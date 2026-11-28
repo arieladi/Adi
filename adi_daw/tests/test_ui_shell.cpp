@@ -28734,6 +28734,386 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
     check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
           "with no overrides Undo has the key map's keys again");
 }
+// WIN-05: under a Hebrew or Russian layout the Latin key at a letter's place runs its command (Ctrl/Cmd+Z
+// undoes, Z and X zoom); a key set exported on one platform imports on another (its chords are canonical
+// text); a file that is not a key set, or holds a chord no one can read, is refused and named.
+void shortcutSets(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string why;
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    const auto *mappings = commands.manager.getKeyMappings();
+    const auto run = [&](juce::juce_wchar letter, int mods) {
+        const juce::KeyPress typed(static_cast<int>(letter), juce::ModifierKeys(mods), letter);
+        if (const int direct = mappings->findCommandForKeyPress(typed); direct != 0)
+            return direct;
+        const auto latin = AppCommands::latinKey(typed);
+        return latin ? mappings->findCommandForKeyPress(*latin) : 0;
+    };
+    const int cmd = juce::ModifierKeys::commandModifier;
+    check(run(0x05D6, cmd) == AppCommands::Undo, "under a Hebrew layout Ctrl/Cmd+Z (the key of zayin) undoes");
+    check(run(0x05D6, 0) == AppCommands::ZoomToSelection && run(0x05E1, 0) == AppCommands::ZoomBack,
+          "and Z and X (zayin, samekh) zoom");
+    check(run(0x044F, cmd) == AppCommands::Undo && run(0x042F, cmd) == AppCommands::Undo && run(0x0447, 0) == AppCommands::ZoomBack,
+          "under a Russian layout too, in either case");
+    check(!AppCommands::latinKey(juce::KeyPress('z')) && !AppCommands::latinKey(juce::KeyPress(0x4E2D)),
+          "a Latin key, and a letter of neither table, are left as typed");
+    // A set exported on Windows: canonical chords, Cmd the command key.
+    const auto windowsSet = juce::File(juce::String((dir / "windows-shortcuts.json").string()));
+    windowsSet.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "preset": "cubase",
+        "overrides": {"view.browser": ["Cmd+Alt+F9"], "edit.undo": [], "help.not-here-yet": ["F9"]}})");
+    check(commands.importShortcuts(windowsSet, why), ("a key set exported on Windows imports: " + why).c_str());
+    const auto browserKeys = mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser);
+    check(browserKeys.size() == 1 && browserKeys[0].getKeyCode() == juce::KeyPress::F9Key &&
+              browserKeys[0].getModifiers() == juce::ModifierKeys(cmd | juce::ModifierKeys::altModifier) &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::Undo).isEmpty() &&
+              settings.get("shortcuts.preset") == "cubase" && settings.get("shortcuts.overrides").contains("help.not-here-yet"),
+          "with this platform's command key, its preset, and the keys of a command this build lacks kept");
+    const auto exported = juce::File(juce::String((dir / "exported-shortcuts.json").string()));
+    check(commands.exportShortcuts(exported, why), ("the set exports: " + why).c_str());
+    auto back = settings::Value::parse(exported.loadFileAsString().toStdString());
+    check(back["format"] == "adi-shortcuts" && back["version"] == 1 && back["preset"] == "cubase" &&
+              back["overrides"]["view.browser"] == settings::Value::array({"Cmd+Alt+F9"}) && back["overrides"]["edit.undo"].empty(),
+          "the exported file holds the preset and the user's keys in canonical text");
+    check(back["overrides"].contains("help.not-here-yet"), "and the keys of a command this build lacks");
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    check(commands.importShortcuts(exported, why) &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser).size() == 1,
+          "and imports back as it was");
+    const auto bad = juce::File(juce::String((dir / "bad-shortcuts.json").string()));
+    bad.replaceWithText("[1, 2]");
+    check(!commands.importShortcuts(bad, why) && why.find("not a key set") != std::string::npos, "a file that is not a key set is refused");
+    bad.replaceWithText(R"({"format": 5, "version": 1, "overrides": {}})");
+    check(!commands.importShortcuts(bad, why) && why.find("not a key set") != std::string::npos, "a format of the wrong type is refused, not thrown");
+    bad.replaceWithText(R"({"format": "adi-shortcuts", "version": "1", "overrides": {}})");
+    check(!commands.importShortcuts(bad, why) && why.find("another version") != std::string::npos, "and a version of the wrong type");
+    bad.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "overrides": {"edit.redo": ["Hyper+"]}})");
+    check(!commands.importShortcuts(bad, why) && why.find("edit.redo") != std::string::npos &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser).size() == 1,
+          "a chord no one can read is refused and named, and nothing changes");
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+}
+// WIN-05: the user's keys laid over the preset's. A chord the system takes (Alt+F4 on Windows, Cmd+Q on the
+// Mac) is no preset's default and is not bound from the record, which keeps it so a set still crosses
+// systems; a key the user takes from a preset command is that command's no longer (the bug: Cmd+Y given
+// to Stop still ran Redo); a chord two of the user's commands claim goes to the first in command order,
+// whatever the record's order; an unreadable chord is kept but not used; the record is rebuilt on what
+// it holds; the Shortcuts page refuses a reserved chord and names the issues; an import names them too.
+void keyConflicts(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    using Kind = KeyIssue::Kind;
+    std::string why;
+    auto *mappings = commands.manager.getKeyMappings();
+    const auto keysOf = [&](int id) {
+        std::vector<std::string> out;
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            out.push_back(AppCommands::chordText(k));
+        return out;
+    };
+    const auto chord = [](const char *text) { return *AppCommands::parseChord(text); };
+    const auto shown = [](const char *text) { return AppCommands::parseChord(text)->getTextDescriptionWithIcons().toStdString(); };
+    const auto reserved = [](const char *text, KeyOs os) { return AppCommands::reservedBy(text, os) != nullptr; };
+    // The reserved chords, by system.
+    check(reserved("Alt+F4", KeyOs::Windows) && !reserved("Alt+F4", KeyOs::Mac) && !reserved("Alt+F4", KeyOs::Linux) &&
+              reserved("Alt+Tab", KeyOs::Windows),
+          "Alt+F4 and Alt+Tab are Windows' own, and Alt+F4 is free on the Mac and Linux");
+    bool macOwn = true;
+    for (const char *text : {"Cmd+Q", "Cmd+H", "Cmd+Alt+H", "Cmd+`"})
+        if (!reserved(text, KeyOs::Mac) || reserved(text, KeyOs::Windows) || reserved(text, KeyOs::Linux))
+            macOwn = false;
+    check(macOwn, "Cmd+Q, Cmd+H, Cmd+Alt+H and Cmd+` are the Mac's own and free elsewhere");
+    check(!reserved("Cmd+M", KeyOs::Windows) && !reserved("Cmd+M", KeyOs::Mac) && !reserved("Cmd+M", KeyOs::Linux),
+          "Cmd+M is free everywhere (MIDI Map Mode's, WIN-07)");
+#if JUCE_MAC
+    check(!reserved("Cmd+Ctrl+Q", KeyOs::Windows) && !reserved("Cmd+Ctrl+Q", KeyOs::Mac) && !reserved("Cmd+Ctrl+Q", KeyOs::Linux),
+          "Cmd+Ctrl+Q is free everywhere");
+#else
+    // Off the Mac Ctrl is the command key, so Cmd+Ctrl+Q reads as Cmd+Q.
+    check(AppCommands::chordText(chord("Cmd+Ctrl+Q")) == "Cmd+Q", "off the Mac Cmd+Ctrl+Q reads as Cmd+Q");
+#endif
+    check(!reserved("Shift+Alt+F4", KeyOs::Windows), "Alt+Shift+F4 is not Alt+F4");
+    check(reserved("Alt+Cmd+h", KeyOs::Mac) &&
+              AppCommands::reservedBy("Alt+Cmd+h", KeyOs::Mac) == AppCommands::reservedBy("Cmd+Alt+H", KeyOs::Mac),
+          "any spelling of a chord is read canonically");
+    bool rows = true;
+    for (const char *text : {"Alt+F4", "Alt+Tab", "Cmd+Q", "Cmd+H", "Cmd+Alt+H", "Cmd+`"})
+        if (const auto key = AppCommands::parseChord(text); !key || AppCommands::chordText(*key) != std::string(text))
+            rows = false;
+    check(rows, "every reserved chord is written canonically");
+    // No preset's default is reserved here; nor, in the pc goldens, on Windows.
+    juce::Array<juce::CommandID> all;
+    commands.getAllCommands(all);
+    std::vector<std::string> order;
+    for (const auto id : all)
+        order.emplace_back(AppCommands::stableId(id));
+    std::string taken;
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        settings.set("shortcuts.preset", std::string(preset), {}, why);
+        commands.reload();
+        for (const auto id : all) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            for (const auto &k : info.defaultKeypresses)
+                if (AppCommands::reservedBy(AppCommands::chordText(k), thisKeyOs()) != nullptr)
+                    taken += std::string(preset) + " " + AppCommands::chordText(k) + " ";
+        }
+        const auto golden = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String("keymap-") + preset + "-pc.txt");
+        check(golden.existsAsFile(), ("the pc golden of preset " + std::string(preset)).c_str());
+        juce::StringArray lines;
+        lines.addLines(golden.loadFileAsString());
+        for (const auto &line : lines) {
+            const auto text = line.toStdString();
+            const auto colon = text.find(": ");
+            if (colon == std::string::npos)
+                continue;
+            for (std::size_t at = colon + 2; at < text.size();) {
+                const auto comma = text.find(", ", at);
+                const auto one = text.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                if (AppCommands::reservedBy(one, KeyOs::Windows) != nullptr)
+                    taken += std::string(preset) + "-pc " + one + " ";
+                at = comma == std::string::npos ? text.size() : comma + 2;
+            }
+        }
+    }
+    check(taken.empty(), ("no preset's default is a reserved chord: " + taken).c_str());
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+    // planKeys, on its own.
+    const auto plan = [&order](const KeyTable &defaults, const char *overrides, KeyOs os) {
+        return AppCommands::planKeys(defaults, settings::Value::parse(overrides), os, order);
+    };
+    {
+        const auto p = plan({{"edit.redo", {"Cmd+Y"}}}, R"({"transport.stop": ["Cmd+Y"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"edit.redo", {}}, {"transport.stop", {"Cmd+Y"}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Shadow, "Cmd+Y", {"edit.redo"}, {"transport.stop"}}},
+              "a user's key takes a preset command's default, and says so");
+    }
+    {
+        const auto p = plan({{"view.info-view", {"Cmd+Alt+F9"}}},
+                            R"({"view.device-view": ["Cmd+Alt+F9"], "view.browser": ["Cmd+Alt+F9"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"view.browser", {"Cmd+Alt+F9"}}, {"view.device-view", {"Cmd+Alt+F9"}}, {"view.info-view", {}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Clash, "Cmd+Alt+F9", {"view.browser", "view.device-view"}, {}},
+                                                    {Kind::Shadow, "Cmd+Alt+F9", {"view.info-view"}, {"view.browser", "view.device-view"}}},
+              "a chord two of the user's commands claim is bound to both, the first in command order named first; a preset holder loses it");
+    }
+    {
+        const auto windows = plan({}, R"({"transport.stop": ["Alt+F4", "Cmd+K"]})", KeyOs::Windows);
+        const auto mac = plan({}, R"({"transport.stop": ["Alt+F4", "Cmd+K"]})", KeyOs::Mac);
+        check(windows.keys == KeyTable{{"transport.stop", {"Cmd+K"}}} &&
+                  windows.issues == std::vector<KeyIssue>{{Kind::Reserved, "Alt+F4", {"transport.stop"},
+                                                           {AppCommands::reservedBy("Alt+F4", KeyOs::Windows)}}},
+              "on Windows Alt+F4 is not bound, and said");
+        check(mac.keys == KeyTable{{"transport.stop", {"Alt+F4", "Cmd+K"}}} && mac.issues.empty(), "on the Mac it is bound");
+    }
+    {
+        const auto p = plan({{"transport.stop", {"F5"}}, {"edit.undo", {"Cmd+Z"}}},
+                            R"({"transport.stop": ["Alt+F4"], "edit.undo": []})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"edit.undo", {}}, {"transport.stop", {"F5"}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Reserved, "Alt+F4", {"transport.stop"},
+                                                     {AppCommands::reservedBy("Alt+F4", KeyOs::Windows)}}},
+              "a list with no usable chord keeps the preset's keys; an empty one unbinds");
+    }
+    {
+        const auto p = plan({}, R"({"transport.stop": ["Hyper+K", "Cmd+J"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"transport.stop", {"Cmd+J"}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Unreadable, "Hyper+K", {"transport.stop"}, {}}},
+              "an unreadable chord is not bound, and named as written");
+    }
+    {
+        const auto p = plan({}, R"({"transport.stop": ["Cmd+J", "Cmd+j", "Cmd+J"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"transport.stop", {"Cmd+J"}}} && p.issues.empty(), "a chord written twice binds once");
+    }
+    {
+        const auto p = plan({{"edit.redo", {"Cmd+Y"}}}, R"({"transport.stop": ["Cmd+Y"], "edit.redo": ["F9"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"edit.redo", {"F9"}}, {"transport.stop", {"Cmd+Y"}}} && p.issues.empty(),
+              "a default whose command has the user's own keys is no shadow");
+    }
+    {
+        const auto p = plan({{"edit.redo", {"F9"}}}, R"({"view.nothing": ["F9"], "transport.stop": "F9"})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"edit.redo", {"F9"}}} && p.issues.empty(),
+              "an unknown id and a value that is no list are skipped, and raise nothing");
+    }
+#if !JUCE_MAC
+    {
+        const auto p = plan({{"edit.redo", {"Cmd+Y"}}}, R"({"transport.stop": ["Ctrl+Y"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"edit.redo", {}}, {"transport.stop", {"Cmd+Y"}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Shadow, "Cmd+Y", {"edit.redo"}, {"transport.stop"}}},
+              "off the Mac Ctrl+Y is Cmd+Y, and takes Redo's");
+    }
+#endif
+    // The bug, in the key map: the preset's Redo key given to Stop runs Stop, and Redo has it no longer.
+    commands.keyOs = KeyOs::Windows;
+    juce::ApplicationCommandInfo redoInfo(AppCommands::Redo);
+    commands.getCommandInfo(AppCommands::Redo, redoInfo);
+    const auto redoKey = AppCommands::chordText(redoInfo.defaultKeypresses[0]);
+    auto record = settings::Value::object();
+    record["transport.stop"] = {redoKey};
+    settings.set("shortcuts.overrides", record, {}, why);
+    commands.reload();
+    const auto redoNow = keysOf(AppCommands::Redo);
+    check(mappings->findCommandForKeyPress(chord(redoKey.c_str())) == AppCommands::Stop &&
+              std::find(redoNow.begin(), redoNow.end(), redoKey) == redoNow.end(),
+          "the preset's Redo key given to Stop runs Stop, and Redo has it no longer");
+    check(commands.issues() == std::vector<KeyIssue>{{Kind::Shadow, redoKey, {"edit.redo"}, {"transport.stop"}}},
+          "and the key map says Redo lost it");
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides").dump() == record.dump(),
+          "the record stays as written, with no entry for Redo");
+    // A clash goes to the first in command order, not the record's (alphabetical) order: ToggleBrowser
+    // ("view.browser") comes before ToggleMixer ("arrangement.mixer"), which sorts first.
+    settings.set("shortcuts.overrides",
+                 settings::Value::parse(R"({"view.browser": ["Cmd+Alt+F9"], "arrangement.mixer": ["Cmd+Alt+F9"]})"), {}, why);
+    commands.reload();
+    check(mappings->findCommandForKeyPress(chord("Cmd+Alt+F9")) == AppCommands::ToggleBrowser &&
+              keysOf(AppCommands::ToggleMixer) == std::vector<std::string>{"Cmd+Alt+F9"},
+          "both hold the clash's chord, and the first in command order runs it");
+    // Also where the chord is the later claimant's own default: SwapPanels ("view.swap-panels") comes
+    // before ToggleDeviceView ("view.device-view", default Cmd+Alt+4), which sorts first.
+    settings.set("shortcuts.overrides",
+                 settings::Value::parse(R"({"view.swap-panels": ["Cmd+Alt+4"], "view.device-view": ["Cmd+Alt+4"]})"), {}, why);
+    commands.reload();
+    check(mappings->findCommandForKeyPress(chord("Cmd+Alt+4")) == AppCommands::SwapPanels &&
+              keysOf(AppCommands::ToggleDeviceView) == std::vector<std::string>{"Cmd+Alt+4"},
+          "also where the chord is the later claimant's own default");
+    // The record is rebuilt on what it holds: a reserved, an unreadable and a later build's key keep their place.
+    const auto verbatim = settings::Value::parse(
+        R"({"transport.stop": ["Alt+F4", "Hyper+K", "Cmd+Alt+F9"], "view.device-view": ["Cmd+Alt+F9"], "view.nothing": ["F9"]})");
+    settings.set("shortcuts.overrides", verbatim, {}, why);
+    commands.reload();
+    check(commands.issues() ==
+              std::vector<KeyIssue>{{Kind::Unreadable, "Hyper+K", {"transport.stop"}, {}},
+                                    {Kind::Reserved, "Alt+F4", {"transport.stop"}, {AppCommands::reservedBy("Alt+F4", KeyOs::Windows)}},
+                                    {Kind::Clash, "Cmd+Alt+F9", {"transport.stop", "view.device-view"}, {}}},
+          "the record's issues: the unreadable chord, the reserved one and the clash");
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides").dump() == verbatim.dump(),
+          "unchanged keys leave the record as written");
+    mappings->addKeyPress(AppCommands::Stop, chord("Cmd+J"));
+    check(commands.storeUserKeys(why), ("a key added to Stop is written: " + why).c_str());
+    check(settings.get("shortcuts.overrides")["transport.stop"] == settings::Value::array({"Cmd+Alt+F9", "Cmd+J", "Alt+F4", "Hyper+K"}) &&
+              settings.get("shortcuts.overrides")["view.device-view"] == verbatim["view.device-view"] &&
+              settings.get("shortcuts.overrides")["view.nothing"] == verbatim["view.nothing"],
+          "Stop's keys in force in mapping order, then its chords never bound in the record's order; the others as written");
+    mappings->resetToDefaultMappings();
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == settings::Value::parse(R"({"view.nothing": ["F9"]})"),
+          "the preset's keys again leave only the later build's command's");
+    // The Shortcuts page refuses a reserved chord, and says so; the refusal stays until the keys change.
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    {
+        ShortcutsPage page(commands);
+        mappings->addKeyPress(AppCommands::Stop, chord("Alt+F4"));
+        page.store();
+        check(keysOf(AppCommands::Stop).empty() && !settings.get("shortcuts.overrides").contains("transport.stop") &&
+                  page.error().find(shown("Alt+F4")) != std::string::npos && page.error().find("Windows") != std::string::npos,
+              ("a reserved chord set in the editor is taken off and said: " + page.error()).c_str());
+        page.store();
+        check(settings.get("shortcuts.overrides").empty() && page.error().find("not saved") == std::string::npos &&
+                  page.error().find("Windows") != std::string::npos,
+              "the store its change message brings saves as before and keeps the refusal said");
+        mappings->addKeyPress(AppCommands::Stop, chord("Cmd+J"));
+        page.store();
+        check(settings.get("shortcuts.overrides")["transport.stop"] == settings::Value::array({"Cmd+J"}) && page.error().empty(),
+              "a later change is saved, and the refusal goes");
+        // A change taken back in the same session leaves the record as it was; so does a key cleared and
+        // given back.
+        mappings->removeKeyPress(chord("Cmd+J"));
+        page.store();
+        check(settings.get("shortcuts.overrides").empty(), "a key added and taken off again leaves no entry");
+        const auto undoKeys = keysOf(AppCommands::Undo);
+        mappings->clearAllKeyPresses(AppCommands::Undo);
+        page.store();
+        check(settings.get("shortcuts.overrides") == settings::Value::parse(R"({"edit.undo": []})"),
+              "Undo's keys cleared are written as none");
+        for (const auto &text : undoKeys)
+            mappings->addKeyPress(AppCommands::Undo, chord(text.c_str()));
+        page.store();
+        check(settings.get("shortcuts.overrides").empty(), "and given back, the entry goes");
+        // The editor's Change takes the old key off before it sets the new: refused, the old key comes back.
+        const auto browserKeys = keysOf(AppCommands::ToggleBrowser);
+        check(!browserKeys.empty(), "Hide/Show Browser has a key to change");
+        if (!browserKeys.empty()) {
+            const int last = static_cast<int>(browserKeys.size()) - 1;
+            mappings->removeKeyPress(AppCommands::ToggleBrowser, last);
+            mappings->addKeyPress(AppCommands::ToggleBrowser, chord("Alt+F4"), last);
+            page.store();
+            page.store();
+            check(keysOf(AppCommands::ToggleBrowser) == browserKeys && settings.get("shortcuts.overrides").empty() &&
+                      page.error().find("Windows") != std::string::npos,
+                  "a key changed to a reserved chord is refused and keeps the key it had");
+        }
+        // A user's key taken off gives the preset command back the default it took, and the record has
+        // no entry for either.
+        settings.set("shortcuts.overrides", record, {}, why);
+        commands.reload();
+        mappings->removeKeyPress(chord(redoKey.c_str()));
+        page.store();
+        page.store();
+        check(settings.get("shortcuts.overrides").empty() && mappings->findCommandForKeyPress(chord(redoKey.c_str())) == AppCommands::Redo,
+              "the user's key taken off Stop is Redo's again, and the record is empty");
+        // An import names what keeps its keys from working here, and its set exports and imports back alike.
+        const auto file = juce::File(juce::String((dir / "conflicting-shortcuts.json").string()));
+        file.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "preset": "live",
+            "overrides": {"view.browser": ["Cmd+Alt+F9"], "view.device-view": ["Cmd+Alt+F9"], "transport.stop": ["Alt+F4"]}})");
+        check(commands.importShortcuts(file, why), ("a set with a clash and a reserved chord imports: " + why).c_str());
+        const auto imported = settings.get("shortcuts.overrides");
+        check(imported == settings::Value::parse(file.loadFileAsString().toStdString())["overrides"], "the record is the file's");
+        std::string texts;
+        for (const auto &text : page.issueTexts())
+            texts += text + "\n";
+        check(page.issueTexts().size() == 2 && texts.find("Hide/Show Browser") != std::string::npos &&
+                  texts.find("Hide/Show Device View") != std::string::npos && texts.find("Windows") != std::string::npos,
+              ("the page names both claimants and Windows: " + texts).c_str());
+        const auto exported = juce::File(juce::String((dir / "conflicting-exported.json").string()));
+        check(commands.exportShortcuts(exported, why) && commands.importShortcuts(exported, why) &&
+                  settings.get("shortcuts.overrides") == imported,
+              "and it exports and imports back as it was, the reserved chord kept");
+    }
+    // A command left only chords never bound keeps the preset's keys; all of them cleared is an empty entry,
+    // which unbinds it after a reload.
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    const auto presetBrowser = keysOf(AppCommands::ToggleBrowser);
+    settings.set("shortcuts.overrides", settings::Value::parse(R"({"view.browser": ["Alt+F4"]})"), {}, why);
+    commands.reload();
+    check(!presetBrowser.empty() && keysOf(AppCommands::ToggleBrowser) == presetBrowser &&
+              mappings->findCommandForKeyPress(chord("Alt+F4")) == 0,
+          "a list of a reserved chord only keeps the preset's keys, and the chord is not bound");
+    mappings->clearAllKeyPresses(AppCommands::ToggleBrowser);
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == settings::Value::parse(R"({"view.browser": []})"),
+          "its keys cleared are written as none");
+    commands.reload();
+    check(keysOf(AppCommands::ToggleBrowser).empty(), "and stay cleared after a reload");
+    // A chord with no key code parses but is no key: it is named and keeps the preset's keys.
+    {
+        const auto p = plan({{"view.browser", {"F5"}}}, R"({"view.browser": ["#0"]})", KeyOs::Windows);
+        check(p.keys == KeyTable{{"view.browser", {"F5"}}} &&
+                  p.issues == std::vector<KeyIssue>{{Kind::Unreadable, "#0", {"view.browser"}, {}}},
+              "a chord of key code none is unreadable");
+    }
+    // An unreadable chord stays in the record but not in an export, which import has to read.
+    const auto unreadable =
+        settings::Value::parse(R"({"transport.stop": ["Hyper+K", "Cmd+J"], "view.browser": ["Hyper+K"], "edit.undo": []})");
+    settings.set("shortcuts.overrides", unreadable, {}, why);
+    commands.reload();
+    const auto readable = juce::File(juce::String((dir / "readable-exported.json").string()));
+    check(commands.exportShortcuts(readable, why) && commands.importShortcuts(readable, why) &&
+              settings.get("shortcuts.overrides") == settings::Value::parse(R"({"transport.stop": ["Cmd+J"], "edit.undo": []})"),
+          ("an export leaves out the unreadable chords, and imports back: " + why).c_str());
+    // Under a Hebrew layout the user's key on Z, taken from Zoom to Selection, reaches the user's command.
+    settings.set("shortcuts.overrides", settings::Value::parse(R"({"transport.stop": ["Z"]})"), {}, why);
+    commands.reload();
+    const juce::KeyPress zayin(0x05D6, juce::ModifierKeys(), 0x05D6);
+    const int direct = mappings->findCommandForKeyPress(zayin);
+    const auto latin = AppCommands::latinKey(zayin);
+    check(direct == 0 && latin && mappings->findCommandForKeyPress(*latin) == AppCommands::Stop &&
+              keysOf(AppCommands::ZoomToSelection).empty(),
+          "under a Hebrew layout zayin runs the user's command on Z, not Zoom to Selection");
+    commands.keyOs = thisKeyOs();
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+}
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -33362,6 +33742,8 @@ int main(int argc, char **argv) {
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
     trace("discardUneditedUntitled", [&] { discardUneditedUntitled(temp.path()); });
     trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
+    trace("shortcutSets", [&] { shortcutSets(commands, settings, temp.path()); });
+    trace("keyConflicts", [&] { keyConflicts(commands, settings, temp.path()); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
 #if JUCE_LOG_ASSERTIONS
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());

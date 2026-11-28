@@ -38,8 +38,10 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <sqlite3.h>
 #include <string_view>
+#include <tuple>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -164,76 +166,460 @@ void AppCommands::reload() {
     manager.getKeyMappings()->resetToDefaultMappings();
     // WIN-04: the user's own keys on top, after every reload, so a Settings change or a preset switch
     // keeps them: a stable id mapped to chord texts, an empty list for none (shortcuts.overrides).
-    if (const auto overrides = settings_.get("shortcuts.overrides"); overrides.is_object())
-        for (const auto &[stable, chords] : overrides.items()) {
-            const int command = commandFor(stable);
-            if (command == 0 || !chords.is_array())
-                continue;
-            auto *mappings = manager.getKeyMappings();
-            mappings->clearAllKeyPresses(command);
-            for (const auto &chord : chords)
-                if (chord.is_string())
-                    if (const auto key = parseChord(chord.get<std::string>()))
-                        mappings->addKeyPress(command, *key);
-        }
+    // WIN-05: laid on by the plan, so a key the user took from a preset command is that command's no
+    // longer, and a chord two of the user's commands claim goes to the first in command order.
+    // The key map holds the preset's keys now, so a command whose keys differ from them is laid on anew;
+    // so is every claimant of a clash, so the mappings hold them in command order and the first of them
+    // is the one a key press finds.
+    layOn(planKeys(defaultKeys(), settings_.get("shortcuts.overrides"), keyOs, commandOrder()), true);
     if (active_ && armModeChanged)
         active_->refreshSelectionArming();
 }
-settings::Value AppCommands::userKeys() const {
-    auto out = settings::Value::object();
-    const auto *mappings = manager.getKeyMappings();
-    for (int id = PlayStop; id <= LastId; ++id) {
-        juce::ApplicationCommandInfo info(id);
-        const_cast<AppCommands *>(this)->getCommandInfo(id, info);
-        std::vector<std::string> mine, theirs;
-        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
-            mine.push_back(chordText(k));
-        for (const auto &k : info.defaultKeypresses)
-            theirs.push_back(chordText(k));
+void AppCommands::layOn(KeyPlan plan, bool clashes) {
+    auto *mappings = manager.getKeyMappings();
+    const auto now = keysInForce();
+    std::set<std::string> anew;
+    for (const auto &[stable, keys] : plan.keys) {
+        const auto held = now.find(stable);
+        auto mine = keys, theirs = held != now.end() ? held->second : std::vector<std::string>{};
         std::sort(mine.begin(), mine.end());
         std::sort(theirs.begin(), theirs.end());
         if (mine != theirs)
-            out[stableId(id)] = mine;
+            anew.insert(stable);
     }
+    if (clashes)
+        for (const auto &issue : plan.issues)
+            if (issue.kind == KeyIssue::Kind::Clash)
+                anew.insert(issue.commands.begin(), issue.commands.end());
+    for (int id = PlayStop; id <= LastId; ++id)
+        if (anew.contains(stableId(id)))
+            mappings->clearAllKeyPresses(id);
+    for (int id = PlayStop; id <= LastId; ++id)
+        if (anew.contains(stableId(id)))
+            for (const auto &chord : plan.keys[stableId(id)])
+                if (const auto key = parseChord(chord))
+                    mappings->addKeyPress(id, *key);
+    planned_ = std::move(plan.keys);
+    issues_ = std::move(plan.issues);
+}
+KeyTable AppCommands::keysInForce() const {
+    KeyTable out;
+    const auto *mappings = manager.getKeyMappings();
+    for (int id = PlayStop; id <= LastId; ++id) {
+        auto &keys = out[stableId(id)];
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            keys.push_back(chordText(k));
+    }
+    return out;
+}
+std::vector<std::string> AppCommands::commandOrder() {
+    juce::Array<juce::CommandID> ids;
+    getAllCommands(ids);
+    std::vector<std::string> out;
+    for (const auto id : ids)
+        if (const char *stable = stableId(id))
+            out.emplace_back(stable);
+    return out;
+}
+KeyTable AppCommands::defaultKeys() const {
+    KeyTable out;
+    for (int id = PlayStop; id <= LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        const_cast<AppCommands *>(this)->getCommandInfo(id, info);
+        auto &keys = out[stableId(id)];
+        for (const auto &k : info.defaultKeypresses)
+            keys.push_back(chordText(k));
+    }
+    return out;
+}
+namespace {
+// The chords each system takes before ADI's window can use them. Only chords a KeyPress can hold, each
+// with its source. Left out on purpose: Cmd+M on the Mac (Live's MIDI Map Mode, WIN-07) and the
+// Win/Super key, which is no JUCE modifier. Linux has none: the window managers' chords differ by desktop.
+// The wider lists (Ctrl+Esc, Cmd+Tab, Cmd+Space and the like) wait for the lane's word (WIN-05).
+struct ReservedChord {
+    KeyOs os;
+    const char *chord; // canonical text
+    const char *use;
+};
+constexpr ReservedChord kReservedChords[] = {
+    // PLAN WIN-05; JUCE hands it to the components before DefWindowProc's SC_CLOSE
+    // (juce_Windowing_windows.cpp:3303, 4386).
+    {KeyOs::Windows, "Alt+F4", "it closes the window"},
+    // The window switcher (live-clip-view-audit l.386).
+    {KeyOs::Windows, "Alt+Tab", "it switches windows"},
+    // The application menu's Quit (ui_shell.cpp's Quit has no key of its own on the Mac).
+    {KeyOs::Mac, "Cmd+Q", "it quits the application"},
+    // JUCE's application menu (juce_MainMenu_mac.mm:715-724); a key equivalent goes to the focused
+    // component first, then to the system (juce_NSViewComponentPeer_mac.mm:2526-2530).
+    {KeyOs::Mac, "Cmd+H", "it hides ADI"},
+    {KeyOs::Mac, "Cmd+Alt+H", "it hides the other applications"},
+    {KeyOs::Mac, "Cmd+`", "it moves between the application's windows"},
+};
+const char *keyOsName(KeyOs os) noexcept {
+    switch (os) {
+    case KeyOs::Windows:
+        return "Windows";
+    case KeyOs::Mac:
+        return "macOS";
+    case KeyOs::Linux:
+        break;
+    }
+    return "Linux";
+}
+std::string keyName(const std::string &chord) {
+    const auto key = AppCommands::parseChord(chord);
+    return key ? key->getTextDescriptionWithIcons().toStdString() : chord;
+}
+bool sameKeys(std::vector<std::string> a, std::vector<std::string> b) {
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    return a == b;
+}
+} // namespace
+KeyOs thisKeyOs() noexcept {
+#if JUCE_MAC
+    return KeyOs::Mac;
+#elif JUCE_WINDOWS
+    return KeyOs::Windows;
+#else
+    return KeyOs::Linux;
+#endif
+}
+const char *AppCommands::reservedBy(const std::string &chord, KeyOs os) noexcept {
+    try {
+        const auto key = parseChord(chord);
+        if (!key)
+            return nullptr;
+        const auto canonical = chordText(*key);
+        for (const auto &row : kReservedChords)
+            if (row.os == os && canonical == row.chord)
+                return row.use;
+    } catch (const std::exception &) {
+    }
+    return nullptr;
+}
+KeyPlan AppCommands::planKeys(const KeyTable &defaults, const settings::Value &overrides, KeyOs os,
+                              const std::vector<std::string> &order) {
+    KeyPlan plan;
+    // Command order: the given order first, then any other command by its id.
+    const auto rank = [&order](const std::string &stable) {
+        const auto at = std::find(order.begin(), order.end(), stable);
+        if (at != order.end())
+            return static_cast<std::size_t>(at - order.begin());
+        return order.size() + static_cast<std::size_t>(std::max(0, commandFor(stable) - PlayStop));
+    };
+    const auto inOrder = [&rank](std::vector<std::string> &ids) {
+        std::stable_sort(ids.begin(), ids.end(), [&rank](const std::string &a, const std::string &b) {
+            return rank(a) < rank(b) || (rank(a) == rank(b) && a < b);
+        });
+    };
+    std::map<std::string, std::vector<std::string>> claims; // a chord to the user's commands that claim it
+    std::set<std::string> overridden;
+    if (overrides.is_object())
+        for (const auto &[stable, chords] : overrides.items()) {
+            if ((!defaults.contains(stable) && commandFor(stable) == 0) || !chords.is_array())
+                continue;
+            std::vector<std::string> usable, seen;
+            for (const auto &chord : chords) {
+                const auto text = chord.is_string() ? chord.get<std::string>() : chord.dump();
+                // A key code of none ("#0") parses but is no key: the key map would not bind it.
+                auto key = chord.is_string() ? parseChord(text) : std::nullopt;
+                if (key && !key->isValid())
+                    key.reset();
+                const auto canonical = key ? chordText(*key) : text;
+                if (std::find(seen.begin(), seen.end(), canonical) != seen.end())
+                    continue;
+                seen.push_back(canonical);
+                if (!key)
+                    plan.issues.push_back({KeyIssue::Kind::Unreadable, text, {stable}, {}});
+                else if (const char *use = reservedBy(canonical, os))
+                    plan.issues.push_back({KeyIssue::Kind::Reserved, canonical, {stable}, {use}});
+                else
+                    usable.push_back(canonical);
+            }
+            // A list with no chord that can be used leaves the preset's keys; an empty one unbinds.
+            if (!chords.empty() && usable.empty())
+                continue;
+            overridden.insert(stable);
+            for (const auto &chord : usable)
+                claims[chord].push_back(stable);
+            plan.keys[stable] = std::move(usable);
+        }
+    // The user's keys win over the preset's: a preset command loses a default the user claims.
+    for (const auto &[stable, keys] : defaults) {
+        if (overridden.contains(stable))
+            continue;
+        auto &mine = plan.keys[stable];
+        for (const auto &chord : keys) {
+            const auto key = parseChord(chord);
+            const auto claim = claims.find(key ? chordText(*key) : chord);
+            if (claim == claims.end()) {
+                mine.push_back(chord);
+                continue;
+            }
+            auto by = claim->second;
+            inOrder(by);
+            plan.issues.push_back({KeyIssue::Kind::Shadow, claim->first, {stable}, by});
+        }
+    }
+    // A chord two of the user's commands claim is bound to each, the first in command order running it.
+    for (auto &[chord, claimants] : claims)
+        if (claimants.size() > 1) {
+            inOrder(claimants);
+            plan.issues.push_back({KeyIssue::Kind::Clash, chord, claimants, {}});
+        }
+    std::sort(plan.issues.begin(), plan.issues.end(), [](const KeyIssue &a, const KeyIssue &b) {
+        return std::tie(a.kind, a.chord, a.commands) < std::tie(b.kind, b.chord, b.commands);
+    });
+    return plan;
+}
+std::string AppCommands::describe(const KeyIssue &issue) const {
+    const auto name = [this](const std::string &stable) {
+        const int id = commandFor(stable);
+        if (id == 0)
+            return stable;
+        juce::ApplicationCommandInfo info(id);
+        const_cast<AppCommands *>(this)->getCommandInfo(id, info);
+        // The description: the command's own name, where the short name follows the selection (Undo's step).
+        return info.description.toStdString();
+    };
+    const auto names = [&name](const std::vector<std::string> &ids) {
+        std::string out;
+        for (std::size_t i = 0; i < ids.size(); ++i)
+            out += (i == 0 ? "" : i + 1 == ids.size() ? " and " : ", ") + name(ids[i]);
+        return out;
+    };
+    const auto owner = issue.commands.empty() ? std::string() : name(issue.commands.front());
+    switch (issue.kind) {
+    case KeyIssue::Kind::Unreadable:
+        return owner + "'s key \"" + issue.chord + "\" cannot be read; it is kept but not used.";
+    case KeyIssue::Kind::Reserved:
+        return keyName(issue.chord) + " belongs to " + keyOsName(keyOs) + " (" +
+               (issue.by.empty() ? std::string("the system's") : issue.by.front()) + "), so " + owner +
+               " does not use it here.";
+    case KeyIssue::Kind::Clash:
+        return keyName(issue.chord) + " is your key for " + (issue.commands.size() > 2 ? "all of " : "both ") +
+               names(issue.commands) + "; " + owner + " runs it.";
+    case KeyIssue::Kind::Shadow:
+        break;
+    }
+    return keyName(issue.chord) + " is your key for " + names(issue.by) + ", so " + owner + " no longer has it.";
+}
+bool AppCommands::refuseReserved(std::string &said, const KeyTable &before) {
+    auto *mappings = manager.getKeyMappings();
+    bool refused = false;
+    for (int id = PlayStop; id <= LastId; ++id) {
+        bool here = false;
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            if (const char *use = reservedBy(chordText(k), keyOs)) {
+                mappings->removeKeyPress(k);
+                if (!refused)
+                    said = k.getTextDescriptionWithIcons().toStdString() + " belongs to " + keyOsName(keyOs) + " (" + use +
+                           "), so it was not assigned.";
+                refused = here = true;
+            }
+        // The key the refused edit replaced goes back in its place.
+        if (const auto kept = before.find(stableId(id)); here && kept != before.end()) {
+            const auto now = mappings->getKeyPressesAssignedToCommand(id);
+            for (std::size_t i = 0; i < kept->second.size(); ++i)
+                if (const auto key = parseChord(kept->second[i]); key && !now.contains(*key))
+                    mappings->addKeyPress(id, *key, static_cast<int>(i));
+        }
+    }
+    return refused;
+}
+settings::Value AppCommands::recordNow() const {
+    const auto held = settings_.get("shortcuts.overrides");
+    // Every held entry stays as written, a later build's command's among them, unless its command changed.
+    auto out = held.is_object() ? held : settings::Value::object();
+    const auto defaults = defaultKeys();
+    const auto *mappings = manager.getKeyMappings();
+    for (int id = PlayStop; id <= LastId; ++id) {
+        const std::string stable = stableId(id);
+        std::vector<std::string> now;
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            now.push_back(chordText(k));
+        const auto planned = planned_.find(stable);
+        const auto preset = defaults.find(stable);
+        const auto theirs = preset != defaults.end() ? preset->second : std::vector<std::string>{};
+        // The keys as planned: the held entry is left as it is, or none written, even where the keys
+        // equal the preset's, so reload()'s own change messages, or a preset whose keys match, never
+        // drop it, and a preset command that lost a key to the user's gets no entry of its own.
+        if (sameKeys(now, planned != planned_.end() ? planned->second : theirs))
+            continue;
+        // The preset's keys again (the editor's reset): the entry goes.
+        if (sameKeys(now, theirs)) {
+            out.erase(stable);
+            continue;
+        }
+        // Otherwise the keys in force, in mapping order, then the held chords that were never bound
+        // (unreadable, or the system's here), in the record's order. With no key in force the entry is
+        // empty: a list of chords never bound would keep the preset's keys, not unbind them.
+        auto keys = settings::Value::array();
+        for (const auto &chord : now)
+            keys.push_back(chord);
+        if (const auto entry = held.is_object() ? held.find(stable) : held.end();
+            !now.empty() && held.is_object() && entry != held.end() && entry->is_array())
+            for (const auto &chord : *entry) {
+                const auto key = chord.is_string() ? parseChord(chord.get<std::string>()) : std::nullopt;
+                if (key && key->isValid() && !reservedBy(chordText(*key), keyOs))
+                    continue;
+                if (std::find(keys.begin(), keys.end(), key ? settings::Value(chordText(*key)) : chord) == keys.end())
+                    keys.push_back(chord);
+            }
+        out[stable] = keys;
+    }
+    return out;
+}
+settings::Value AppCommands::userKeys() const {
+    auto out = recordNow();
+    // A stable id this build does not know (a later build's command) is the record's, not the key map's.
+    for (auto it = out.begin(); it != out.end();)
+        it = commandFor(it.key()) == 0 ? out.erase(it) : std::next(it);
     return out;
 }
 bool AppCommands::storeUserKeys(std::string &why) {
     const auto held = settings_.get("shortcuts.overrides");
-    auto keys = userKeys();
-    if (held.is_object()) {
-        const auto *mappings = manager.getKeyMappings();
-        for (const auto &[stable, chords] : held.items()) {
-            const int command = commandFor(stable);
-            // A stable id this build does not know (a later build's command) keeps its keys.
-            if (command == 0) {
-                keys[stable] = chords;
-                continue;
-            }
-            // A held entry the command still has keeps its place even where it equals the preset's keys,
-            // so reload()'s own change messages, or a preset whose keys match, never drop it.
-            std::vector<std::string> now, kept;
-            for (const auto &k : mappings->getKeyPressesAssignedToCommand(command))
-                now.push_back(chordText(k));
-            if (chords.is_array())
-                for (const auto &chord : chords)
-                    if (chord.is_string())
-                        kept.push_back(chord.get<std::string>());
-            std::sort(now.begin(), now.end());
-            std::sort(kept.begin(), kept.end());
-            if (now == kept && !keys.contains(stable))
-                keys[stable] = chords;
-        }
-    }
+    const auto keys = recordNow();
     if (keys == held)
         return true;
-    return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
+    if (!settings_.set("shortcuts.overrides", keys, {}, why))
+        return false;
+    // The plan follows the record in force (set, even when the save then fails), so a later store
+    // compares with what is true now, a preset command gets back a default the user's key no longer
+    // takes, and the Shortcuts page names the issues of the keys in force.
+    layOn(planKeys(defaultKeys(), keys, keyOs, commandOrder()), false);
+    return settings_.save(why);
+}
+namespace {
+// The Latin letter at each letter of the Hebrew (SI-1452) and Russian (JCUKEN) layouts' keys.
+struct LayoutKey {
+    juce::juce_wchar letter;
+    char latin;
+};
+constexpr LayoutKey kLayoutKeys[] = {
+    // Hebrew
+    {0x05E7, 'e'}, {0x05E8, 'r'}, {0x05D0, 't'}, {0x05D8, 'y'}, {0x05D5, 'u'}, {0x05DF, 'i'}, {0x05DD, 'o'},
+    {0x05E4, 'p'}, {0x05E9, 'a'}, {0x05D3, 's'}, {0x05D2, 'd'}, {0x05DB, 'f'}, {0x05E2, 'g'}, {0x05D9, 'h'},
+    {0x05D7, 'j'}, {0x05DC, 'k'}, {0x05DA, 'l'}, {0x05E3, ';'}, {0x05D6, 'z'}, {0x05E1, 'x'}, {0x05D1, 'c'},
+    {0x05D4, 'v'}, {0x05E0, 'b'}, {0x05DE, 'n'}, {0x05E6, 'm'}, {0x05EA, ','}, {0x05E5, '.'},
+    // Russian, lower case (upper case folds to it first)
+    {0x0439, 'q'}, {0x0446, 'w'}, {0x0443, 'e'}, {0x043A, 'r'}, {0x0435, 't'}, {0x043D, 'y'}, {0x0433, 'u'},
+    {0x0448, 'i'}, {0x0449, 'o'}, {0x0437, 'p'}, {0x0445, '['}, {0x044A, ']'}, {0x0444, 'a'}, {0x044B, 's'},
+    {0x0432, 'd'}, {0x0430, 'f'}, {0x043F, 'g'}, {0x0440, 'h'}, {0x043E, 'j'}, {0x043B, 'k'}, {0x0434, 'l'},
+    {0x0436, ';'}, {0x044D, '\''}, {0x044F, 'z'}, {0x0447, 'x'}, {0x0441, 'c'}, {0x043C, 'v'}, {0x0438, 'b'},
+    {0x0442, 'n'}, {0x044C, 'm'}, {0x0431, ','}, {0x044E, '.'}};
+} // namespace
+std::optional<juce::KeyPress> AppCommands::latinKey(const juce::KeyPress &k) {
+    auto letter = k.getTextCharacter() != 0 ? k.getTextCharacter() : static_cast<juce::juce_wchar>(k.getKeyCode());
+    if (letter >= 0x0410 && letter <= 0x042F)
+        letter += 0x20; // Russian upper case
+    for (const auto &l : kLayoutKeys)
+        if (l.letter == letter)
+            return juce::KeyPress(l.latin, k.getModifiers(), 0);
+    return std::nullopt;
+}
+bool AppCommands::exportShortcuts(const juce::File &file, std::string &why) const {
+    // The user's keys as the record keeps them, a later build's commands' keys and the chords never
+    // bound here (unreadable, or this system's) among them, so a set still crosses systems.
+    // Only what import reads: a chord no one can read here is left out, and so is an entry left with
+    // none of its chords (it kept the preset's keys, which an empty list would unbind).
+    auto overrides = settings::Value::object();
+    // Held by name: a range-for over recordNow().items() would iterate a temporary that is gone.
+    const auto record = recordNow();
+    for (const auto &[stable, chords] : record.items()) {
+        if (!chords.is_array())
+            continue;
+        auto readable = settings::Value::array();
+        for (const auto &chord : chords)
+            if (chord.is_string() && parseChord(chord.get<std::string>()))
+                readable.push_back(chord);
+        if (!readable.empty() || chords.empty())
+            overrides[stable] = readable;
+    }
+    const settings::Value set{{"format", "adi-shortcuts"},
+                              {"version", 1},
+                              {"preset", settings_.get("shortcuts.preset")},
+                              {"overrides", overrides}};
+    if (!file.replaceWithText(juce::String::fromUTF8(set.dump(2).c_str()), false, false, "\n")) {
+        why = "The key set could not be written to " + file.getFullPathName().toStdString() + ".";
+        return false;
+    }
+    return true;
+}
+bool AppCommands::importShortcuts(const juce::File &file, std::string &why) {
+    settings::Value set;
+    try {
+        set = settings::Value::parse(file.loadFileAsString().toStdString());
+    } catch (const std::exception &) {
+        why = file.getFileName().toStdString() + " is not a key set.";
+        return false;
+    }
+    // Each field's type checked before it is read: a wrong type is a file that is not a key set.
+    const auto format = set.is_object() ? set.find("format") : set.end();
+    const auto overrides = set.is_object() ? set.find("overrides") : set.end();
+    if (!set.is_object() || format == set.end() || !format->is_string() || *format != "adi-shortcuts" ||
+        overrides == set.end() || !overrides->is_object()) {
+        why = file.getFileName().toStdString() + " is not a key set.";
+        return false;
+    }
+    if (const auto version = set.find("version"); version == set.end() || !version->is_number_integer() || *version != 1) {
+        why = file.getFileName().toStdString() + " is a key set of another version.";
+        return false;
+    }
+    for (const auto &[stable, chords] : set["overrides"].items()) {
+        if (!chords.is_array()) {
+            why = stable + " in " + file.getFileName().toStdString() + " holds no list of keys.";
+            return false;
+        }
+        for (const auto &chord : chords)
+            if (!chord.is_string() || !parseChord(chord.get<std::string>())) {
+                why = "The key " + chord.dump() + " for " + stable + " cannot be read.";
+                return false;
+            }
+    }
+    if (const auto preset = set.find("preset"); preset != set.end() && preset->is_string())
+        if (!settings_.set("shortcuts.preset", *preset, {}, why))
+            return false;
+    if (!settings_.set("shortcuts.overrides", set["overrides"], {}, why) || !settings_.save(why))
+        return false;
+    reload();
+    return true;
 }
 ShortcutsPage::ShortcutsPage(AppCommands &commands)
     : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
     // setColours, not setColour: only it reaches the editor's tree, which fills most of it.
     editor_.setColours(look::panel, look::text);
     addAndMakeVisible(editor_);
+    for (auto *b : {&importButton, &exportButton})
+        addAndMakeVisible(*b);
+    importButton.setTooltip("Reads a key set exported from ADI on any computer.");
+    exportButton.setTooltip("Writes your keys to a file another computer's ADI can import.");
+    importButton.onClick = [this] {
+        chooser_ = std::make_unique<juce::FileChooser>("Import a key set", juce::File(), "*.json");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this](const juce::FileChooser &fc) {
+                                  if (fc.getResult() == juce::File())
+                                      return;
+                                  std::string why;
+                                  // Imported, the line names what keeps any of its keys from working here.
+                                  refused_ = false;
+                                  say(commands_.importShortcuts(fc.getResult(), why) ? issueLine() : why);
+                              });
+    };
+    exportButton.onClick = [this] {
+        chooser_ = std::make_unique<juce::FileChooser>("Export your keys", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("ADI Shortcuts.json"), "*.json");
+        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this](const juce::FileChooser &fc) {
+                                  if (fc.getResult() == juce::File())
+                                      return;
+                                  std::string why;
+                                  say(commands_.exportShortcuts(fc.getResult(), why) ? std::string() : why);
+                              });
+    };
     commands_.manager.getKeyMappings()->addChangeListener(this);
+    before_ = commands_.keysInForce();
     setSize(560, kHeight);
 }
 ShortcutsPage::~ShortcutsPage() { commands_.manager.getKeyMappings()->removeChangeListener(this); }
@@ -245,15 +631,58 @@ void ShortcutsPage::paint(juce::Graphics &g) {
     g.drawText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().removeFromBottom(kErrorHeight).reduced(17, 0),
                juce::Justification::centredLeft, true);
 }
-void ShortcutsPage::resized() { editor_.setBounds(getLocalBounds().withTrimmedBottom(kErrorHeight)); }
-void ShortcutsPage::store() {
-    std::string why;
-    const bool ok = commands_.storeUserKeys(why);
-    const std::string said = ok ? std::string() : "Your keys were not saved: " + why;
+void ShortcutsPage::resized() {
+    auto area = getLocalBounds().withTrimmedBottom(kErrorHeight);
+    auto foot = area.removeFromBottom(kFootHeight).reduced(17, 3);
+    exportButton.setBounds(foot.removeFromRight(90));
+    foot.removeFromRight(8);
+    importButton.setBounds(foot.removeFromRight(90));
+    editor_.setBounds(area);
+}
+void ShortcutsPage::say(const std::string &said) {
     if (said != error_) {
         error_ = said;
         repaint();
     }
+}
+void ShortcutsPage::store() {
+    // A chord the system takes is taken off again and said; its change message brings the next store.
+    // The keys it replaced go back from the last store's.
+    std::string said;
+    if (commands_.refuseReserved(said, before_)) {
+        refused_ = true;
+        say(said);
+        return;
+    }
+    const auto before = commands_.settings().get("shortcuts.overrides");
+    std::string why;
+    const bool stored = commands_.storeUserKeys(why);
+    before_ = commands_.keysInForce();
+    if (!stored) {
+        say("Your keys were not saved: " + why);
+        return;
+    }
+    // The refusal stays said until the user's keys change, so the store its own change message brings
+    // does not take it away at once.
+    if (refused_ && commands_.settings().get("shortcuts.overrides") == before)
+        return;
+    refused_ = false;
+    say(issueLine());
+}
+std::string ShortcutsPage::issueLine() const {
+    const auto &issues = commands_.issues();
+    if (issues.empty())
+        return {};
+    auto line = commands_.describe(issues.front());
+    if (issues.size() > 1)
+        line += " (and " + std::to_string(issues.size() - 1) + " more)";
+    return line;
+}
+std::vector<std::string> ShortcutsPage::issueTexts() const {
+    std::vector<std::string> out;
+    for (const auto &issue : commands_.issues())
+        out.push_back(commands_.describe(issue));
+    return out;
 }
 void ShortcutsPage::changeListenerCallback(juce::ChangeBroadcaster *) { store(); }
 namespace {
@@ -1302,7 +1731,11 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
     }
     if (allowComputerMidi && root.playComputerMidiKey(pressed))
         return true;
-    const auto key = allowComputerMidi ? root.computerMidiShortcut(pressed) : pressed;
+    auto key = allowComputerMidi ? root.computerMidiShortcut(pressed) : pressed;
+    // A non-Latin layout's letter that is no command's is the Latin key at its place (WIN-05).
+    if (mappings->findCommandForKeyPress(key) == 0)
+        if (const auto latin = latinKey(key))
+            key = *latin;
     auto id = mappings->findCommandForKeyPress(key);
     const int physical = computerMidiKeyCode(pressed);
     if (allowComputerMidi && id == 0 && (physical == 'm' || physical == 'M') &&

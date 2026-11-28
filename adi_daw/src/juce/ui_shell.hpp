@@ -39,9 +39,12 @@
 #include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 #include <type_traits>
 #include <variant>
 namespace adi::automation {
@@ -59,6 +62,28 @@ struct AdditionalAutomationLane {
     int height = 0;
 };
 class ProjectDocument;
+// WIN-05: the operating system whose own keys the key map leaves alone (this build's, unless a test says).
+enum class KeyOs { Windows, Mac, Linux };
+KeyOs thisKeyOs() noexcept;
+// Stable id to chords in canonical text, in the order they are applied.
+using KeyTable = std::map<std::string, std::vector<std::string>>;
+// WIN-05: what keeps one of the user's keys from working as written.
+struct KeyIssue {
+    // Unreadable: no one can read the chord. Reserved: the system takes it first. Clash: two of the user's
+    // commands claim it. Shadow: the user's key took a preset command's default.
+    enum class Kind { Unreadable, Reserved, Clash, Shadow };
+    Kind kind;
+    std::string chord;                 // canonical text; as written for Unreadable
+    std::vector<std::string> commands; // Clash: the claimants in command order (the first runs it); Shadow: the
+                                       // preset command that lost it; Unreadable and Reserved: the key's owner
+    std::vector<std::string> by;       // Shadow: the user's commands that hold it; Reserved: what the system does with it
+    bool operator==(const KeyIssue &) const = default;
+};
+// The keys in force once the user's are laid over the preset's, and what kept any from working as written.
+struct KeyPlan {
+    KeyTable keys;                // every planned command's keys
+    std::vector<KeyIssue> issues; // sorted by kind, chord, commands
+};
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
 class AppCommands final : public juce::ApplicationCommandTarget {
@@ -230,8 +255,42 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     static std::optional<juce::KeyPress> parseChord(const std::string &);
     // The keys that differ from the key map's, as shortcuts.overrides holds them; written only when
     // they differ from what it holds (false with why when the write fails).
+    // WIN-05: built on the record, so a key that was never bound (unreadable, or the system's here) and a
+    // later build's command keep their place in it.
     settings::Value userKeys() const;
     bool storeUserKeys(std::string &why);
+    // WIN-05: the system whose keys are left alone; this build's, set otherwise only by a test.
+    KeyOs keyOs = thisKeyOs();
+    // What the system does with a chord it takes before the window sees it (Alt+F4 on Windows closes the
+    // window), or null for a chord it leaves to ADI. Any spelling of the chord is read canonically.
+    static const char *reservedBy(const std::string &chord, KeyOs) noexcept;
+    // Each command's preset keys, by stable id, as the key map registers them.
+    KeyTable defaultKeys() const;
+    // The user's keys (shortcuts.overrides) laid over the preset's: an unknown id or a value that is no
+    // list is skipped; an unreadable or reserved chord is not bound; a list with no usable chord leaves
+    // the preset's keys (an empty one unbinds); a chord two of the user's commands claim is bound to
+    // each in command order, so the first runs it; a preset command loses a default the user claims.
+    static KeyPlan planKeys(const KeyTable &defaults, const settings::Value &overrides, KeyOs,
+                            const std::vector<std::string> &order);
+    // The issues of the keys in force, and one in plain words for the Shortcuts page.
+    const std::vector<KeyIssue> &issues() const noexcept { return issues_; }
+    std::string describe(const KeyIssue &) const;
+    // A reserved chord the editor just assigned is taken off again; true with what to say when one was.
+    // A command that lost a key to the same edit (the editor's Change takes the old key off first) gets
+    // it back from before, the keys in force as they were.
+    bool refuseReserved(std::string &said, const KeyTable &before = {});
+    // Each command's keys in force, by stable id, in mapping order.
+    KeyTable keysInForce() const;
+    // WIN-05: the Latin key at a non-Latin layout's letter (Hebrew SI-1452, Russian JCUKEN), with its
+    // modifiers, so Ctrl/Cmd+Z undoes and Z zooms whatever layout types; none for a key that is Latin
+    // already or in neither table. Key dispatch tries it when the key as typed is no command's.
+    static std::optional<juce::KeyPress> latinKey(const juce::KeyPress &);
+    // WIN-05: the key set as a file, the same on every platform (chords in canonical text):
+    // {"format": "adi-shortcuts", "version": 1, "preset": ..., "overrides": {stable id: [chords]}}.
+    // Import refuses a file that is not one and a chord it cannot read, naming it; it writes the preset
+    // and the overrides, then reloads.
+    bool exportShortcuts(const juce::File &, std::string &why) const;
+    bool importShortcuts(const juce::File &, std::string &why);
     bool key(const juce::KeyPress &, AdiRootComponent &, bool allowComputerMidi = true);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -339,11 +398,19 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     juce::ApplicationCommandManager manager;
 
   private:
+    // The record as the keys in force would have it: held entries kept where the keys are as planned.
+    settings::Value recordNow() const;
+    std::vector<std::string> commandOrder();
+    // Lays a plan onto the key map: a command whose keys in force differ from the plan's is laid on anew,
+    // in command order, and so is every claimant of a clash when asked; then the plan is the one in force.
+    void layOn(KeyPlan plan, bool clashes);
     settings::AppSettings &settings_;
     juce::File recentProjectsFile_;
     juce::RecentlyOpenedFilesList recentProjects_;
     void saveRecentProjects();
     AdiRootComponent *active_ = nullptr;
+    KeyTable planned_;
+    std::vector<KeyIssue> issues_;
     bool live_ = true;
     bool infoView_ = true;
     bool browserPreviewEnabled_ = false;
@@ -378,15 +445,26 @@ class ShortcutsPage final : public juce::Component, private juce::ChangeListener
     void resized() override;
     juce::KeyMappingEditorComponent &editor() noexcept { return editor_; }
     const std::string &error() const noexcept { return error_; }
-    // Writes the user's keys now (the change message comes later, on the message loop).
+    // Writes the user's keys now (the change message comes later, on the message loop). A chord the
+    // system takes is refused first, and said; otherwise the line under the editor names the first
+    // issue of the keys in force (WIN-05).
     void store();
-    static constexpr int kHeight = 440, kErrorHeight = 20;
+    // Every issue of the keys in force, in plain words.
+    std::vector<std::string> issueTexts() const;
+    // WIN-05: Import and Export of the key set, under the editor (a file chooser each).
+    juce::TextButton importButton{"Import..."}, exportButton{"Export..."};
+    static constexpr int kHeight = 440, kErrorHeight = 20, kFootHeight = 28;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    void say(const std::string &);
+    std::string issueLine() const;
     AppCommands &commands_;
     juce::KeyMappingEditorComponent editor_;
     std::string error_;
+    bool refused_ = false; // a refusal stays said until the user's keys change
+    KeyTable before_;      // the keys in force at the last store, which a refused edit goes back to
+    std::unique_ptr<juce::FileChooser> chooser_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
