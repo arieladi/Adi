@@ -1120,12 +1120,12 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     reuse->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
                 : StoredLaunchPageReuse{};
             DriverClock position;
-            const auto adoptedResidentBank = adoptedCompatible && readDriverClock(position)
+            const auto adoptedRawBank = adoptedCompatible && readDriverClock(position)
                 ? StoredLaunchPageReuse{adopted->launchSource.get(),adopted->launchAudio->mediaAt(position.sample).get()}
                 : StoredLaunchPageReuse{};
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
                 storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages,
-                !hasPriorBank || (adoptedCompatible && !primeExternalAt_), adoptedResidentBank);
+                !hasPriorBank || (adoptedCompatible && !primeExternalAt_), adoptedRawBank);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {
@@ -1732,8 +1732,10 @@ bool Session::rebuild() {
                     const auto dropsResident = residentBefore && residentBefore->launchAudio &&
                         residentBefore->launchAudio->incarnation() == status.incarnation &&
                         residentBefore->launchAudio->dropsResidentRaw(timing->launchAudio.get(),clock.sample,track.track,track.clip);
-                    if (!dropsWarp && !dropsResident && !prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
-                                                                          track.track,track.clip)) continue;
+                    const auto dropsPages = prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
+                        track.track,track.clip) && !prior->launchAudio->canRetainLegacyPages(timing->launchAudio.get(),clock.sample,
+                                                                                           track.track,track.clip);
+                    if (!dropsWarp && !dropsResident && !dropsPages) continue;
                     error_ = "Session clips#" + std::to_string(track.clip) + (dropsWarp
                         ? ": external tempo has no source for the running worker-stretched slot"
                         : dropsResident ? ": external tempo needs the active unwarped resident bank"
@@ -3672,7 +3674,10 @@ bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const 
     }
     if (driver) {
         driver->discardIncompatiblePinnedRuns(compatibleFormat ? launchAudio.get() : nullptr,position);
-        if (dropped && launchAudio) driver->retainPinnedRuns(*previous->launchAudio,*launchAudio,position);
+        // A prepared Scene already owns its outgoing bank through the cut.
+        // Only an ordinary handover needs a separate lease for the running pager.
+        if (compatibleFormat && previous->launchAudio && launchAudio && (dropped || !preparedScene))
+            driver->retainPinnedRuns(*previous->launchAudio,*launchAudio,position,dropped);
     }
     return true;
 }

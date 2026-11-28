@@ -455,21 +455,23 @@ void LaunchAudioDriver::discardIncompatiblePinnedRuns(const LaunchAudioRuntime* 
 }
 
 void LaunchAudioDriver::retainPinnedRuns(const LaunchAudioRuntime& before, const LaunchAudioRuntime& after,
-                                         std::int64_t sample) noexcept {
+                                         std::int64_t sample, bool preserveExisting) noexcept {
     struct Context {
         LaunchAudioDriver& driver;
         const LaunchAudioRuntime& before;
         const LaunchAudioRuntime& after;
         std::int64_t sample;
         std::size_t settledRuns;
+        bool preserveExisting;
     };
-    const Context context{*this,before,after,sample,retainedCount_};
+    const Context context{*this,before,after,sample,retainedCount_,preserveExisting};
     (void)launcher_.anyRunningClip(&context,[](const void* opaque, std::int64_t track,
                                               std::int64_t clip, std::uint64_t run) noexcept {
         const auto& call = *static_cast<const Context*>(opaque);
         auto& driver = call.driver;
         if (driver.retainedCount_ == driver.retained_.size() || driver.findRetained(track,call.settledRuns) ||
-            !call.before.dropsPinnedPages(&call.after,call.sample,track,clip,true))
+            !call.before.dropsPinnedPages(&call.after,call.sample,track,clip,true) ||
+            (!call.preserveExisting && !call.before.canRetainLegacyPages(&call.after,call.sample,track,clip)))
             return false;
         const auto* old = call.before.pinnedCandidate(call.sample,track,clip);
         const auto* next = call.after.pinnedCandidate(call.sample,track,clip);
@@ -500,6 +502,18 @@ bool LaunchAudioRuntime::dropsResidentRaw(const LaunchAudioRuntime* after, std::
     const auto* next = after && after->incarnation() == incarnation() && after->hasTrack(track)
         ? after->mediaAt(sample)->clip(clip) : nullptr;
     return !next || next->residentRawPcm() != source->residentRawPcm();
+}
+
+bool LaunchAudioRuntime::canRetainLegacyPages(const LaunchAudioRuntime* after, std::int64_t sample,
+                                              std::int64_t track, std::int64_t clip) const noexcept {
+    if (!after || after->incarnation() != incarnation() || !hasTrack(track) || !after->hasTrack(track)) return false;
+    const auto* source = mediaAt(sample)->clip(clip);
+    const auto* next = after->mediaAt(sample)->clip(clip);
+    if (!source || !next || !source->legacyPageSource() || source->legacyPageSource() != next->legacyPageSource())
+        return false;
+    const auto* from = pinnedCandidate(sample,track,clip);
+    const auto* to = after->pinnedCandidate(sample,track,clip);
+    return from && from->source && to && to->source && samePinnedShape(from->slot,to->slot);
 }
 
 bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::int64_t sample,
@@ -550,7 +564,8 @@ bool LaunchAudioDriver::dropsRunningProtectedAudio(const LaunchAudioRuntime& bef
         const auto& query = *static_cast<const Check*>(opaque);
         return (query.externalTempo && query.before.dropsWorkerWarp(query.after,query.sample,track,clip)) ||
             (query.residentRaw && query.before.dropsResidentRaw(query.after,query.sample,track,clip)) ||
-            (query.pinnedPages && query.before.dropsPinnedPages(query.after,query.sample,track,clip,!query.externalTempo));
+            (query.pinnedPages && query.before.dropsPinnedPages(query.after,query.sample,track,clip,!query.externalTempo) &&
+             !query.before.canRetainLegacyPages(query.after,query.sample,track,clip));
     });
 }
 
@@ -875,7 +890,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, std::int64_t clip, std::int64_t tick) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         const auto* pcm = call.media->clip(clip);
-        return pcm && pcm->residentRawPcm() ? pcm->frameForTick(tick,call.media->bpm()) : -1;
+        return pcm && (pcm->residentRawPcm() || pcm->legacyPageSource()) ? pcm->frameForTick(tick,call.media->bpm()) : -1;
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);

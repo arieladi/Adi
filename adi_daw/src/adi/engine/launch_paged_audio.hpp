@@ -36,6 +36,7 @@ public:
         return sampleRate_ == rate && channels_ == channels && blockFrames_ == blockFrames;
     }
     [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
+    [[nodiscard]] std::int64_t firstFrame(std::int64_t clip) const noexcept;
     [[nodiscard]] std::int32_t latencySamples(std::int64_t clip) const noexcept;
     /// Owner query after prime for a newly published worker-backed bank.
     [[nodiscard]] bool allWorkerPhasesPrimed(std::int64_t clip) const noexcept;

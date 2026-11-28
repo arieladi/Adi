@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace adi::engine {
@@ -73,6 +74,8 @@ public:
     }
     void shareWholeResidentRaw(); // owner only
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
+    [[nodiscard]] static std::int64_t frameForTick(std::int64_t tick, double bpm, std::uint32_t rate,
+                                                  std::int64_t firstTick = 0) noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
     struct LegacyAperture {
@@ -82,6 +85,10 @@ public:
     // Bank geometry is independent of the shared raw reader and its extent.
     void setLegacyAperture(LegacyAperture aperture) noexcept { legacyAperture_ = aperture; }
     [[nodiscard]] std::optional<LegacyAperture> legacyAperture() const noexcept { return legacyAperture_; }
+    struct LegacyPageIdentity {};
+    using LegacyPageSource = std::shared_ptr<const LegacyPageIdentity>;
+    void setLegacyPageSource(LegacyPageSource source) noexcept { legacyPageSource_ = std::move(source); }
+    [[nodiscard]] const LegacyPageSource& legacyPageSource() const noexcept { return legacyPageSource_; }
     [[nodiscard]] std::optional<LaunchAudioClip> shareRawPages() const {
         if (!pages_ || followsTempo() || latencySamples() != 0) return std::nullopt;
         return fromPages(clip_,rate_,channels_,renderedFrames_,pages_,legacyRaw_);
@@ -120,6 +127,7 @@ private:
     bool legacyRaw_ = false;
     std::optional<LegacyAperture> legacyAperture_;
     std::shared_ptr<const std::vector<float>> residentRaw_;
+    LegacyPageSource legacyPageSource_;
 };
 
 /// Replace a half-open region of a track's source buffer with an active slot

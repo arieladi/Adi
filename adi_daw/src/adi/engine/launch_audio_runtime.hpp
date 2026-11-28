@@ -96,7 +96,7 @@ public:
                                               bool residentRaw) const noexcept;
     void suspend() noexcept;
     void retainPinnedRuns(const LaunchAudioRuntime& before, const LaunchAudioRuntime& after,
-                          std::int64_t sample) noexcept;
+                          std::int64_t sample, bool preserveExisting) noexcept;
     void discardIncompatiblePinnedRuns(const LaunchAudioRuntime*, std::int64_t sample) noexcept;
     void collectPinnedSourceOwners() noexcept; // owner only
     [[nodiscard]] std::uint64_t performedSceneToken() const noexcept {
@@ -191,6 +191,8 @@ public:
                                         std::int64_t track, std::int64_t clip) const noexcept;
     [[nodiscard]] bool dropsPinnedPages(const LaunchAudioRuntime* after, std::int64_t sample,
                                         std::int64_t track, std::int64_t clip, bool retainedOnly = false) const noexcept;
+    [[nodiscard]] bool canRetainLegacyPages(const LaunchAudioRuntime* after, std::int64_t sample,
+                                          std::int64_t track, std::int64_t clip) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 
 private:

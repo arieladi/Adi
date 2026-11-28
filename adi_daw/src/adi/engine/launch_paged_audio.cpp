@@ -91,6 +91,11 @@ bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
     return find(clip) != nullptr;
 }
 
+std::int64_t LaunchPagedAudio::firstFrame(std::int64_t clip) const noexcept {
+    const auto* found = find(clip);
+    return found ? found->source.firstFrame : -1;
+}
+
 std::int32_t LaunchPagedAudio::latencySamples(std::int64_t clip) const noexcept {
     const auto* source = find(clip);
     return source ? source->latency : 0;

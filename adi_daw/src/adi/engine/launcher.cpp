@@ -689,10 +689,10 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
         track.run.physicalCueFrame = cue.physicalFrame;
         if (target->startTick > 0 && target->physicalStartFrame < 0 && !target->legato &&
-            !loops(*target) && sink.residentRawAnchor) {
-            track.run.residentRawAnchorFrame = sink.residentRawAnchor(sink.context,target->clip,position);
-            track.run.residentRawFixedBpm = target->residentRawFixedBpm;
-            track.run.residentRawFrameRate = block.sampleRate;
+            !loops(*target) && sink.legacyRawAnchor) {
+            track.run.legacyRawAnchorFrame = sink.legacyRawAnchor(sink.context,target->clip,position);
+            track.run.legacyRawFixedBpm = target->legacyRawFixedBpm;
+            track.run.legacyRawFrameRate = block.sampleRate;
         }
         if (pending.repeat && repeatTick > tick) {
             track.repeat = pending;
@@ -710,8 +710,8 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         sample,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
         track.run.velocity,track.run.fade,oldLap.startFrame >= 0 ? oldLap.tickAt(0) : previous.pcmAnchorTick,elapsed,
         previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick,
-        oldLap.startFrame >= 0 ? oldLap.originFrame() : previous.residentRawAnchorFrame,oldFramesUntilEnd,
-        previous.residentRawAnchorFrame >= 0 && previous.residentRawFixedBpm == 0};
+        oldLap.startFrame >= 0 ? oldLap.originFrame() : previous.legacyRawAnchorFrame,oldFramesUntilEnd,
+        previous.legacyRawAnchorFrame >= 0 && previous.legacyRawFixedBpm == 0};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -729,8 +729,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                       std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
     auto refusedUserStartAtCursor = false;
-    if (track.run.residentRawAnchorFrame >= 0 && track.run.residentRawFrameRate != block.sampleRate)
-        track.run.residentRawAnchorFrame = -1;
+    if (track.run.legacyRawAnchorFrame >= 0 && track.run.legacyRawFrameRate != block.sampleRate)
+        track.run.legacyRawAnchorFrame = -1;
     while (cursor < end) {
         const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
@@ -740,8 +740,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (preparedSlot) {
                 track.run.scene = preparedSlot->scene;
                 track.run.fade = preparedSlot->fade;
-                if (track.run.residentRawFixedBpm != preparedSlot->residentRawFixedBpm)
-                    track.run.residentRawFixedBpm = 0;
+                if (track.run.legacyRawFixedBpm != preparedSlot->legacyRawFixedBpm)
+                    track.run.legacyRawFixedBpm = 0;
             }
         }
         LaunchSlot regionGeometry;
@@ -846,8 +846,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
                 track.run.pcmAnchorTick,elapsed,track.run.region.has_value(),
                 track.run.anchorTick,track.run.anchorSourceTick,
-                lap.startFrame >= 0 ? lap.originFrame() : track.run.residentRawAnchorFrame,
-                track.run.residentRawAnchorFrame >= 0 && track.run.residentRawFixedBpm == 0});
+                lap.startFrame >= 0 ? lap.originFrame() : track.run.legacyRawAnchorFrame,
+                track.run.legacyRawAnchorFrame >= 0 && track.run.legacyRawFixedBpm == 0});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
@@ -937,8 +937,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 track.run.anchorTick = edgeTick;
                 track.run.pcmAnchorTick = revisedPosition;
                 track.run.pcmAnchorFrame = track.run.frames;
-                if (track.run.residentRawAnchorFrame >= 0 && sink.residentRawAnchor)
-                    track.run.residentRawAnchorFrame = sink.residentRawAnchor(sink.context,track.run.clip,revisedPosition);
+                if (track.run.legacyRawAnchorFrame >= 0 && sink.legacyRawAnchor)
+                    track.run.legacyRawAnchorFrame = sink.legacyRawAnchor(sink.context,track.run.clip,revisedPosition);
                 phaseChangedAtCursor = true;
             }
         } else if (occupied(slot) && loops(*slot)) {
@@ -946,8 +946,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             track.run.anchorTick = nextTick;
             track.run.pcmAnchorTick = slot->loopStartTick;
             track.run.pcmAnchorFrame = track.run.frames;
-            if (track.run.residentRawAnchorFrame >= 0 && sink.residentRawAnchor)
-                track.run.residentRawAnchorFrame = sink.residentRawAnchor(sink.context,track.run.clip,slot->loopStartTick);
+            if (track.run.legacyRawAnchorFrame >= 0 && sink.legacyRawAnchor)
+                track.run.legacyRawAnchorFrame = sink.legacyRawAnchor(sink.context,track.run.clip,slot->loopStartTick);
             track.run.physicalCueFrame = -1;
             ++track.run.completedLoops;
             phaseChangedAtCursor = true;

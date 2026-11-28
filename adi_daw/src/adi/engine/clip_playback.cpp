@@ -1734,7 +1734,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
     std::span<const std::int64_t> warmWarpClips, StoredLaunchPageReuse priorPinnedPages,
-    bool allowColdPinnedPages, StoredLaunchPageReuse adoptedResidentBank) {
+    bool allowColdPinnedPages, StoredLaunchPageReuse adoptedRawBank) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -1791,20 +1791,26 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     };
     std::vector<NativePageSlot> nativePages;
     std::vector<LaunchPagedSource> paged;
-    std::vector<std::optional<LaunchAudioClip::LegacyAperture>> pagedLegacyApertures;
+    struct PagedAperture {
+        std::optional<LaunchAudioClip::LegacyAperture> aperture;
+        LaunchAudioClip::LegacyPageSource source;
+    };
+    std::vector<PagedAperture> pagedApertures;
     const auto fixedFrame = [&](std::int64_t tick) { return samples(fixedClock.ticksToSeconds(tick), rate); };
     const auto addPreparedPages = [&](const rows::Clip& clip, const LaunchSlot& slot, std::int64_t end,
                                       bool warmPhysicalWindow = false, std::optional<std::int64_t> sourceEndNs = {},
-                                      std::optional<LaunchAudioClip::LegacyAperture> legacyAperture = {}) {
+                                      PagedAperture legacy = {}) {
         const auto pinned = slot.physicalStartFrame >= 0;
         const auto extent = sourceEndNs ? samplesAtNs(*sourceEndNs,rate) : fixedFrame(end);
         if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
         appendLaunchSource(*pagedProject,original,clip,clip.id,end,sourceEndNs);
-        paged.push_back({clip.id,clip.id,pinned ? slot.physicalStartFrame : fixedFrame(slot.startTick),
+        const auto first = pinned ? slot.physicalStartFrame : legacy.source
+            ? LaunchAudioClip::frameForTick(slot.startTick,bpm,rate) : fixedFrame(slot.startTick);
+        paged.push_back({clip.id,clip.id,first,
             pinned ? slot.physicalLoopBeginFrame : fixedFrame(slot.loopStartTick),
             pinned ? slot.physicalLoopEndFrame : fixedFrame(slot.loopEndTick),extent,
-            pinned && warmPhysicalWindow, pinned || legacyAperture.has_value()});
-        pagedLegacyApertures.push_back(legacyAperture);
+            pinned && warmPhysicalWindow, pinned || legacy.aperture.has_value()});
+        pagedApertures.push_back(std::move(legacy));
     };
     const auto sameRawSlotSource = [&](const StoredLaunchPageReuse& prior, const rows::Clip& clip) {
         if (!prior.source || !prior.bank) return false;
@@ -1812,18 +1818,19 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         const auto priorClip = std::ranges::find(clips,clip.id,&rows::Clip::id);
         return priorClip != clips.end() && *priorClip == clip && sameStoredAudioBacking(*prior.source,original,clip.id);
     };
-    const auto priorRawPages = [&](const rows::Clip& clip, std::int64_t endFrame, auto matches) -> const LaunchAudioClip* {
-        if (!priorPinnedPages.source || !priorPinnedPages.bank) return nullptr;
-        const auto* prior = priorPinnedPages.bank->clip(clip.id);
-        const auto slots = priorPinnedPages.bank->view().slots;
+    const auto priorRawPages = [&](const StoredLaunchPageReuse& from, const rows::Clip& clip,
+                                   std::int64_t endFrame, auto matches) -> const LaunchAudioClip* {
+        if (!from.source || !from.bank) return nullptr;
+        const auto* prior = from.bank->clip(clip.id);
+        const auto slots = from.bank->view().slots;
         const auto priorSlot = std::ranges::find(slots,clip.id,&LaunchSlot::clip);
         return prior && prior->pageReader() && prior->latencySamples() == 0 &&
             prior->pageReader()->matchesFormat(rate,channels,maxFrames) &&
             prior->frames() == static_cast<std::uint64_t>(endFrame) && priorSlot != slots.end() &&
-            sameRawSlotSource(priorPinnedPages,clip) && matches(*prior,*priorSlot) ? prior : nullptr;
+            sameRawSlotSource(from,clip) && matches(*prior,*priorSlot) ? prior : nullptr;
     };
     const auto priorRawResident = [&](const rows::Clip& clip, std::int64_t frames) -> const LaunchAudioClip* {
-        for (const auto& from : {adoptedResidentBank,priorPinnedPages}) {
+        for (const auto& from : {adoptedRawBank,priorPinnedPages}) {
             const auto* old = from.bank ? from.bank->clip(clip.id) : nullptr;
             if (old && old->matchesResidentRaw(rate,channels,static_cast<std::uint64_t>(frames)) &&
                 sameRawSlotSource(from,clip)) return old;
@@ -1845,7 +1852,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                                                                 budget,source.endNs);
         prepared.shareWholeResidentRaw();
         prepared.setLegacyAperture(source.aperture);
-        if (hasPreparedClock) slot.residentRawFixedBpm = bpm;
+        if (hasPreparedClock) slot.legacyRawFixedBpm = bpm;
         return prepared;
     };
     const auto add = [](std::int64_t a, std::int64_t b) {
@@ -1959,7 +1966,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                         prepared.physicalLoopEndFrame = samplesAtNs(*clip->loopEndNs,rate);
                     }
                     if (!setting.ramMode) {
-                        const auto prior = priorRawPages(*clip,endFrame,[&](const LaunchAudioClip& oldAudio, const LaunchSlot& old) {
+                        const auto prior = priorRawPages(priorPinnedPages,*clip,endFrame,[&](const LaunchAudioClip& oldAudio, const LaunchSlot& old) {
                             return old.physicalStartFrame == startFrame && old.physicalFrames == prepared.physicalFrames &&
                                 old.physicalLoopBeginFrame == prepared.physicalLoopBeginFrame &&
                                 old.physicalLoopEndFrame == prepared.physicalLoopEndFrame &&
@@ -1978,8 +1985,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 // LaunchSlot still owns the musical End. The reader must have
                 // the source past its old flat-clock trim when playback slows.
                 const bool residentOffset = setting.ramMode && slot.startTick > 0;
-                auto rawEndNs = usePins && !slot.legato && (residentOffset ||
-                    (slot.startTick == 0 && (!setting.ramMode || !hasPreparedClock))) &&
+                auto rawEndNs = usePins && !slot.legato && (slot.startTick > 0 ||
+                    !setting.ramMode || !hasPreparedClock) &&
                     audioRow != original.rows.audioClips.end()
                     ? legacyRawDuration(*clip,*audioRow,original.rows.media) : std::nullopt;
                 const auto rawFrames = rawEndNs ? samplesAtNs(*rawEndNs,rate) : 0;
@@ -1993,13 +2000,23 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                         throw std::runtime_error("Session clip source is shorter than one frame");
                     legacyAperture = LaunchAudioClip::LegacyAperture{fixedEnd,!hasPreparedClock};
                 }
+                LaunchAudioClip::LegacyPageSource pageSource;
                 if (rawEndNs && !setting.ramMode) {
-                    const auto prior = priorRawPages(*clip,rawFrames,[](const LaunchAudioClip& oldAudio, const LaunchSlot&) {
+                    const auto matches = [](const LaunchAudioClip& oldAudio, const LaunchSlot&) {
                         return oldAudio.legacyRaw();
-                    });
-                    if (prior) {
+                    };
+                    const auto* prior = priorRawPages(priorPinnedPages,*clip,rawFrames,matches);
+                    if (slot.startTick > 0) {
+                        if (const auto* adopted = priorRawPages(adoptedRawBank,*clip,rawFrames,matches)) prior = adopted;
+                        pageSource = prior ? prior->legacyPageSource() : nullptr;
+                        if (!pageSource) pageSource = std::make_shared<const LaunchAudioClip::LegacyPageIdentity>();
+                        if (hasPreparedClock) prepared.legacyRawFixedBpm = bpm;
+                    }
+                    if (prior && (!pageSource || prior->pageReader()->firstFrame(clip->id) ==
+                                  LaunchAudioClip::frameForTick(slot.startTick,bpm,rate))) {
                         auto clipAudio = *prior;
                         clipAudio.setLegacyAperture(*legacyAperture);
+                        clipAudio.setLegacyPageSource(std::move(pageSource));
                         pcm.push_back(std::move(clipAudio));
                         continue;
                     }
@@ -2035,7 +2052,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     pcm.push_back(std::move(clipAudio));
                 } else {
                     addPreparedPages(*clip,launchSlots.back(),preparedEnd,warmPhysicalWindow,
-                                     pinned ? sourceEndNs : rawEndNs,legacyAperture);
+                                     pinned ? sourceEndNs : rawEndNs,{legacyAperture,std::move(pageSource)});
                 }
             }
         } catch (const std::exception& e) {
@@ -2084,10 +2101,12 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             for (std::size_t index = 0; index < paged.size(); ++index) {
                 const auto id = paged[index].clip;
                 if (!reader->hasClip(id)) continue;
-                const auto aperture = pagedLegacyApertures[index];
+                auto& legacy = pagedApertures[index];
+                const auto aperture = legacy.aperture;
                 auto clipAudio = LaunchAudioClip::fromPages(id,rate,channels,static_cast<std::uint64_t>(paged[index].endFrame),
                                                             reader,aperture.has_value());
                 if (aperture) clipAudio.setLegacyAperture(*aperture);
+                clipAudio.setLegacyPageSource(std::move(legacy.source));
                 pcm.push_back(std::move(clipAudio));
             }
         }

@@ -896,20 +896,28 @@ void steadyLegacyOneShotAperture(bool explicitEnd = false) {
             "steady musical apertures and their fades perform no callback allocation or file I/O");
 }
 
-void fadedLegacyRawSceneAtFirstAdoption() {
+void fadedLegacyRawSceneAtFirstAdoption(bool trimmed = false) {
     test::TempDirectory folder{"legacy_fade_aperture","first-adoption"};
     auto store = sceneProject(folder.path());
     enableTempoScene(*store);
     constexpr auto cut = tempoSceneFrame;
-    constexpr auto outgoingEnd = cut + 32;
+    const auto oldStart = trimmed ? 36000 : 0;
+    const auto newStart = trimmed ? 30857 : 0;
+    const auto outgoingEnd = oldStart + cut + 32;
     constexpr auto incomingStop = cut + 20571;
     constexpr auto sourceFrames = 3 * rate;
-    addClip(*store,folder.path(),101,10,1,false,outgoingEnd-1,1,sourceFrames);
-    addClip(*store,folder.path(),102,20,1,false,3000,1,sourceFrames);
+    addClip(*store,folder.path(),101,10,1,false,static_cast<int>(outgoingEnd-1),1,sourceFrames);
+    addClip(*store,folder.path(),102,20,1,false,newStart+3000,1,sourceFrames);
     auto& db = store->db();
     db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL;"
             "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL;"
             "UPDATE clip_launch SET clip_fade=1,ram_mode=0 WHERE clip_id=101;");
+    if (trimmed) {
+        SQLite::Statement start(db,"UPDATE clips SET content_offset_ticks=?");
+        start.bind(1,3*quarter/2);
+        start.exec();
+        db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102");
+    }
     SQLite::Statement length(db,"UPDATE clips SET length_ticks=? WHERE id=?");
     length.bind(1,4 * quarter + 32 * quarter / (rate / 2));
     length.bind(2,101);
@@ -968,20 +976,20 @@ void fadedLegacyRawSceneAtFirstAdoption() {
     for (std::int64_t at = 0; at < static_cast<std::int64_t>(pcm.size()); ++at) {
         auto expected = 0.f;
         if (at < cut) {
-            expected = outgoing[static_cast<std::size_t>(at)];
+            expected = outgoing[static_cast<std::size_t>(oldStart+at)];
             if (at < duration) expected *= static_cast<float>(clipFadeShape(static_cast<double>(at)/static_cast<double>(duration),4));
         } else {
-            if (at < incomingStop) expected = incoming[static_cast<std::size_t>(at-cut)];
+            if (at < incomingStop) expected = incoming[static_cast<std::size_t>(newStart+at-cut)];
             if (at-cut < duration) {
-                const auto frame = std::min(at,outgoingEnd-1);
+                const auto frame = std::min(oldStart+at,outgoingEnd-1);
                 const auto shape = clipFadeShape(static_cast<double>(at-cut)/static_cast<double>(duration),4);
                 expected += static_cast<float>(outgoing[static_cast<std::size_t>(frame)]*(1.0-shape));
             }
         }
         exact &= pcm[static_cast<std::size_t>(at)] == expected;
     }
-    std::printf("Paired legacy Fade first adoption: swaps %llu -> %llu, old aperture %lld, tail %.6f/%.6f, target %.6f, exact %d\n",
-        static_cast<unsigned long long>(swaps),static_cast<unsigned long long>(adopted),static_cast<long long>(outgoingEnd),
+    std::printf("Paired legacy Fade first adoption, trimmed %d: swaps %llu -> %llu, old aperture %lld, tail %.6f/%.6f, target %.6f, exact %d\n",
+        trimmed,static_cast<unsigned long long>(swaps),static_cast<unsigned long long>(adopted),static_cast<long long>(outgoingEnd),
         static_cast<double>(pcm[cut]),static_cast<double>(pcm[cut+32]),static_cast<double>(pcm[cut+3000]),exact);
     checkTempoScene(*store,session,playback);
     require(adopted > swaps && playback.count == 3 && playback.edges[0].newClip == 101 &&
@@ -1153,11 +1161,12 @@ void legacyMusicalOneShotPlaysRawPcm(bool explicitEnd = false) {
             playback.through(expectedStop+blockFrames);
 
             const auto stop = playback.count == 2 && playback.edges[1].newClip == 0 ? playback.edges[1].sample : -1;
-            const auto playable = std::min<std::int64_t>(mediaFrames,expectedStop-launch);
+            const auto sourceStartFrame = trim ? 6000 : 0;
+            const auto playable = std::min<std::int64_t>(mediaFrames-sourceStartFrame,expectedStop-launch);
             const bool exactSource = flatRegion
                 ? std::equal(source.begin(),source.begin()+6000,pcm.begin()) &&
                     std::equal(source.begin()+12000,source.begin()+straightStop,pcm.begin()+6000)
-                : std::equal(source.begin(),source.begin()+playable,pcm.begin()+launch);
+                : std::equal(source.begin()+sourceStartFrame,source.begin()+sourceStartFrame+playable,pcm.begin()+launch);
             bool exact = exactSource &&
                 std::all_of(pcm.begin()+launch+playable,pcm.end(),[](float sample) { return sample == 0; });
             if (fade) {
@@ -1177,13 +1186,6 @@ void legacyMusicalOneShotPlaysRawPcm(bool explicitEnd = false) {
             std::printf("Tick-only raw %s case %d saved End %d: BPM %.0f, Stop %lld/%lld, exact PCM %d, owner accepted %d\n",
                 ram ? "RAM" : "paged",static_cast<int>(clock),explicitEnd,observed,static_cast<long long>(stop),
                 static_cast<long long>(expectedStop),exact,accepted);
-            if (trim) {
-                const auto& problems = session.problems();
-                matched &= std::ranges::any_of(problems,[](const auto& p) {
-                    return p.find("requires a constant prepared tempo") != std::string::npos;
-                }) && std::all_of(pcm.begin(),pcm.end(),[](float sample) {return sample == 0;});
-                continue;
-            }
             matched &= exact && stop == expectedStop && playback.edges[0].sample == launch &&
                 observed == (external ? 20 : authoredRamp ? 60 : 120) &&
                 accepted == (external || race) && session.problems().empty() && !hasPins();
@@ -1203,7 +1205,9 @@ std::vector<float> residentLegacySignal() {
     return source;
 }
 
-std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, std::span<const float> source, bool fade) {
+std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, std::span<const float> source, bool fade,
+                                            bool ram = true, std::int64_t startTick = quarter/2,
+                                            std::int64_t endTick = 2*quarter) {
     const auto mediaFrames = static_cast<std::uint32_t>(source.size());
     auto store = sceneProject(folder.path());
     const auto file = folder.path()/"dense.wav";
@@ -1213,7 +1217,7 @@ std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, 
         writer.close();
     }
     const auto hash = media::blake3File(file);
-    require(static_cast<bool>(hash),"hash the resident legacy file");
+    require(static_cast<bool>(hash),"hash the raw legacy file");
     {
         auto& db = store->db();
         db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
@@ -1231,13 +1235,13 @@ std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, 
         ops[2].opType = "session.setSlotClip";
         ops[2].payload = {{"track",1},{"scene",10},{"clip",101}};
         ops[3].opType = "session.setLaunchSettings";
-        ops[3].payload = {{"clip",101},{"ram",true},{"fade",fade}};
-        require(OpJournal(*store).commit(ops).ok,"save the dense source in a resident Session slot");
+        ops[3].payload = {{"clip",101},{"ram",ram},{"fade",fade}};
+        require(OpJournal(*store).commit(ops).ok,"save the dense source in a Session slot");
         SQLite::Statement start(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=0 WHERE id=101");
-        start.bind(1,quarter/2);
+        start.bind(1,startTick);
         start.exec();
         SQLite::Statement end(db,"INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(101,?)");
-        end.bind(1,2*quarter);
+        end.bind(1,endTick);
         end.exec();
     }
     store.reset();
@@ -1245,14 +1249,136 @@ std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, 
     store = Store::open(folder.path()/"song.adi",error);
     require(static_cast<bool>(store),"reopen the saved legacy Start and End");
     auto& saved = store->db();
-    require(saved.execAndGet("SELECT content_offset_ticks FROM clips WHERE id=101").getInt64() == quarter/2 &&
-            saved.execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64() == 2*quarter &&
+    require(saved.execAndGet("SELECT content_offset_ticks FROM clips WHERE id=101").getInt64() == startTick &&
+            saved.execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64() == endTick &&
             saved.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt64() == 0 &&
             saved.execAndGet("SELECT loop_enabled FROM clips WHERE id=101").getInt() == 0 &&
+            saved.execAndGet("SELECT ram_mode FROM clip_launch WHERE clip_id=101").getInt() == static_cast<int>(ram) &&
             saved.execAndGet("SELECT legato FROM clip_launch WHERE clip_id=101").getInt() == 0 &&
             saved.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=101").getInt() == 0,
             "the persisted slot has musical Start and End without pins, Warp, loop, or Legato");
     return store;
+}
+
+void pagedLegacyStartReaders() {
+    test::TempDirectory folder{"paged_legacy_start","banks"};
+    const auto signal = residentLegacySignal();
+    auto store = residentLegacyRawSlot(folder,signal,false,false,3*quarter/2,4*quarter);
+    const auto model = rows::readModel(*store);
+    const auto source = readClipProject(*store,model,true);
+    auto clock = TempoMap::fromRows(model.tempo);
+    std::vector<std::string> problems;
+    const auto build = [&](const ClipProject& from, const TempoMap& timing, StoredLaunchPageReuse prior = {}) {
+        auto result = prepareStoredLaunchProject(from,timing,rate,2,blockFrames,1,problems,kSessionResidentPcmBudget,{}, {},prior,false,prior);
+        require(result && problems.empty() && result->clip(101) && result->clip(101)->pageReader(),
+                "prepare the complete persisted raw page bank");
+        return result;
+    };
+    const auto prior = build(*source,clock);
+    const auto* old = prior->clip(101);
+    const StoredLaunchPageReuse reuse{source.get(),prior.get()};
+    clock.events.push_back({quarter/2,240,0});
+    const auto same = build(*source,clock,reuse);
+    require(same->clip(101)->pageReader() == old->pageReader(),"equal resolved Start reuses the existing warm raw pager");
+    clock.events = {{0,240,0}};
+    const auto later = build(*source,clock,reuse);
+    const auto* next = later->clip(101);
+    require(old->pageReader() != next->pageReader() && old->pageReader()->firstFrame(101) == 36000 &&
+            next->pageReader()->firstFrame(101) == 18000,
+            "the new Start gets its own reader without mutating the published old warm Start");
+    {
+        const audio::CallbackScope scope;
+        require(next->pageReader()->reserveCue(101,18000,blockFrames,false),"the whole first block at the new Start is already warm");
+        next->pageReader()->releaseCue(101);
+    }
+    store->db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+    const auto edited = readClipProject(*store,rows::readModel(*store),true);
+    const auto changed = build(*edited,clock,reuse);
+    LaunchAudioDriver owner(1);
+    LaunchAudioRuntime before(prior,{1},blockFrames,{},0,0,&owner);
+    LaunchAudioRuntime after(later,{1},blockFrames,{},0,0,&owner);
+    LaunchAudioRuntime incompatible(changed,{1},blockFrames,{},0,0,&owner);
+    require(before.dropsPinnedPages(&after,0,1,101) && before.canRetainLegacyPages(&after,0,1,101) &&
+            before.dropsPinnedPages(&incompatible,0,1,101) && !before.canRetainLegacyPages(&incompatible,0,1,101),
+            "only an unchanged raw source can keep its old pager across the new bank");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,"page readiness stays callback-safe");
+    std::printf("Paged legacy Start readers: reused 36000, independently warmed 18000, changed gain refused\n");
+}
+
+void pagedLegacyNonzeroStart(const std::string_view mode) {
+    constexpr std::int64_t oldStart = 36000, newStart = 18000, cut = 12000;
+    constexpr std::int64_t oldDuration = 60000, activeStop = 36000, freshDuration = 30000;
+    const bool step = mode == "step", whole = mode == "whole", repeated = mode == "repeated";
+    const bool gain = mode == "gain", sourceChange = mode == "source";
+    const bool rebase = whole || repeated || gain || sourceChange;
+    require(step || rebase || mode == "steady", "paged test mode is valid");
+    std::vector<float> source(3 * rate);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame % 257) - 128.f) * .001f;
+
+    test::TempDirectory folder{"paged_legacy_start",mode.data()};
+    auto store = residentLegacyRawSlot(folder,source,false,false,3*quarter/2,4*quarter);
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    const auto stop = repeated ? 90000 : step || rebase ? activeStop : oldDuration;
+    const auto fresh = stop + blockFrames;
+    const auto freshStop = fresh + freshDuration;
+    std::vector<float> pcm(static_cast<std::size_t>((whole ? freshStop : stop) + blockFrames));
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(step ? cut/2 : cut);
+    const auto run = trackState(session).run;
+    require(trackState(session).clip == 101 && run != 0, "the persisted paged run is active");
+    bool accepted = true;
+    if (step) accepted = session.setExternalTempoAt(*store,240,quarter/2);
+    if (rebase) accepted = session.setExternalTempo(*store,240);
+    playback.through(cut+1);
+    const auto observed = session.beginRender().bpmAtTick(2*quarter);
+    auto continuous = trackState(session).run == run;
+    if (repeated || gain || sourceChange) {
+        playback.through(18000);
+        if (gain) store->db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+        if (sourceChange) store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=101");
+        const bool movedAgain = session.setExternalTempo(*store,60);
+        if (!repeated)
+            require(!movedAgain && session.error().find("needs the active unwarped page bank") != std::string::npos,
+                    "a later changed source cannot replace the reader leased by the old run");
+        playback.through(18001);
+        require(movedAgain == repeated && session.beginRender().bpmAtTick(2*quarter) == (repeated ? 60 : 240),
+                "a second compatible clock can adopt while edited backing retains the old clock");
+        continuous &= trackState(session).run == run;
+    }
+    if (whole && accepted) {
+        playback.through(fresh);
+        scene(*store,session,10);
+    }
+    playback.through(static_cast<std::int64_t>(pcm.size()));
+
+    std::int64_t mismatch = -1;
+    for (std::int64_t frame = 0; frame < static_cast<std::int64_t>(pcm.size()); ++frame) {
+        const float expected = frame < stop ? source[static_cast<std::size_t>(oldStart + frame)] :
+            whole && frame >= fresh && frame < freshStop ? source[static_cast<std::size_t>(newStart + frame - fresh)] : 0.f;
+        if (pcm[static_cast<std::size_t>(frame)] != expected) { mismatch = frame; break; }
+    }
+    const auto actualStop = playback.count > 1 ? playback.edges[1].sample : -1;
+    std::printf("Paged saved Start %.*s: accepted %d, BPM %g, Stop %lld/%lld, first mismatch %lld, allocations %u, file I/O %u\n",
+                static_cast<int>(mode.size()),mode.data(),accepted,observed,static_cast<long long>(actualStop),
+                static_cast<long long>(stop),static_cast<long long>(mismatch),
+                callbackAllocations,audio::callbackFileIo.load());
+    if (!accepted) std::fprintf(stderr,"Tempo admission: %s\n",session.error().c_str());
+    require(accepted && observed == (step || rebase ? 240 : 120) && continuous,
+            "the prepared paged reader survives the performed tempo clock");
+    require(playback.count == (whole ? 4u : 2u) && playback.edges[0].sample == 0 &&
+            actualStop == stop && playback.edges[1].newClip == 0 && mismatch == -1 && session.problems().empty(),
+            "the paged slot plays every original raw frame through its exact musical Stop");
+    if (whole)
+        require(playback.edges[2].newClip == 101 && playback.edges[2].sample == fresh &&
+                playback.edges[3].newClip == 0 && playback.edges[3].sample == freshStop,
+                "the next launch uses the new bank's different source page and duration");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "paged legacy playback allocates nothing and does no callback file I/O");
 }
 
 void residentLegacyNonzeroStart() {
@@ -4144,10 +4270,18 @@ int main() {
         steadyLegacyOneShotAperture(true);
         legacyMusicalOneShotPlaysRawPcm();
         legacyMusicalOneShotPlaysRawPcm(true);
+        pagedLegacyStartReaders();
+        pagedLegacyNonzeroStart("steady");
+        pagedLegacyNonzeroStart("step");
+        pagedLegacyNonzeroStart("whole");
+        pagedLegacyNonzeroStart("repeated");
+        pagedLegacyNonzeroStart("gain");
+        pagedLegacyNonzeroStart("source");
         residentLegacyNonzeroStart();
         protectResidentLegacyNonzeroStartAdoption();
         residentLegacyBudgetKeepsBothSlots();
         fadedLegacyRawSceneAtFirstAdoption();
+        fadedLegacyRawSceneAtFirstAdoption(true);
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();
         pausedSupersessionReturnsToSameClock(false);
