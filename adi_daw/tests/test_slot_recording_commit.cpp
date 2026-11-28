@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/controller_data.hpp"
 #include "adi/engine/slot_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/history.hpp"
@@ -291,6 +292,8 @@ void routedMidiSlots() {
         note(9, EventType::NoteOn, 2, 76, 55, unused),
         SlotMidiInput{110, 110, {10, EventType::NoteExpression, 2, 0, 52, 0, 1.25}, pads},
         SlotMidiInput{111, 111, {11, EventType::Controller, 4, 0, 0, 74, 0.75}, pads},
+        SlotMidiInput{112, 112, {12, EventType::Controller, 2, 0, 0, controllers::kPitchBend, 0.625}, pads},
+        SlotMidiInput{113, 113, {13, EventType::NoteExpression, 2, 0, 0, 0, 1.0}, pads},
         note(15, EventType::NoteOff, 2, 60, 51, keys),
         note(16, EventType::NoteOff, 2, 64, 52, pads),
         note(17, EventType::NoteOff, 4, 68, 53, pads)};
@@ -300,7 +303,7 @@ void routedMidiSlots() {
             take->targets.front().midiInput == MidiInputFilter{keys, 3} &&
             std::count_if(take->midi.begin(), take->midi.end(), [&](const auto& packet) {
                 return packet.kind == MidiCapturePacket::Kind::Event && packet.port == pads;
-            }) == 6, "the take freezes input filters and records every physical packet port");
+            }) == 8, "the take freezes input filters and records every physical packet port");
     constexpr std::array<std::int64_t, 3> clips{61, 62, 63};
     const std::array clipIds{recording::ClipIds{clips[0], 0, "Keyboard"},
         recording::ClipIds{clips[1], 0, "Pads"}, recording::ClipIds{clips[2], 0, "Foot controller"}};
@@ -322,11 +325,20 @@ void routedMidiSlots() {
             project.scalar("SELECT count(*) FROM event_streams WHERE clip_id=63 AND stream_kind='cc' AND channel=4 AND controller=74") == 1 &&
             project.scalar("SELECT count(*) FROM event_streams WHERE stream_kind='cc'") == 1,
             "expression and controller ownership follow the same frozen MIDI input");
+    const auto wheel = stream<AutomationPoint>(project,
+        "SELECT data FROM event_streams WHERE clip_id=62 AND stream_kind='pitchbend' AND channel=2 AND controller IS NULL",
+        FourCC::Controller);
+    require(project.scalar("SELECT count(*) FROM event_streams WHERE stream_kind='pitchbend'") == 1 &&
+            wheel.size() == 2 && sampleAt(wheel[0].time) == 9 && wheel[0].value == 0.625 &&
+            sampleAt(wheel[1].time) == 10 && wheel[1].value == 0.75,
+            "native and physical pitch-wheel packets keep their normalized values in the routed channel's lane");
     require(History(*project.store).undo().ok &&
             project.scalar("SELECT count(*) FROM clip_slots") == 0 &&
+            project.scalar("SELECT count(*) FROM event_streams WHERE stream_kind='pitchbend'") == 0 &&
             project.scalar("SELECT count(*) FROM clips WHERE id IN (31,32)") == 2 &&
             History(*project.store).redo().ok &&
-            project.scalar("SELECT count(*) FROM clip_slots WHERE scene_id=11 AND clip_id IN (61,62,63)") == 3,
+            project.scalar("SELECT count(*) FROM clip_slots WHERE scene_id=11 AND clip_id IN (61,62,63)") == 3 &&
+            project.scalar("SELECT count(*) FROM event_streams WHERE clip_id=62 AND stream_kind='pitchbend'") == 1,
             "one Undo and Redo cover all routed slots and leave Arrangement alone");
 }
 

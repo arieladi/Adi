@@ -2,9 +2,11 @@
 #include "adi/recording_commands.hpp"
 
 #include "adi/clip_image.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/slot_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -60,11 +62,14 @@ SlotMidiContent readSlotMidi(const engine::launch::SlotRecordingResult& capture,
         previous = sample;
         if (!route.matches(packet.port, event.channel)) continue;
         const auto tick = tickAt(sample);
-        if (event.type == engine::EventType::Controller) {
-            if (event.paramId > 127 || event.value < 0 || event.value > 1)
+        const bool channelWheel = adi::capture::isChannelPitchWheel(event);
+        if (event.type == engine::EventType::Controller || channelWheel) {
+            const auto address = channelWheel ? controllers::kPitchBend : event.paramId;
+            const auto value = channelWheel ? adi::capture::channelPitchWheelValue(event.value) : event.value;
+            if (!controllers::validController(address) || value < 0 || value > 1)
                 throw std::runtime_error("invalid slot MIDI controller address or value");
-            auto& points = content.controllers[{event.channel, static_cast<int>(event.paramId)}];
-            points.push_back({tick, event.value, 0, 0, 0, 0, points.size() + 1});
+            auto& points = content.controllers[{event.channel, static_cast<int>(address)}];
+            points.push_back({tick, value, 0, 0, 0, 0, points.size() + 1});
             continue;
         }
         if (event.noteId == 0)
@@ -210,10 +215,12 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
                 image = RecordingEdit::slotMidiImage(store,
                     {track, id.clip, 0, length, id.name, midiContent.notes, expression}, allocated);
                 for (const auto& [key, points] : midiContent.controllers) {
+                    const bool pitch = key.second == controllers::kPitchBend;
                     const auto bytes = writeStream<AutomationPoint>(FourCC::Controller, points, 1, StreamFlags::SortedByTime);
                     image.at("children")["event_streams"].push_back(edit::defaultRow(store.db(), "event_streams", {
-                        {"id", allocated.next("event_streams")}, {"clip_id", id.clip}, {"stream_kind", "cc"},
-                        {"channel", key.first}, {"controller", key.second}, {"data", RecordingEdit::slotStreamBytes(bytes)},
+                        {"id", allocated.next("event_streams")}, {"clip_id", id.clip}, {"stream_kind", pitch ? "pitchbend" : "cc"},
+                        {"channel", key.first}, {"controller", pitch ? Payload(nullptr) : Payload(key.second)},
+                        {"data", RecordingEdit::slotStreamBytes(bytes)},
                     }));
                 }
             } else {
