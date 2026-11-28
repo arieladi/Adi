@@ -25,8 +25,16 @@ Pending: the slot was busy with other sessions' cold builds when this was writte
 filled in as the checks finish.
 
 - Round 2 (28 November, from 17:30 JST): slot 10 still held round 1's check of `71ff4941b` (the test
-  commit), "waiting for a build place" since 15:53, and refused a new check ("BUSY"). The head check
-  (`slot.sh run 10 origin/basics/review-recording-chain all`) follows as soon as the slot frees.
+  commit), "waiting for a build place" since 15:53, and refused a new check ("BUSY").
+- Test commit `71ff4941b` alone, core, filtered to the recording suites (built 18:09, done 18:19): the
+  new SC-22 checks fail as they should, without the fix: in `adi_recording_commands_tests` "corrected
+  song position shifts the take…", "a take that ended before its corrected start is refused…", "an
+  unpunched take keeps its sample mapping…"; in `adi_ui_document_tests` "SC-22: the saved impulse…" and
+  "SC-22: a take from the song's start hides…". SC-447's `takeIsWholeWhileTheOwnerWorks` passed there.
+  One more failure, not this stream's: "opening yields to the owner between slow plug-in loads"
+  (`adi_ui_document_tests`); slot 6 showed the same line for another branch the same afternoon, so it
+  belongs to the base or the loaded build PC.
+- Head `e13ce0aa8`, all (core and ui): started 18:20. Result below when it finishes.
 - Base alone (`land/basics-1128c` at `16064c0a6`), core: 290 of 291 passed. `adi_link_playback_tests`
   failed there ("both tempo directions detect old history on repeated loops…"), before any change of
   this stream.
