@@ -176,6 +176,12 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
     }
     return false;
 }
+bool timeMagnify(ArrangementGeometry &time, float factor, double pixel) {
+    if (!std::isfinite(factor) || factor <= 0.f || factor == 1.f)
+        return false;
+    time.zoom(factor, std::max(0., pixel));
+    return true;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -2912,6 +2918,14 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
     mouseMove(e);
     repaint();
 }
+void NoteEditor::mouseMagnify(const juce::MouseEvent &e, float factor) {
+    if (timeMagnify(time, factor, static_cast<double>(e.position.x) - notesArea().getX())) {
+        panel.root.arrangement.followPaused = true;
+        panel.repaint(panel.gridBox());
+        mouseMove(e);
+        repaint();
+    }
+}
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
     auto out = labels_;
     out.push_back(preview_.getBounds().reduced(2, 0));
@@ -3863,6 +3877,13 @@ bool SampleEditor::keyPressed(const juce::KeyPress &key) {
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (timeWheel(time, e, w, 0)) {
+        panel.root.arrangement.followPaused = true;
+        panel.repaint(panel.headerArea());
+        repaint();
+    }
+}
+void SampleEditor::mouseMagnify(const juce::MouseEvent &e, float factor) {
+    if (timeMagnify(time, factor, e.position.x)) {
         panel.root.arrangement.followPaused = true;
         panel.repaint(panel.headerArea());
         repaint();

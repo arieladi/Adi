@@ -51,6 +51,7 @@ class NoteEditor final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    void mouseMagnify(const juce::MouseEvent &, float factor) override;
     // Editing (manual 10.4 to 10.6): a double-click adds a note or deletes the one under it; a
     // drag moves the selected notes, or their start or end edges; a drag in the Velocity lane
     // changes their velocities; a drag from empty space selects. Each gesture is one undo step.
@@ -444,6 +445,7 @@ class SampleEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    void mouseMagnify(const juce::MouseEvent &, float factor) override;
     static constexpr int kRulerHeight = 18, kScrubHeight = 9, kMarkerHeight = 9;
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;

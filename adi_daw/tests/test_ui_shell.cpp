@@ -10051,6 +10051,89 @@ void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir
     check(panel.details() != nullptr && panel.details()->trackId == 3 && maskTrack == 3 && !editor.previewButton().getToggleState(),
           "the same Preview switch applies across clips, and playback lights follow the new track");
 }
+void editorPinchZoom(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "editor-pinch.adi", true, {}, error);
+    check(document != nullptr, "SC-451: a project for editor pinch gestures");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "editor-pinch");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    constexpr std::int64_t midiTrack = 2, audioTrack = 4;
+    const bool noteShown = root.insertMidiClips({midiTrack}, 0, 16 * beat) && root.showClipView();
+    check(noteShown, "SC-451: open a clip in the Note Editor");
+    if (!noteShown)
+        return;
+    root.resizeClipView(360);
+    root.frame();
+
+    constexpr float anchorX = 192.f; // time-local x for tick 7 * PPQ at the starting scale
+    const auto pinch = [&](juce::Component &component, ArrangementGeometry &geometry, int originX, int y,
+                           std::string_view label, bool pauseFollow) {
+        geometry.left = 4.;
+        geometry.scale = 64.;
+        const auto event = pressAt(component, {static_cast<float>(originX) + anchorX, static_cast<float>(y)});
+        root.arrangement.followPaused = false;
+        component.mouseMagnify(event, 1.5f);
+        check(geometry.scale == 96. && geometry.left == 5. && geometry.x(7 * beat) == anchorX,
+              (std::string(label) + ": pinch out increases the scale around the pointer").c_str());
+        if (pauseFollow)
+            check(root.arrangement.followPaused, (std::string(label) + ": a pinch pauses Follow").c_str());
+        component.mouseMagnify(event, .5f);
+        check(geometry.scale == 48. && geometry.left == 3. && geometry.x(7 * beat) == anchorX,
+              (std::string(label) + ": pinch in decreases the scale around the same pointer").c_str());
+    };
+    auto &arrange = root.arrangement;
+    const int rowY = arrange.geometry.rowTop(root.reader(), midiTrack) + 12;
+    pinch(arrange.canvas, arrange.geometry, 0, rowY, "SC-451 Arrangement", false);
+    arrange.geometry.resizeTrack(midiTrack, 88);
+    arrange.canvas.mouseMagnify(pressAt(arrange.canvas, {anchorX, static_cast<float>(rowY)},
+                                      juce::ModifierKeys::altModifier), 1.5f);
+    check(arrange.geometry.heightFor(midiTrack) == 132 && arrange.geometry.scale == 48.,
+          "SC-451: Option-pinch in the Arrangement resizes the track without moving time");
+
+    auto &note = root.clipView.notes;
+    check(note.isVisible() && note.notesArea().getWidth() > static_cast<int>(anchorX),
+          "SC-451: the note grid is showing under the test pointer");
+    pinch(note, note.time, note.notesArea().getX(), note.notesArea().getCentreY(), "SC-451 Note Editor", true);
+    const auto neutral = pressAt(note, note.notesArea().getCentre().toFloat());
+    root.arrangement.followPaused = false;
+    for (const auto factor : {1.f, 0.f, std::numeric_limits<float>::infinity()})
+        note.mouseMagnify(neutral, factor);
+    check(note.time.scale == 48. && note.time.left == 3. && !root.arrangement.followPaused,
+          "SC-451: inactive magnify events leave the viewport and Follow alone");
+
+    const auto wav = dir / "editor-pinch.wav";
+    {
+        std::vector<float> frames(96000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport imported;
+    const bool sourceReady = document->prepareImport(wav.string(), 1'700'000'000'000'000, imported);
+    check(sourceReady, "SC-451: prepare an audio clip for the Sample Editor");
+    if (!sourceReady)
+        return;
+    auto placed = dropAudio(*document->view().current(), audioTrack, 4 * beat, "Pinch", imported);
+    const bool audioPlaced = placed.refusal.empty() && document->ops().submit(std::move(placed.ops)).ok &&
+                             document->synchronise();
+    check(audioPlaced, "SC-451: place the Sample Editor's audio clip");
+    if (!audioPlaced)
+        return;
+    root.frame();
+    const auto *track = root.reader().findTrack(audioTrack);
+    check(track != nullptr && !track->clips.empty(), "SC-451: find the placed audio clip");
+    if (track == nullptr || track->clips.empty())
+        return;
+    arrange.selectClip(audioTrack, track->clips.front()->id);
+    root.frame();
+    auto &sample = root.clipView.sample;
+    check(sample.isVisible() && sample.waveArea().getWidth() > static_cast<int>(anchorX),
+          "SC-451: the sample waveform is showing under the test pointer");
+    pinch(sample, sample.time, 0, sample.waveArea().getCentreY(), "SC-451 Sample Editor", true);
+}
 void noteEditorEdgeScroll(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "note-edge-scroll.adi", true, {}, error);
@@ -32432,6 +32515,7 @@ int main(int argc, char **argv) {
     trace("clipViewLoopPlayhead", [&] { clipViewLoopPlayhead(commands, temp.path()); });
     trace("clipViewNoteCursors", [&] { clipViewNoteCursors(commands, temp.path()); });
     trace("clipViewScrubArea", [&] { clipViewScrubArea(commands, temp.path()); });
+    trace("editorPinchZoom", [&] { editorPinchZoom(commands, temp.path()); });
     trace("noteEditorEdgeScroll", [&] { noteEditorEdgeScroll(commands, temp.path()); });
     trace("arrangementScrubEdgeScroll", [&] { arrangementScrubEdgeScroll(commands, temp.path()); });
     trace("clipControllerEnvelope", [&] { clipControllerEnvelope(commands, temp.path()); });
