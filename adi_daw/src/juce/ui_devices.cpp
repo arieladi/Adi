@@ -190,9 +190,14 @@ void ParameterControl::mouseDown(const juce::MouseEvent &e) {
     }
 }
 void ParameterControl::mouseUp(const juce::MouseEvent &e) {
-    if (e.eventComponent == this)
-        if (auto *panel = dynamic_cast<DevicePanelView *>(getParentComponent()))
-            panel->endParameterReorder(parameter, e.getEventRelativeTo(panel).getPosition(), e.getDistanceFromDragStart());
+    if (e.eventComponent == this) {
+        if (auto *panel = dynamic_cast<DevicePanelView *>(getParentComponent())) {
+            const bool labelClick = name.getBounds().contains(e.getPosition()) &&
+                                    !e.source.hasMovedSignificantlySincePressed();
+            panel->endParameterReorder(parameter, e.getEventRelativeTo(panel).getPosition(),
+                                       e.getDistanceFromDragStart(), labelClick);
+        }
+    }
 }
 void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
     if (e.eventComponent == this && name.getBounds().contains(e.getPosition()))
@@ -2144,18 +2149,22 @@ bool DevicePanelView::beginParameterReorder(const std::string &parameter) {
                                          menuEpoch, controlsEpoch};
     return true;
 }
-void DevicePanelView::endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance) {
+void DevicePanelView::endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance,
+                                          bool labelClick) {
     auto drag = std::exchange(parameterReorder_, std::nullopt);
-    if (!drag || distance < 4 || drag->parameter != parameter || !configureSession_ || !configuring ||
+    const bool click = distance < 4;
+    if (!drag || (click && !labelClick) || drag->parameter != parameter || !configureSession_ || !configuring ||
         menuInteraction_ || menuEpoch_ != drag->menuEpoch || controlsEpoch_ != drag->controlsEpoch ||
         strip.folded(id) || !reallyContains(position, true))
         return;
     const auto target = std::find_if(controls.begin(), controls.end(), [&](const auto &control) {
         return control->isShowing() && control->getBounds().contains(position);
     });
-    if (target == controls.end() || (*target)->parameter == drag->parameter)
+    if (target == controls.end())
         return;
     const auto destination = (*target)->parameter;
+    if (click ? destination != drag->parameter : destination == drag->parameter)
+        return;
     const auto expected = configureSession_->expected;
     const auto safe = SafePointer<DevicePanelView>(this);
     if (!panelTargetCurrent(expected) || !safe)
@@ -2170,6 +2179,12 @@ void DevicePanelView::endParameterReorder(const std::string &parameter, juce::Po
                     drag->order.begin(), drag->order.end(),
                     [](const panel::Entry &entry, const auto &parameterId) { return entry.id == parameterId; }))
         return;
+    if (click) {
+        if (strip.root.automationMode())
+            if (const auto lane = strip.root.deviceAutomationTarget(id, drag->parameter))
+                strip.root.showAutomation(lane->first, lane->second);
+        return;
+    }
     auto &order = drag->order;
     const auto from = std::find(order.begin(), order.end(), drag->parameter);
     const auto to = std::find(order.begin(), order.end(), destination);

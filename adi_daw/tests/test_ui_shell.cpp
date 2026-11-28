@@ -20607,19 +20607,32 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
             const auto outside = surface.getLocalPoint(&panel, juce::Point<int>{panel.getWidth() + 35,
                                                                                panel.getHeight() / 2}).toFloat();
             const auto beforeCancel = panelEdits;
+            const auto shownLane = volumeTarget(2);
+            root.showAutomation(2, shownLane);
             mouse(*startAgain, {});
             mouse(*startAgain, left);
             mouse(*overGain, left);
             mouse(outside, left);
             mouse(outside, {});
             frame();
-            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel,
-                  "SC-326: releasing beyond the device cancels the reorder without an edit");
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      root.automationTarget(2) == shownLane,
+                  "SC-326: releasing beyond the device changes neither the panel nor the chosen lane");
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*overGain, left);
+            mouse(*startAgain, left);
+            mouse(*startAgain, {});
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      root.automationTarget(2) == shownLane,
+                  "SC-326: a drag back to the source does not select the source lane");
             mouse(*startAgain, {});
             mouse(*startAgain, left);
             mouse(*startAgain, {});
-            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel,
-                  "SC-326: a click without a drag leaves the control in place");
+            const auto chosenLane = root.automationTarget(2);
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      chosenLane.ownerKind == "device" && chosenLane.ownerId == id && chosenLane.paramRef == "31",
+                  "SC-326: clicking a Configure label selects its lane without editing the panel");
         }
     }
     if (panel.configuring)

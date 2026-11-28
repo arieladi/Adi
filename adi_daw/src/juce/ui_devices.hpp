@@ -285,7 +285,7 @@ class DevicePanelView final : public juce::Component,
     void queueConfigureTouch(const DevicePanelData &);
     void applyConfigureTouches();
     bool beginParameterReorder(const std::string &parameter);
-    void endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance);
+    void endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance, bool labelClick);
     bool panelTargetCurrent(const DevicePanelData &);
     void chooseLastTouch(const DevicePanelData &, bool showAutomation);
     bool canHotSwap() const;
