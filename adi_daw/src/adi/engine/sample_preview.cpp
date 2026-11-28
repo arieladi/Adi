@@ -2,6 +2,8 @@
 #include "adi/engine/sample_preview.hpp"
 #include "adi/audio/aac_codec.hpp"
 #include "adi/audio/pcm_stream.hpp"
+#include "adi/dsp/biquad.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -22,6 +24,7 @@ constexpr std::size_t kChunkFrames = 1024;
 constexpr std::size_t kQueueChunks = 128; // Enough source frames for a 4096-frame callback at 768 -> 44.1 kHz.
 constexpr std::size_t kWaveformBins = 512;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
 
 struct Cancelled {};
 void checkCancelled(std::stop_token stop) {
@@ -138,6 +141,65 @@ struct Chunk {
     std::array<Stereo, kChunkFrames> pcm;
 };
 
+// Filter every source frame before linear interpolation can skip it. A
+// twelve-pole Butterworth leaves a transition band below the device's Nyquist.
+// The two latest filtered frames cover interpolation across queue boundaries.
+struct PreviewLowPass {
+    struct History {
+        double z1 = 0., z2 = 0.;
+        void reset(const dsp::Biquad &coefficients, double input) noexcept {
+            z1 = (1. - coefficients.b0) * input;
+            z2 = (coefficients.b2 - coefficients.a2) * input;
+        }
+        double step(const dsp::Biquad &coefficients, double input) noexcept {
+            const auto output = coefficients.b0 * input + z1;
+            z1 = coefficients.b1 * input - coefficients.a1 * output + z2;
+            z2 = coefficients.b2 * input - coefficients.a2 * output;
+            return output;
+        }
+    };
+    struct Section {
+        dsp::Biquad coefficients;
+        History left, right;
+    };
+    static constexpr int kSections = 6;
+    std::array<Section, kSections> sections;
+    std::uint32_t sourceRate = 0;
+    double outputRate = 0.;
+    std::uint64_t nextFrame = 0;
+    Stereo previous, latest;
+
+    void reset() noexcept { sourceRate = 0; }
+
+    Stereo frameAt(const Chunk &chunk, std::size_t at, double deviceRate) noexcept {
+        if (sourceRate != chunk.rate || outputRate != deviceRate) {
+            sourceRate = chunk.rate;
+            outputRate = deviceRate;
+            nextFrame = chunk.first;
+            const auto start = chunk.pcm[0];
+            for (int index = 0; index < kSections; ++index) {
+                auto &section = sections[static_cast<std::size_t>(index)];
+                section.coefficients = dsp::lowPass(sourceRate, deviceRate * .40,
+                                                     dsp::butterworthQ(2 * kSections, kSections - index));
+                section.left.reset(section.coefficients, start.left);
+                section.right.reset(section.coefficients, start.right);
+            }
+        }
+        const auto through = chunk.first + at + 1;
+        for (; nextFrame < through; ++nextFrame) {
+            const auto input = chunk.pcm[static_cast<std::size_t>(nextFrame - chunk.first)];
+            double left = input.left, right = input.right;
+            for (auto &section : sections) {
+                left = section.left.step(section.coefficients, left);
+                right = section.right.step(section.coefficients, right);
+            }
+            previous = latest;
+            latest = {static_cast<float>(left), static_cast<float>(right)};
+        }
+        return through == nextFrame ? latest : previous;
+    }
+};
+
 void appendPeaks(SamplePreview::Waveform &wave, std::span<const float> pcm, std::size_t channels) {
     for (std::size_t at = 0; at < pcm.size(); at += channels) {
         const auto sample = previewSample(pcm.subspan(at, channels));
@@ -181,8 +243,13 @@ struct SamplePreview::Impl {
     std::atomic<std::uint64_t> written{0}, consumed{0};
     std::atomic<std::uint64_t> requested{0}, decoderEnded{0}, failed{0};
     std::atomic<std::uint64_t> audible{0}, finished{0}, position{0};
+    std::atomic<bool> hasTail{false}; // The last callback contributed audio that Stop may need to fade.
     std::uint64_t rendering = 0; // audio-thread-only
     double offset = 0.;
+    double lastLeft = 0., lastRight = 0., releaseLeft = 0., releaseRight = 0.;
+    int fadeFrames = 1, releaseRemaining = 0, attackRemaining = 0;
+    bool starting = false;
+    PreviewLowPass lowPass;
 
     std::jthread playbackThread, selectionThread; // join before releasing the queue and owner state
     Impl() {
@@ -264,6 +331,7 @@ struct SamplePreview::Impl {
         std::uint64_t frame = 0, start = 0;
         std::size_t channels = 0;
         std::uint32_t rate = 0;
+        auto retry = 2ms;
         streamPcm(request.path, request.stop, [&](const audio::PcmStreamInfo &info) {
             channels = info.channels;
             rate = info.sampleRate;
@@ -289,10 +357,16 @@ struct SamplePreview::Impl {
             while (at < frames) {
                 checkCancelled(request.stop);
                 const auto next = written.load(std::memory_order_relaxed);
-                if (next - consumed.load(std::memory_order_acquire) >= queue.size()) {
-                    std::this_thread::sleep_for(2ms);
+                const auto space = [&] { return next - consumed.load(std::memory_order_acquire) < queue.size(); };
+                if (!space()) {
+                    // The audio callback only publishes its cursor. Back off
+                    // while the device is suspended, and wake on cancellation.
+                    std::unique_lock lock(mutex);
+                    wake.wait_for(lock, request.stop, retry, space);
+                    retry = std::min(2 * retry, 32ms);
                     continue;
                 }
+                retry = 2ms;
                 auto &chunk = queue[static_cast<std::size_t>(next % queue.size())];
                 chunk.revision = request.revision;
                 chunk.rate = rate;
@@ -388,8 +462,9 @@ SamplePreview::Status SamplePreview::status() const {
 bool SamplePreview::active() const noexcept {
     const auto &state = *impl_;
     const auto revision = state.requested.load(std::memory_order_acquire);
-    return revision != 0 && state.finished.load(std::memory_order_relaxed) != revision &&
-           state.failed.load(std::memory_order_acquire) != revision;
+    return state.hasTail.load(std::memory_order_relaxed) ||
+           (revision != 0 && state.finished.load(std::memory_order_relaxed) != revision &&
+            state.failed.load(std::memory_order_acquire) != revision);
 }
 bool SamplePreview::canOutput(const AudioIo &io, int firstChannel) noexcept {
     const auto packed = io.packedOutputPair(firstChannel);
@@ -404,30 +479,65 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst,
     if (!narrow && !wide)
         return;
     auto &state = *impl_;
-    const auto wanted = state.requested.load(std::memory_order_acquire);
-    if (!wanted || state.finished.load(std::memory_order_relaxed) == wanted ||
+    auto wanted = state.requested.load(std::memory_order_acquire);
+    if (state.finished.load(std::memory_order_relaxed) == wanted ||
         state.failed.load(std::memory_order_acquire) == wanted)
-        return;
+        wanted = 0;
     if (state.rendering != wanted) {
         state.rendering = wanted;
         state.offset = 0.;
+        // The worker may not have the replacement ready yet. Release the last
+        // audible value now, then attack the replacement when its PCM arrives.
+        const bool releasing = state.lastLeft != 0. || state.lastRight != 0.;
+        state.fadeFrames = static_cast<int>(std::clamp(deviceRate * .005, 1., 4096.));
+        state.releaseLeft = state.lastLeft;
+        state.releaseRight = state.lastRight;
+        state.releaseRemaining = releasing ? state.fadeFrames : 0;
+        state.attackRemaining = releasing && wanted ? state.fadeFrames : 0;
+        state.starting = wanted != 0;
+        state.lowPass.reset();
     }
+    const auto mixFrame = [&](double left, double right, std::int32_t frame) {
+        if (state.releaseRemaining > 0) {
+            const auto release = static_cast<double>(--state.releaseRemaining) / state.fadeFrames;
+            left += state.releaseLeft * release;
+            right += state.releaseRight * release;
+        }
+        if (narrow) {
+            io.out[firstChannel][frame] += static_cast<float>(left);
+            io.out[firstChannel + 1][frame] += static_cast<float>(right);
+        }
+        if (wide) {
+            io.out64[firstChannel][frame] += left;
+            io.out64[firstChannel + 1][frame] += right;
+        }
+        state.lastLeft = left;
+        state.lastRight = right;
+    };
     auto next = state.consumed.load(std::memory_order_relaxed);
     const bool ended = state.decoderEnded.load(std::memory_order_acquire) == wanted;
     const auto available = state.written.load(std::memory_order_acquire);
     while (next != available && state.queue[static_cast<std::size_t>(next % state.queue.size())].revision < wanted)
         ++next;
-    for (std::int32_t i = 0; i < io.frames; ++i) {
+    std::optional<mix::filters::FlushDenormals> flush;
+    if (wanted && next != available && state.queue[static_cast<std::size_t>(next % state.queue.size())].rate > deviceRate)
+        flush.emplace();
+    std::int32_t i = 0;
+    for (; wanted && i < io.frames; ++i) {
         while (next != available) {
             const auto &candidate = state.queue[static_cast<std::size_t>(next % state.queue.size())];
             if (candidate.revision != wanted || state.offset < static_cast<double>(candidate.frames))
                 break;
+            if (candidate.rate > deviceRate)
+                state.lowPass.frameAt(candidate, candidate.frames - 1, deviceRate);
             state.offset -= static_cast<double>(candidate.frames);
             ++next;
         }
         if (next == available) {
-            if (ended)
+            if (ended) {
                 state.finished.store(wanted, std::memory_order_release);
+                state.rendering = 0;
+            }
             break;
         }
         const auto &chunk = state.queue[static_cast<std::size_t>(next % state.queue.size())];
@@ -435,33 +545,42 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst,
             break;
         const auto at = static_cast<std::size_t>(state.offset);
         const double fraction = state.offset - static_cast<double>(at);
-        const auto a = chunk.pcm[at];
+        const bool downsample = chunk.rate > deviceRate;
+        if (!downsample)
+            state.lowPass.reset();
+        const auto sample = [&](const Chunk &from, std::size_t index) {
+            return downsample ? state.lowPass.frameAt(from, index, deviceRate) : from.pcm[index];
+        };
+        const auto a = sample(chunk, at);
         auto b = a;
         if (fraction > 0.) {
             if (at + 1 < chunk.frames)
-                b = chunk.pcm[at + 1];
+                b = sample(chunk, at + 1);
             else if (next + 1 < available) {
                 const auto &following = state.queue[static_cast<std::size_t>((next + 1) % state.queue.size())];
                 if (following.revision == wanted)
-                    b = following.pcm[0];
+                    b = sample(following, 0);
             }
             else if (!ended)
                 break; // wait for interpolation's next source frame without changing position
         }
-        const double left = std::lerp(static_cast<double>(a.left), static_cast<double>(b.left), fraction) * gain;
-        const double right = std::lerp(static_cast<double>(a.right), static_cast<double>(b.right), fraction) * gain;
-        if (narrow) {
-            io.out[firstChannel][i] += static_cast<float>(left);
-            io.out[firstChannel + 1][i] += static_cast<float>(right);
-        }
-        if (wide) {
-            io.out64[firstChannel][i] += left;
-            io.out64[firstChannel + 1][i] += right;
-        }
+        if (std::exchange(state.starting, false) && chunk.first != 0)
+            state.attackRemaining = state.fadeFrames;
+        double level = gain;
+        if (state.attackRemaining > 0)
+            level *= 1. - static_cast<double>(--state.attackRemaining) / state.fadeFrames;
+        mixFrame(std::lerp(static_cast<double>(a.left), static_cast<double>(b.left), fraction) * level,
+                 std::lerp(static_cast<double>(a.right), static_cast<double>(b.right), fraction) * level, i);
         state.offset += static_cast<double>(chunk.rate) / deviceRate;
         state.position.store(chunk.first + static_cast<std::uint64_t>(state.offset), std::memory_order_relaxed);
         state.audible.store(wanted, std::memory_order_release);
     }
+    for (; state.releaseRemaining > 0 && i < io.frames; ++i)
+        mixFrame(0., 0., i);
+    if (i < io.frames)
+        state.lastLeft = state.lastRight = 0.;
+    state.hasTail.store(state.releaseRemaining > 0 || state.lastLeft != 0. || state.lastRight != 0.,
+                        std::memory_order_relaxed);
     state.consumed.store(next, std::memory_order_release);
 }
 } // namespace adi::engine

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/media/separated_stems.hpp"
+#include "adi/control/stem_jobs.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -96,6 +97,44 @@ std::vector<float> samples(const fs::path& path) {
     if(reader.read(result.data(),static_cast<std::uint32_t>(reader.frames()))!=reader.frames())throw std::runtime_error("read comparison wave");
     return result;
 }
+void jobReadSet() {
+    using namespace adi::control;
+    {
+        Fixture f(1);
+        JobBook jobs;
+        const auto queued = jobs.enqueue("owner", {"stems", f.store->projectUuid(),
+                                                  JobRevisionPolicy::StableUntilCompletion});
+        check(queued && startStemJob(jobs, queued->id, *f.store, f.result).has_value(),
+              "a stem job captures the registered source before inference");
+        if (!queued) return;
+        const auto head = OpJournal(*f.store).headSeq();
+        wave(f.project.parent_path() / "source.wav", f.rate, f.frames, 0.125f);
+        const auto finished = finishStemJob(jobs, queued->id, *f.store, f.result, f.options, Actor::Agent);
+        const auto target = f.project.parent_path() / "audio" /
+                            ("separated-" + f.result.stems.front().hash + ".wav");
+        check(finished && finished->state == JobState::Failed && finished->conflict &&
+                  OpJournal(*f.store).headSeq() == head && !fs::exists(target),
+              "changed source bytes cause a conflict before the gateway can publish a stem");
+    }
+    {
+        Fixture f(1);
+        JobBook jobs;
+        const auto queued = jobs.enqueue("owner", {"stems", f.store->projectUuid(),
+                                                  JobRevisionPolicy::StableUntilCompletion});
+        if (!queued || !startStemJob(jobs, queued->id, *f.store, f.result)) {
+            check(false, "the unchanged source starts its job");
+            return;
+        }
+        OpRequest unrelated;
+        unrelated.opType = "track.create";
+        unrelated.payload = {{"id", 99}, {"kind", "audio"}, {"name", "Other track"}, {"index", 0}};
+        check(OpJournal(*f.store).commit(unrelated).ok, "an unrelated edit moves the project head");
+        const auto finished = finishStemJob(jobs, queued->id, *f.store, f.result, f.options, Actor::Agent);
+        check(finished && finished->state == JobState::Completed && count(*f.store, "agent_requests") == 1,
+              "the unchanged read set allows the real stem gateway commit after an unrelated edit");
+    }
+}
+
 void nativeLifecycle() {
     Fixture f;const auto before=digestProject(*f.store).text;const auto head=OpJournal(*f.store).headSeq();
     auto prepared=f.prepare();check(prepared.ready(),prepared.error().empty()?"complete four-stem result captures without inference":prepared.error().c_str());if(!prepared.ready())return;
@@ -299,6 +338,6 @@ void boundaries() {
     if(!ec){linked.result.stems.front().file="linked.wav";check(!linked.prepare().ready(),"result file symlink refuses without following outside the result boundary");}
 }
 } // namespace
-int main(){try{nativeLifecycle();failuresAndRetry();shapesAndValidation();cancellationAndCallbacks();boundaries();}
+int main(){try{jobReadSet();nativeLifecycle();failuresAndRetry();shapesAndValidation();cancellationAndCallbacks();boundaries();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

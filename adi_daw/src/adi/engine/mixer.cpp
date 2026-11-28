@@ -129,15 +129,24 @@ void StripNode::prepare(double sampleRate, std::int32_t) {
     rampFrames_.store(static_cast<std::int32_t>(std::max<long>(1, frames)), std::memory_order_relaxed);
 }
 
-bool StripNode::midiAudible(const NodeIo& io) const noexcept {
+StripNode::MidiAudibleRun StripNode::midiAudibleRun(const NodeIo& io, std::int32_t frame) const noexcept {
+    const auto end = io.blockOffset + io.frames;
     const auto gates = hearingGates_.load(std::memory_order_relaxed);
-    if ((gates & kAudible) == 0) return false;
+    if ((gates & kAudible) == 0) return {false, end};
     const bool unmuted = (gates & kUnmuted) != 0;
     const auto* lanes = lanesFor(io);
     const auto* clock = transport_.load(std::memory_order_acquire);
-    if (!lanes || !lanes->mute || !clock) return unmuted;
-    const auto sample = clock->sampleAt(clock->playing() ? io.blockOffset : 0);
-    return heldValueAt(*lanes->mute, sample, unmuted ? 0.0 : 1.0) < 0.5;
+    if (!lanes || !lanes->mute || !clock) return {unmuted, end};
+    const bool playing = clock->playing();
+    const auto sample = clock->sampleAt(playing ? frame : 0);
+    const bool audible = heldValueAt(*lanes->mute, sample, unmuted ? 0.0 : 1.0) < 0.5;
+    if (!playing) return {audible, end};
+
+    auto remaining = clock->contiguousFrames(frame, end - frame);
+    const auto next = automationBoundaryAfter(*lanes->mute, sample);
+    if (next > sample)
+        remaining = std::min(remaining, next - sample);
+    return {audible, frame + static_cast<std::int32_t>(remaining)};
 }
 
 StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {

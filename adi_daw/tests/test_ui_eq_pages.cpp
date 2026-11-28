@@ -112,8 +112,10 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
           "the turned title and activator share a rail beside the EQ graph");
     juce::Image grid(juce::Image::RGB, card.getWidth(), card.getHeight(), true,
                      juce::SoftwareImageType{});
-    juce::Graphics graphics(grid);
-    card.paint(graphics);
+    {
+        juce::Graphics graphics(grid);
+        card.paint(graphics);
+    }
     const int decadeX = juce::roundToInt(x);
     check(grid.getPixelAt(decadeX, 30) != grid.getPixelAt(decadeX + 3, 30),
           "the Stack EQ paints frequency decades at the same log positions as its nodes");

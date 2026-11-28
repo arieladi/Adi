@@ -109,7 +109,7 @@ BrowserLibrarySnapshot::BrowserLibrarySnapshot(LibraryListing listing) : listing
         if (place.root.empty())
             continue;
         scope.folders.emplace_back();
-        std::unordered_map<std::filesystem::path, std::size_t> folders{{{}, 0}};
+        std::unordered_map<std::filesystem::path, std::size_t, LibraryPathHash> folders{{{}, 0}};
         std::vector<std::string> folderSortKeys(1);
         const auto folderIndex = [&](auto &&self, const std::filesystem::path &path) -> std::size_t {
             if (const auto found = folders.find(path); found != folders.end())

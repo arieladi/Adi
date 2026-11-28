@@ -834,18 +834,11 @@ struct Session::MidiHardwareNode final : Node {
     void process(const NodeIo& io) noexcept override {
         if (io.wide()) copyAudio(io.in64, io.out64, io.channels, io.blockOffset, io.frames);
         else copyAudio(io.in, io.out, io.channels, io.blockOffset, io.frames);
-        const auto* sink = owner_.midiHardwareSink_;
-        if (!sink || !sink->send || io.exporting) return;
-        const auto now = owner_.midiHardwareStreamSample_;
-        const bool heard = strip_.midiAudible(io);
-        if (heard_ && !heard)
-            sink->send(sink->context, port_, track_, now + io.blockOffset, kMidiHardwareRelease);
-        heard_ = heard;
-        if (!heard) return;
-        for (const auto& event : io.events)
-            if (const auto word = midiHardwareWord(event, route_.channel); word != 0)
-                sink->send(sink->context, port_, track_, now + event.frame, word);
+        sendMidi(io);
     }
+
+    // The graph can sleep after notes end even while a hardware pedal is held.
+    void silenceTaps(const NodeIo& io) noexcept override { sendMidi(io); }
 
     const rows::MidiOutput& route() const noexcept { return route_; }
     const StripNode& strip() const noexcept { return strip_; }
@@ -855,6 +848,31 @@ struct Session::MidiHardwareNode final : Node {
     std::shared_ptr<LiveMidiInput::Voices> liveVoices;
 
 private:
+    void sendMidi(const NodeIo& io) noexcept {
+        const auto* sink = owner_.midiHardwareSink_;
+        if (!sink || !sink->send || io.exporting || (!releasePending_ && io.events.empty())) return;
+        const auto now = owner_.midiHardwareStreamSample_;
+        const auto blockEnd = io.blockOffset + io.frames;
+        auto event = io.events.begin();
+        const auto eventsEnd = io.events.end();
+        for (auto frame = io.blockOffset; frame < blockEnd;) {
+            const auto run = strip_.midiAudibleRun(io, frame);
+            if (!run.audible && releasePending_) {
+                sink->send(sink->context, port_, track_, now + frame, kMidiHardwareRelease);
+                releasePending_ = false;
+            }
+            for (; event != eventsEnd && event->frame < run.endFrame; ++event) {
+                if (!run.audible) continue;
+                if (const auto word = midiHardwareWord(*event, route_.channel); word != 0) {
+                    sink->send(sink->context, port_, track_, now + event->frame, word);
+                    releasePending_ = true;
+                }
+            }
+            if (event == eventsEnd && !releasePending_) break;
+            frame = run.endFrame;
+        }
+    }
+
     template<class Sample>
     static void copyAudio(const Sample* const* input, Sample* const* output,
                           std::int32_t channels, std::int32_t offset, std::int32_t frames) noexcept {
@@ -872,7 +890,7 @@ private:
     rows::MidiOutput route_;
     std::uint64_t port_;
     std::uint64_t serial_;
-    bool heard_ = false;
+    bool releasePending_ = false;
 };
 
 void Session::attach(std::shared_ptr<const TimingView> timing) {
@@ -1114,9 +1132,9 @@ std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId
 std::vector<Node*> Session::graphTrackChain(std::int64_t track, const TimingView& timing) {
     auto chain = trackChain(track);
     if (const auto output = timing.midiHardware.find(track); output != timing.midiHardware.end()) {
-        const auto instrument = std::find_if(chain.begin(), chain.end(),
-            [](const Node* node) { return node->eventFlow() == EventFlow::Consume; });
-        chain.insert(instrument, output->second.get());
+        const auto stopsMidi = std::find_if(chain.begin(), chain.end(),
+            [](const Node* node) { return node->eventFlow() != EventFlow::Through; });
+        chain.insert(stopsMidi, output->second.get());
     }
     return chain;
 }
@@ -1139,9 +1157,10 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model, const TimingView& 
                 output = found->second.get();
             bool through = true;
             for (auto* node : chainFor(trackId)) {
-                if (output && node->eventFlow() == EventFlow::Consume) break;
+                const bool passesMidi = node->eventFlow() == EventFlow::Through;
+                if (output && !passesMidi) break;
                 result.push_back(node);
-                if (node->eventFlow() != EventFlow::Through) { through = false; break; }
+                if (!passesMidi) { through = false; break; }
             }
             if (!through) continue;
             if (output) {
@@ -1217,7 +1236,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     };
     const auto firstMidiEffect = [this](std::int64_t track, Node* output) {
         const auto chain = chainFor(track);
-        return !chain.empty() && chain.front()->eventFlow() != EventFlow::Consume ? chain.front() : output;
+        return !chain.empty() && chain.front()->eventFlow() == EventFlow::Through ? chain.front() : output;
     };
     decltype(midiHistories_) histories;
     const bool validPlayRate = std::isfinite(timing.sampleRate) && timing.sampleRate >= 1 &&

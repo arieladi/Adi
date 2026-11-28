@@ -21043,3 +21043,53 @@ his answers to the two questions the agent seat put to him about Stop Agent: "A 
 | `docs/DEFERRED.md` | DF-W63 (a fade editor), DF-W64 (the double-click that adds a track) |
 | `collab/README.md` | ADR 0265 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0266; DF-W65 |
+
+## ADR-0266 — After his second test: the encoders, backups on a timer, a clip ends with its audio, an export does not stop the song, and the EQ on a track — `DECIDED` (2026-11-28) — **DIRECTOR'S FIVE ANSWERS OF 28 NOVEMBER; GRANTS THE TWO LIBRARIES OF PLAN EX1; ADDS TO ADR-0255 (e); CONFIRMS ADR-0212 AND ADR-0243 FOR THE EQ**
+
+**What this records.** On 28 November the director worked in ADI a second time, on macOS, and dictated
+what he found: SC-447 to SC-478, worked from `collab/prompts/2026-11-28-directors-test-2.md`. Win put five
+choices to him, two of them parked by the integrator and three from his own test. His reply: "A a, B a,
+C a, D a (and also give bouton to open in explorer.. ), E a."
+
+### Decisions
+
+1. **The two encoder libraries are taken in (his A).** libFLAC and LAME, pinned and built into ADI, for
+   Export to FLAC and MP3 (PLAN EX1 and EX-04, whose grant was his; SC-398).
+2. **Backups on a timer stay (his B).** A copy of a named project is made when it opens and every ten
+   minutes while it is open, beside the copy from the second Take Snapshot on that ADR-0255 (e) rules;
+   the newest ten are kept. An addition: ADI saves all the time, and someone who never takes a snapshot
+   would otherwise have no copy (SC-157).
+3. **A clip that does not loop stops at the end of its audio (his C).** As Live's. A looped clip can be
+   drawn out and repeats (SC-476, SC-448).
+4. **An export does not stop the song (his D).** Playback keeps running while ADI exports, an addition.
+   When the export is done ADI says so and names the file, with a button that shows it in Explorer or
+   Finder (SC-470). His condition, in his words: "pretty crazy it can export and also keep playing just
+   please make an sanity check this isn't crippling our daw since no daw i no of can do that". That check
+   is SC-479. What win read the same day: the export is a second engine that renders the saved project
+   on a worker, from one snapshot and with plug-ins of its own, so the playing engine is not touched, and
+   the acceptance walk proves the exported file equal to the live play. What is not yet proved is listed
+   in SC-479 and is checked before this is called safe.
+5. **The EQ on a track is Live's EQ Eight, laid out as Live's (his E).** His own EQ is not a second EQ
+   device on a track: it comes through the Mix View's built-in feature, with a window of its own that
+   opens from a track, as ADR-0212 and ADR-0243 rule. As a plug-in it loads on any track like any other.
+   The built-in devices' panels are settled from a sheet first (SC-455).
+
+### His corrections the same day, recorded with them
+
+6. **The take with parts cut was seen once.** "It only happened once, and I recorded a few other times
+   and it was just fine. So don't break yourself over this." One bounded attempt to reproduce it; one
+   thing holds either way, a take never loses audio silently (SC-447).
+7. **The right-click menus are checked against Live's.** "Please make a sanity check on this, because
+   also basic stuff from Ableton." Live's menus are read in Live itself, thirty places, and each gap
+   becomes a row (SC-478).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0255 (e) | the timed copies stay beside the copy at Take Snapshot (d2) |
+| ADR-0212; ADR-0243 | stand: no second EQ device of his on a track (d5) |
+| PLAN EX1, EX-04 | the grant for libFLAC and LAME is given (d1) |
+| `docs/SANITY-CHECK.md` | SC-447 to SC-479; notes on SC-157, SC-347, SC-398 |
+| `collab/README.md` | ADR 0266 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0267 |
