@@ -5803,7 +5803,7 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
 // not run in this build.
 void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "color-cab-tile.adi", true, {}, error);
+    auto document = ProjectDocument::open(dir / "color-cab-tile.adi", true, device::withBuiltinDevices(), error);
     check(document != nullptr, "a project for Color Cab's tile");
     if (!document)
         return;
@@ -5825,11 +5825,34 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
+#if ADI_WITH_PD
+    std::optional<ProjectDocument::SampleEditJob> pending;
+    root.devices.colorCabBuilding = [&](std::int64_t device) { return pending && pending->device == device; };
+    root.devices.resizeColorCab = [&](const DevicePanelData &target, std::size_t taps) {
+        pending = document->colorCabSizeJob(target.id, taps);
+        return true;
+    };
+    const auto finishBuild = [&] {
+        if (!pending)
+            return false;
+        auto job = std::move(*pending);
+        pending.reset();
+        const bool ok = document->applySampleEdit(ProjectDocument::captureSampleEdit(job), job);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+#endif
     root.devices.assignSample = [&](std::int64_t device, std::int32_t slot, const std::string &path) {
+#if ADI_WITH_PD
+        pending = document->sampleEditJob(device, slot, media::pathFromUtf8(path), 7);
+        return true;
+#else
         const bool ok = document->assignSample(device, slot, media::pathFromUtf8(path), 7);
         if (!ok)
             root.say(document->error());
         return ok;
+#endif
     };
     root.devices.clearSample = [&](std::int64_t device, std::int32_t slot) {
         const bool ok = document->clearSample(device, slot);
@@ -5863,9 +5886,51 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
 #if ADI_WITH_PD
     check(panels[0]->sample->drop(path), "a file dropped on the tile");
     refresh();
+    auto *size = panels[0]->colorCabSizeControl();
+    const auto *buildStatus = panels[0]->colorCabBuildStatus();
+    check(size && buildStatus, "SC-484: Color Cab has a Size chooser and a build status");
+    if (!size || !buildStatus) return;
+    check(size->getSelectedId() == 256 && size->getNumItems() == 5 &&
+              size->getItemText(0).contains(juce::String::fromUTF8("1× work")) &&
+              size->getItemText(4).contains(juce::String::fromUTF8("16× work")) &&
+              !panels[0]->title.getTooltip().containsIgnoreCase("latency"),
+          "SC-484: Color Cab shows the size and its relative convolution work");
+    check(buildStatus->isVisible() && buildStatus->getText().contains("Building new colour") &&
+              !size->isEnabled() && panels[0]->sample->state() == SampleTile::State::Empty,
+          "SC-484: a pending sample build is shown before any slot or journal change");
+    check(root.command(AppCommands::ToggleDeviceView) && !root.devices.isVisible() &&
+              root.command(AppCommands::ToggleDeviceView),
+          "SC-484: Device View can close and reopen during a build");
+    refresh();
+    size = panels[0]->colorCabSizeControl();
+    buildStatus = panels[0]->colorCabBuildStatus();
+    check(size && buildStatus && buildStatus->isVisible() && !size->isEnabled(),
+          "SC-484: reopening Device View still shows the pending build");
+    if (!size || !buildStatus) return;
+    check(finishBuild(), "SC-484: the built sample commits on the document owner");
+    refresh();
     check(panels[0]->sample->state() == SampleTile::State::Loaded && panels[0]->sample->clear.isVisible() &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Assign device sample",
           "assigns Impulse in one step; the tile shows the sample and offers Clear");
+    check(!buildStatus->isVisible() && size->isEnabled() && root.command(AppCommands::Undo),
+          "SC-484: completion clears the sign and Undo is available for the new sample");
+    refresh();
+    check(panels[0]->sample->state() == SampleTile::State::Empty && root.command(AppCommands::Redo),
+          "SC-484: sample Undo restores the previous slot");
+    refresh();
+    const auto oldHead = OpJournal(document->store()).headSeq();
+    size->setSelectedId(512, juce::sendNotificationSync);
+    refresh();
+    check(buildStatus->isVisible() && !size->isEnabled() && size->getSelectedId() == 256 &&
+              panels[0]->sample->state() == SampleTile::State::Loaded && OpJournal(document->store()).headSeq() == oldHead,
+          "SC-484: the loaded colour and its Size stay current while a new Size is prepared");
+    check(finishBuild(), "SC-484: the prepared Size commits");
+    refresh();
+    check(!buildStatus->isVisible() && size->isEnabled() && size->getSelectedId() == 512 &&
+              root.command(AppCommands::Undo),
+          "SC-484: completion selects the new Size and Undo is available");
+    refresh();
+    check(size->getSelectedId() == 256, "SC-484: Undo sets Size from the restored slot");
     std::filesystem::rename(wav, dir / "cab-impulse-moved.wav");
     document->view().refresh(document->store());
     root.frame();
@@ -5888,7 +5953,11 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     panels[0]->sample->itemDropped(fromBrowser);
 #if ADI_WITH_PD
     // The file was moved away above: the drop reaches the engine, which says why it cannot read it.
-    check(!root.error().empty(), "a sample dropped from the browser reaches the assignment, its refusal said");
+    refresh();
+    check(buildStatus->isVisible() && !finishBuild() && !root.error().empty(),
+          "a sample dropped from the browser reaches the assignment, its refusal said");
+    refresh();
+    check(!buildStatus->isVisible(), "SC-484: a refused build clears the sign");
 #else
     check(!root.error().empty(), "a sample dropped from the browser reaches the assignment, and Pd off is said");
 #endif
@@ -19610,6 +19679,38 @@ void builtinPanelWithoutConfigure(AppCommands &commands, const std::filesystem::
     check(!builtinPanel.configuring && !builtinPanel.search.isVisible(),
           "SC-454: direct Configure does not open on the built-in");
 }
+void chordCombInfo(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "chord-comb-info.adi", true, {}, error);
+    check(document != nullptr, "SC-484: a project for Chord Comb's Info View");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "chord-comb-info");
+    DevicePanelData chord;
+    chord.id = 17;
+    chord.name = "Chord Comb";
+    chord.uid = "org.adidaw.builtin.chord-comb";
+    chord.format = "internal";
+    chord.available = true;
+    chord.declared = {{"2", "Mode"}, {"4", "Color"}};
+    chord.records = {{.id = "2", .name = "Mode", .text = "Saw", .shape = panel::Shape::Switch},
+                     {.id = "4", .name = "Color", .text = "0"}};
+    chord.resolved.entries = {{"2"}, {"4"}};
+
+    DevicePanelView card(root.devices, chord);
+    root.addAndMakeVisible(card);
+    card.setSize(170, 180);
+    check(card.controls.size() == 2, "SC-484: the card presents Mode and Color");
+    if (card.controls.size() != 2) return;
+    root.hover(&card.controls[0]->toggle);
+    check(root.infoText().contains("Saw rings on every harmonic") &&
+              root.infoText().contains("Square rings on the odd harmonics only"),
+          "SC-484: Info View describes both Mode choices on the switch itself");
+    root.hover(&card.controls[1]->slider);
+    check(root.infoText().contains("Darkens the ringing") &&
+              root.infoText().contains("higher harmonics fade sooner"),
+          "SC-484: Info View describes Color on the knob itself");
+}
 void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "plugin-touches.adi", true, test::knobsLoader("0000001f", "clap"), error);
@@ -32449,6 +32550,7 @@ int main(int argc, char **argv) {
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("builtinPanelWithoutConfigure", [&] { builtinPanelWithoutConfigure(commands, temp.path()); });
+    trace("chordCombInfo", [&] { chordCombInfo(commands, temp.path()); });
     trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });

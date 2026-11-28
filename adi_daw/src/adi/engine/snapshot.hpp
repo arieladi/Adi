@@ -219,6 +219,7 @@ struct SampleSlotNode {
     std::string name,uid,mediaHash,stateHash,problem,fileName;
     std::optional<std::int64_t> mediaId;
     bool empty=true,missing=false,hasDerivedState=false,filePresent=false;
+    std::size_t colorCabSize=0;
     friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
 };
 

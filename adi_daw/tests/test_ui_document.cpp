@@ -24,6 +24,7 @@
 #include "return_project_fixture.hpp"
 #include "scoped_environment.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/builtin_samples.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -1458,6 +1459,125 @@ void dropSampleInstrument(const std::filesystem::path &dir) {
     check(document->ops().redo().ok && document->synchronise() && deviceOnTrack() == instrument && hasSample() && play() > .05f,
           "SC-283: Redo restores the same loaded instrument and its sound");
     document->release();
+}
+
+void colorDeviceUndo(const std::filesystem::path &dir) {
+#if ADI_WITH_PD
+    using engine::ParamEventKind;
+    constexpr auto cabUid = "org.adidaw.builtin.color-cab";
+    constexpr auto combUid = "org.adidaw.builtin.chord-comb";
+    constexpr auto stateId = "1";
+    constexpr auto sampleRole = "sample:1";
+    constexpr std::int64_t audioTrack = 4;
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "color-undo.adi", true, device::withBuiltinDevices(), error);
+    check(document != nullptr, "SC-484: open a project with the built-in loader");
+    if (!document) return;
+    document->prepare(48000, 64);
+    const bool inserted = document->insertBuiltin(cabUid, audioTrack, {}) &&
+                          document->insertBuiltin(combUid, audioTrack, {});
+    check(inserted, "SC-484: insert Color Cab and Chord Comb through the browser operation");
+    if (!inserted) return;
+
+    const auto devices = document->parameterFeed().current();
+    const auto deviceId = [&](std::string_view uid) {
+        const auto at = std::find_if(devices->begin(), devices->end(), [uid](const auto &row) { return row.uid == uid; });
+        return at == devices->end() ? std::int64_t{0} : at->id;
+    };
+    const auto cabId = deviceId(cabUid);
+    const auto combId = deviceId(combUid);
+    auto *const cab = document->session().instanceFor(cabId);
+    auto *const comb = document->session().instanceFor(combId);
+    check(cab && comb, "SC-484: both cards have live built-in instances");
+    if (!cab || !comb) return;
+
+    const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+    const auto navigate = [&](bool undo) {
+        const auto result = undo ? document->ops().undo() : document->ops().redo();
+        if (!result.ok || !document->synchronise()) return false;
+        document->tick(static_cast<std::int64_t>(checks));
+        return true;
+    };
+    const auto combStateIs = [&](double expected) {
+        if (document->session().instanceFor(combId) != comb) return false;
+        const auto value = comb->getParam(stateId);
+        return value.hasReal && std::abs(value.real - expected) < .00001;
+    };
+    const auto oldStateHead = head();
+    const auto original = comb->getParam(stateId);
+    check(combStateIs(0) && document->parameterGesture(combId, stateId, ParamEventKind::Begin, original.normalized) &&
+              document->parameterGesture(combId, stateId, ParamEventKind::Value, 1.) &&
+              document->parameterGesture(combId, stateId, ParamEventKind::End, 1.) && combStateIs(7),
+          "SC-484: selecting Chord Comb's eighth State changes the live device");
+    check(navigate(true) && head() == oldStateHead, "SC-484: Chord Comb State is one Undo step");
+    check(combStateIs(0),
+          "SC-484: one Undo restores the original Chord Comb State on the same instance");
+    check(navigate(false) && combStateIs(7), "SC-484: Redo restores the eighth Chord Comb State");
+
+    const auto first = dir / "cab-low.wav";
+    const auto next = dir / "cab-high.wav";
+    const auto writeTone = [](const auto &path, double frequency) {
+        std::array<float, 1024> tone{};
+        for (std::size_t i = 0; i < tone.size(); ++i)
+            tone[i] = static_cast<float>(.5 * std::sin(2. * 3.141592653589793 * frequency * static_cast<double>(i) / 48000.));
+        audio::WavWriter writer(path, 48000, 1, audio::WavFormat::Float32);
+        writer.write(tone.data(), static_cast<std::uint32_t>(tone.size()));
+        writer.close();
+    };
+    writeTone(first, 750.);
+    writeTone(next, 3000.);
+    const auto sampleState = [&] {
+        return document->session().instanceFor(cabId) == cab ? cab->saveState(sampleRole) : std::vector<std::uint8_t>{};
+    };
+    const auto slotIs = [&](std::string_view name, std::size_t size) {
+        const auto view = document->view().current();
+        return std::any_of(view->sampleSlots.begin(), view->sampleSlots.end(), [&](const auto &slot) {
+            return slot && slot->deviceId == cabId && slot->slot == 1 && !slot->empty && !slot->missing &&
+                   slot->hasDerivedState && slot->fileName == name && slot->colorCabSize == size;
+        });
+    };
+    const auto kernelSizeIs = [](const auto &bytes, std::size_t size) {
+        const auto state = Payload::from_cbor(bytes, true, false);
+        const auto derived = state.find("derived");
+        return derived != state.end() && derived->contains("kernel") && derived->at("kernel").size() == size;
+    };
+    constexpr auto defaultSize = device::kColorCabDefaultSize;
+    constexpr std::size_t largerSize = 512;
+    const auto emptySample = sampleState();
+    check(document->assignSample(cabId, 1, first, 7) && slotIs("cab-low.wav", defaultSize),
+          "SC-484: dropping a WAV builds Color Cab's first colour at the default Size");
+    const auto firstSample = sampleState();
+    const auto firstSampleHead = head();
+    check(!emptySample.empty() && firstSample != emptySample && kernelSizeIs(firstSample, defaultSize),
+          "SC-484: the live instance receives the default-sized derived kernel");
+    const auto job = document->colorCabSizeJob(cabId, largerSize);
+    auto prepared = ui::ProjectDocument::captureSampleEdit(job);
+    check(document->applySampleEdit(std::move(prepared), job) && slotIs("cab-low.wav", largerSize),
+          "SC-484: choosing a larger Size rebuilds the same sample's colour");
+    const auto largerSample = sampleState();
+    check(kernelSizeIs(largerSample, largerSize), "SC-484: the live instance receives the larger kernel");
+    check(navigate(true) && head() == firstSampleHead && slotIs("cab-low.wav", defaultSize),
+          "SC-484: one Undo restores the earlier Size in the project");
+    check(sampleState() == firstSample,
+          "SC-484: one Undo restores the earlier Size and its live kernel");
+    check(navigate(false) && slotIs("cab-low.wav", largerSize) && sampleState() == largerSample,
+          "SC-484: Redo restores the larger Size and its live kernel");
+    const auto largerSampleHead = head();
+    check(document->assignSample(cabId, 1, next, 8) && slotIs("cab-high.wav", largerSize),
+          "SC-484: dropping a second WAV rebuilds its colour at the selected Size");
+    const auto nextSample = sampleState();
+    check(nextSample != largerSample && kernelSizeIs(nextSample, largerSize),
+          "SC-484: the two samples produce distinct derived states at the selected Size");
+    check(navigate(true) && head() == largerSampleHead && slotIs("cab-low.wav", largerSize),
+          "SC-484: replacing a sample, including its import, is one Undo step");
+    check(sampleState() == largerSample,
+          "SC-484: one Undo restores the earlier sample and its live colour");
+    check(navigate(false) && slotIs("cab-high.wav", largerSize) && sampleState() == nextSample,
+          "SC-484: Redo restores the replacement sample and its live colour");
+    document->release();
+#else
+    (void)dir;
+#endif
 }
 
 void hotSwapLiveState(const std::filesystem::path &dir) {
@@ -7030,6 +7150,7 @@ int main(int argc, char **argv) {
     deviceRangeEdits(temp.path() / "device-range.adi");
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
+    colorDeviceUndo(temp.path());
     devicePresetRoundTrip(temp.path());
     {
         test::TempDirectory hotSwapStateDir("ui_document", "hot-swap-state");

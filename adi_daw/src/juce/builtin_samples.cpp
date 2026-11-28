@@ -22,6 +22,12 @@ constexpr std::string_view oneShotUid="org.adidaw.builtin.oneshot";
 constexpr std::string_view hybridReverbUid="org.adidaw.builtin.hybrid-reverb";
 void offThread(){if(audio::onAudioThread)throw std::runtime_error("sample preparation belongs off the audio thread");}
 void validRate(double rate){if(!std::isfinite(rate)||rate<=0||rate>768000)throw std::runtime_error("invalid sample processing rate");}
+bool colorCabSizeValid(std::size_t size) noexcept {
+    return std::find(kColorCabSizes.begin(), kColorCabSizes.end(), size) != kColorCabSizes.end();
+}
+void requireColorCabSize(std::size_t size) {
+    if (!colorCabSizeValid(size)) throw std::runtime_error("Color Cab does not support this Size.");
+}
 bool hashValid(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
 float sourceSample(std::span<const std::uint8_t> bytes, std::size_t sample) noexcept {
     const auto offset=sample*4;
@@ -54,7 +60,9 @@ std::vector<float> atRate(const std::vector<float>& source,double from,double to
 std::unique_ptr<PdSampleBuffer> design(const std::vector<float>& mono,double sourceRate,double rate,const BuiltinSampleInfo& info) {
     auto raw=std::make_unique<PdSampleBuffer>();raw->id=info.slot;raw->channels=1;raw->sampleRate=rate;
     raw->interleaved=atRate(mono,sourceRate,rate);raw->frames=static_cast<std::int64_t>(raw->interleaved.size());raw->blake3=info.mediaHash;
-    return prepareColorCabSample(std::move(raw));
+    dsp::ColorCabOptions options;
+    options.size=info.colorCabSize;
+    return prepareColorCabSample(std::move(raw),options);
 }
 void captureDesign(Payload& value,const PdColorCabSample& sample) {
     value["derived"]={{"rate",sample.design.sampleRate},{"kernel",std::vector<double>(sample.design.kernel.taps.begin(),
@@ -87,6 +95,18 @@ BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
     }
     info.slot=static_cast<std::int32_t>(slot);info.empty=value.at("empty").get<bool>();
     if(!info.empty){info.mediaHash=value.at("mediaHash").get<std::string>();if(!hashValid(info.mediaHash))throw std::runtime_error("invalid sample media hash");}
+    if (info.uid == colorCabUid) {
+        info.colorCabSize = kColorCabDefaultSize;
+        if (const auto size = value.find("colorCabSize"); size != value.end()) {
+            if (!size->is_number_integer()) throw std::runtime_error("Invalid Color Cab Size.");
+            info.colorCabSize = size->get<std::size_t>();
+            requireColorCabSize(info.colorCabSize);
+        } else if (const auto derived = value.find("derived"); !info.empty && derived != value.end() && derived->is_object()) {
+            const auto taps = derived->find("kernel");
+            if (taps != derived->end() && taps->is_array() && colorCabSizeValid(taps->size()))
+                info.colorCabSize = taps->size();
+        }
+    }
     return info;
 }
 media::PeakResult buildBuiltinSamplePeaks(const Payload &value, std::stop_token stop) {
@@ -136,8 +156,13 @@ media::PeakResult buildBuiltinSamplePeaks(const Payload &value, std::stop_token 
     }
 }
 Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::filesystem::path& source,
-    const std::filesystem::path& playable,double rate) {
+    const std::filesystem::path& playable,double rate,std::size_t colorCabSize) {
     offThread();auto value=emptyBuiltinSample(uid,slot);auto info=inspectBuiltinSample(value);validRate(rate);
+    if (info.uid == colorCabUid) {
+        requireColorCabSize(colorCabSize);
+        info.colorCabSize = colorCabSize;
+        if (colorCabSize != kColorCabDefaultSize) value["colorCabSize"] = colorCabSize;
+    }
 #if ADI_WITH_PD
     audio::WavReader reader(playable);
     if(reader.frames()==0||reader.frames()>builtinSampleMaxFrames||reader.channels()==0||reader.channels()>64)
@@ -198,6 +223,23 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
     (void)source;(void)playable;(void)info;throw std::runtime_error("built-in sample backend is disabled");
 #endif
 }
+Payload resizeColorCabSample(Payload value, std::size_t size, double rate) {
+    offThread();validRate(rate);requireColorCabSize(size);
+    auto info=inspectBuiltinSample(value);
+    if (info.uid != colorCabUid) throw std::runtime_error("Size applies to Color Cab.");
+    info.colorCabSize=size;
+    value["colorCabSize"]=size;
+#if ADI_WITH_PD
+    if (!info.empty) {
+        auto prepared=design(sourceMono(value),value.at("sourceRate").get<double>(),rate,info);
+        if (!prepared) throw std::runtime_error("Color Cab could not rebuild the sample.");
+        captureDesign(value,dynamic_cast<const PdColorCabSample&>(*prepared));
+    }
+    return value;
+#else
+    throw std::runtime_error("built-in sample backend is disabled");
+#endif
+}
 std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double rate) {
     offThread();const auto info=inspectBuiltinSample(value);validRate(rate);
 #if ADI_WITH_PD
@@ -252,7 +294,9 @@ std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double
     }
     validateDesign(value);auto mono=sourceMono(value);const double sourceRate=value.at("sourceRate").get<double>();validRate(sourceRate);
     const auto& derived=value.at("derived");
-    if(derived.at("rate").get<double>()!=rate)return design(mono,sourceRate,rate,info);
+    if(derived.at("rate").get<double>()!=rate ||
+       (value.contains("colorCabSize") && derived.at("kernel").size()!=info.colorCabSize))
+        return design(mono,sourceRate,rate,info);
     auto result=std::make_unique<PdColorCabSample>();result->id=info.slot;result->blake3=info.mediaHash;result->sampleRate=rate;
     result->design.sampleRate=rate;result->design.target=derived.at("target").get<std::vector<double>>();
     const auto taps=derived.at("kernel").get<std::vector<double>>();result->design.kernel.size=taps.size();

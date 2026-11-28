@@ -19,6 +19,8 @@ namespace adi {
 namespace {
 constexpr std::string_view sampleInstrumentUid = "org.adidaw.builtin.oneshot";
 constexpr std::int32_t sampleInstrumentSlot = 1;
+constexpr std::string_view colorCabUid = "org.adidaw.builtin.color-cab";
+constexpr std::string_view sampleStateHint = "adi.builtin.sample.cbor.v1";
 std::string sampleDeviceUid(Store& store,std::int64_t device) {
     SQLite::Statement selected(store.db(),"SELECT p.format,p.uid FROM devices d JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE d.id=?");selected.bind(1,device);
     if(!selected.executeStep() || selected.getColumn(0).getString()!="internal")throw std::runtime_error("sample assignment needs a supported built-in device");
@@ -41,13 +43,40 @@ void requireEditableInstrumentTrack(SQLite::Database& db, std::int64_t track) {
     row.bind(1, track);
     if (row.executeStep()) throw std::runtime_error("A sample cannot replace an instrument on a frozen or locked track.");
 }
-void addState(PreparedSampleAssignment& prepared,const Payload& state) {
+struct SavedSampleState {
+    Payload value;
+    std::string hint;
+    std::size_t size;
+};
+std::optional<SavedSampleState> colorCabState(const Store& store,std::int64_t deviceId) {
+    SQLite::Statement row(store.db(),"SELECT state_hash,format_hint FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    row.bind(1,deviceId);
+    if(!row.executeStep())return std::nullopt;
+    const auto bytes=store.getStateBlob(row.getColumn(0).getString());
+    if(!bytes || bytes->empty() || bytes->size()>40u*1024u*1024u)throw std::runtime_error("Color Cab sample state is unavailable.");
+    const auto* begin=reinterpret_cast<const std::uint8_t*>(bytes->data());
+    auto value=Payload::from_cbor(begin,begin+bytes->size());
+    const auto info=device::inspectBuiltinSample(value);
+    if(info.uid!=colorCabUid || info.slot!=1)throw std::runtime_error("Color Cab sample state does not match the device.");
+    const auto hint=row.getColumn(1).getString();
+    return SavedSampleState{std::move(value),hint.empty()?std::string(sampleStateHint):hint,info.colorCabSize};
+}
+std::size_t colorCabSizeForReplacement(const Store& store,std::int64_t deviceId) {
+    try {
+        if (const auto saved = colorCabState(store, deviceId)) return saved->size;
+    } catch (const std::runtime_error&) {
+        // Clearing or replacing a damaged colour is also how a project recovers it.
+    } catch (const Payload::exception&) {
+    }
+    return device::kColorCabDefaultSize;
+}
+void addState(PreparedSampleAssignment& prepared,const Payload& state,std::string_view hint=sampleStateHint) {
     auto bytes=Payload::to_cbor(state);const auto hash=media::blake3Bytes(std::as_bytes(std::span(bytes)));
     if(!hash)throw std::runtime_error("sample state hashing failed");
     prepared.blobs.push_back({hash.hex,std::move(bytes)});
     OpRequest request;request.opType="device.loadState";request.label="Assign device sample";request.targetKind="device";request.targetId=prepared.deviceId;
     request.payload={{"dev",prepared.deviceId},{"role","sample:"+std::to_string(state.at("slot").get<std::int32_t>())},
-        {"hash",hash.hex},{"hint","adi.builtin.sample.cbor.v1"}};
+        {"hash",hash.hex},{"hint",hint}};
     prepared.requests.push_back(std::move(request));
 }
 PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t slot,const std::filesystem::path* file,
@@ -62,6 +91,8 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
         checkSlot(uid,slot);result.sourceFile=media::pathUtf8(store.path());
         result.options.expectHead.emplace(OpJournal(store).headSeq());
         Payload state=device::emptyBuiltinSample(uid,slot);
+        const auto size=uid==colorCabUid?colorCabSizeForReplacement(store,deviceId):device::kColorCabDefaultSize;
+        if(size!=device::kColorCabDefaultSize)state["colorCabSize"]=size;
         if(file) {
             RowIds ids(db);
             OpRequest import;const auto imported=media::prepareImport(store,*file,ids.next("media_files"),utc,import,cache);
@@ -70,7 +101,7 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
             if(!import.opType.empty())result.requests.push_back(std::move(import));
             const auto source=file->is_absolute()?*file:media::projectFolder(store)/ *file;
             const auto playable=cache?cache->playable(source):source;
-            try {state=device::captureBuiltinSample(uid,slot,source,playable,rate);}
+            try {state=device::captureBuiltinSample(uid,slot,source,playable,rate,size);}
             catch(...){if(cache)cache->release(playable);throw;}
             if(cache)cache->release(playable);
             // The import and decode must describe the SAME content even if a
@@ -100,6 +131,30 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
 PreparedSampleAssignment prepareSampleAssignment(Store& store,std::int64_t device,std::int32_t slot,
     const std::filesystem::path& path,double rate,std::int64_t utc,audio::DecodeCache* cache){return prepare(store,device,slot,&path,rate,utc,cache);}
 PreparedSampleAssignment prepareSampleClear(Store& store,std::int64_t device,std::int32_t slot){return prepare(store,device,slot,nullptr,48000,0,nullptr);}
+PreparedSampleAssignment prepareColorCabSize(Store& store,std::int64_t deviceId,std::size_t size,double rate) {
+    PreparedSampleAssignment result;result.deviceId=deviceId;
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("sample assignment belongs off the audio thread");
+        if(store.readOnly())throw std::runtime_error("project is read-only");
+        auto& db=store.db();std::optional<SQLite::Transaction> read;
+        if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
+        const auto uid=sampleDeviceUid(store,deviceId);
+        if(uid!=colorCabUid)throw std::runtime_error("Size applies to Color Cab.");
+        checkSlot(uid,1);
+        result.sourceFile=media::pathUtf8(store.path());
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        auto saved=colorCabState(store,deviceId);
+        auto state=saved?std::move(saved->value):device::emptyBuiltinSample(uid,1);
+        if((saved?saved->size:device::kColorCabDefaultSize)!=size) {
+            if(!saved)addState(result,state);
+            addState(result,device::resizeColorCabSample(std::move(state),size,rate),
+                     saved?std::string_view(saved->hint):sampleStateHint);
+            for(auto& request:result.requests)request.label="Change Color Cab Size";
+        }
+        result.ok=true;
+    } catch(const std::exception& e) {result.error=e.what();}
+    return result;
+}
 PreparedSampleAssignment prepareSampleInstrument(Store& store, std::int64_t track,
     const std::filesystem::path& file, double rate, std::int64_t utc,
     audio::DecodeCache* cache, std::int64_t retainedDeviceId) {

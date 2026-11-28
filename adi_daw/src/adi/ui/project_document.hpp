@@ -386,6 +386,21 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool loadSampleInstrument(std::int64_t track, const std::filesystem::path &file, std::int64_t nowUtc);
     bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
     bool clearSample(std::int64_t device, std::int32_t slot);
+    struct SampleEditJob {
+        std::filesystem::path project, file;
+        std::int64_t device = 0;
+        std::int32_t slot = 0;
+        std::int64_t importedUtc = 0;
+        double rate = 48000.0;
+        std::optional<std::int64_t> head;
+        std::optional<std::size_t> colorCabSize;
+    };
+    [[nodiscard]] SampleEditJob sampleEditJob(std::int64_t device, std::int32_t slot,
+                                             const std::filesystem::path &file, std::int64_t nowUtc) const;
+    [[nodiscard]] SampleEditJob colorCabSizeJob(std::int64_t device, std::size_t size) const;
+    // Worker only reads its own project connection. Applying the result stays on the owner thread.
+    [[nodiscard]] static PreparedSampleAssignment captureSampleEdit(const SampleEditJob &);
+    bool applySampleEdit(PreparedSampleAssignment, const SampleEditJob &);
     // The parameter glue's counters (for the tests: a sample's state reached the live device).
     const engine::ParamOps::Stats &parameterStats() const noexcept { return parameterOps_.stats(); }
     std::vector<engine::PendingParameterGesture> pendingParameterGestures() const {
@@ -447,6 +462,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    bool commitSampleEdit(PreparedSampleAssignment);
     enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
     struct TrackRenderWork;
     bool startTrackRender(TrackRenderKind, std::int64_t track);

@@ -35,7 +35,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     ParameterControl(DeviceChainStrip &, std::int64_t, const panel::Record &,
                      double defaultNormalized);
     ~ParameterControl() override;
-    void present(const panel::Record &, double defaultNormalized);
+    void present(const panel::Record &, double defaultNormalized, const char *authoredHelp = nullptr);
     void resized() override;
     void paint(juce::Graphics &) override;
     // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
@@ -67,6 +67,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    const char *authoredHelp_ = nullptr;
     std::unique_ptr<ValueEntry> valueEntry_;
     int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
@@ -125,6 +126,7 @@ class SampleTile final : public juce::Component,
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
     const juce::String &fileName() const noexcept { return fileName_; }
+    std::size_t colorCabSize() const noexcept;
     juce::Rectangle<int> fileNameBounds() const noexcept;
     juce::Rectangle<int> waveformBounds() const noexcept;
     juce::TextButton clear{"Clear"};
@@ -255,6 +257,8 @@ class DevicePanelView final : public juce::Component,
     std::string_view parameterPageUnavailableReason() const;
     // A built-in's [adi.sample] slot tile beside its controls, initially on the first slot declared.
     std::unique_ptr<SampleTile> sample;
+    juce::ComboBox *colorCabSizeControl() noexcept;
+    const juce::Label *colorCabBuildStatus() const noexcept;
     bool sampleSlotsRead_ = false;
     static constexpr int kTileWidth = 96;
     bool configuring = false;
@@ -304,6 +308,10 @@ class DevicePanelView final : public juce::Component,
     std::uint64_t activatorClick_ = 0;
     void updateTitleTooltip();
     bool refreshPlaybackProblem();
+    struct ColorCabControls;
+    std::unique_ptr<ColorCabControls> colorCab_;
+    void makeColorCabControls();
+    void refreshColorCabControls();
     bool playbackProblemPresented_ = false;
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
@@ -469,6 +477,9 @@ class DeviceChainStrip final : public juce::Component,
     // each one undo step, its refusal said in the Status Bar.
     std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
     std::function<bool(std::int64_t device, std::int32_t slot)> clearSample;
+    // SC-484: a non-automatable design choice and the owner's worker status.
+    std::function<bool(const DevicePanelData &, std::size_t taps)> resizeColorCab;
+    std::function<bool(std::int64_t device)> colorCabBuilding;
     std::function<void(const std::filesystem::path &)> revealSample;
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 

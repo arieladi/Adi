@@ -2480,30 +2480,57 @@ bool ProjectDocument::loadSampleInstrument(std::int64_t track, const std::filesy
 bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
                                    std::int64_t nowUtc) {
     // The decode cache takes every format the browser lists (AIFF, FLAC, MP3...), not WAV alone.
-    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc, &audio::defaultDecodeCache());
-    if (!prepared.ok) {
-        error_ = prepared.error.empty() ? "The sample could not be prepared." : prepared.error;
-        return false;
-    }
-    const auto states = loadStates(prepared);
-    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {
-        return commitSampleAssignment(s, p, actor);
-    });
-    error_ = result.error;
-    if (!result.ok)
-        return false;
-    for (const auto &state : states)
-        parameterOps_.appliedState(*store_, state, captureNowMs());
-    if (!synchronise())
-        return false;
-    feed_.publish(session_, realisedGeneration_);
-    return true;
+    return commitSampleEdit(prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc,
+                                                    &audio::defaultDecodeCache()));
 }
 bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
-    auto prepared = prepareSampleClear(*store_, device, slot);
-    if (!prepared.ok) {
-        error_ = prepared.error.empty() ? "The slot could not be cleared." : prepared.error;
+    return commitSampleEdit(prepareSampleClear(*store_, device, slot));
+}
+ProjectDocument::SampleEditJob ProjectDocument::sampleEditJob(std::int64_t device, std::int32_t slot,
+                                                              const std::filesystem::path &file, std::int64_t nowUtc) const {
+    return {store_->path(), file, device, slot, nowUtc, engineRate_, OpJournal(*store_).headSeq(), {}};
+}
+ProjectDocument::SampleEditJob ProjectDocument::colorCabSizeJob(std::int64_t device, std::size_t size) const {
+    auto job = sampleEditJob(device, 1, {}, 0);
+    job.colorCabSize = size;
+    return job;
+}
+PreparedSampleAssignment ProjectDocument::captureSampleEdit(const SampleEditJob &job) {
+    PreparedSampleAssignment refused;
+    StoreError error{};
+    auto store = Store::open(job.project, error, false);
+    if (!store) {
+        refused.error = "The project could not be read for the sample edit: " + std::string(toString(error));
+        return refused;
+    }
+    if (OpJournal(*store).headSeq() != job.head) {
+        refused.error = "The project changed before the sample edit could start.";
+        return refused;
+    }
+    auto prepared = job.colorCabSize ? prepareColorCabSize(*store, job.device, *job.colorCabSize, job.rate)
+                                     : prepareSampleAssignment(*store, job.device, job.slot, job.file, job.rate,
+                                                               job.importedUtc, &audio::defaultDecodeCache());
+    if (prepared.ok && (!prepared.options.expectHead || *prepared.options.expectHead != job.head)) {
+        refused.error = "The project changed while the sample edit was starting.";
+        return refused;
+    }
+    return prepared;
+}
+bool ProjectDocument::applySampleEdit(PreparedSampleAssignment prepared, const SampleEditJob &job) {
+    if (store_->path() != job.project || engineRate_ != job.rate || OpJournal(*store_).headSeq() != job.head) {
+        error_ = "The project or its audio rate changed while the sample edit was prepared.";
         return false;
+    }
+    return commitSampleEdit(std::move(prepared));
+}
+bool ProjectDocument::commitSampleEdit(PreparedSampleAssignment prepared) {
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The sample edit could not be prepared." : prepared.error;
+        return false;
+    }
+    if (prepared.requests.empty()) {
+        error_.clear();
+        return true;
     }
     const auto states = loadStates(prepared);
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {

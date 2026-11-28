@@ -7,6 +7,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/media/media_ops.hpp"
+#include "juce/builtin_samples.hpp"
 #include "juce/pd_declarations.hpp"
 #include "mix_eq_host.hpp"
 #include "adi/mix/eq/Preview.hpp"
@@ -20,6 +21,18 @@ constexpr int kLoadIssueHeight = 48;
 constexpr const char *kPluginUnavailable = "Plug-in unavailable";
 constexpr const char *kPlaybackProblemDescription =
     "This device has a playback problem. See Playback Problems in the Status Bar.";
+bool isColorCab(const DevicePanelData &data) noexcept {
+    return data.format == "internal" && data.uid == "org.adidaw.builtin.color-cab";
+}
+const char *deviceParameterHelp(const DevicePanelData &device, const panel::Record &parameter) noexcept {
+    if (device.format == "internal" && device.uid == "org.adidaw.builtin.chord-comb") {
+        if (parameter.id == "4")
+            return "Darkens the ringing sound and makes its higher harmonics fade sooner.";
+        if (parameter.id == "2")
+            return "Saw rings on every harmonic. Square rings on the odd harmonics only.";
+    }
+    return nullptr;
+}
 }
 ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
                                    double defaultNormalized)
@@ -131,16 +144,30 @@ bool ParameterControl::setOnce(double normalized) {
     const bool applied = gesture(engine::ParamEventKind::Value, normalized);
     return alive && gesture(engine::ParamEventKind::End, normalized) && applied;
 }
-void ParameterControl::present(const panel::Record &r, double defaultNormalized) {
+void ParameterControl::present(const panel::Record &r, double defaultNormalized, const char *authoredHelp) {
     record = &r;
     defaultValue = std::isfinite(defaultNormalized) ? std::clamp(defaultNormalized, 0.0, 1.0) : 0.0;
     setEnabled(!r.missing);
     const juce::String label = r.name + (r.missing ? " (missing)" : "");
-    if (name.getText() != label) {
+    const bool labelChanged = name.getText() != label;
+    if (labelChanged) {
         name.setText(label, juce::dontSendNotification);
         setTitle(label);
-        setTooltip(r.missing ? "This parameter is missing from the plug-in."
-                             : "A parameter of the plug-in, in its own words.");
+    }
+    if (labelChanged || authoredHelp_ != authoredHelp) {
+        const auto *help = r.missing ? "This parameter is missing from the plug-in." : authoredHelp;
+        setTooltip(help ? help : "A parameter of the plug-in, in its own words.");
+        // The Info View takes the nearest tooltip client, including the actual control.
+        if (authoredHelp || authoredHelp_) {
+            const auto update = [&](auto &control) {
+                control.setTitle(authoredHelp ? label : juce::String());
+                control.setTooltip(authoredHelp ? help : "");
+            };
+            update(slider);
+            update(toggle);
+            update(menu);
+        }
+        authoredHelp_ = authoredHelp;
     }
     const juce::String text = r.text.empty() ? juce::String(r.playing, 3) : juce::String(r.text);
     if (value.getText() != text)
@@ -406,6 +433,9 @@ void SampleTile::refresh() {
         peaks_ = std::move(peaks);
         repaint(waveformBounds());
     }
+}
+std::size_t SampleTile::colorCabSize() const noexcept {
+    return presented_ && presented_->colorCabSize ? presented_->colorCabSize : device::kColorCabDefaultSize;
 }
 void SampleTile::resized() {
     slotChooser.setBounds(3, 2, getWidth() - 6, 17);
@@ -1056,6 +1086,64 @@ void DevicePanelView::finishEqEdit(bool cancel) {
     }
 }
 
+struct DevicePanelView::ColorCabControls {
+    juce::ComboBox size;
+    juce::Label status;
+};
+
+juce::ComboBox *DevicePanelView::colorCabSizeControl() noexcept {
+    return colorCab_ ? &colorCab_->size : nullptr;
+}
+const juce::Label *DevicePanelView::colorCabBuildStatus() const noexcept {
+    return colorCab_ ? &colorCab_->status : nullptr;
+}
+void DevicePanelView::makeColorCabControls() {
+    colorCab_ = std::make_unique<ColorCabControls>();
+    auto &size = colorCab_->size;
+    size.setTitle("Size");
+    size.setTooltip("A longer filter follows the sample's colour more closely. "
+                    "Each choice shows its convolution work relative to 64 taps.");
+    const auto separator = juce::String::fromUTF8(" · ");
+    const auto work = juce::String::fromUTF8("× work");
+    for (const auto taps : device::kColorCabSizes)
+        size.addItem("Size " + juce::String(static_cast<int>(taps)) + separator +
+                         juce::String(static_cast<int>(taps / device::kColorCabSizes.front())) + work,
+                     static_cast<int>(taps));
+    addAndMakeVisible(size);
+    size.onChange = [this] {
+        const auto safe = SafePointer<DevicePanelView>(this);
+        const auto taps = static_cast<std::size_t>(colorCab_->size.getSelectedId());
+        if (taps != 0 && sample && taps != sample->colorCabSize() &&
+            data && validTarget() && strip.validExpected(*data) && strip.resizeColorCab)
+            strip.resizeColorCab(*data, taps);
+        if (safe) safe->refreshColorCabControls();
+    };
+    auto &status = colorCab_->status;
+    status.setText(juce::String::fromUTF8("Building new colour…"), juce::dontSendNotification);
+    status.setTitle("Building new colour");
+    status.setFont(look::font(11.f));
+    status.setColour(juce::Label::textColourId, look::text);
+    status.setInterceptsMouseClicks(false, false);
+    status.setJustificationType(juce::Justification::centredLeft);
+    addChildComponent(status);
+    refreshColorCabControls();
+}
+void DevicePanelView::refreshColorCabControls() {
+    if (!colorCab_ || !sample)
+        return;
+    const bool building = strip.colorCabBuilding && strip.colorCabBuilding(id);
+    auto &size = colorCab_->size;
+    const auto taps = static_cast<int>(sample->colorCabSize());
+    if (size.getSelectedId() != taps)
+        size.setSelectedId(taps, juce::dontSendNotification);
+    const bool editable = data && data->available && static_cast<bool>(strip.resizeColorCab) && !building;
+    if (size.isEnabled() != editable)
+        size.setEnabled(editable);
+    const bool statusVisible = building && !strip.folded(id);
+    if (colorCab_->status.isVisible() != statusVisible)
+        colorCab_->status.setVisible(statusVisible);
+}
+
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, bool mixCard)
     : id(d.id), mixCard_(mixCard), strip(s) {
     // The title is the bar's text, not a box (Live's device title).
@@ -1544,9 +1632,11 @@ void DevicePanelView::updateTitleTooltip() {
     if (!data)
         return;
     const auto &d = *data;
-    auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
-                      (d.available ? "Latency: " + juce::String(d.latency) + " samples."
-                                   : juce::String("This device is unavailable."));
+    auto hint = juce::String("Double-click to fold; right-click for device commands.");
+    if (!d.available)
+        hint += "\nThis device is unavailable.";
+    else if (!isColorCab(d))
+        hint += "\nLatency: " + juce::String(d.latency) + " samples.";
     if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
     if (mixCard_ && eqPresentation(d))
         hint += "\nSelect a band, then drag its frequency or gain handle.";
@@ -1599,7 +1689,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         std::vector<SampleTile::DeclaredSlot> slots;
         for (const auto &declared : device::parsePdDeclarations(builtinDeclarations(d.uid)).samples)
             slots.push_back({declared.id, juce::String(declared.name)});
-        if (slots.empty() && d.uid == "org.adidaw.builtin.color-cab")
+        if (slots.empty() && isColorCab(d))
             slots.push_back({1, "Impulse"});
         if (!slots.empty()) {
             sample = std::make_unique<SampleTile>(strip, id, std::move(slots));
@@ -1608,6 +1698,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
                 if (data && sample) requestHotSwap(*data, sample->slot, menuEpoch_);
             };
             addAndMakeVisible(*sample);
+            if (isColorCab(d)) makeColorCabControls();
             resized();
         }
     }
@@ -1672,7 +1763,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
     for (auto &c : controls)
         for (const auto &r : d.parameters())
             if (c->parameter == r.id) {
-                c->present(r, defaultOf(r.id));
+                c->present(r, defaultOf(r.id), deviceParameterHelp(d, r));
                 const auto declared = std::find_if(d.declarations().begin(), d.declarations().end(), [&](const auto &p) {
                     return p.id == r.id;
                 });
@@ -1761,7 +1852,15 @@ void DevicePanelView::resized() {
         sample->setVisible(!isFolded);
         sample->hotSwapButton.setVisible(hotSwapButton.isVisible());
         const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
-        sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6, std::min(84, std::max(0, getHeight() - tileTop - 4)));
+        const int sizeArea = colorCab_ ? 38 : 0;
+        sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6,
+                          std::min(84, std::max(0, getHeight() - tileTop - sizeArea - 4)));
+        if (colorCab_) {
+            colorCab_->size.setVisible(!isFolded);
+            colorCab_->size.setBounds(6, sample->getBottom() + 4, std::max(0, getWidth() - 12), 17);
+            colorCab_->status.setBounds(6, colorCab_->size.getBottom() + 1, std::max(0, getWidth() - 12), 16);
+            refreshColorCabControls();
+        }
     }
     search.setVisible(!isFolded && configuring);
     parameterList.setVisible(search.isVisible() && data && data->plugin && !mixCard_);
@@ -3034,7 +3133,10 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, boo
 }
 void DeviceChainStrip::showSamples() {
     for (auto &p : panels)
-        if (p->sample) p->sample->refresh();
+        if (p->sample) {
+            p->sample->refresh();
+            p->refreshColorCabControls();
+        }
 }
 void DeviceChainStrip::setPlaybackProblemIds(std::vector<std::int64_t> ids) {
     if (playbackProblemIds_ == ids)

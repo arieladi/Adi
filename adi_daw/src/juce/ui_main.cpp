@@ -1573,6 +1573,8 @@ class AdiApplication final : public juce::JUCEApplication,
             delete presetPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        if (colorCabEdit_)
+            colorCabEdit_->result.wait();
         // A take still recording or landing goes into its project before the project closes (MX-09).
         const bool takeSettled = !document_ || document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
@@ -2074,7 +2076,10 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
                                  std::chrono::system_clock::now().time_since_epoch())
                                  .count();
-            const bool ok = document_->assignSample(device, slot, pathFromUtf8(path), now);
+            const auto file = pathFromUtf8(path);
+            if (isColorCabDevice(device))
+                return startColorCabEdit(device, [&] { return document_->sampleEditJob(device, slot, file, now); });
+            const bool ok = document_->assignSample(device, slot, file, now);
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -2084,6 +2089,14 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
+        };
+        root->devices.resizeColorCab = [this](const DevicePanelData &target, std::size_t taps) {
+            if (!document_->deviceTargetCurrent(target.id, target.runtime, target.instance))
+                return false;
+            return startColorCabEdit(target.id, [&] { return document_->colorCabSizeJob(target.id, taps); });
+        };
+        root->devices.colorCabBuilding = [this](std::int64_t device) {
+            return colorCabEdit_ && colorCabEdit_->device == device && colorCabEditCurrent(*colorCabEdit_);
         };
         root->loadSampleInstrument = [this](std::int64_t track, const std::filesystem::path &samplePath,
                                             std::string &why) {
@@ -2783,6 +2796,74 @@ class AdiApplication final : public juce::JUCEApplication,
         return {};
     }
 
+    bool isColorCabDevice(std::int64_t id) const {
+        const auto *entry = document_ ? document_->session().entryFor(id) : nullptr;
+        return entry && entry->resolvedFormat == "internal" && entry->resolvedUid == "org.adidaw.builtin.color-cab";
+    }
+
+    struct ColorCabEdit {
+        ProjectDocument::SampleEditJob job;
+        std::future<PreparedSampleAssignment> result;
+        engine::DeviceRuntimeToken runtime;
+        std::uint64_t generation = 0;
+        std::int64_t device = 0;
+        bool hotSwap = false;
+    };
+
+    bool colorCabEditCurrent(const ColorCabEdit &edit) const {
+        if (!document_ || edit.generation != installGeneration_)
+            return false;
+        const auto *entry = document_->session().entryFor(edit.device);
+        const auto expected = edit.runtime.claimIdentity();
+        return entry && !entry->retired && !expected.expired() &&
+               !expected.owner_before(entry->runtimeIdentity) && !entry->runtimeIdentity.owner_before(expected);
+    }
+
+    bool startColorCabEdit(std::int64_t id, const auto &makeJob, bool hotSwap = false) {
+        if (!root_ || !document_) return false;
+        if (colorCabEdit_) {
+            root_->say("A Color Cab colour is already being built.");
+            return false;
+        }
+        try {
+            auto job = makeJob();
+            auto result = std::async(std::launch::async, [job] { return ProjectDocument::captureSampleEdit(job); });
+            colorCabEdit_.emplace(ColorCabEdit{std::move(job), std::move(result),
+                document_->session().deviceRuntimeToken(id), installGeneration_, id, hotSwap});
+            return true;
+        } catch (const std::exception &error) {
+            root_->say(error.what());
+            return false;
+        }
+    }
+
+    void pollColorCabEdit() {
+        if (!colorCabEdit_ || colorCabEdit_->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        auto edit = std::move(*colorCabEdit_);
+        colorCabEdit_.reset();
+        if (!root_ || !document_ || edit.generation != installGeneration_)
+            return;
+        if (!colorCabEditCurrent(edit)) {
+            root_->say("The Color Cab changed while its colour was being built.");
+            return;
+        }
+        try {
+            if (!document_->applySampleEdit(edit.result.get(), edit.job)) {
+                root_->say(document_->error());
+                return;
+            }
+            if (edit.hotSwap && hotSwap_ && hotSwap_->expected.id == edit.device &&
+                edit.runtime.sameInstance(hotSwap_->expected.runtime)) {
+                leaveHotSwap();
+                root_->devices.chose(edit.device);
+            }
+            root_->say({});
+        } catch (const std::exception &error) {
+            root_->say(error.what());
+        }
+    }
+
     void leaveHotSwap() {
         hotSwap_.reset();
         if (root_)
@@ -2840,6 +2921,11 @@ class AdiApplication final : public juce::JUCEApplication,
                 break;
             }
             case Kind::Sample:
+                if (hotSwap_->slot && isColorCabDevice(target.id)) {
+                    const auto slot = *hotSwap_->slot;
+                    const auto now = juce::Time::currentTimeMillis() * 1000;
+                    return startColorCabEdit(target.id, [&] { return document_->sampleEditJob(target.id, slot, choice.path, now); }, true);
+                }
                 if (hotSwap_->slot && document_->hotSwapSample(target, *hotSwap_->slot, choice.path,
                                                                juce::Time::currentTimeMillis() * 1000))
                     device = target.id;
@@ -3761,6 +3847,7 @@ class AdiApplication final : public juce::JUCEApplication,
         reloadStoredHistory();
         if (std::exchange(quitAfterHistoryReload_, false))
             systemRequestedQuit();
+        pollColorCabEdit();
         if (!document_) {
             pollCollectAndExport();
             return;
@@ -3978,6 +4065,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::thread import_;
     std::shared_ptr<std::atomic<bool>> importing_;
     std::stop_source importStop_;
+    std::optional<ColorCabEdit> colorCabEdit_;
     // Moves with every install, so a worker's result finds the document it was for, or nothing.
     std::uint64_t installGeneration_ = 0;
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came

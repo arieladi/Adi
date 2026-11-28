@@ -754,6 +754,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 const auto value=Payload::from_cbor(first,first+bytes->size());const auto info=device::inspectBuiltinSample(value);
                 if(info.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
                 node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
+                node.colorCabSize=info.colorCabSize;
             }
             if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
             node.mediaId.reset();node.fileName.clear();node.missing=false;node.filePresent=false;
