@@ -986,6 +986,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
     auto project = timing.spec.launchAudio;
     std::shared_ptr<const LaunchAudioProject> beforeClock;
     std::int64_t clockSample = 0;
+    const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!project && clipProject_ && storedLaunchIncarnation_ != 0) {
         const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
         const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
@@ -1005,12 +1006,19 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             warmWarpClips = sceneTempoBanks_->warmWarpClips;
             budget -= beforeClock->residentBytes();
         }
+        timing.protectCompatiblePinnedPages = !beforeClock && prior && prior->launchAudio && prior->launchSource &&
+            prior->launchAudio->incarnation() == storedLaunchIncarnation_ &&
+            prior->sampleRate == timing.sampleRate && prior->spec.channels == timing.spec.channels &&
+            prior->spec.maxFrames == timing.spec.maxFrames &&
+            sameStoredLaunchSources(*prior->launchSource,*clipProject_);
         if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
             storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events ||
             storedLaunchPreparedBpm_ != preparedBpm || !std::ranges::equal(storedLaunchWarmWarpClips_,warmWarpClips)) {
             auto diagnostics = model.slotProblems;
+            const auto* priorPinnedPages = timing.protectCompatiblePinnedPages
+                ? prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get() : nullptr;
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
-                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips);
+                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips,priorPinnedPages);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {
@@ -1051,18 +1059,13 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             tracks.push_back(id);
     }
     std::uint64_t gainRevision = 0;
-    const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (prior && prior->launchAudio && prior->launchAudio->incarnation() == project->incarnation()) {
         const auto& priorProject = prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max());
         // A retimed generation gets fresh page and tail identities. Carry
         // the gain baseline for an identical bank, its outgoing clock bank,
-        // or a clock-only reprojection of the same stored audio and settings.
+        // or a reprojection of the same stored audio, settings and driver format.
         // The gain driver clears the multiplier when the launch run changes.
-        if (project == priorProject || beforeClock == priorProject ||
-            (!beforeClock && timing.launchSource && prior->launchSource &&
-             timing.sampleRate == prior->sampleRate && timing.spec.channels == prior->spec.channels &&
-             timing.spec.maxFrames == prior->spec.maxFrames && timing.tempo.events != prior->tempo.events &&
-             sameStoredLaunchSources(*timing.launchSource, *prior->launchSource)))
+        if (project == priorProject || beforeClock == priorProject || timing.protectCompatiblePinnedPages)
             gainRevision = prior->launchAudio->gainRevision();
     }
     timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,
@@ -1563,8 +1566,8 @@ bool Session::rebuild() {
     } else {
         primeWhilePlaying(*nextClips, *timing);
     }
-    timing->protectActiveWorkerWarp = primeExternalAt_.has_value() && !timing->preparedScene;
-    if (timing->protectActiveWorkerWarp) {
+    timing->protectExternalSessionAudio = primeExternalAt_.has_value() && !timing->preparedScene;
+    if (timing->protectExternalSessionAudio) {
         const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
         if (prior && prior->launchAudio) {
             DriverClock clock;
@@ -1573,10 +1576,13 @@ bool Session::rebuild() {
             if (readDriverClock(clock) && clock.playing && readLaunchStatus(tracks,status) &&
                 status.transportPlaying && status.incarnation == prior->launchAudio->incarnation()) {
                 for (const auto& track : std::span(tracks).first(status.trackCount)) {
-                    if (!prior->launchAudio->dropsWorkerWarp(timing->launchAudio.get(),clock.sample,
-                                                            track.track,track.clip)) continue;
-                    error_ = "Session clips#" + std::to_string(track.clip) +
-                             ": external tempo has no source for the running worker-stretched slot";
+                    const auto dropsWarp = prior->launchAudio->dropsWorkerWarp(timing->launchAudio.get(),clock.sample,
+                                                                             track.track,track.clip);
+                    if (!dropsWarp && !prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
+                                                                          track.track,track.clip)) continue;
+                    error_ = "Session clips#" + std::to_string(track.clip) + (dropsWarp
+                        ? ": external tempo has no source for the running worker-stretched slot"
+                        : ": external tempo needs the active unwarped page bank");
                     return false;
                 }
             }
@@ -3439,10 +3445,14 @@ bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const 
     if (!session->transport_.playing()) return true;
     const auto* previous = dynamic_cast<const TimingView*>(before);
     if (!previous || previous->session != session) return true;
-    // A launch can settle after the owner's last status observation.
-    if (protectActiveWorkerWarp && previous->launchAudio && session->launchAudioDriver_ &&
-        session->launchAudioDriver_->dropsRunningWorkerWarp(*previous->launchAudio,launchAudio.get(),
-                                                           session->transport_.position()))
+    // Compare with the graph that actually played. The owner's prior publication
+    // can have been superseded before its page reader ever reached the driver.
+    const bool protectPinned = (protectExternalSessionAudio || protectCompatiblePinnedPages) &&
+        previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
+        previous->spec.maxFrames == spec.maxFrames;
+    if ((protectExternalSessionAudio || protectPinned) && previous->launchAudio && session->launchAudioDriver_ &&
+        session->launchAudioDriver_->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
+            session->transport_.position(),protectExternalSessionAudio,protectPinned))
         return false;
     if (!delayedSourceReadiness || !previous->authoredPerformanceTempo ||
         previous->tempoRevision == tempoRevision || previous->spec.sampleRate != spec.sampleRate ||

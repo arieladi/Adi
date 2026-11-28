@@ -179,17 +179,39 @@ bool LaunchAudioRuntime::dropsWorkerWarp(const LaunchAudioRuntime* after, std::i
         (!after || !after->hasTrack(track) || !after->mediaAt(sample)->clip(clip));
 }
 
-bool LaunchAudioDriver::dropsRunningWorkerWarp(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
-                                               std::int64_t sample) const noexcept {
+bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::int64_t sample,
+                                         std::int64_t track, std::int64_t clip) const noexcept {
+    if (!hasTrack(track)) return false;
+    const auto& bank = *mediaAt(sample);
+    const auto* source = bank.clip(clip);
+    if (!source || !source->pageReader() || source->latencySamples() != 0) return false;
+    const auto slots = bank.view().slots;
+    if (slots.empty()) return false;
+    const auto* end = slots.data() + slots.size();
+    auto* slot = std::lower_bound(slots.data(),end,track,
+        [](const LaunchSlot& item,std::int64_t id) { return item.track < id; });
+    for (; slot != end && slot->track == track; ++slot) {
+        if (slot->clip != clip || slot->physicalFrames <= 3 * ClipPlayback::readAheadFrames(source->rate()))
+            continue;
+        const auto* next = after && after->hasTrack(track) ? after->mediaAt(sample)->clip(clip) : nullptr;
+        return !next || next->pageReader() != source->pageReader();
+    }
+    return false;
+}
+
+bool LaunchAudioDriver::dropsRunningProtectedAudio(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
+                                               std::int64_t sample, bool workerWarp, bool pinnedPages) const noexcept {
     struct Check {
         const LaunchAudioRuntime& before;
         const LaunchAudioRuntime* after;
         std::int64_t sample;
+        bool workerWarp, pinnedPages;
     };
-    const Check check{before,after,sample};
+    const Check check{before,after,sample,workerWarp,pinnedPages};
     return launcher_.anyRunningClip(&check,[](const void* opaque, std::int64_t track, std::int64_t clip) noexcept {
         const auto& query = *static_cast<const Check*>(opaque);
-        return query.before.dropsWorkerWarp(query.after,query.sample,track,clip);
+        return (query.workerWarp && query.before.dropsWorkerWarp(query.after,query.sample,track,clip)) ||
+            (query.pinnedPages && query.before.dropsPinnedPages(query.after,query.sample,track,clip));
     });
 }
 
@@ -387,7 +409,8 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
     if (!edge.oldFade || offset < 0 || offset >= frames) return;
     const auto* pcm = media.clip(edge.oldClip);
     if (!pcm) return;
-    const auto anchor = pcm->frameForTick(edge.oldSourceAnchorTick, media.bpm());
+    const auto anchor = edge.oldPhysicalSourceAnchorFrame >= 0 ? edge.oldPhysicalSourceAnchorFrame
+        : pcm->frameForTick(edge.oldSourceAnchorTick, media.bpm());
     const auto source = anchor + std::min(edge.oldFramesSinceSourceAnchor,
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, anchor));
     LaunchAudioDriver::Tail tail{edge.track, edge.oldClip, source, 0,
@@ -411,7 +434,8 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     if (ranges.size >= ranges.items.size()) return;
     if (!ranges.midi.empty()) ranges.midi.data()[ranges.size] = {section, block, base};
     const auto* pcm = media.clip(section.clip);
-    const auto anchor = pcm ? pcm->frameForTick(section.sourceAnchorTick, media.bpm()) : 0;
+    const auto anchor = section.physicalSourceAnchorFrame >= 0 ? section.physicalSourceAnchorFrame
+        : (pcm ? pcm->frameForTick(section.sourceAnchorTick, media.bpm()) : 0);
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;

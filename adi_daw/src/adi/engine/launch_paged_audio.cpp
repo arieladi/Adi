@@ -22,6 +22,10 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
         if (source.clip <= 0 || source.sourceTrack <= 0 || source.firstFrame < 0 || source.endFrame < 0 ||
             source.loopBeginFrame < 0 || source.loopEndFrame < source.loopBeginFrame)
             throw std::invalid_argument("invalid Session paged source");
+        const auto window = source.endFrame - source.firstFrame;
+        if (source.warmPhysicalWindow && (window <= 0 || window > 3 * ClipPlayback::readAheadFrames(sampleRate) ||
+            source.loopEndFrame != source.loopBeginFrame))
+            throw std::invalid_argument("invalid unwarped Session page window");
         const auto nodes = pages_.sourcesFor(source.sourceTrack);
         if (nodes.size() == 1) {
             const auto latency = pages_.warpLatencyFor(source.sourceTrack);
@@ -52,8 +56,13 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         first.play();
         loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
         loop.play();
-        if (pages_.primeTrackAt(source.sourceTrack, first, loop, timeout)) return false;
-        problems_.push_back("Session clips#" + std::to_string(source.clip) + ": page preparation did not fill the start and loop windows");
+        const auto ready = source.warmPhysicalWindow
+            ? pages_.primeTrackWindow(source.sourceTrack,first,static_cast<std::int32_t>(source.endFrame - source.firstFrame),timeout)
+            : pages_.primeTrackAt(source.sourceTrack,first,loop,timeout);
+        if (ready) return false;
+        problems_.push_back("Session clips#" + std::to_string(source.clip) + (source.warmPhysicalWindow
+            ? ": page preparation did not fill the physical source window"
+            : ": page preparation did not fill the start and loop windows"));
         return true;
     });
     return !sources_.empty();

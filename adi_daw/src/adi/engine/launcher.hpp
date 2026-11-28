@@ -21,6 +21,8 @@ struct LaunchSlot {
     std::optional<LaunchQuantization> quantization; // absent means Global
     float velocityAmount = 0.0f;
     bool legato = false, fade = false, hasStop = true;
+    // An absolute one-shot keeps its native extent when the project clock changes.
+    std::int64_t physicalStartFrame = -1, physicalFrames = 0;
 };
 
 struct LaunchView {
@@ -76,6 +78,7 @@ struct LaunchSection {
     bool regionIsLiveEdit = false;
     // Musical anchor of the current run or lap, independent of callback size.
     std::int64_t clockAnchorTick = 0, clockAnchorSourceTick = 0;
+    std::int64_t physicalSourceAnchorFrame = -1;
 };
 
 struct LaunchTransition {
@@ -91,6 +94,7 @@ struct LaunchTransition {
     float oldVelocity = 1.0f;
     bool oldFade = false;
     std::int64_t oldClockAnchorTick = 0, oldClockAnchorSourceTick = 0;
+    std::int64_t oldPhysicalSourceAnchorFrame = -1;
 };
 
 struct LaunchFollowRequest {
@@ -250,7 +254,7 @@ private:
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
     [[nodiscard]] std::optional<std::int64_t> queuedLegatoSourceTick(const Track&, const Pending&,
-        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&) const noexcept;
+        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;
     void publishStatus(const LaunchBlock&, const LaunchView&, LaunchSink, bool, std::int64_t) noexcept;

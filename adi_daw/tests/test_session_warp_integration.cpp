@@ -473,6 +473,179 @@ void absoluteWarpFallback() {
         "the fixed bank preserves all 250 ms of the absolute-time slot");
 }
 
+void pinUnwarpedOneShot(Store& store, std::int64_t startNs, std::int64_t durationNs) {
+    auto& db = store.db();
+    db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101");
+    SQLite::Statement clip(db,"UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,"
+                              "length_ns=?,loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
+    clip.bind(1,durationNs);
+    clip.exec();
+    SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(101,?,?)");
+    pins.bind(1,startNs);
+    pins.bind(2,startNs + durationNs);
+    pins.exec();
+}
+
+enum class PhysicalTempoChange { None, Early, Late, ChangedGain };
+
+std::vector<float> renderPhysicalOneShot(Store& store, bool ram, std::int64_t span, PhysicalTempoChange change) {
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(), "the pinned one-shot opens without source errors");
+
+    std::vector<float> pcm(static_cast<std::size_t>(span + blockFrames));
+    Playback playback{session, pcm};
+    playback.paged = !ram;
+    scene(store,session,10);
+    const auto cut = change == PhysicalTempoChange::Early ? 12000 : span - 9000;
+    const auto cutTick = cut * quarter / (rate / 2);
+    playback.through(cut - 100);
+    const auto status = [&] {
+        std::array<LaunchTrackStatus,1> tracks{};
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(tracks,header) && header.trackCount == 1 &&
+                tracks.front().clip == 101 && tracks.front().run > 0,
+                "the persisted unwarped slot owns an active driver run");
+        return tracks.front();
+    };
+    const auto before = status();
+    const LaunchClipRegionEdit region{1,101,session.launchIncarnation(),before.run,
+        {quarter / 8,2 * quarter,{}},ClipUpdateRate::None};
+    if (!ram) {
+        require(!session.postLaunchClipRegionEdit(region), "paged regions still reject direct live edits");
+        const LaunchClipGainEdit gain{1,101,session.launchIncarnation(),before.run,0.5f,ClipUpdateRate::None};
+        require(session.postLaunchClipGainEdit(gain), "post a live gain to the paged one-shot");
+    }
+
+    const auto changedGain = change == PhysicalTempoChange::ChangedGain;
+    if (changedGain) store.db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+    if (change != PhysicalTempoChange::None) {
+        const bool accepted = session.setExternalTempoAt(store,140,cutTick);
+        if (changedGain) {
+            require(!accepted && session.error().find("needs the active unwarped page bank") != std::string::npos,
+                    "a changed stored gain cannot reuse or replace the active long page bank");
+        } else {
+            require(accepted, "ordinary performed tempo admits the pinned one-shot");
+        }
+    }
+    playback.through(cut + 1);
+    const auto after = status();
+    require(after.run == before.run && after.remainingSamples == span - cut - 1,
+            "the running slot and its physical remaining duration survive the tempo candidate");
+    if (!ram) require(!session.postLaunchClipRegionEdit(region), "retiming preserves the paged region edit rule");
+    const bool retimed = change != PhysicalTempoChange::None && !changedGain;
+    require(session.beginRender().bpmAtTick(cutTick) == (retimed ? 140 : 120),
+            "the driver selects the admitted clock with its source bank");
+    if (!ram && retimed)
+        require(session.refresh(store), "refresh the identical project after audible tempo adoption");
+
+    playback.through(span + blockFrames);
+    require(playback.count == 2 && playback.edges[0].newClip == 101 && playback.edges[0].sample == 0 &&
+            playback.edges[1].newClip == 0 && playback.edges[1].sample == span,
+            "the one-shot stops at its physical end sample");
+    for (auto first = std::int64_t{3000}; first < span; first += 12000) {
+        const auto expected = !ram && first >= cut ? .275f : .55f;
+        require(std::abs(pcm[static_cast<std::size_t>(first)] - expected) < 1e-6f,
+                "the absolute source pin keeps attack phase and the live gain");
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "unwarped one-shot playback performs no callback allocation or file I/O");
+    return pcm;
+}
+
+void supersededUnwarpedBank(Store& store, std::int64_t span) {
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    session.transport().play();
+    constexpr auto onset = 3000;
+    const auto target = span - 9000;
+    const auto publish = target - 100;
+    const auto tick = target * quarter / (rate / 2);
+    std::vector<float> pcm(static_cast<std::size_t>(span));
+    Playback playback{session,pcm};
+    playback.paged = true;
+    playback.through(publish);
+    require(playback.count == 0, "the owner observes the long paged bank idle");
+    store.db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+    const bool published = session.setExternalTempoAt(store,140,tick,[&] {
+        scene(store,session,10);
+        playback.through(publish + 1);
+        require(playback.count == 1 && playback.edges[0].sample == publish,
+                "the old driver starts the slot after the owner checked it");
+        return true;
+    });
+    require(published && session.refresh(store), "a compatible refresh supersedes the new clock publication");
+    playback.through(publish + onset + 1);
+    require(session.beginRender().bpmAtTick(tick) == 120 &&
+            std::abs(pcm[static_cast<std::size_t>(publish + onset)] - .55f) < 1e-6f,
+            "the superseding publication still holds the audible bank and its clock");
+    session.transport().play(false);
+    require(session.beginRender().bpmAtTick(tick) == 140, "the driver admits the held clock after stop");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "holding the actual page bank adds no callback allocation or file reads");
+}
+
+void physicalOneShotsFollowExternalTempo() {
+    for (const bool ram : {true,false}) {
+        test::TempDirectory folder{"session_unwarped_one_shot", ram ? "ram" : "paged"};
+        auto store = sceneProject(folder.path());
+        // The long paged case cannot fit the bounded whole-window admission.
+        // A new initial long bank on a ramp, Loop and Legato still need their own admission.
+        const auto seconds = ram ? 1 : 4;
+        const auto pinNs = ram ? std::int64_t{50000000} : std::int64_t{50031250}; // paged: 2401.5 samples
+        const int trimFrame = ram ? 2400 : 2402;
+        addClip(*store,folder.path(),101,10,4 * seconds + 1,false,trimFrame + 3000,1,12000);
+        auto& db = store->db();
+        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+                "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+        pinUnwarpedOneShot(*store,pinNs,static_cast<std::int64_t>(seconds) * 1000000000);
+        db.exec(ram ? "UPDATE clip_launch SET ram_mode=1 WHERE clip_id=101"
+                    : "UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+        const auto span = static_cast<std::int64_t>(seconds) * rate;
+        const auto reference = renderPhysicalOneShot(*store,ram,span,PhysicalTempoChange::None);
+        if (ram)
+            require(renderPhysicalOneShot(*store,ram,span,PhysicalTempoChange::Early) == reference,
+                    "early external tempo preserves all resident one-shot PCM");
+        require(renderPhysicalOneShot(*store,ram,span,PhysicalTempoChange::Late) == reference,
+                "late external tempo preserves all PCM and the natural stop");
+        if (!ram) {
+            supersededUnwarpedBank(*store,span);
+            store->db().exec("UPDATE clips SET gain_db=0 WHERE id=101");
+            require(renderPhysicalOneShot(*store,ram,span,PhysicalTempoChange::ChangedGain) == reference,
+                    "a source mismatch keeps the already audible long page bank");
+        }
+        std::printf("Physical unwarped %s: %lld exact frames through ordinary tempo updates\n",
+                    ram ? "RAM" : "paged",static_cast<long long>(span));
+    }
+}
+
+void physicalOneShotToWarpLegato() {
+    test::TempDirectory folder{"session_unwarped_one_shot", "legato-source"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    addClip(*store,folder.path(),101,10,17,false,0,1,12000);
+    pinUnwarpedOneShot(*store,100000000,4000000000);
+    addClip(*store,folder.path(),102,20,3,true);
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    std::vector<float> pcm(static_cast<std::size_t>(tempoSceneFrame + blockFrames));
+    Playback playback{session, pcm};
+    scene(*store,session,10);
+    playback.through(blockFrames);
+    scene(*store,session,20);
+    playback.through(tempoSceneFrame + blockFrames);
+    checkTempoScene(*store,session,playback);
+    require(playback.count == 2 && playback.edges[1].newClip == 102 &&
+            playback.edges[1].sample == tempoSceneFrame && playback.edges[1].sourceTick == quarter,
+            "the native Legato target inherits four elapsed beats modulo its three-beat source loop");
+    require(std::abs(pcm[static_cast<std::size_t>(tempoSceneFrame)] + .6f) < .02f,
+            "the changed-tempo native Warp attack keeps the inherited phase after a pinned source");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -540,6 +713,8 @@ int main() {
         mixedTempoScene(MixedScene::ColdWarp);
         mixedTempoScene(MixedScene::ChangeNativeGain);
         absoluteWarpFallback();
+        physicalOneShotsFollowExternalTempo();
+        physicalOneShotToWarpLegato();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

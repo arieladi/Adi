@@ -99,6 +99,14 @@ std::int64_t sourceEnd(const LaunchSlot& slot) noexcept {
     return loops(slot) ? slot.loopEndTick : slot.endTick;
 }
 
+std::int64_t physicalSourceTick(const LaunchSlot& slot, std::int64_t elapsed) noexcept {
+    if (elapsed <= 0) return slot.startTick;
+    if (elapsed >= slot.physicalFrames) return slot.endTick;
+    const auto fraction = static_cast<long double>(elapsed) / static_cast<long double>(slot.physicalFrames);
+    const auto ticks = static_cast<long double>(slot.endTick - slot.startTick);
+    return slot.startTick + static_cast<std::int64_t>(fraction * ticks);
+}
+
 std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept {
     if (loops(slot) && position >= slot.loopEndTick)
         return slot.loopStartTick + (position - slot.loopEndTick) % (slot.loopEndTick - slot.loopStartTick);
@@ -135,6 +143,8 @@ const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<
     scratch.endTick = region->end;
     scratch.loopStartTick = region->loop ? region->loop->begin : 0;
     scratch.loopEndTick = region->loop ? region->loop->end : 0;
+    scratch.physicalStartFrame = -1;
+    scratch.physicalFrames = 0;
     return &scratch;
 }
 
@@ -502,10 +512,11 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     track.regionEdit.reset();
     track.run = {};
     track.run.arrangement = pending.action == Action::Arrangement;
+    LaunchSlot oldGeometry;
+    const auto* oldSlot = previous.clip
+        ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry) : nullptr;
     if (pending.action == Action::Start) {
         track.stopSuppressesFollow = false;
-        LaunchSlot oldGeometry;
-        const auto* oldSlot = effectiveSlot(findClip(view,track.id,previous.clip),previous.region,oldGeometry);
         const auto position = launchSourceTick(*target,oldSlot,previous.sourceTick);
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
@@ -525,7 +536,8 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     const LaunchTransition edge{track.id,previous.clip,track.run.clip,track.run.sourceTick,
         block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
         track.run.velocity,track.run.fade,previous.pcmAnchorTick,previous.frames-previous.pcmAnchorFrame,
-        previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick};
+        previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick,
+        oldSlot ? oldSlot->physicalStartFrame : -1};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -555,11 +567,18 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
+        const auto elapsed = track.run.frames - track.run.pcmAnchorFrame;
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
             sourceOffset = cursor;
             sourceTick = tick;
+        } else if (slot && slot->physicalFrames > 0) {
+            const auto remaining = std::max<std::int64_t>(0,slot->physicalFrames - elapsed);
+            if (remaining <= block.frames - cursor) {
+                sourceOffset = cursor + static_cast<std::int32_t>(remaining);
+                sourceTick = atSample(block,block.sample + sourceOffset);
+            }
         } else if (slot) {
             const auto untilEnd = std::max<std::int64_t>(0,sourceEnd(*slot) - track.run.anchorSourceTick);
             sourceTick = add(track.run.anchorTick,untilEnd);
@@ -619,14 +638,17 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         if (boundary > cursor) {
             auto endSource = track.run.sourceTick;
             if (slot) {
-                endSource = atSourceEdge ? sourceEnd(*slot) : std::min(sourceEnd(*slot),
-                    add(track.run.anchorSourceTick,std::max<std::int64_t>(0,nextTick - track.run.anchorTick)));
+                if (slot->physicalFrames > 0)
+                    endSource = physicalSourceTick(*slot,add(elapsed,boundary-cursor));
+                else
+                    endSource = atSourceEdge ? sourceEnd(*slot) : std::min(sourceEnd(*slot),
+                        add(track.run.anchorSourceTick,std::max<std::int64_t>(0,nextTick - track.run.anchorTick)));
             }
             if (sink.section) sink.section(sink.context, {track.id,track.run.clip,track.run.sourceTick,
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
-                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,track.run.region.has_value(),
-                track.run.anchorTick,track.run.anchorSourceTick});
+                track.run.pcmAnchorTick,elapsed,track.run.region.has_value(),
+                track.run.anchorTick,track.run.anchorSourceTick,slot ? slot->physicalStartFrame : -1});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
@@ -716,6 +738,7 @@ Launcher::RetargetResult Launcher::retarget(std::span<const LaunchRequest> reque
         if (!occupied(before) || !occupied(after) || after->clip != *request.clip ||
             before->startTick != after->startTick || before->endTick != after->endTick ||
             before->loopStartTick != after->loopStartTick || before->loopEndTick != after->loopEndTick ||
+            before->physicalStartFrame != after->physicalStartFrame || before->physicalFrames != after->physicalFrames ||
             before->mode != after->mode || before->quantization != after->quantization ||
             before->legato != after->legato || before->fade != after->fade || before->velocityAmount != after->velocityAmount)
             return RetargetResult::Rejected;
@@ -918,7 +941,7 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
 }
 
 std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track, const Pending& pending,
-    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block) const noexcept {
+    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample) const noexcept {
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto physicalSample = [&](const Pending& event) {
@@ -933,6 +956,11 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
         ? track.regionEdit->boundary.sample : block.sampleAtTick(block.clock,track.regionEdit->boundary.tick)) <= dueSample)
         return {};
 
+    if (current->physicalFrames > 0) {
+        const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
+        if (elapsed > current->physicalFrames) return {};
+        return launchSourceTick(target,current,physicalSourceTick(*current,elapsed));
+    }
     const auto dueTick = block.sampleAtTick(block.clock,pending.tick) == dueSample
         ? pending.tick : atSample(block,dueSample);
     const auto end = sourceEnd(*current);
@@ -974,6 +1002,8 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         if (slot && loops(*slot)) {
             status.loopStartTick = slot->loopStartTick;
             status.loopLengthTicks = slot->loopEndTick - slot->loopStartTick;
+        } else if (slot && slot->physicalFrames > 0) {
+            status.remainingSamples = std::max<std::int64_t>(0,slot->physicalFrames - (run.frames - run.pcmAnchorFrame));
         } else if (occupied(slot)) {
             const auto end = add(run.anchorTick,std::max<std::int64_t>(0,slot->endTick - run.anchorSourceTick));
             status.remainingSamples = std::max<std::int64_t>(0,block.sampleAtTick(block.clock,end) - endSample);
@@ -998,7 +1028,7 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         if (pending->action == Action::Arrangement) action = LaunchQueuedAction::BackToArrangement;
         if (action != LaunchQueuedAction::None) status.queued = {action,pending->clip,pending->scene,pending->tick};
         if (action == LaunchQueuedAction::Start)
-            status.queued.legatoSourceTick = queuedLegatoSourceTick(track,*pending,*target,slot,block);
+            status.queued.legatoSourceTick = queuedLegatoSourceTick(track,*pending,*target,slot,block,endSample);
     }
     return status;
 }

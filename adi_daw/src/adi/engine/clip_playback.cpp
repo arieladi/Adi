@@ -1469,7 +1469,8 @@ struct LaunchWarpPageBank : std::enable_shared_from_this<LaunchWarpPageBank> {
 
 // The private readers share the same projection of the unrolled source.
 static void appendLaunchSource(ClipProject& project, const ClipProject& original, const rows::Clip& authored,
-                               std::int64_t sourceTrack, std::int64_t endTick) {
+                               std::int64_t sourceTrack, std::int64_t endTick,
+                               std::optional<std::int64_t> endNs = {}) {
     auto& model = project.rows;
     const auto audioRow = std::ranges::find(original.rows.audioClips, authored.id, &rows::AudioClip::clipId);
     if (audioRow == original.rows.audioClips.end()) throw std::runtime_error("missing Session audio row");
@@ -1487,6 +1488,13 @@ static void appendLaunchSource(ClipProject& project, const ClipProject& original
     source.lengthTicks = endTick;
     source.posNs.reset();
     source.lengthNs.reset();
+    if (endNs) {
+        source.timeBase = 1;
+        source.posTicks.reset();
+        source.lengthTicks.reset();
+        source.posNs = 0;
+        source.lengthNs = *endNs;
+    }
     source.contentOffsetTicks = 0;
     source.contentOffsetNs.reset();
     source.loopEnabled = false;
@@ -1555,14 +1563,15 @@ static LaunchAudioClip prepareStreamingLaunchClip(const ClipProject& project, co
 
 static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const rows::Clip& authored,
                                        std::int64_t endTick, double bpm, std::uint32_t rate,
-                                       std::uint16_t channels, std::uint64_t byteBudget) {
+                                       std::uint16_t channels, std::uint64_t byteBudget,
+                                       std::optional<std::int64_t> endNs = {}) {
     auto project = std::make_shared<ClipProject>();
     project->folder = original.folder;
     project->rows.tempo.push_back({0, bpm, 0, 0.0});
-    appendLaunchSource(*project, original, authored, authored.trackId, endTick);
+    appendLaunchSource(*project, original, authored, authored.trackId, endTick, endNs);
     TempoMap tempo;
     tempo.events.push_back({0, bpm, 0});
-    const auto frames = samples(tempo.ticksToSeconds(endTick), rate);
+    const auto frames = endNs ? samplesAtNs(*endNs,rate) : samples(tempo.ticksToSeconds(endTick),rate);
     if (channels == 0 || frames <= 0 || static_cast<std::uint64_t>(frames) > byteBudget / sizeof(float) / channels)
         throw std::length_error("Session clip exceeds the prepared audio budget");
     constexpr std::int32_t blockSize = 512;
@@ -1600,7 +1609,7 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
-    std::span<const std::int64_t> warmWarpClips) {
+    std::span<const std::int64_t> warmWarpClips, const LaunchAudioProject* priorPinnedPages) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -1660,11 +1669,13 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::vector<std::uint64_t> pagedExtents;
     const auto fixedFrame = [&](std::int64_t tick) { return samples(fixedClock.ticksToSeconds(tick), rate); };
     const auto addPreparedPages = [&](const rows::Clip& clip, const LaunchSlot& slot, std::int64_t end) {
-        const auto extent = fixedFrame(end);
+        const auto pinned = slot.physicalStartFrame >= 0;
+        const auto extent = pinned ? slot.physicalStartFrame + slot.physicalFrames : fixedFrame(end);
         if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
-        appendLaunchSource(*pagedProject,original,clip,clip.id,end);
-        paged.push_back({clip.id,clip.id,fixedFrame(slot.startTick),
-            fixedFrame(slot.loopStartTick),fixedFrame(slot.loopEndTick),extent});
+        appendLaunchSource(*pagedProject,original,clip,clip.id,end,pinned ? clip.sourceEndNs : std::nullopt);
+        paged.push_back({clip.id,clip.id,pinned ? slot.physicalStartFrame : fixedFrame(slot.startTick),
+            fixedFrame(slot.loopStartTick),fixedFrame(slot.loopEndTick),extent,
+            pinned && slot.physicalFrames <= 3 * ClipPlayback::readAheadFrames(rate)});
         pagedExtents.push_back(static_cast<std::uint64_t>(extent));
     };
     const auto add = [](std::int64_t a, std::int64_t b) {
@@ -1706,12 +1717,17 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             LaunchQuantization::Bar);
         try {
             const bool usePins = clip->kind == "audio" && !warped;
+            const bool physicalPins = usePins && clip->timeBase == 1 && clip->contentOffsetNs && clip->sourceEndNs &&
+                *clip->contentOffsetNs >= 0 && !clip->loopEnabled && !slot.legato && slot.mode != LaunchMode::Repeat;
+            // A paired tempo scene still observes the outgoing pin's logical
+            // region when a different slot takes its relative Legato phase.
+            const auto& pinClock = physicalPins ? nativeReferenceClock : fixedClock;
             slot.startTick = usePins && clip->contentOffsetNs
-                ? fixedClock.storedNanosecondsToTicks(*clip->contentOffsetNs) : clip->contentOffsetTicks;
+                ? pinClock.storedNanosecondsToTicks(*clip->contentOffsetNs) : clip->contentOffsetTicks;
             const auto length = clip->timeBase == 0 ? clip->lengthTicks.value_or(0)
                 : slotClock.storedNanosecondsToTicks(clip->lengthNs.value_or(0));
             slot.endTick = usePins && clip->sourceEndNs
-                ? fixedClock.storedNanosecondsToTicks(*clip->sourceEndNs)
+                ? pinClock.storedNanosecondsToTicks(*clip->sourceEndNs)
                 : clip->endMarkerTicks.value_or(add(slot.startTick, length));
             if (clip->loopEnabled) {
                 slot.loopStartTick = usePins && clip->loopBeginNs
@@ -1746,11 +1762,35 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     nativePages.push_back({*clip,launchSlots.size()-1,static_cast<std::uint64_t>(extent)});
                     continue;
                 }
-                if (!hasPreparedClock) throw std::runtime_error("Session audio requires a constant prepared tempo");
-                if (mode) usePreparedWarpEnd(*clip,launchSlots.back());
+                auto& prepared = launchSlots.back();
+                if (physicalPins) {
+                    const auto startFrame = samplesAtNs(*clip->contentOffsetNs,rate);
+                    const auto endFrame = samplesAtNs(*clip->sourceEndNs,rate);
+                    if (endFrame <= startFrame) throw std::runtime_error("Session clip source is shorter than one frame");
+                    prepared.physicalStartFrame = startFrame;
+                    prepared.physicalFrames = endFrame - startFrame;
+                    if (!setting.ramMode) {
+                        const auto* prior = priorPinnedPages ? priorPinnedPages->clip(clip->id) : nullptr;
+                        if (prior && prior->pageReader() && prior->latencySamples() == 0 &&
+                            prior->frames() == static_cast<std::uint64_t>(endFrame)) {
+                            // Only the selected graph calls read(). The owner
+                            // copies the immutable clip wrapper and shares its
+                            // driver cursor and existing source pages.
+                            pcm.push_back(*prior);
+                            continue;
+                        }
+                        if (!hasPreparedClock && prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate))
+                            throw std::runtime_error("Session unwarped source needs an identical running page bank");
+                    }
+                }
+                const auto pinned = prepared.physicalStartFrame >= 0;
+                if (!hasPreparedClock && !pinned)
+                    throw std::runtime_error("Session audio requires a constant prepared tempo");
+                if (mode) usePreparedWarpEnd(*clip,prepared);
                 const auto preparedEnd = std::max(launchSlots.back().endTick,slot.loopEndTick);
                 if (setting.ramMode) {
-                    auto clipAudio = prepareLaunchClipAudio(original, *clip, preparedEnd, bpm, rate, channels, remaining);
+                    auto clipAudio = prepareLaunchClipAudio(original, *clip, preparedEnd, bpm, rate, channels, remaining,
+                                                           pinned ? clip->sourceEndNs : std::nullopt);
                     remaining -= clipAudio.bytes();
                     pcm.push_back(std::move(clipAudio));
                 } else {
@@ -2042,8 +2082,18 @@ bool ClipPlayback::primeTrackAt(std::int64_t track, const Transport& first, cons
                                 std::chrono::milliseconds timeout) {
     return primeTargets(first, &loop, timeout, true, {}, track);
 }
+bool ClipPlayback::primeTrackWindow(std::int64_t track, const Transport& first, std::int32_t frames,
+                                    std::chrono::milliseconds timeout) {
+    // A private unwarped source uses output-rate pages. This range can cover
+    // at most seven of the existing eight pages, even with an unaligned start.
+    if (frames <= 0) return false;
+    for (const auto& clip : impl_->clips)
+        if (clip->track == track && frames > 3 * readAheadFrames(clip->rate)) return false;
+    return primeTargets(first, nullptr, timeout, true, {}, track, frames);
+}
 bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout,
-                                bool waitForPendingWarp,std::stop_token stop,std::optional<std::int64_t> track) {
+                                bool waitForPendingWarp,std::stop_token stop,std::optional<std::int64_t> track,
+                                std::int32_t windowFrames) {
     if(audio::onAudioThread || timeout.count()<0)return false;
     // One stable request for the entire wait. In particular, a driver advancing
     // the live Transport cannot move a candidate's readiness target mid-wait.
@@ -2052,7 +2102,8 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     const bool synchronous=impl_->synchronousReads;
     const auto selected = [track](const Clip& clip) { return !track || clip.track == *track; };
     auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
-        pages=clip.wanted(target,impl_->maxFrames,!synchronous);
+        pages=windowFrames > 0 ? clip.wanted(target,windowFrames,false)
+                               : clip.wanted(target,impl_->maxFrames,!synchronous);
         if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames,!synchronous)) {
             if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;
             const auto empty=std::find(pages.begin(),pages.end(),-1);

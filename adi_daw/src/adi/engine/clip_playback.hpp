@@ -37,7 +37,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
     std::uint64_t incarnation, std::vector<std::string>& problems,
     std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
-    std::span<const std::int64_t> warmWarpClips = {});
+    std::span<const std::int64_t> warmWarpClips = {}, const LaunchAudioProject* priorPinnedPages = nullptr);
 class ClipPlayback {
 public:
     enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };
@@ -117,6 +117,9 @@ public:
     /// private track's initial/loop window without replacing other requests.
     bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
                       std::chrono::milliseconds timeout);
+    // Prime the entire bounded physical window of a private one-shot source.
+    bool primeTrackWindow(std::int64_t track, const Transport& first, std::int32_t frames,
+                          std::chrono::milliseconds timeout);
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }
@@ -157,7 +160,8 @@ public:
 private:
     friend struct LaunchWarpPageBank;
     bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
-                      std::stop_token stop = {}, std::optional<std::int64_t> track = {});
+                      std::stop_token stop = {}, std::optional<std::int64_t> track = {},
+                      std::int32_t windowFrames = 0);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
