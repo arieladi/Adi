@@ -223,10 +223,20 @@ engine::EventFlow DeviceNode::eventFlowAfterBypass(bool bypass) const noexcept {
 }
 
 std::int32_t DeviceNode::latencySamples() const noexcept {
+    return latencyReport().samples;
+}
+
+engine::LatencyReport DeviceNode::latencyReport() const noexcept {
     // ADR-0203 d4: only deleting the device releases its delay. The graph
     // substitutes a plain delay line for the audible output while bypassed.
-    if (inst_ == nullptr) return 0;
-    return inst_->latencySamples();
+    if (inst_ == nullptr) return {0, false};
+    return inst_->latencyReport();
+}
+
+engine::LatencyReport DeviceInstance::latencyReport() const noexcept {
+    if (!loaded()) return {0, false};
+    const auto samples = latencySamples();
+    return samples < 0 ? engine::LatencyReport{0, false} : engine::LatencyReport{samples, true};
 }
 
 // ---------------------------------------------------------------------------

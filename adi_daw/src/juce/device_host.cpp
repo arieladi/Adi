@@ -110,6 +110,7 @@ bool DeviceHost::rebuildModel(const rows::Model& model, engine::NodePreparePolic
     opts.monitors=spec_.monitors;
     opts.channels = spec_.channels;
     opts.devicesFor = spec_.devicesFor ? spec_.devicesFor : chainSupplier();
+    opts.rackFor = spec_.rackFor;
     opts.sourcesFor = spec_.sourcesFor;
     opts.tapFor = spec_.tapFor;
     opts.keyTapFor = spec_.keyTapFor;

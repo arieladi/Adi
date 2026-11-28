@@ -770,6 +770,11 @@ bool loopEdge(const Node* from, const Node* to) noexcept {
 }  // namespace
 
 void Graph::computeCompensation() {
+    // SDK latency reads are owner-only. The initial plan, like a later retap,
+    // uses a single declaration per node for timing and diagnostics.
+    std::vector<LatencyReport> reports;
+    reports.reserve(slots_.size());
+    for (const auto& slot : slots_) reports.push_back(slot.latencyReport());
     // ADR-0058 decision 2. A node's input is whole only once the LATEST of its
     // feeds has arrived, so its arrival is the max over inputs of (that input's
     // arrival + that input's own latency). Every earlier feed is then delayed
@@ -783,7 +788,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.inputs) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                u.latency();
+                reports[static_cast<std::size_t>(in)].samples;
             if (ready > latest) latest = ready;
         }
         // ADR-0058 decision 5: a sidechain is compensated WITH the rest, not
@@ -792,7 +797,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.sidechains) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                u.latency();
+                reports[static_cast<std::size_t>(in)].samples;
             if (ready > latest) latest = ready;
         }
         s.arrival = static_cast<std::int32_t>(latest);
@@ -808,14 +813,17 @@ void Graph::computeCompensation() {
                    static_cast<std::int64_t>(feed.arrival) + *feed.fixedLatency == s.arrival;
         };
         s.inDelays.resize(s.inputs.size());
-        if (s.hasBypass) prepareLine(s.dryDelay, s.latency());
+        if (s.hasBypass) prepareLine(s.dryDelay, reports[static_cast<std::size_t>(id)].samples);
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             if (!delayCompensation_ || loopEdge(u.node, s.node) || fixedDirectFeed(u)) {
+                // No ring at all, not even the headroom: it never delays,
+                // so a retap that tried to move it would be refused.
                 s.inDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
                 continue;
             }
-            const std::int32_t ready = u.arrival + u.latency();
+            const std::int32_t ready =
+                u.arrival + reports[static_cast<std::size_t>(s.inputs[k])].samples;
             prepareLine(s.inDelays[k], s.arrival - ready);
         }
         s.sideDelays.resize(s.sidechains.size());
@@ -825,7 +833,8 @@ void Graph::computeCompensation() {
                 s.sideDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
                 continue;
             }
-            const std::int32_t ready = u.arrival + u.latency();
+            const std::int32_t ready =
+                u.arrival + reports[static_cast<std::size_t>(s.sidechains[k])].samples;
             prepareLine(s.sideDelays[k], s.arrival - ready);
         }
     }
@@ -837,14 +846,15 @@ void Graph::computeCompensation() {
         slotLatency_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
     if (slotArrival_.size() != slots_.size())
         slotArrival_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
+    if (slotLatencyKnown_.size() != slots_.size())
+        slotLatencyKnown_ = std::vector<std::atomic<bool>>(slots_.size());
     for (std::size_t i = 0; i < slots_.size(); ++i) {
-        slotLatency_[i].store(slots_[i].latency(),
-                              std::memory_order_relaxed);
+        slotLatency_[i].store(reports[i].samples, std::memory_order_relaxed);
         slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
+        slotLatencyKnown_[i].store(reports[i].known, std::memory_order_relaxed);
     }
-    const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_.store(out.arrival + out.latency(),
-                        std::memory_order_release);
+    const auto output = static_cast<std::size_t>(output_);
+    graphLatency_.store(slots_[output].arrival + reports[output].samples, std::memory_order_release);
     preparePdcStorage();
 }
 
@@ -856,13 +866,15 @@ void Graph::preparePdcStorage() {
         for(auto& d:s.inDelays)pdcLines_.push_back(&d);
         for(auto& d:s.sideDelays)pdcLines_.push_back(&d);
     }
-    const auto cells=2*n+pdcLines_.size()+1;
+    const auto declarations=2*n+pdcLines_.size();
+    const auto cells=declarations+n+1;
     pdcPending_=std::vector<std::atomic<std::int32_t>>(cells);
     pdcOwner_.resize(cells);pdcCandidate_.resize(cells);pdcScratch_.resize(cells);
     pdcActiveLatency_.resize(n);pdcActiveArrival_.resize(n);
     for(std::size_t i=0;i<n;++i) {
         pdcOwner_[i]=pdcActiveLatency_[i]=slotLatency_[i].load(std::memory_order_relaxed);
         pdcOwner_[n+i]=pdcActiveArrival_[i]=slotArrival_[i].load(std::memory_order_relaxed);
+        pdcOwner_[declarations+i]=slotLatencyKnown_[i].load(std::memory_order_relaxed) ? 1 : 0;
     }
     for(std::size_t i=0;i<pdcLines_.size();++i)pdcOwner_[2*n+i]=pdcLines_[i]->delay();
     pdcOwner_.back()=graphLatency_.load(std::memory_order_relaxed);
@@ -874,7 +886,12 @@ void Graph::preparePdcStorage() {
 bool Graph::computePdcOwner() noexcept {
     const auto n=slots_.size();
     // Main-thread-only SDK calls: one answer per node for the complete plan.
-    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].latency();
+    const auto declarations = 2*n+pdcLines_.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto report = slots_[i].latencyReport();
+        pdcOwner_[i] = report.samples;
+        pdcOwner_[declarations+i] = report.known ? 1 : 0;
+    }
     bool allFit = true;
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
@@ -946,11 +963,15 @@ void Graph::pinPhysicalPdc(std::uint64_t block) noexcept {
     }
     if(!ready)return;
     for(std::size_t i=0;i<pdcLines_.size();++i)pdcLines_[i]->applyGraphTarget(pdcCandidate_[2*n+i]);
+    appliedLatencySequence_.fetch_add(1, std::memory_order_acq_rel);
+    const auto declarations = 2*n+pdcLines_.size();
     for(std::size_t i=0;i<n;++i) {
         pdcActiveLatency_[i]=pdcCandidate_[i];pdcActiveArrival_[i]=pdcCandidate_[n+i];
-        slotLatency_[i].store(pdcActiveLatency_[i],std::memory_order_relaxed);
-        slotArrival_[i].store(pdcActiveArrival_[i],std::memory_order_relaxed);
+        slotLatency_[i].store(pdcActiveLatency_[i],std::memory_order_release);
+        slotArrival_[i].store(pdcActiveArrival_[i],std::memory_order_release);
+        slotLatencyKnown_[i].store(pdcCandidate_[declarations+i] != 0, std::memory_order_release);
     }
+    appliedLatencySequence_.fetch_add(1, std::memory_order_release);
     graphLatency_.store(pdcCandidate_.back(),std::memory_order_release);pdcApplied_=pdcCandidateVersion_;
     glides_.fetch_add(1,std::memory_order_release);
 }
@@ -2493,6 +2514,24 @@ std::optional<std::int64_t> Graph::outputLatencyOf(NodeId id) const noexcept {
     const auto i = static_cast<std::size_t>(id);
     return static_cast<std::int64_t>(slotArrival_[i].load(std::memory_order_relaxed)) +
            static_cast<std::int64_t>(slotLatency_[i].load(std::memory_order_relaxed));
+}
+
+std::optional<PathLatency> Graph::pathLatencyBetween(NodeId from, NodeId to, NodeId last) const noexcept {
+    const auto version = appliedLatencySequence_.load(std::memory_order_acquire);
+    if (version & 1) return std::nullopt;
+    const auto start = outputLatencyOf(from);
+    const auto end = outputLatencyOf(to);
+    if (!start || !end) return std::nullopt;
+    bool known = true;
+    if (last != kInvalidNode) {
+        if (last < from || static_cast<std::size_t>(last) >= slotLatencyKnown_.size()) return std::nullopt;
+        for (std::size_t i = static_cast<std::size_t>(from); i <= static_cast<std::size_t>(last); ++i) {
+            if (!slotLatencyKnown_[i].load(std::memory_order_relaxed)) { known = false; break; }
+        }
+    }
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (appliedLatencySequence_.load(std::memory_order_acquire) != version) return std::nullopt;
+    return PathLatency{*end - *start, known};
 }
 
 void Graph::process(const AudioIo& io) noexcept {

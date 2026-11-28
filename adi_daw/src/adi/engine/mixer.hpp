@@ -180,6 +180,10 @@ struct StripControlImage {
 
 class StripNode final : public Node {
 public:
+    StripNode() = default;
+    explicit StripNode(EventFlow flow) noexcept : eventFlow_(flow) {}
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return eventFlow_; }
+
     /// Message thread: the model's values. `audible` is the gate automation
     /// cannot override; `unmuted` is the authored Track Activator fallback.
     void setStatic(double volumeDb, double pan, PanLaw law, bool audible, bool unmuted = true) noexcept;
@@ -279,6 +283,7 @@ private:
     template <typename T>
     void writeMeter(const NodeIo& io, const T* const* audio) noexcept;
 
+    EventFlow eventFlow_ = EventFlow::Through;
     StripMeter meter_;
     // Audio thread only. Accumulate segments of one callback; offset zero
     // starts the next. Publication after each segment describes its prefix.

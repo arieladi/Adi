@@ -75,6 +75,7 @@ public:
         /// the chain itself. Unset, `chainSupplier()` places by the track id
         /// given to `add` (ADR-0090's behaviour, and every test of it).
         engine::DeviceChainFn devicesFor;
+        engine::RackPlacementFn rackFor;
         /// What pushes into a track's junction (ADR-0122). Unset, nothing.
         engine::SourceFn sourcesFor;
         /// ADR-0203 d3: where a send leaves its track, the node it plays

@@ -82,6 +82,24 @@ public:
 /// the project and a rebuild is not a reason to reload a plugin.
 using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
+struct RackBranch {
+    Node* gate = nullptr;
+    std::vector<Node*> devices;
+    Node* strip = nullptr;
+};
+
+/// `devicesFor` supplies a rack's sum as a serial stage. Its placement expands
+/// that stage into branches of the same Graph, including other rack stages.
+struct RackPlacement {
+    std::int64_t deviceId = 0;
+    Node* router = nullptr;
+    std::vector<RackBranch> branches;
+    bool latencyKnown = true;
+};
+using RackPlacementFn = std::function<std::optional<RackPlacement>(const Node&)>;
+
+using RackLatency = PathLatency;
+
 /// How a track's SOURCES are supplied: what pushes audio into the junction
 /// ahead of the devices -- a clip reader, a live input, a test tone. Same
 /// contract as `DeviceChainFn`: caller-owned nodes by default, outliving any
@@ -134,6 +152,7 @@ struct RealizeOptions {
     /// Unset means every track is bare, which is the right behaviour for a
     /// project with no plugins and for every test that is about topology.
     DeviceChainFn devicesFor;
+    RackPlacementFn rackFor;
 
     /// Unset means no track has a source, which is every topology test and
     /// a project that is only routing. A source is connected INTO the
@@ -191,6 +210,8 @@ public:
 
     /// `kInvalidNode` for a VCA and for a track that is not in the plan.
     [[nodiscard]] bool has(std::int64_t trackId) const noexcept;
+    /// Applied graph transit plus the availability of the leaves' reports.
+    [[nodiscard]] std::optional<RackLatency> rackLatency(std::int64_t deviceId) const noexcept;
 
     /// False when the plan could not be realised at all. Distinct from
     /// `graph().ok()`, which is about `prepare`.
@@ -278,6 +299,8 @@ public:
             Next,   ///< from the junction or a chain node to the next node
             Monitor, ///< private cue feed, named by its persistent monitor node
             Send,   ///< from a tap into a send's node, named by its routing row
+            Branch, ///< rack router into one stable branch gate
+            Join,   ///< a rack branch returning to its sum
         };
         std::int64_t track = 0;
         Leg leg = Leg::Next;
@@ -321,12 +344,19 @@ private:
         /// The caller's nodes after the junction, in order: where a tap is.
         std::vector<std::pair<const Node*, NodeId>> nodes;
     };
+    struct RackEndpoints {
+        NodeId router;
+        NodeId sum;
+        NodeId last;
+        bool known;
+    };
 
     std::vector<std::shared_ptr<void>> sourceOwners_; // destroyed after graph_
     Graph graph_;
     /// Only the nodes realisation itself created. Devices are owned elsewhere.
     std::vector<std::unique_ptr<Node>> owned_;
     std::unordered_map<std::int64_t, Chain> chains_;
+    std::unordered_map<std::int64_t, RackEndpoints> racks_;
     std::vector<EdgeRecord> planEdges_;
     std::vector<ChainRecord> chainEdges_;
     std::vector<Node*> loopReaders_;

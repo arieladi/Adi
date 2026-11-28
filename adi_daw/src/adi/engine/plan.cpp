@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 
 namespace adi::engine {
@@ -42,6 +43,70 @@ std::optional<std::size_t> GraphPlan::indexOf(std::int64_t trackId) const {
     for (std::size_t i = 0; i < nodes.size(); ++i)
         if (nodes[i].trackId == trackId) return i;
     return std::nullopt;
+}
+
+DeviceLayout::DeviceLayout(const rows::Model& model) {
+    for (const auto& device : model.devices) {
+        byDevice_.emplace(device.id, &device);
+        devices_[device.chainId].push_back(&device);
+    }
+    for (const auto& chain : model.deviceChains) {
+        byChain_.emplace(chain.id, &chain);
+        if (chain.trackId && !chain.parentDeviceId) {
+            trackChains_[*chain.trackId].push_back(&chain);
+        } else if (chain.parentDeviceId && !chain.trackId) {
+            const auto parent = byDevice_.find(*chain.parentDeviceId);
+            if (parent != byDevice_.end() && parent->second->isRack)
+                rackChains_[*chain.parentDeviceId].push_back(&chain);
+        }
+    }
+    const auto order = [](auto& groups) {
+        for (auto& [id, siblings] : groups)
+            std::ranges::sort(siblings, [](const auto* a, const auto* b) {
+                return std::tie(a->ord, a->id) < std::tie(b->ord, b->id);
+            });
+    };
+    order(trackChains_);
+    order(rackChains_);
+    order(devices_);
+}
+
+std::optional<std::int64_t> DeviceLayout::trackOf(std::int64_t id) const noexcept {
+    auto device = byDevice_.find(id);
+    // Every valid ancestor is distinct. Bound the walk for damaged projects.
+    for (std::size_t depth = 0; depth < byDevice_.size() && device != byDevice_.end(); ++depth) {
+        const auto chain = byChain_.find(device->second->chainId);
+        if (chain == byChain_.end()) return std::nullopt;
+        const auto& row = *chain->second;
+        if (row.trackId) return row.parentDeviceId ? std::nullopt : row.trackId;
+        if (!row.parentDeviceId) return std::nullopt;
+        device = byDevice_.find(*row.parentDeviceId);
+        if (device != byDevice_.end() && !device->second->isRack) return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+const rows::Device* DeviceLayout::device(std::int64_t id) const noexcept {
+    const auto found = byDevice_.find(id);
+    return found == byDevice_.end() ? nullptr : found->second;
+}
+
+std::span<const rows::DeviceChain* const> DeviceLayout::trackChains(std::int64_t id) const noexcept {
+    const auto found = trackChains_.find(id);
+    if (found == trackChains_.end()) return {};
+    return found->second;
+}
+
+std::span<const rows::DeviceChain* const> DeviceLayout::rackChains(std::int64_t id) const noexcept {
+    const auto found = rackChains_.find(id);
+    if (found == rackChains_.end()) return {};
+    return found->second;
+}
+
+std::span<const rows::Device* const> DeviceLayout::devices(std::int64_t id) const noexcept {
+    const auto found = devices_.find(id);
+    if (found == devices_.end()) return {};
+    return found->second;
 }
 
 GraphPlan planGraph(const rows::Model& m) {
@@ -93,27 +158,7 @@ GraphPlan planGraph(const rows::Model& m) {
     std::map<std::int64_t, PlannedNode::Route> mainDecided;
     // ADR-0203 d3: the sends, planned after every main and default edge.
     std::vector<const rows::Routing*> sends;
-    std::unordered_map<std::int64_t,const rows::Device*> deviceRows;
-    std::unordered_map<std::int64_t,const rows::DeviceChain*> chainRows;
-    bool keyIndexReady=false;
-    const auto ownerOfDevice = [&](std::int64_t device)->std::optional<std::int64_t> {
-        // No key rows means no new maps or traversal work. With keys, build
-        // one owner-side index rather than rescan the whole project per route.
-        if(!keyIndexReady) {
-            deviceRows.reserve(m.devices.size());chainRows.reserve(m.deviceChains.size());
-            for(const auto& d:m.devices)deviceRows.emplace(d.id,&d);
-            for(const auto& c:m.deviceChains)chainRows.emplace(c.id,&c);
-            keyIndexReady=true;
-        }
-        for(std::size_t depth=0;depth<=m.devices.size();++depth) {
-            const auto d=deviceRows.find(device);if(d==deviceRows.end())return {};
-            const auto c=chainRows.find(d->second->chainId);if(c==chainRows.end())return {};
-            if(c->second->trackId)return c->second->trackId;
-            if(!c->second->parentDeviceId)return {};
-            device=*c->second->parentDeviceId;
-        }
-        return {}; // malformed ownership cycle; bounded with no per-route allocation
-    };
+    std::optional<DeviceLayout> deviceLayout;
 
     for (const rows::Routing* r : routes) {
         // A send switched off is still planned, at its node's gate, so Enable
@@ -148,7 +193,8 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
 
         if(r->kind=="sidechain" && r->dstKind=="device") {
-            const auto owner=ownerOfDevice(r->dstId);
+            if (!deviceLayout) deviceLayout.emplace(m);
+            const auto owner=deviceLayout->trackOf(r->dstId);
             const auto source=byId.find(r->srcId);
             const auto target=owner?byId.find(*owner):byId.end();
             if(r->srcKind!="track" || source==byId.end() || target==byId.end()) {

@@ -319,6 +319,21 @@ struct Device {
     bool missing = false;
 };
 
+struct RackMacro {
+    std::int64_t id = 0, deviceId = 0, ord = 0;
+    std::string name;
+    double value = 0.0;
+    std::optional<std::int64_t> color;
+};
+
+struct MacroMapping {
+    std::int64_t id = 0, macroId = 0, targetDeviceId = 0;
+    std::string targetParamRef;
+    double rangeMin = 0.0, rangeMax = 1.0;
+    std::int64_t curve = 1;
+    bool inverted = false;
+};
+
 /// `plugin_params`: the missing-plugin safety net (SPEC §7.1), and the
 /// values a placeholder answers `getParam` with.
 struct PluginParam {
@@ -434,6 +449,8 @@ struct Model {
     std::vector<PluginState> pluginState;
     std::vector<DeviceRoute> deviceRoutes;
     std::vector<DevicePanel> devicePanels;
+    std::vector<RackMacro> rackMacros;
+    std::vector<MacroMapping> macroMappings;
     std::vector<GroupSumming> summing;       ///< ADR-0174
     std::vector<Remark> remarks;
     std::vector<AutomationLane> automationLanes;   ///< by id

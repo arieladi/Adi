@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/ops.hpp"
 #include "adi/store_rows.hpp"
+#include <map>
 #include <span>
 namespace adi {
 struct DeviceRemoteReference {
@@ -16,9 +17,15 @@ struct DeviceCopy {
     std::optional<rows::PluginRef> reference;
     std::optional<DeviceRemoteReference> remoteHost;
     bool hasNestedChains=false;
+    /// Owned typed rack rows and their project-local pooled identities.
+    /// The ordinary-device clipboard continues to use insert above.
+    Payload rackContents;
+    std::map<std::int64_t,rows::PluginRef> rackReferences;
+    std::map<std::int64_t,DeviceRemoteReference> rackRemoteHosts;
+    [[nodiscard]] bool hasOriginalDeviceId(std::int64_t) const;
 };
 /// Stored state on this connection's owner, off the callback. Uses the same
-/// registered capture as device.remove; does not read a live plug-in or write.
+/// causal capture as device.remove; does not read a live plug-in or write.
 [[nodiscard]] DeviceCopy readDeviceCopy(Store&,std::int64_t);
 struct PreparedDevicePaste {
     bool ok=false;
@@ -29,7 +36,7 @@ struct PreparedDevicePaste {
 };
 /// Same-project copy. A null before appends; otherwise insert before that
 /// device in the given chain. All IDs/order moves are captured in preparation.
-/// Nested rack images and cross-project state/ref import are separate work.
+/// Rack paste remaps the stored fragment, its owned rows and its internal links.
 [[nodiscard]] PreparedDevicePaste prepareDevicePaste(Store&,const DeviceCopy&,
     std::int64_t newId,std::int64_t chain,std::optional<std::int64_t> before={});
 /// Paste an ordered block. Each copy gets its corresponding fresh ID and all
@@ -44,5 +51,15 @@ struct PreparedDevicePaste {
 prepareDevicePasteForTrack(Store &, const DeviceCopy &, std::int64_t newId, std::int64_t track);
 [[nodiscard]] PreparedDevicePaste prepareDevicePasteForTrack(Store &, std::span<const DeviceCopy>,
     std::span<const std::int64_t> newIds, std::int64_t track);
+/// Allocate the root together with the fragment, skipping original IDs and saved remarks.
+[[nodiscard]] PreparedDevicePaste prepareDevicePasteWithFreshId(Store&, const DeviceCopy&,
+    std::int64_t chain, std::optional<std::int64_t> before = {});
+[[nodiscard]] PreparedDevicePaste prepareDevicePasteForTrackWithFreshId(Store&, const DeviceCopy&, std::int64_t track);
 [[nodiscard]] CommitResult commitDevicePaste(Store&,const PreparedDevicePaste&,Actor=Actor::User);
+
+/// Wrap a contiguous serial selection in one new rack and one child chain.
+[[nodiscard]] CommitResult groupDevicesInRack(Store&, std::span<const std::int64_t> deviceIds,
+                                              std::string_view rackKind, Actor = Actor::User);
+/// Return an enabled rack's one unrestricted serial chain to the parent.
+[[nodiscard]] CommitResult ungroupDeviceRack(Store&, std::int64_t rackId, Actor = Actor::User);
 }

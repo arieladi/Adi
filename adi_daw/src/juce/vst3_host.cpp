@@ -1163,11 +1163,13 @@ std::int64_t Vst3Device::readTail() const noexcept {
 }
 
 std::int32_t Vst3Device::latencySamples() const noexcept {
-    if (inst_ == nullptr) return 0;
-    const int l = inst_->getLatencySamples();
-    // A plugin reporting a negative latency is reporting nonsense, and
-    // compensating by a negative number moves audio EARLIER than the source.
-    return l > 0 ? l : 0;
+    return latencyReport().samples;
+}
+
+engine::LatencyReport Vst3Device::latencyReport() const noexcept {
+    if (inst_ == nullptr) return {0, false};
+    const auto samples = inst_->getLatencySamples();
+    return samples < 0 ? engine::LatencyReport{0, false} : engine::LatencyReport{samples, true};
 }
 
 std::vector<std::string> Vst3Device::stateRoles() const {

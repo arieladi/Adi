@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/param_automation.hpp"
+#include "adi/builtin_catalog.hpp"
+#include "adi/engine/plan.hpp"
+#include "juce/builtin_values.hpp"
+#include "juce/clap_host.hpp"
 
 #include "adi/device_param_ref.hpp"
 
@@ -19,16 +23,39 @@ void DeviceAutomation::add(const AutomationLaneProgram& lane, std::uint32_t para
     l.program = &lane;
     l.paramId = paramId;
     l.steps = steps;
-    lanes_.push_back(l);
+    lanes_.push_back(std::move(l));
+}
+
+void DeviceAutomation::addMacro(MacroTarget target, std::uint32_t paramId) {
+    Lane lane;
+    lane.paramId = paramId;
+    lane.macro = std::make_unique<MacroTarget>(std::move(target));
+    lanes_.push_back(std::move(lane));
 }
 
 void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std::int64_t sample) noexcept {
-    const auto& program = *lane.program;
-    double v = std::clamp(lane.steps.stepped ? heldValueAt(program, sample, program.defaultValue)
-                                            : valueAt(program, sample), 0.0, 1.0);
-    if (lane.steps.stepped && lane.steps.count > 1) {
-        const double divisions = lane.steps.count - 1;
-        v = std::round(v * divisions) / divisions;
+    double v;
+    if (lane.macro) {
+        const auto& target = *lane.macro;
+        MacroSum sum;
+        for (const auto& input : target.inputs) {
+            const auto position = input.lane ? valueAt(*input.lane, sample) : input.value;
+            sum.add(input.range, position);
+        }
+        const auto value = sum.value(target.minimum, target.maximum);
+        if (!value) return;
+        const auto normalized = target.native ? std::optional{device::builtin_values::normalized(*target.native, *value)}
+                                              : normalizeMacroValue(*value, target.minimum, target.maximum);
+        if (!normalized) return;
+        v = *normalized;
+    } else {
+        const auto& program = *lane.program;
+        v = std::clamp(lane.steps.stepped ? heldValueAt(program, sample, program.defaultValue)
+                                          : valueAt(program, sample), 0.0, 1.0);
+        if (lane.steps.stepped && lane.steps.count > 1) {
+            const double divisions = lane.steps.count - 1;
+            v = std::round(v * divisions) / divisions;
+        }
     }
     if (lane.sent && v == lane.last) return;
     Event e;
@@ -45,6 +72,15 @@ void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std
     lane.sent = true;
 }
 
+std::int64_t DeviceAutomation::boundaryAfter(const Lane& lane, std::int64_t sample) noexcept {
+    if (lane.program) return automationBoundaryAfter(*lane.program, sample);
+    auto next = std::numeric_limits<std::int64_t>::max();
+    for (const auto& input : lane.macro->inputs) {
+        if (input.lane) next = std::min(next, automationBoundaryAfter(*input.lane, sample));
+    }
+    return next;
+}
+
 void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::int32_t end,
                            std::int64_t first) noexcept {
     // The run's first sample: continuity, and the chase after a wrap or a locate.
@@ -54,7 +90,7 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
     // out of order, a point between two grid lines would be compared with the
     // later line's value and skipped as unchanged, and a step would land on
     // the grid instead of where it is drawn.
-    auto point = automationBoundaryAfter(*lane.program, first);
+    auto point = boundaryAfter(lane, first);
     const std::int64_t last = first + (end - frame);   // one past the run's last sample
     std::int32_t grid = (frame / interval_ + 1) * interval_;
     for (;;) {
@@ -67,7 +103,7 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
         if (next == grid) grid += interval_;
         if (next == atPoint) {
             // Several points on one sample (a step) are one offer.
-            point = automationBoundaryAfter(*lane.program, first + (next - frame));
+            point = boundaryAfter(lane, first + (next - frame));
         }
     }
 }
@@ -116,15 +152,126 @@ void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int
 
 // ---------------------------------------------------------------------------
 
+namespace {
+bool parseParamId(const std::string& text, std::uint32_t& out) {
+    if (text.empty() || text.size() > 10) return false;
+    std::uint64_t v = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    if (v > std::numeric_limits<std::uint32_t>::max()) return false;
+    out = static_cast<std::uint32_t>(v);
+    return true;
+}
+
+std::optional<std::pair<std::uint32_t, DeviceAutomation::MacroTarget>> macroTarget(
+    const device::DeviceInstance& instance, const std::string& reference) {
+    const auto& identity = instance.identity();
+    std::uint32_t decimal = 0;
+    const bool numeric = parseParamId(reference, decimal);
+    for (std::int32_t i = 0; i < instance.paramCount(); ++i) {
+        const auto* parameter = instance.paramAt(i);
+        if (!parameter || !parameter->automatable || parameter->missing) continue;
+        std::uint32_t wire = 0;
+        const bool parsed = identity.format == "clap" ? device::ClapDevice::paramIdFromText(parameter->id, wire)
+                                                       : parseParamId(parameter->id, wire);
+        if (!parsed || (reference != parameter->id && (!numeric || wire != decimal))) continue;
+        DeviceAutomation::MacroTarget target;
+        if (identity.format != "vst3" && parameter->hasRealRange) {
+            target.minimum = parameter->minReal;
+            target.maximum = parameter->maxReal;
+        }
+        if (identity.format == "internal" && std::in_range<std::int32_t>(wire)) {
+            const auto declarations = device::parsePdDeclarations(builtinDeclarations(identity.uid));
+            if (const auto* native = declarations.param(static_cast<std::int32_t>(wire))) {
+                target.native = *native;
+                target.minimum = native->min;
+                target.maximum = native->max;
+            }
+        }
+        if (!std::isfinite(target.minimum) || !std::isfinite(target.maximum) || target.minimum > target.maximum)
+            return std::nullopt;
+        return std::pair{wire, std::move(target)};
+    }
+    return std::nullopt;
+}
+
+void addMacroMappings(DeviceAutomationBinding& binding, const rows::Model& model,
+                      const std::map<std::pair<std::int64_t, std::string>, const AutomationLaneProgram*>& sources,
+                      const std::function<const device::DeviceInstance*(std::int64_t)>& resolve,
+                      const Transport& transport, std::int32_t interval) {
+    if (!resolve || model.macroMappings.empty()) return;
+    const DeviceLayout layout(model);
+    std::map<std::int64_t, const rows::RackMacro*> macros;
+    for (const auto& row : model.rackMacros) macros.emplace(row.id, &row);
+    std::map<std::pair<std::int64_t, std::uint32_t>, DeviceAutomation::MacroTarget> targets;
+    for (const auto& mapping : model.macroMappings) {
+        const auto fail = [&](std::string_view reason) {
+            binding.problems.push_back("macro_mappings#" + std::to_string(mapping.id) + ": " + std::string(reason));
+        };
+        const auto source = macros.find(mapping.macroId);
+        if (source == macros.end()) { fail("macro is missing"); continue; }
+        const auto& knob = *source->second;
+        const auto* rack = layout.device(knob.deviceId);
+        const auto slot = rackMacroSlot(knob.ord);
+        if (!rack || !rack->isRack || !layout.trackOf(rack->id) || !slot || !std::isfinite(knob.value)) {
+            fail("macro has no usable rack or slot");
+            continue;
+        }
+        if (!rack->enabled) continue;
+        if (!std::isfinite(mapping.rangeMin) || !std::isfinite(mapping.rangeMax) ||
+            mapping.curve < 0 || mapping.curve > kMaxCurve) {
+            fail("mapping range or curve is invalid");
+            continue;
+        }
+        const auto* instance = resolve(mapping.targetDeviceId);
+        auto resolved = instance && instance->loaded() ? macroTarget(*instance, mapping.targetParamRef) : std::nullopt;
+        if (!resolved) { fail("target parameter is unavailable"); continue; }
+        auto& [wire, target] = *resolved;
+        const auto lane = sources.find({knob.deviceId, std::string(rackMacroParamRef(*slot))});
+        const MacroRange range{mapping.rangeMin, mapping.rangeMax, static_cast<std::uint8_t>(mapping.curve), mapping.inverted};
+        const auto key = std::pair{mapping.targetDeviceId, wire};
+        auto& group = targets.try_emplace(key, std::move(target)).first->second;
+        group.inputs.push_back({knob.value, lane == sources.end() ? nullptr : lane->second, range});
+    }
+    for (auto& [key, target] : targets) {
+        const auto [deviceId, paramId] = key;
+        auto& source = binding.byDevice[deviceId];
+        if (!source) source = std::make_unique<DeviceAutomation>(transport, interval);
+        source->addMacro(std::move(target), paramId);
+        binding.macroTargets.insert(key);
+    }
+}
+}  // namespace
+
 std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<const AutomationProgram> program,
                                                               const std::set<std::int64_t>& overridden,
                                                               const Transport& transport, double sampleRate,
                                                               const DeviceAutomationSteps& steps,
-                                                              const DeviceActivatorAvailable& activatorAvailable) {
+                                                              const DeviceActivatorAvailable& activatorAvailable,
+                                                              const rows::Model* model,
+                                                              const std::function<const device::DeviceInstance*(std::int64_t)>& resolve) {
     auto out = std::make_shared<DeviceAutomationBinding>();
     out->program = std::move(program);
     if (!out->program) return out;
     const std::int32_t interval = automationInterval(sampleRate);
+    std::set<std::int64_t> rackIds;
+    std::map<std::pair<std::int64_t, std::string>, const AutomationLaneProgram*> sources;
+    if (model) {
+        for (const auto& row : model->devices) if (row.isRack) rackIds.insert(row.id);
+        for (const auto& lane : out->program->lanes()) {
+            if (lane.ownerKind != "device" || !lane.enabled || lane.valueDomain != "normalized" ||
+                !rackIds.contains(lane.ownerId) || !parseRackMacroParamRef(lane.paramRef)) continue;
+            const auto key = std::pair{lane.ownerId, lane.paramRef};
+            if (!out->laneFor.emplace(key, lane.laneId).second) {
+                out->problems.push_back("automation_lanes#" + std::to_string(lane.laneId) + ": duplicate rack macro lane");
+                continue;
+            }
+            if (!overridden.contains(lane.laneId)) sources.emplace(key, &lane);
+        }
+        addMacroMappings(*out, *model, sources, resolve, transport, interval);
+    }
     for (const AutomationLaneProgram& lane : out->program->lanes()) {
         if (lane.ownerKind != "device") continue;
         const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
@@ -138,6 +285,7 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
                                     lane.valueDomain + "' value needs the plug-in's own mapping; not played");
             continue;
         }
+        if (rackIds.contains(lane.ownerId) && parseRackMacroParamRef(lane.paramRef)) continue;
         std::uint32_t paramId = 0;
         if (!activator && !parseDeviceParamRef(lane.paramRef, paramId)) {
             out->problems.push_back(who + ": param_ref '" + lane.paramRef +
@@ -159,6 +307,8 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
             out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
             continue;
         }
+        // DEV-06: a parameter a macro maps is played by the macro, not its own lane.
+        if (!activator && out->macroTargets.contains({lane.ownerId, paramId})) continue;
         auto& device = out->byDevice[lane.ownerId];
         if (!device) device = std::make_unique<DeviceAutomation>(transport, interval);
         if (activator) device->addActivator(lane);

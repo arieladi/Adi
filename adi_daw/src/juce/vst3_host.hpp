@@ -184,6 +184,7 @@ public:
     /// decision 4: the device buffer is NOT included here, or every
     /// compensated track is wrong by up to 4096 samples.
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
+    [[nodiscard]] engine::LatencyReport latencyReport() const noexcept override;
 
     // --- parameters ---------------------------------------------------------
 

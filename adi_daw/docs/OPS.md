@@ -213,6 +213,12 @@ Where an inverse would still exceed a threshold (proposed: 4 MB), the op is
 marked `lossy_undo` and the user is told **before** it commits. Silently dropping
 undo is not acceptable; neither is a 2 GB op log.
 
+New rack `device.remove` and `chain.delete` submissions use 4 MiB of encoded
+inverse bytes. An exact inverse at the limit still commits. An oversized edit
+returns the `lossy_undo` issue before the transaction commits, with its earlier
+operations rolled back. The application can surface that issue for an explicit
+decision. Previously recorded exact inverses still replay at their saved size.
+
 ### 6.4 Gestures: preview, then one committed action
 
 ADR-0216 supersedes the proposed 300 ms journal merge. `GestureSession`
@@ -1674,6 +1680,14 @@ UI/host producer wiring is introduced.
 | `macro.unmap` | e | S | cap | P1 |
 | `macro.setRange` | e | S | sym | P1 |
 
+`macro.setValue` writes normalized `value` to a stored macro `id`. Creating a
+previously implicit slot also supplies its `rack` and one-based `slot` from 1
+to 16. `macro.map` supplies `id`, `macro`, target device `dev` and stable
+parameter `param`. `macro.map` and `macro.setRange` take `lo` and `hi` as the
+authored endpoints, plus optional `curve` and `inverted`. A CLAP or native
+target uses its physical unit when it declares one. A VST3 target uses
+normalized positions. The derived parameter events never enter the journal.
+
 N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
 the same first-touch opener and normalization as a plug-in's own edit capture.
 Commit each completed gesture's batch as one transaction; unbracketed UI edits
@@ -1717,10 +1731,11 @@ plug-in's format/UID/shell identity and remote endpoint identity, so ID reuse
 after history changes cannot select a different plug-in or host; labels and
 binary relocation remain compatible. commitDevicePaste preserves
 the captured expected head, including a null root. Keep the document generation
-with an asynchronous result; cross-project state/ref import and nested rack
-images are not supplied and return explicit refusals. The reader still exposes
-a rack's root metadata and hasNestedChains. Flush pending host edit capture
-before reading if the clipboard should include that gesture.
+with an asynchronous result. A same-project rack clipboard includes its stored
+chains, device state references, parameters, panels and internal mappings.
+Paste assigns fresh identities to those rows and rewrites internal links. It
+refuses cross-project state/ref imports. Flush pending host edit capture before
+reading if the clipboard should include that gesture.
 
 `prepareDevicePasteForTrack(Store&, copy, newId, track)` (N51) appends through
 the track's first top-level chain in `(ord,id)` order. If none exists it stages
@@ -1728,17 +1743,19 @@ the track's first top-level chain in `(ord,id)` order. If none exists it stages
 undoable transaction: Undo removes the new device and its new chain; Redo restores
 the same identities. `PreparedDevicePaste::chainId` reports the selected/staged
 chain. The existing chain/before-device API retains its insertion behavior.
-The track-target packet carries the expected head, source connection, exact
+`prepareDevicePasteWithFreshId` and `prepareDevicePasteForTrackWithFreshId`
+allocate the root through the same `RowIds` context as the fragment. They skip
+the original device IDs, including those released by Cut, and saved remarks.
+The packet carries the expected head, source connection, exact
 track/chain/device destination guards (including absent sets/identities), and
 plug-in-reference row through the common captured submission path. Submit that
 packet intact with `commitDevicePaste` or the ordinary journal/submitter;
 partial/tampered/appended packets refuse, and an invalid partial offer does not
 poison the authentic offer. Same-head external target changes refuse before any
-order move or chain write. All owned state/parameters remain the stored clipboard
-image; nested-rack and cross-project limitations still apply. The caller refreshes
+order move or chain write. All owned state/parameters come from the stored clipboard
+image. The caller refreshes
 Session/ProjectView after commit; the window binds the new append API when it
-has a track destination without a selected device. Preparation uses the existing
-bounded native MAX-id strategy; shared allocator consolidation is the M2 follow-up.
+has a track destination without a selected device.
 
 
 The browser calls prepareBuiltinInsert(store, uid, track, beforeDevice) then

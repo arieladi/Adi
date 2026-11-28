@@ -23,6 +23,8 @@ struct GraphPdcTestAccess {
     static void stall(Graph& g){g.pdcSequence_.fetch_add(1,std::memory_order_acq_rel);}
     static void finish(Graph& g){g.pdcSequence_.fetch_add(1,std::memory_order_release);}
     static DelayLine& dry(Graph& g,NodeId id){return g.slots_[static_cast<std::size_t>(id)].dryDelay;}
+    static void stallApplied(Graph& g) {g.appliedLatencySequence_.fetch_add(1,std::memory_order_acq_rel);}
+    static void finishApplied(Graph& g) {g.appliedLatencySequence_.fetch_add(1,std::memory_order_release);}
 };
 }
 using namespace adi::engine;
@@ -40,11 +42,13 @@ struct Source final:Node {
 };
 struct Latched final:Node {
     std::atomic<std::int32_t> reported{8};std::int32_t applied=8,lastConfigured=-1;
+    std::atomic<bool> known{true};
     std::uint64_t physical=0,frames=0,calls=0;mutable unsigned queries=0;
     std::array<float,512> ring{};std::size_t write=0;
     bool alwaysProcess()const noexcept override{return true;}
     bool hasBypass()const noexcept override{return true;}
     std::int32_t latencySamples()const noexcept override{++queries;return reported.load(std::memory_order_relaxed);}
+    LatencyReport latencyReport() const noexcept override {return {latencySamples(), known.load(std::memory_order_relaxed)};}
     void process(const NodeIo& io)noexcept override{
         lastConfigured=io.configuredLatency;
         if(io.renderBlock!=physical){physical=io.renderBlock;if(io.configuredLatency==reported.load())applied=io.configuredLatency;}
@@ -88,12 +92,17 @@ void splitPin(Precision precision){
     Fixture a(precision),control(precision);a.warm();control.warm();
     auto cursor=a.tap.cursorAtEnd();const auto before=a.latent.frames;const auto written=a.tap.written();
     a.render(17,512,100);control.render(17,512,100);
-    a.latent.reported=0;const auto queries=a.latent.queries;
+    a.latent.reported=0;a.latent.known=false;const auto queries=a.latent.queries;
     check(a.graph.retapLatency(),"within-capacity retap publishes");
     check(a.latent.queries==queries+1,"retap queries each SDK node exactly once");
     a.graph.pinPhysicalPdc(100);
     check(a.graph.latencySamples()==8&&a.main().target()==8&&a.side().target()==8&&a.dry().target()==8,
           "retap leaves all actual targets and metadata pinned within physical callback");
+    const auto oldReport = a.graph.pathLatencyBetween(a.src, a.out, a.out);
+    check(oldReport && oldReport->samples == 8 && oldReport->known, "paired latency still reads the old declaration");
+    GraphPdcTestAccess::stallApplied(a.graph);
+    check(!a.graph.pathLatencyBetween(a.src, a.out, a.out), "a partial audio publication yields no mixed latency reading");
+    GraphPdcTestAccess::finishApplied(a.graph);
     a.render(47,529,100);control.render(47,529,100);
     check(a.audio==control.audio&&a.wide==control.wide&&a.latent.lastConfigured==8&&a.latent.applied==8,
           "17/47 tail stays bit-identical to coherent old plan");
@@ -104,6 +113,8 @@ void splitPin(Precision precision){
     {RT rt;a.graph.pinPhysicalPdc(101);}
     check(a.graph.latencySamples()==0&&a.main().target()==0&&a.side().target()==0&&a.dry().target()==0,
           "next callback exposes complete committed plan before processing");
+    const auto newReport = a.graph.pathLatencyBetween(a.src, a.out, a.out);
+    check(newReport && newReport->samples == 0 && !newReport->known, "numeric fallback and unknown declaration travel together");
     a.render(64,576,101);check(a.latent.applied==0&&a.latent.lastConfigured==0,"child acknowledges new target only in next callback");
 }
 void stalledAndLatest(Precision precision){

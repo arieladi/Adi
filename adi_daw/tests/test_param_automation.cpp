@@ -10,6 +10,7 @@
 #include "adi/blob.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/history.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -366,6 +367,7 @@ struct Recorder final : device::DeviceInstance {
         double value;
     };
     device::DeviceIdentity id;
+    std::array<device::ParamDescriptor, 2> parameters;
     std::vector<Seen> seen;   // reserved before any render
     std::vector<device::ParamDescriptor> declared;
     std::int64_t clock = 0;
@@ -373,9 +375,16 @@ struct Recorder final : device::DeviceInstance {
     int calls = 0;
     const device::DeviceIdentity& identity() const noexcept override { return id; }
     bool loaded() const noexcept override { return true; }
-    std::int32_t paramCount() const noexcept override { return static_cast<std::int32_t>(declared.size()); }
+    // A test's own declarations first (they win a lookup by ID), then the
+    // two parameters DEV-06's macro tests map (7 and 8).
+    std::int32_t paramCount() const noexcept override {
+        return static_cast<std::int32_t>(declared.size() + parameters.size());
+    }
     const device::ParamDescriptor* paramAt(std::int32_t index) const noexcept override {
-        return index >= 0 && static_cast<std::size_t>(index) < declared.size() ? &declared[static_cast<std::size_t>(index)] : nullptr;
+        if (index < 0) return nullptr;
+        const auto at = static_cast<std::size_t>(index);
+        if (at < declared.size()) return &declared[at];
+        return at - declared.size() < parameters.size() ? &parameters[at - declared.size()] : nullptr;
     }
     void process(const NodeIo& io) noexcept override {
         ++calls;
@@ -428,8 +437,15 @@ struct Project {
         spec.maxFrames = block;
         const bool ok = session.load(
             *store,
-            [this](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+            [this](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
                 auto r = std::make_unique<Recorder>();
+                r->id.format = request.ref->format;
+                r->id.uid = request.ref->uid;
+                r->parameters[0].id = r->id.format == "clap" ? "00000007" : "7";
+                r->parameters[0].minReal = 20.0;
+                r->parameters[0].maxReal = 80.0;
+                r->parameters[0].hasRealRange = true;
+                r->parameters[1].id = r->id.format == "clap" ? "00000008" : "8";
                 r->seen.reserve(200000);
                 r->declared = declared;
                 rec = r.get();
@@ -662,8 +678,7 @@ void testNamedAndPlaceholders() {
     Project p("named", 48000.0, 512);
     p.lane(1, {{0, 0.5}}, "7", "real");
     p.lane(2, {{0, 0.5}}, "cutoff");
-    // A device inside a rack's chain is not realised yet (ADR-0060), so it is
-    // in no chain the graph plays.
+    // Device 1 is an ordinary effect. A child chain needs a rack owner.
     p.store->db().exec("INSERT INTO device_chains(id,parent_device_id) VALUES(2,1);"
                        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(5,2,0,1,'Nested')");
     p.lane(3, {{0, 0.5}}, "9", "normalized", 5);
@@ -671,6 +686,89 @@ void testNamedAndPlaceholders() {
     check(p.mentions("automation_lanes#1: a device lane must be normalized"), "a real lane is named");
     check(p.mentions("automation_lanes#2: param_ref 'cutoff'"), "a non-numeric parameter is named");
     check(p.mentions("devices#5: has automation but is in no chain"), "a device in no chain is named");
+}
+
+void testNestedRackAutomation() {
+    section("DEV-01 -- a hosted device inside nested racks hears its own automation");
+    Project p("nested", 48000.0, 64);
+    p.store->db().exec(
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) VALUES(20,1,1,'Outer',1,'audio_effect');"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(21,20);"
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) VALUES(30,21,0,'Inner',1,'audio_effect');"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(31,30);"
+        "UPDATE devices SET chain_id=31 WHERE id=1");
+    p.lane(1, {{0, 0.125}, {512, 0.625}});
+    p.load();
+    p.play(512);
+    check(p.rec && p.session.instanceFor(1) == p.rec && !p.rec->seen.empty() &&
+              p.rec->seen.front().paramId == 7 && p.rec->seen.front().value == 0.125 &&
+              p.rec->seen.back().value > 0.5 && !p.mentions("in no chain"),
+          "nested leaf receives its stored addressed lane at the native process entry point");
+}
+
+void testRackMacroPlayback() {
+    section("DEV-06 -- rack macros take over one target and sum before the native clamp");
+    Project p("rack_macros", 48000.0, 64);
+    p.store->db().exec(
+        "UPDATE plugin_refs SET format='clap' WHERE id=1;"
+        "INSERT INTO devices(id,chain_id,ord,is_rack) VALUES(20,1,1,1);"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(21,20);"
+        "UPDATE devices SET chain_id=21 WHERE id=1;"
+        "WITH RECURSIVE slots(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM slots WHERE n<15)"
+        "INSERT INTO macros(id,device_id,ord,name,value) SELECT 100+n,20,n,'Macro '||(n+1),0.5 FROM slots;"
+        "INSERT INTO macro_mappings(id,macro_id,target_device_id,target_param_ref,range_min,range_max) "
+        "VALUES(200,100,1,'00000007',0,100),(201,115,1,'7',50,0)");
+    p.lane(1, {{0, 0.25, 0}, {131, 0.75}}, "macro.1", "normalized", 20);
+    p.lane(2, {{0, 0.05}}, "7");
+    p.lane(3, {{0, 0.4}}, "8");
+    g_allocations = 0;
+    p.load();
+    p.play(256);
+    const auto parameters = p.session.rackParameters(20);
+    bool allSlots = parameters.has_value() && p.session.model().rackMacros.size() == 16;
+    for (std::size_t slot = 0; allSlots && slot < kRackMacroCount; ++slot)
+        allSlots = (*parameters)[slot].ref == rackMacroParamRef(slot) && (*parameters)[slot].value == 0.5;
+    check(allSlots && parameters->back().ref == "chainSelect", "all 16 stored slots and the selector have stable parameter refs");
+    const auto saw = [&](std::uint32_t id, std::int64_t sample, double value) {
+        return std::ranges::any_of(p.rec->seen, [&](const Recorder::Seen& event) {
+            return event.paramId == id && event.sample == sample && std::abs(event.value - value) < 1e-12;
+        });
+    };
+    check(saw(7, 0, 0.5) && saw(7, 131, 1.0), "a 25 plus 25 contribution is normalized after the sum, and a step to 100 clamps at 80");
+    check(!saw(7, 0, 0.05) && saw(8, 0, 0.4) && p.session.macroControls(1, 7),
+          "takeover suppresses the matching ordinary parameter lane and keeps the other lane running");
+    check(g_allocations.load() == 0, "rack parameter evaluation does not allocate in the callback");
+
+    OpJournal journal(*p.store);
+    History history(*p.store);
+    OpRequest move;
+    move.opType = "macro.setValue";
+    move.payload = {{"id", 115}, {"value", 1.0}};
+    check(journal.commit(move).ok, "a stored macro position is edited through its journal operation");
+    const auto atMove = p.clock;
+    p.refresh();
+    p.render(64);
+    check(saw(7, atMove, (75.0 - 20.0) / 60.0) &&
+              p.store->db().execAndGet("SELECT count(*) FROM plugin_params").getInt() == 0,
+          "the moved macro affects the target in the next generation without journaling generated values");
+    check(history.undo().ok, "one Undo restores the authored knob value");
+    p.refresh();
+    check(p.session.rackParameters(20)->at(15).value == 0.5, "Undo restores the stored macro position in the slot view");
+
+    OpRequest removeFirst;
+    removeFirst.opType = "macro.unmap";
+    removeFirst.payload = {{"id", 200}};
+    auto removeLast = removeFirst;
+    removeLast.payload["id"] = 201;
+    const std::array remove{removeFirst, removeLast};
+    check(journal.commit(remove).ok, "the mappings can be removed in one edit");
+    const auto atUnmap = p.clock;
+    p.refresh();
+    p.render(64);
+    check(!p.session.macroControls(1, 7) && saw(7, atUnmap, 0.05), "unmapping the last source chases the ordinary lane again");
+    check(history.undo().ok, "unmapping restores both exact mapping rows in one Undo");
+    p.refresh();
+    check(p.session.macroControls(1, 7), "the restored mapping takes over again");
 }
 
 void testRepublishedUnderTheCallback() {
@@ -759,7 +857,9 @@ int main() {
         testLegacySteppedDeviceLanes();
         testDeviceActivator();
         testOverrideAndReenable();
-        testNamedAndPlaceholders();
+    testNamedAndPlaceholders();
+    testNestedRackAutomation();
+    testRackMacroPlayback();
         testRepublishedUnderTheCallback();
         testNonCanonicalLegacyOverrideAndDuplicate();
     } catch (const std::exception& e) {

@@ -515,6 +515,21 @@ Model readModel(const Store& store) {
               m.devices.push_back(std::move(d));
           });
 
+    query(m, db, "macros", "SELECT id,device_id,ord,name,value,color FROM macros ORDER BY device_id,ord,id",
+          [&](const SQLite::Statement& st) {
+              m.rackMacros.push_back({st.getColumn(0).getInt64(), st.getColumn(1).getInt64(),
+                  st.getColumn(2).getInt64(), st.getColumn(3).getString(), st.getColumn(4).getDouble(), optInt(st, 5)});
+          });
+
+    query(m, db, "macro_mappings",
+          "SELECT id,macro_id,target_device_id,target_param_ref,range_min,range_max,curve,inverted "
+          "FROM macro_mappings ORDER BY id",
+          [&](const SQLite::Statement& st) {
+              m.macroMappings.push_back({st.getColumn(0).getInt64(), st.getColumn(1).getInt64(), st.getColumn(2).getInt64(),
+                  st.getColumn(3).getString(), st.getColumn(4).getDouble(), st.getColumn(5).getDouble(),
+                  st.getColumn(6).getInt64(), flag(st, 7)});
+          });
+
     query(m, db, "plugin_params",
           "SELECT device_id, param_id, name, normalized_value, real_value, "
           "       display, unit, flags FROM plugin_params ORDER BY device_id, param_id",

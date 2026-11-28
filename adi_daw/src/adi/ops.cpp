@@ -11,6 +11,7 @@
 #include "adi/history_roots.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -698,9 +699,20 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
                 std::string err;
                 if (!d->buildInverse(ctx, payload, inverse, err)) {
                     r.error = q.opType + ": cannot build inverse: " + err;
+                    if (err == detail::kRackUndoLimitMessage) r.issues.push_back({"lossy_undo", err});
                     return r;   // Transaction dtor rolls back
                 }
                 haveInverse = true;
+            }
+
+            std::vector<std::byte> inverseBytes;
+            if (haveInverse) inverseBytes = encodePayload(inverse);
+            if (inverseBytes.size() > detail::kRackUndoLimitBytes &&
+                (q.opType == "chain.delete" || (q.opType == "device.remove" && detail::isRackUndoPacket(inverse)))) {
+                const auto message = std::string(detail::kRackUndoLimitMessage);
+                r.error = q.opType + ": " + message;
+                r.issues.push_back({"lossy_undo", message});
+                return r;
             }
 
             std::string err;
@@ -710,8 +722,6 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             }
 
             const auto payloadBytes = encodePayload(payload);
-            std::vector<std::byte> inverseBytes;
-            if (haveInverse) inverseBytes = encodePayload(inverse);
 
             // Ephemeral ops (transport, clip launching) are in the log for
             // audit and OUTSIDE the undo tree: parent_seq NULL, and they do not

@@ -542,5 +542,46 @@ void fanoutReleases(Precision width) {
     check(stopped.instruments[0]->events(EventType::NoteOn)==130 && stopped.instruments[0]->events(EventType::NoteOff)==130 &&
           silent(*stopped.instruments[0]),"a delayed dead-end Stop branch cannot retain released ownership and exhaust the bounded voice table");
 }
+
+void rackNotesAtSwap(Precision width) {
+    Fixture f(width, 128);
+    f.store->db().exec(
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack) VALUES(10,1,1,'Legacy Rack',1);"
+        "INSERT INTO device_chains(id,parent_device_id,ord) VALUES(11,10,0),(12,10,1);"
+        "UPDATE devices SET chain_id=11 WHERE id=1;"
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) VALUES(20,12,0,'Nested',1,'instrument');"
+        "INSERT INTO device_chains(id,parent_device_id,ord) VALUES(21,20,0);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,21,0,1,'Delay'),(3,21,1,1,'Slow');"
+        "INSERT INTO device_chains(id,track_id) VALUES(9,9);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(4,9,0,1,'Downstream')");
+    f.write({Fixture::note(42, 0, 24024)});
+    f.load();
+    check(f.session.tapFor(1, Tap::PreFx) && f.session.tapFor(1, Tap::PreFx) == f.session.tapFor(1, Tap::PostFx),
+          "a legacy kindless instrument rack's Pre FX tap follows its sum");
+    const auto instrument = [&](std::int64_t id) {
+        return dynamic_cast<Instrument*>(f.session.instanceFor(id));
+    };
+    const auto* fast = instrument(1);
+    const auto* slow = instrument(3);
+    const auto* downstream = instrument(4);
+    check(fast && slow && downstream, "all rack instruments and the downstream consumer were placed");
+    if (!fast || !slow || !downstream) return;
+    f.render();
+    check(fast->count == 2 && slow->count == 0 && downstream->count == 0,
+          "the fast consumer heard both events while the delayed branch and rack output still held them");
+    f.store->db().exec("UPDATE device_chains SET ord=2 WHERE id=11");
+    f.refresh();
+    while (f.clock < 768) f.render();
+    check(instrument(1) == fast && instrument(3) == slow && instrument(4) == downstream && f.loads == 3,
+          "reordering a branch retains all instrument identities");
+    const auto pairAt = [](const Instrument& instance, std::int64_t on) {
+        return instance.count == 2 && instance.heard[0].event.type == EventType::NoteOn &&
+               instance.heard[0].sample == on && instance.heard[1].event.type == EventType::NoteOff &&
+               instance.heard[1].sample == on + 100 &&
+               instance.heard[1].event.noteId == instance.heard[0].event.noteId && silent(instance);
+    };
+    check(pairAt(*fast, 0) && pairAt(*slow, 512) && pairAt(*downstream, 512),
+          "each branch hears its note once and the successor hears one compensated pair after the swap");
 }
-int main(){try{for(auto width:{Precision::Float32,Precision::Float64}){heldClock(width);identities(width);transportAndLegacy(width);pedalEdit(width);rejection(width);skippedControllers(width);exactBoundary(width);queuedEvents(width);queuedNoteAtSwap(width);delayedCurve(width);acquiredLocate(width);multiHopLocate(width);destinationIdentity(width);fanoutReleases(width);}check(allocations.load()==0 && frees.load()==0 && audio::callbackFileIo.load()==0,"every tested callback, queued handover, retry and acquired transport edit has zero allocation/free/file I/O");}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(){try{for(auto width:{Precision::Float32,Precision::Float64}){heldClock(width);identities(width);transportAndLegacy(width);pedalEdit(width);rejection(width);skippedControllers(width);exactBoundary(width);queuedEvents(width);queuedNoteAtSwap(width);delayedCurve(width);acquiredLocate(width);multiHopLocate(width);destinationIdentity(width);fanoutReleases(width);rackNotesAtSwap(width);}check(allocations.load()==0 && frees.load()==0 && audio::callbackFileIo.load()==0,"every tested callback, queued handover, retry and acquired transport edit has zero allocation/free/file I/O");}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

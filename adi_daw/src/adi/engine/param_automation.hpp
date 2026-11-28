@@ -28,7 +28,9 @@
 
 #include "adi/engine/automation.hpp"
 #include "adi/engine/graph.hpp"
+#include "adi/engine/macro_math.hpp"
 #include "adi/engine/transport.hpp"
+#include "juce/pd_declarations.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -41,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+namespace adi::device { class DeviceInstance; }
 namespace adi::engine {
 
 /// ADR-0054's floor in samples: sessionRate / 500, at least 1.
@@ -58,11 +61,22 @@ using DeviceActivatorAvailable = std::function<bool(std::int64_t device)>;
 /// One device's lanes, emitted as ParamValue events addressed to its node.
 class DeviceAutomation final : public EventSource {
 public:
+    struct MacroInput {
+        double value = 0.0;
+        const AutomationLaneProgram* lane = nullptr;
+        MacroRange range;
+    };
+    struct MacroTarget {
+        double minimum = 0.0, maximum = 1.0;
+        std::optional<device::PdParamDecl> native;
+        std::vector<MacroInput> inputs;
+    };
     DeviceAutomation(const Transport& transport, std::int32_t interval) noexcept
         : transport_(transport), interval_(interval > 0 ? interval : 1) {}
 
     /// Message thread, before the graph that plays it is published.
     void add(const AutomationLaneProgram& lane, std::uint32_t paramId, DeviceParameterSteps steps = {});
+    void addMacro(MacroTarget target, std::uint32_t paramId);
     void addActivator(const AutomationLaneProgram& lane) noexcept { activator_ = &lane; }
     bool selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept override;
     /// Audio observation for this binding. Empty until a graph renders it.
@@ -79,6 +93,7 @@ public:
 private:
     struct Lane {
         const AutomationLaneProgram* program = nullptr;
+        std::unique_ptr<MacroTarget> macro;
         std::uint32_t paramId = 0;
         DeviceParameterSteps steps;
         double last = 0.0;       ///< audio thread
@@ -86,6 +101,7 @@ private:
     };
     void offer(Lane& lane, EventList& out, std::int32_t frame, std::int64_t sample) noexcept;
     void run(Lane& lane, EventList& out, std::int32_t frame, std::int32_t end, std::int64_t first) noexcept;
+    [[nodiscard]] static std::int64_t boundaryAfter(const Lane&, std::int64_t sample) noexcept;
 
     const Transport& transport_;
     std::int32_t interval_;
@@ -105,6 +121,7 @@ struct DeviceAutomationBinding {
     /// a change to that parameter would override (ADR-0162).
     std::map<std::pair<std::int64_t, std::string>, std::int64_t> laneFor;
     std::vector<std::string> problems;
+    std::set<std::pair<std::int64_t, std::uint32_t>> macroTargets;
 };
 
 /// Bind a program's device lanes. A lane in `overridden` is known but not
@@ -115,6 +132,10 @@ struct DeviceAutomationBinding {
 [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden,
     const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {},
-    const DeviceActivatorAvailable& activatorAvailable = {});
+    const DeviceActivatorAvailable& activatorAvailable = {},
+    // DEV-06: the rows a rack's macros map from, and the resolved instance
+    // whose native parameter declaration a macro target reads.
+    const rows::Model* model = nullptr,
+    const std::function<const device::DeviceInstance*(std::int64_t)>& resolve = {});
 
 }  // namespace adi::engine
