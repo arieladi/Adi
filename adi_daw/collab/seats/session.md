@@ -44,6 +44,7 @@ Session engine seat taken on 27 November 2026.
 | Main and checker merges | Merged `origin/main` at `6aeeed1b1`, including the tenth bundle in PR #830, into `5bd9c522f`. Both platform checker branches were already ancestors. Kept Session source attachment and handovers alongside the landed resampling, MIDI routing, pitch wheel, and media diagnostics. | All 303 strict GCC 14 Debug suites passed with `ctest -LE performance` in 254.86 s. The five repository validators passed. | Pushed and verified. |
 | TM-SV-02 Arrangement import isolation | Excluded zero-origin slot rows in the single-file and consecutive-batch drop overlap probes (`84e4b3329`). | The native test executes both import operations and checks their new clips, preserved slot ownership and preserved Volume automation bytes. | Pushed. Full headless rerun pending. |
 | TM-SV-03 native pitch wheel | Prepared the newly landed native pitch-wheel stream in Session and shared its pending neutral with the Arrangement handover (`8fba6d61b`). | The native graph fixture exercises pitch and CC7 at frames 55 and 548, with one center and a note release at 730. | Pushed. Full headless rerun pending. |
+| TM-SV-04 centered wheel capture | Preserved an isolated held wheel as a literal ACTL stream when it returns to center before the run ends (`704c6f660`). | The native replay fixture checks the wheel at frames 55, 548 and 655, event and byte equality, Undo, Redo and reopen. Off-center exits remain outside the admission proof. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
