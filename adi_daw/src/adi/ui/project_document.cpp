@@ -728,6 +728,14 @@ void ProjectDocument::OpenJob::advance() {
         doc.feed_.publish(doc.session_, doc.realisedGeneration_);
         doc.persistReportedLatencies();
         appendSharedStorageWarning(*doc.store_, doc.warning_);
+        // The document always asks to write. A supported project that opened read-only all the same
+        // is a file the system protects from writing: say so once, with the way to keep working.
+        if (doc.store_->readOnly() && doc.store_->schemaMajor() == kSchemaMajor) {
+            if (!doc.warning_.empty())
+                doc.warning_ += ' ';
+            doc.warning_ += "This project's file is write-protected, so it opened read-only. "
+                            "Use Save As to keep your changes.";
+        }
         phase_ = Phase::ready;
     } catch (const std::exception &error) {
         fail(error.what());

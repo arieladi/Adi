@@ -12,6 +12,7 @@
 #include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <atomic>
 #include <chrono>
@@ -660,6 +661,18 @@ std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, S
         }
         effectiveReadOnly = true;
         result = StoreError::SchemaTooNew;
+    }
+
+    // SQLite opens a file the system protects from writing (a read-only attribute, a read-only
+    // medium) for reading even when asked to write. Such a project is read-only here too: entering
+    // WAL mode below is a write, and it used to fail the whole open as "sql error". Save As then
+    // makes an editable project of it. An exclusive open exists only to write, so it refuses.
+    if (!effectiveReadOnly && sqlite3_db_readonly(db->getHandle(), "main") == 1) {
+        if (exclusive) {
+            err = StoreError::CannotOpen;
+            return nullptr;
+        }
+        effectiveReadOnly = true;
     }
 
     // ADR-0144: an older minor of OUR major. Opened for writing, it is upgraded
