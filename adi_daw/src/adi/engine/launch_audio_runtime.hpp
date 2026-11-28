@@ -117,6 +117,10 @@ public:
     [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus> tracks, LaunchStatusHeader& header) const noexcept {
         return launcher_.readStatus(tracks, header);
     }
+    [[nodiscard]] bool regionEditsSettled(const LaunchStatusHeader& header,
+                                          std::span<const std::int64_t> tracks) const noexcept {
+        return launcher_.regionEditsSettled(header,tracks);
+    }
     void suspend() noexcept {
         if (wasPlaying_) launcher_.suspendStatus();
         wasPlaying_ = false;

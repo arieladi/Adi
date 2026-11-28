@@ -399,7 +399,9 @@ void audioHandover() {
     stopPreparedScenes(*store);
 }
 
-void rawAudioSeekKeepsPhysicalPhase() {
+enum class RawClockCase { Seek, Retain, Stop };
+
+void rawAudioClockBank(RawClockCase variant) {
     constexpr std::int64_t cut = 96'000;
     constexpr std::int64_t offsetFrames = 240;
     constexpr auto sampleValue = [](std::int64_t frame) { return static_cast<float>(frame) / 16384.0f; };
@@ -430,23 +432,88 @@ void rawAudioSeekKeepsPhysicalPhase() {
         "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(101,5000000,1000000000);"
         "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,10,101,1);"
         "INSERT INTO clip_launch(clip_id,launch_quant,clip_fade,ram_mode) VALUES(101,1,0,1);");
+    const bool retain = variant != RawClockCase::Seek;
+    if (retain) store->db().exec("INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,20,NULL,0)");
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
     session.transport().play();
     Render render{session};
-    render.runThrough(0);
+    if (retain) session.transport().locate(cut - 4096);
+    render.runThrough(session.transport().position());
     const auto stamp = session.launchIncarnation();
+    const std::array launch{LaunchRequest{LaunchRequestKind::SlotPress, 1, 10, 101, stamp}};
     OpRequest change;
     change.opType = "session.launchScene";
     change.payload = {{"scene", 20}, {"incarnation", stamp}};
+    if (retain) {
+        auto first = session.transport().position();
+        require(session.postLaunchGesture(launch), "launch the native resident source before the tempo change");
+        render.runThrough(first);
+        std::array<LaunchTrackStatus,1> status;
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(status,header) && status[0].clip == 101, "read the retained run identity");
+        if (variant == RawClockCase::Retain) {
+            const LaunchClipRegionEdit edit{1,101,stamp,status[0].run,{quarter/4,quarter},ClipUpdateRate::Bar};
+            require(session.postLaunchClipRegionEdit(edit), "queue an edit to the retained source region");
+            require(!session.prepareSceneLaunch(*store,20,4*quarter) &&
+                session.error().find("unedited playback bounds") != std::string::npos,
+                "a tempo scene waits for unconsumed region edits");
+            render.runThrough(session.transport().position());
+            require(!session.prepareSceneLaunch(*store,20,4*quarter) &&
+                session.error().find("unedited playback bounds") != std::string::npos,
+                "a tempo scene refuses a pending region edit on its retained run");
+            first = session.transport().position();
+            require(session.postLaunchGesture(launch), "restart the clip with its original source window");
+            render.runThrough(first);
+            require(session.readLaunchStatus(status,header) && status[0].clip == 101, "read the replacement run identity");
+        }
+        const auto run = status[0].run;
+        const auto beforeEdges = render.clipCount;
+        require(OpJournal(*store).commit(change).ok, "admit the tempo scene with an explicit No Stop cell");
+        const LaunchClipRegionEdit edit{1,101,stamp,run,{quarter/4,quarter},ClipUpdateRate::None};
+        require(!session.postLaunchClipRegionEdit(edit), "protect the retained source window until the tempo handover");
+        render.runThrough(cut - blockSize);
+        const auto blockStart = session.transport().position();
+        require(blockStart < cut && blockStart + blockSize > cut, "inspect one callback that spans the tempo boundary");
+        if (variant == RawClockCase::Stop) {
+            OpRequest stop;
+            stop.opType = "session.stopTrack";
+            stop.payload = {{"track",1},{"incarnation",stamp}};
+            require(OpJournal(*store).commit(stop).ok, "audit a Stop Track while the retained tempo scene waits");
+        }
+        render.runThrough(cut);
+        require(render.count == 1 && render.scenes[0].sample == cut && render.scenes[0].tick == 4 * quarter &&
+            render.scenes[0].tempoBpm == 140, "the prepared scene applies tempo at the performed cut");
+        for (std::int32_t frame = 0; frame < blockSize; ++frame) {
+            const auto sample = blockStart + frame;
+            const auto expected = variant == RawClockCase::Stop && sample >= cut
+                ? 0.0f : sampleValue(offsetFrames + sample - first);
+            const auto index = static_cast<std::size_t>(frame);
+            require(render.left[index] == expected && render.right[index] == expected,
+                "each output frame uses continuous native PCM through the cut or is silent after an explicit Stop");
+        }
+        require(session.readLaunchStatus(status,header), "read active Session state after the tempo change");
+        if (variant == RawClockCase::Stop) {
+            require(status[0].source == LaunchTrackSource::Silence && render.clipCount == beforeEdges + 1 &&
+                render.clips[beforeEdges].oldRun == run && render.clips[beforeEdges].newClip == 0 &&
+                render.clips[beforeEdges].sample == cut, "explicit Stop owns the same-sample track edge");
+        } else {
+            require(status[0].run == run && render.clipCount == beforeEdges, "No Stop retains the same run without a launch edge");
+            require(session.postLaunchClipRegionEdit(edit), "retained clips accept region edits after the clock performs");
+        }
+        require(allocations == 0 && audio::callbackFileIo == 0, "native tempo scene crossing has no driver allocation or file reads");
+        std::puts(variant == RawClockCase::Stop
+            ? "PASS -- audited Stop Track takes precedence at the native tempo boundary"
+            : "PASS -- No Stop retains bit-exact native PCM and run identity at the tempo boundary");
+        return;
+    }
     require(OpJournal(*store).commit(change).ok, "audit the prepared tempo scene on the live owner");
     render.runThrough(cut);
     require(render.count == 1 && render.scenes[0].sample == cut && render.scenes[0].tempoBpm == 140,
         "clock scene already performed before the transport seeks");
 
     session.transport().locate(1000);
-    const std::array launch{LaunchRequest{LaunchRequestKind::SlotPress, 1, 10, 101, stamp}};
     require(session.postLaunchGesture(launch), "launch the persisted Warp-off source in the old bank");
     render.runThrough(1000);
     const auto verify = [&](std::int64_t frame, const char* message) {
@@ -473,8 +540,13 @@ void rawAudioSeekKeepsPhysicalPhase() {
 } // namespace
 
 int main() {
-    try { exercise(); audioHandover(); rawAudioSeekKeepsPhysicalPhase(); }
-    catch (const std::exception& error) {
+    try {
+        exercise();
+        audioHandover();
+        rawAudioClockBank(RawClockCase::Seek);
+        rawAudioClockBank(RawClockCase::Stop);
+        rawAudioClockBank(RawClockCase::Retain);
+    } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
     }

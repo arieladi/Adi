@@ -46,6 +46,23 @@ constexpr bool kMonitorOffMutesPreviousTake = false;
 constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
 std::atomic<std::uint64_t> nextLaunchIncarnation{1};
 
+const LaunchSlot* sceneCell(const LaunchView& view, std::int64_t track, std::int64_t scene) noexcept {
+    const auto key = std::pair{track,scene};
+    const auto address = [](const LaunchSlot& slot) { return std::pair{slot.track,slot.scene}; };
+    const auto it = std::ranges::lower_bound(view.slots,key,{},address);
+    return it != view.slots.end() && address(*it) == key ? &*it : nullptr;
+}
+
+bool retainsTrack(const LaunchView& view, std::int64_t track, std::int64_t scene) noexcept {
+    const auto* cell = sceneCell(view,track,scene);
+    return cell && !cell->clip && !cell->hasStop;
+}
+
+bool fixedNativeOneShot(const LaunchAudioProject& media, const rows::Clip& clip) noexcept {
+    const auto* pcm = media.clip(clip.id);
+    return pcm && pcm->hasDirectPcm() && !clip.loopEnabled;
+}
+
 std::string deviceRef(const rows::Device& row) {
     std::string s = "devices#" + std::to_string(row.id);
     if (!row.name.empty()) s += " (" + row.name + ")";
@@ -1040,6 +1057,27 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
             budget -= bank->residentBytes();
         }
         result.push_back({sample,bank});
+    }
+    if (sceneClockPending() && result.size() >= 2 && periods.back().posTicks == preparedScene_->tick) {
+        const auto& before = *result[result.size()-2].media;
+        const auto& after = *result.back().media;
+        const auto from = before.view();
+        const auto to = after.view();
+        for (const auto& clip : model.slotClips) {
+            if (clip.kind != "audio" || clip.muted || !retainsTrack(from,clip.trackId,preparedScene_->scene))
+                continue;
+            const auto oldSlot = std::ranges::find(from.slots,clip.id,&LaunchSlot::clip);
+            if (oldSlot == from.slots.end())
+                throw std::runtime_error("a retained Session clip needs a prepared source window");
+            const auto* newSlot = sceneCell(to,clip.trackId,oldSlot->scene);
+            const auto* oldPcm = before.clip(clip.id);
+            const auto* newPcm = after.clip(clip.id);
+            if (!newSlot || newSlot->clip != clip.id || !oldPcm || !newPcm || !newPcm->hasDirectPcm() ||
+                !oldPcm->sameResidentSourceShape(*newPcm) ||
+                oldPcm->frameForTick(oldSlot->startTick,before.bpm()) != newPcm->frameForTick(newSlot->startTick,after.bpm()) ||
+                oldPcm->frameForTick(oldSlot->endTick,before.bpm()) != newPcm->frameForTick(newSlot->endTick,after.bpm()))
+                throw std::runtime_error("a retained Session clip needs the same native frame window across tempo banks");
+        }
     }
     if (!launchFilesCurrent(*clipProject_))
         throw std::runtime_error("Session media changed during tempo bank preparation");
@@ -2659,20 +2697,43 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         const auto hasAudio = [](const rows::Clip& clip) { return clip.kind == "audio" && !clip.muted; };
         if (*bpm != before->bpm() && std::ranges::any_of(model_.slotClips, hasAudio)) {
             const auto view = before->view();
+            std::vector<std::int64_t> retainedTracks;
             const auto needsRestart = [&](const rows::Clip& clip) {
                 if (!hasAudio(clip)) return false;
-                const auto cell = std::ranges::find_if(view.slots, [&](const LaunchSlot& slot) {
-                    return slot.track == clip.trackId && slot.scene == scene;
-                });
-                return cell != view.slots.end() && (cell->clip ? cell->legato : !cell->hasStop);
+                const auto* cell = sceneCell(view,clip.trackId,scene);
+                if (!cell || (cell->hasStop && !cell->clip)) return false;
+                if (cell->clip) return cell->legato;
+                const auto slot = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
+                if (slot == view.slots.end() || slot->legato || !fixedNativeOneShot(*before,clip)) return true;
+                retainedTracks.push_back(clip.trackId);
+                return false;
             };
             const auto since = nextBanks ? nextBanks->periods.back().posTicks : 0;
             if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
                 std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
                     return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
                 }) || std::ranges::any_of(model_.slotClips, needsRestart)) {
-                error_ = "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
+                error_ = "a tempo scene needs fixed-tempo audio and a Stop, non-legato start, or native resident one-shot on each audio track";
                 return false;
+            }
+            if (!retainedTracks.empty()) {
+                if (launchAudioDriver_->sourceEditReserved()) {
+                    error_ = "a tempo scene cannot retain a clip while a live source replacement is reserved";
+                    return false;
+                }
+                LaunchStatusHeader status;
+                if (!launchAudioDriver_->regionEditsSettled(status,retainedTracks)) {
+                    std::vector<LaunchTrackStatus> tracks(kMaximumStoredLaunchTracks);
+                    if (!readLaunchStatus(tracks,status) || status.incarnation != before->incarnation() ||
+                        !launchAudioDriver_->regionEditsSettled(status,retainedTracks) ||
+                        std::ranges::any_of(std::span(tracks).first(status.trackCount),[&](const auto& track) {
+                            return track.hasLiveRegion && before->clip(track.clip) &&
+                                std::ranges::find(retainedTracks,track.track) != retainedTracks.end();
+                        })) {
+                        error_ = "a tempo scene needs unedited playback bounds on retained Session clips";
+                        return false;
+                    }
+                }
             }
             if (nextBanks && nextBanks->periods.front().posTicks == 0 && !before->hasPagedAudio())
                 nextBanks->periods.push_back({tick,*bpm,0});
@@ -3791,8 +3852,18 @@ bool Session::postLaunchClipRegionEdit(const LaunchClipRegionEdit& edit) noexcep
     if (audio::onAudioThread) return false;
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     DriverClock clock;
-    return launchAudioDriver_ && timing && timing->launchAudio && readDriverClock(clock) &&
-        timing->launchAudio->postRegionEdit(*launchAudioDriver_, edit, clock.sample);
+    if (!launchAudioDriver_ || !timing || !timing->launchAudio || !readDriverClock(clock)) return false;
+    const auto& audio = *timing->launchAudio;
+    if (timing->preparedScene && sceneClockPending() && timing->preparedScene->tempoBpm > 0) {
+        const auto cut = timing->sampleForTick(timing->preparedScene->tick);
+        if (cut > 0) {
+            const auto& before = audio.mediaAt(cut-1);
+            const auto& after = audio.mediaAt(cut);
+            if (before->bpm() != after->bpm() && before->clip(edit.clip) &&
+                retainsTrack(before->view(),edit.track,timing->preparedScene->scene)) return false;
+        }
+    }
+    return audio.postRegionEdit(*launchAudioDriver_,edit,clock.sample);
 }
 
 bool Session::postLaunchClipSourceEdit(const LaunchClipSourceEdit& edit,
