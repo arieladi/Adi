@@ -121,10 +121,15 @@ struct LaunchPhysicalRegion {
     std::int64_t startFrame, endFrame, loopBeginFrame = 0, loopEndFrame = 0;
 };
 
+struct LaunchSourceCue {
+    std::int64_t tick = 0, physicalFrame = -1;
+};
+
 struct LaunchQueuedStatus {
     LaunchQueuedAction action = LaunchQueuedAction::None;
     std::int64_t clip = 0, scene = 0, tick = 0;
     std::optional<std::int64_t> legatoSourceTick{};
+    std::optional<std::int64_t> legatoSourceFrame{};
     bool operator==(const LaunchQueuedStatus&) const = default;
 };
 
@@ -267,7 +272,7 @@ private:
                 std::int32_t begin, std::int32_t end) noexcept;
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t) noexcept;
-    [[nodiscard]] std::optional<std::int64_t> queuedLegatoSourceTick(const Track&, const Pending&,
+    [[nodiscard]] std::optional<LaunchSourceCue> queuedLegatoSourceCue(const Track&, const Pending&,
         const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;

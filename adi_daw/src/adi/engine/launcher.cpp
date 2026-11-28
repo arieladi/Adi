@@ -151,6 +151,23 @@ std::int64_t launchSourceTick(const LaunchSlot& target, const LaunchSlot* previo
     return position < sourceEnd(target) ? position : target.startTick;
 }
 
+LaunchSourceCue launchSourceCue(const LaunchSlot& target, const LaunchSlot* previous,
+                                std::int64_t previousTick, std::int64_t previousFrame = -1) noexcept {
+    const auto tick = launchSourceTick(target,previous,previousTick);
+    if (!target.legato || target.physicalLoopEndFrame) return {tick,-1};
+    const auto lap = physicalLap(&target,false);
+    if (lap.startFrame < 0) return {tick,-1};
+    std::int64_t elapsed = 0;
+    if (previous && previous->clip != target.clip && previousFrame >= 0 && previous->physicalStartFrame >= 0) {
+        const auto relative = legatoUsesPreviousClipRelativePosition
+            ? previousFrame - previous->physicalStartFrame : previousFrame - lap.startFrame;
+        if (relative >= 0 && relative < lap.length()) elapsed = relative;
+    } else if (tick > lap.startTick) {
+        elapsed = std::min(lap.length()-1,lap.frameAt(tick)-lap.startFrame);
+    }
+    return {lap.tickAt(elapsed),lap.startFrame+elapsed};
+}
+
 bool validRegion(const LaunchClipRegion& region) noexcept {
     return region.start >= 0 && region.end > region.start &&
         (!region.loop || (region.loop->begin >= region.start && region.loop->end > region.loop->begin &&
@@ -587,10 +604,15 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     const auto elapsed = previous.frames - previous.pcmAnchorFrame;
     if (pending.action == Action::Start) {
         track.stopSuppressesFollow = false;
+        const auto oldFrame = oldLap.startFrame < 0 ? -1 :
+            oldSlot->physicalLoopEndFrame && elapsed == oldLap.length() ? oldSlot->physicalLoopBeginFrame :
+            oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
-        const auto position = launchSourceTick(*target,oldSlot,sourceTick);
+        const auto cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        const auto position = cue.tick;
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
+        track.run.physicalCueFrame = cue.physicalFrame;
         if (pending.repeat) {
             const bool repeatAtSourceEnd = pending.grid == LaunchQuantization::None && repeatWithoutQuantizationRestartsAtClipEnd;
             const auto next = repeatAtSourceEnd
@@ -668,9 +690,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         auto boundary = end;
         bool editRegion = false;
         const bool prepared = track.dueScene && track.dueScene->prepared;
-        const auto usesPhysicalLaps = [slot](const Pending& pending) noexcept {
-            return slot && pending.physicalLaps > 0 &&
-                (slot->physicalLoopEndFrame || (pending.repeat && slot->physicalFrames > 0));
+        const auto usesPhysicalLaps = [lap](const Pending& pending) noexcept {
+            return lap.startFrame >= 0 && pending.physicalLaps > 0;
         };
         for (auto* candidate : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
                                 prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
@@ -1071,14 +1092,14 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
     return true;
 }
 
-std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track, const Pending& pending,
+std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& track, const Pending& pending,
     const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample) const noexcept {
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
+    const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
+        .withCue(run.physicalCueFrame);
     const auto physicalSample = [&](const Pending& event) {
-        if (event.physicalLaps > 0 && (current->physicalLoopEndFrame || (event.repeat && current->physicalFrames > 0))) {
-            const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
-                .withCue(run.physicalCueFrame);
+        if (event.physicalLaps > 0 && lap.startFrame >= 0) {
             const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
             const auto period = physicalLap(current,true).length();
             const auto completed = std::min(run.completedLoops,static_cast<std::uint64_t>(event.physicalLaps));
@@ -1101,13 +1122,12 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
 
     if (current->physicalFrames > 0) {
         const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
-        const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
-            .withCue(run.physicalCueFrame);
-        if (elapsed <= lap.length())
-            return launchSourceTick(target,current,lap.tickAt(elapsed));
+        if (elapsed < lap.length() || (!current->physicalLoopEndFrame && elapsed == lap.length()))
+            return launchSourceCue(target,current,lap.tickAt(elapsed),lap.originFrame()+elapsed);
         if (!current->physicalLoopEndFrame) return {};
         const auto wrapped = physicalLap(current,true);
-        return launchSourceTick(target,current,wrapped.tickAt((elapsed - lap.length()) % wrapped.length()));
+        const auto phase = (elapsed - lap.length()) % wrapped.length();
+        return launchSourceCue(target,current,wrapped.tickAt(phase),wrapped.startFrame+phase);
     }
     const auto dueTick = block.sampleAtTick(block.clock,pending.tick) == dueSample
         ? pending.tick : atSample(block,dueSample);
@@ -1117,7 +1137,7 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
     const auto sourceAtDue = add(run.anchorSourceTick,std::max<std::int64_t>(0,dueTick - run.anchorTick));
     if (!loops(*current)) {
         if (firstEndSample < dueSample) return {};
-        return launchSourceTick(target,current,firstEndSample == dueSample ? end : std::min(end,sourceAtDue));
+        return launchSourceCue(target,current,firstEndSample == dueSample ? end : std::min(end,sourceAtDue));
     }
 
     // A rounded source wrap and a later grid tick can occupy the same physical
@@ -1127,7 +1147,7 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
     const auto wrapSample = block.sampleAtTick(block.clock,wrap);
     const auto nextWrapSample = block.sampleAtTick(block.clock,add(wrap,length));
     if (wrapSample == nextWrapSample) return {};
-    return launchSourceTick(target,current,wrapSample == dueSample || nextWrapSample == dueSample ? end : sourceAtDue);
+    return launchSourceCue(target,current,wrapSample == dueSample || nextWrapSample == dueSample ? end : sourceAtDue);
 }
 
 LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& block,
@@ -1179,8 +1199,12 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         }
         if (pending->action == Action::Arrangement) action = LaunchQueuedAction::BackToArrangement;
         if (action != LaunchQueuedAction::None) status.queued = {action,pending->clip,pending->scene,pending->tick};
-        if (action == LaunchQueuedAction::Start)
-            status.queued.legatoSourceTick = queuedLegatoSourceTick(track,*pending,*target,slot,block,endSample);
+        if (action == LaunchQueuedAction::Start) {
+            if (const auto cue = queuedLegatoSourceCue(track,*pending,*target,slot,block,endSample)) {
+                status.queued.legatoSourceTick = cue->tick;
+                if (cue->physicalFrame >= 0) status.queued.legatoSourceFrame = cue->physicalFrame;
+            }
+        }
     }
     return status;
 }

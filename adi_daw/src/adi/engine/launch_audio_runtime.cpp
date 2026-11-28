@@ -335,8 +335,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto* clip = media.clip(track.queued.clip);
         if (clip && clip->followsTempo())
             clip->prefetchWarp(track.queued.tick,*track.queued.legatoSourceTick);
-        else if (clip && clip->pageReader())
-            clip->pageReader()->prefetch(clip->clip(), clip->frameForTick(*track.queued.legatoSourceTick, media.bpm()));
+        else if (clip && clip->pageReader()) {
+            const auto frame = track.queued.legatoSourceFrame ? *track.queued.legatoSourceFrame
+                : clip->frameForTick(*track.queued.legatoSourceTick,media.bpm());
+            clip->pageReader()->prefetch(clip->clip(),frame);
+        }
     }, [](void* state, const LaunchSceneTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         if (edge.preparedToken != 0)

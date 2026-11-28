@@ -1368,6 +1368,131 @@ void pinnedRepeatUsesItsLaunchClock() {
     }
 }
 
+std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder, bool ram) {
+    auto store = sceneProject(folder);
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    addClip(*store,folder,101,10,7,false,3000,1,12000);
+    pinUnwarpedOneShot(*store,50000000,1500000000);
+    // The inherited target frame 27,086 carries the third signed pulse.
+    addClip(*store,folder,102,20,5,true,3086,1,12000);
+    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
+            "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
+            "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,1100000000);"
+            "UPDATE clip_launch SET launch_quant=8 WHERE clip_id=102;");
+    if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102");
+    return store;
+}
+
+void physicalLegatoOneShotFollowsExternalTempo() {
+    bool matched = true;
+    enum class Case { Resident, Paged, Trimmed };
+    for (const auto kind : {Case::Resident,Case::Paged,Case::Trimmed}) {
+        const bool ram = kind != Case::Paged, trimEnd = kind == Case::Trimmed;
+        test::TempDirectory folder{"physical_legato",trimEnd ? "trimmed" : ram ? "ram" : "paged"};
+        auto store = physicalLegatoProject(folder.path(),ram);
+        auto& db = store->db();
+        if (ram) db.exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=1 WHERE clip_id=102");
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        constexpr auto due = 22286;
+        constexpr auto cue = 4800 + due;
+        const auto end = trimEnd ? 35200 : 48000;
+        const auto pause = ram ? 0 : 2 * blockFrames;
+        std::vector<float> pcm(static_cast<std::size_t>(end + pause + blockFrames));
+        Playback playback{session,pcm};
+        playback.paged = !ram;
+        scene(*store,session,10);
+        playback.through(6000);
+        require(session.setExternalTempoAt(*store,140,quarter / 2), "perform tempo before the queued unwarped Legato");
+        playback.through(16000);
+        const LaunchRequest request{LaunchRequestKind::SlotPress,1,20,102,session.launchIncarnation()};
+        require(session.postLaunchGesture(std::array{request}), "queue the physical one-shot Legato target");
+        playback.through(16000 + blockFrames);
+        const auto forecast = trackState(session).queued;
+        playback.through(due + 1);
+        const auto active = trackState(session);
+        if (trimEnd) {
+            playback.through(due + 3000);
+            const auto tick = [](std::int64_t frame) { return frame * quarter / (rate / 2); };
+            const LaunchClipRegionEdit edit{1,102,session.launchIncarnation(),active.run,
+                {tick(4800),tick(40000),{}},ClipUpdateRate::None};
+            require(session.postLaunchClipRegionEdit(edit), "trim the cued RAM one-shot's physical End");
+        }
+        if (!ram) {
+            constexpr auto pausedAt = due + 6000;
+            playback.through(pausedAt);
+            session.transport().play(false);
+            playback.through(pausedAt + blockFrames);
+            db.exec("UPDATE clips SET gain_db=-6 WHERE id=102");
+            require(session.refresh(*store), "rebuild the different bounded page bank while transport is stopped");
+            playback.through(pausedAt + pause);
+            session.transport().play();
+        }
+        playback.through(end + pause + blockFrames);
+        const auto stop = playback.count == 3 ? playback.edges[2].sample : -1;
+        std::printf("Physical Legato %s: frame %lld, expected cue %d, attack %.6f, remaining %lld, stop %lld\n",
+            trimEnd ? "RAM with End edit" : ram ? "RAM" : "paged",
+            static_cast<long long>(playback.edges[1].sample),cue,static_cast<double>(pcm[due]),
+            static_cast<long long>(active.remainingSamples),static_cast<long long>(stop));
+        for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+        matched &= forecast.clip == 102 && forecast.legatoSourceTick &&
+            forecast.legatoSourceFrame && *forecast.legatoSourceFrame == cue && playback.count == 3 &&
+            playback.edges[1].newClip == 102 && playback.edges[1].sample == due && playback.edges[2].newClip == 0 &&
+            stop == end && active.remainingSamples == 48000 - due - 1 && std::abs(pcm[due] + .7f) < 1e-6f &&
+            std::abs(pcm[static_cast<std::size_t>(due+12000+pause)] + (ram ? .8f : .8f * std::pow(10.f,-.3f))) < 1e-6f &&
+            session.problems().empty();
+    }
+    require(matched, "both physical Legato backends keep the exact cue and remaining duration across tempo");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the physical Legato cue performs no callback allocation or file I/O");
+}
+
+void physicalLegatoRebasesItsCueOnLaterBank() {
+    test::TempDirectory folder{"physical_legato","later-flat-clock"};
+    auto store = physicalLegatoProject(folder.path(),true);
+    store->db().exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
+    addClip(*store,folder.path(),103,30,2,true,2107,1,12000);
+    store->db().exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=103");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto due = 22286, rebase = due + 3000, next = rebase + 2;
+    const auto clipTickAt20 = [](std::int64_t sourceFrame) { return sourceFrame * quarter / (3 * rate); };
+    std::vector<float> pcm(next + blockFrames);
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(6000);
+    require(session.setExternalTempoAt(*store,140,quarter / 2), "prepare the positive performed tempo boundary");
+    playback.through(16000);
+    const LaunchRequest first{LaunchRequestKind::SlotPress,1,20,102,session.launchIncarnation()};
+    require(session.postLaunchGesture(std::array{first}), "take the first physical Legato cue");
+    playback.through(rebase);
+    require(playback.edges[1].sample == due && trackState(session).clip == 102, "start the original physical Legato run");
+    require(session.setExternalTempo(*store,20), "replace the clock with a new tick-zero tempo");
+    playback.through(rebase+1);
+    const auto before = trackState(session);
+    playback.through(next);
+    const auto after = trackState(session);
+    const LaunchRequest third{LaunchRequestKind::SlotPress,1,30,103,session.launchIncarnation()};
+    require(session.postLaunchGesture(std::array{third}), "launch the next Warp Legato target on the new clock");
+    playback.through(next + blockFrames);
+    std::printf("Rebased physical Legato: 20 BPM source ticks %lld/%lld, next inherited %lld at %lld\n",
+        static_cast<long long>(before.sourceTick),static_cast<long long>(after.sourceTick),
+        static_cast<long long>(playback.edges[2].sourceTick),static_cast<long long>(playback.edges[2].sample));
+    require(before.run == after.run && before.clip == 102 &&
+            std::abs(before.sourceTick - clipTickAt20(4800 + rebase + 1)) <= 1 &&
+            std::abs(after.sourceTick - clipTickAt20(4800 + next)) <= 1 && after.sourceTick > before.sourceTick,
+            "physical source ticks advance in the new bank's geometry");
+    require(playback.count == 3 && playback.edges[2].newClip == 103 && playback.edges[2].sample == next &&
+            std::abs(playback.edges[2].sourceTick - clipTickAt20(next)) <= 1 && pcm[next] < -.4f,
+            "the subsequent Warp Legato inherits the physical phase on the new geometry");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -1454,6 +1579,8 @@ int main() {
             pinnedLiveRegionEdit(kind,true);
         }
         pinnedLiveRegionEdit("end",true,true);
+        physicalLegatoOneShotFollowsExternalTempo();
+        physicalLegatoRebasesItsCueOnLaterBank();
         pinnedRepeatUsesItsLaunchClock();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation

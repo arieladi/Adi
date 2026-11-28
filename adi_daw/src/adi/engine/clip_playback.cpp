@@ -1723,13 +1723,17 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         try {
             const bool usePins = clip->kind == "audio" && !warped;
             const bool physicalSource = usePins && clip->timeBase == 1 && clip->contentOffsetNs && clip->sourceEndNs &&
-                *clip->contentOffsetNs >= 0 && !slot.legato;
+                *clip->contentOffsetNs >= 0;
+            const bool supportedPhysicalLaunch = !slot.legato || (physicalSource && !clip->loopEnabled &&
+                slot.mode != LaunchMode::Repeat && (setting.ramMode ||
+                    samplesAtNs(*clip->sourceEndNs,rate) - samplesAtNs(*clip->contentOffsetNs,rate)
+                        <= 3 * ClipPlayback::readAheadFrames(rate)));
             const bool physicalLoop = physicalSource && clip->loopEnabled && clip->loopBeginNs && clip->loopEndNs &&
                 *clip->loopBeginNs >= 0 && *clip->loopEndNs <= *clip->sourceEndNs &&
                 *clip->loopEndNs > std::max(*clip->loopBeginNs,*clip->contentOffsetNs) &&
                 samplesAtNs(*clip->loopEndNs,rate) >
                     samplesAtNs(std::max(*clip->loopBeginNs,*clip->contentOffsetNs),rate);
-            const bool physicalPins = physicalSource && (!clip->loopEnabled || physicalLoop);
+            const bool physicalPins = physicalSource && supportedPhysicalLaunch && (!clip->loopEnabled || physicalLoop);
             // A paired tempo scene still observes the outgoing pin's logical
             // region when a different slot takes its relative Legato phase.
             const auto& pinClock = physicalPins ? nativeReferenceClock : fixedClock;
