@@ -80,7 +80,18 @@ void run() {
     test::TempDirectory dir("plugin_admission", "scopes");
     auto original = project(dir.path() / "one.adi", "project-one");
     auto other = project(dir.path() / "two.adi", "project-two");
-    auto old = project(dir.path() / "old.adi", "");
+    const auto legacyPath = dir.path() / "old.adi";
+    {
+        auto legacyFile = project(legacyPath, "");
+        legacyFile->db().exec("DELETE FROM adi_meta WHERE key='project_uuid'");
+        if (!legacyFile->close()) throw std::runtime_error("cannot close the legacy admission fixture");
+    }
+    // A writable open assigns an identity. A legacy file opened read-only
+    // still has none and must never seek a hosting grant.
+    StoreError legacyError{};
+    const auto legacy = Store::open(legacyPath, legacyError, /*readOnly=*/true);
+    if (!legacy || !legacy->projectUuid().empty())
+        throw std::runtime_error("cannot open a legacy admission fixture without a project identity");
     std::error_code identityError;
     const auto originalFile = media::readFileIdentity(original->path(), identityError);
     if (!originalFile) throw std::runtime_error("cannot identify the original admission test project");
@@ -130,9 +141,11 @@ void run() {
     check(!refused && matchId && factories == 0 && authorizations == 1 && error.find("Room") != std::string::npos,
           "a project-enabled server row never grants a connection");
 
-    request.project = old.get();
+    const auto resolutionsBeforeLegacy = resolutions;
+    request.project = legacy.get();
     refused = loader(request, error);
-    check(!refused && authorizations == 1 && factories == 0,
+    check(!refused && resolutions == resolutionsBeforeLegacy && authorizations == 1 && factories == 0 &&
+          error.find("project identity") != std::string::npos,
           "projects awaiting a durable identity ask no ledger and make no connection");
 
     valid.store(true);
