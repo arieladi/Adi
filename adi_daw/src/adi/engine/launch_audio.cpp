@@ -169,12 +169,20 @@ float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const no
     return samples_.data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
 }
 
-void LaunchAudioClip::prefetchWarp(std::int64_t launchTick, std::int64_t sourceTick) const noexcept {
+void LaunchAudioClip::prefetchWarp(LaunchWarpPosition position) const noexcept {
     if (auto* pages = pagedWarp_.get()) {
-        const auto placement = pages->player().launchAt(static_cast<double>(launchTick),
-                                                        static_cast<double>(sourceTick));
-        if (placement) pages->prefetch(placement);
+        const auto placement = pages->player().launchAt(static_cast<double>(position.anchorTick),
+                                                        static_cast<double>(position.anchorSourceTick));
+        if (placement) pages->prefetch(placement,position.frame);
     }
+}
+
+bool LaunchAudioClip::reserveWarpCue(LaunchWarpPosition position, std::int32_t frames) const noexcept {
+    auto* pages = pagedWarp_.get();
+    if (!pages) return false;
+    const auto placement = pages->player().launchAt(static_cast<double>(position.anchorTick),
+                                                    static_cast<double>(position.anchorSourceTick));
+    return pages->reserveCue(placement,position.frame,frames);
 }
 
 bool LaunchAudioClip::renderWarp(const AudioIo& io, std::int32_t offset, std::int32_t count,

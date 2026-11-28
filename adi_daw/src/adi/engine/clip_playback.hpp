@@ -20,6 +20,7 @@ struct NoteExpressionsRead;
 struct TempoMap;
 class LaunchAudioRuntime;
 class LaunchAudioProject;
+class LaunchWarpSource;
 struct ClipMediaSource {
     std::int64_t clipId = 0, mediaId = 0;
     std::filesystem::path path;
@@ -165,6 +166,7 @@ public:
     // must outlive this source generation's worker (including readiness holds).
     // All hooks run on the disk worker, never the audio callback.
     void setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest*) noexcept;
+    static void setWarpRequestSnapshotProbeForTest(LaunchWarpSource&, const RequestSnapshotProbeForTest*) noexcept;
     std::uint32_t underrunSamples() const noexcept;
     std::uint32_t readErrors() const noexcept;
     [[nodiscard]] std::uint64_t pageBytesCeiling() const noexcept;

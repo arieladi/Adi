@@ -1322,27 +1322,56 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
 }
 ClipPlayback::~ClipPlayback()=default;
 
+struct LaunchWarpPageBank;
+
 namespace {
 class PagedLaunchWarpSource final : public LaunchWarpSource {
 public:
-    PagedLaunchWarpSource(std::shared_ptr<void> bank, Clip& clip, std::int32_t maxFrames)
+    PagedLaunchWarpSource(std::shared_ptr<LaunchWarpPageBank> bank, Clip& clip, std::int32_t maxFrames)
         : bank_(std::move(bank)), clip_(clip), reader_{clip}, maxFrames_(maxFrames),
           lookAhead_(static_cast<std::int32_t>(std::ceil(16384.0 * clip.rate / 48000.0))) {
         warmed_.fill(-1);
         forecast_.fill(-1);
+        cue_.fill(-1);
     }
 
-    void prefetch(WarpClipPlayer::Placement placement) noexcept override {
+    void prefetch(WarpClipPlayer::Placement placement, std::int64_t first) noexcept override {
+        if (clip_.cueAdmitted) return;
         Pages pages;
         pages.fill(-1);
-        (void)addRange(pages,placement,placement.firstFrame,maxFrames_);
-        if (pages == forecast_) return;
+        (void)addRange(pages,placement,first,maxFrames_);
         forecast_ = pages;
         for (const auto page : warmed_)
             if (page >= 0) (void)append(pages,page);
-        (void)addRange(pages,placement,placement.firstFrame,lookAhead_);
+        (void)addRange(pages,placement,first,lookAhead_);
         clip_.request(pages);
     }
+
+    bool reserveCue(WarpClipPlayer::Placement placement, std::int64_t first,
+                    std::int32_t frames) noexcept override {
+        if (!placement || first < placement.firstFrame || first >= placement.endFrame ||
+            frames <= 0 || frames > maxFrames_ || clip_.cueAdmitted || readErrors()) return false;
+        Pages pages;
+        pages.fill(-1);
+        if (!addRange(pages,placement,first,frames) || pages.front() < 0) return false;
+        clip_.trimAdmission(pages);
+        for (const auto page : pages) {
+            if (page >= 0 && !clip_.reserve(page)) {
+                clip_.releaseAdmission();
+                return false;
+            }
+        }
+        cue_ = pages;
+        clip_.cueAdmitted = true;
+        return true;
+    }
+
+    void releaseCue() noexcept override {
+        clip_.cueAdmitted = false;
+        clip_.releaseAdmission();
+    }
+
+    [[nodiscard]] LaunchWarpPageBank& bank() noexcept { return *bank_; }
 
     const WarpClipPlayer& player() const noexcept override { return *clip_.streamingWarp; }
     std::uint16_t channels() const noexcept override { return clip_.channels; }
@@ -1351,6 +1380,9 @@ public:
     std::uint32_t underrunSamples() const noexcept override { return clip_.underruns.load(std::memory_order_relaxed); }
     std::uint32_t readErrors() const noexcept override { return clip_.errors.load(std::memory_order_relaxed); }
     bool allPhasesPrimed() const noexcept override { return allPhasesPrimed_; }
+    bool wholeSourceFitsPageCache() const noexcept override {
+        return clip_.sourceLength <= warmed_.size() * static_cast<std::uint64_t>(clip_.pageFrames);
+    }
 
     bool prime(const LaunchSlot& slot, bool warmAllPhases) {
         const auto lastPage = (static_cast<std::int64_t>(clip_.sourceLength) - 1) / clip_.pageFrames;
@@ -1391,15 +1423,18 @@ public:
         Pages current;
         current.fill(-1);
         (void)addRange(current,placement,first,frames);
-        auto wanted = current;
+        // The cue is already pinned. Its demand takes priority until the
+        // entire overlay, including any tail on this placement, is rendered.
+        auto wanted = clip_.cueAdmitted ? cue_ : current;
         for (const auto page : forecast_)
             if (page >= 0) (void)append(wanted,page);
         for (const auto page : warmed_)
             if (page >= 0) (void)append(wanted,page);
         (void)addRange(wanted,placement,first,std::max(frames,lookAhead_));
         clip_.request(wanted);
-        for (const auto page : current)
-            if (page >= 0) (void)clip_.reserve(page);
+        if (!clip_.cueAdmitted)
+            for (const auto page : current)
+                if (page >= 0) (void)clip_.reserve(page);
     }
 
     void renderFrame(WarpClipPlayer::Placement placement, std::int64_t frame,
@@ -1452,11 +1487,11 @@ private:
         return complete;
     }
 
-    std::shared_ptr<void> bank_;
+    std::shared_ptr<LaunchWarpPageBank> bank_;
     Clip& clip_;
     Clip::StreamReader reader_;
     std::int32_t maxFrames_, lookAhead_;
-    Pages warmed_, forecast_;
+    Pages warmed_, forecast_, cue_;
     std::uint32_t missing_ = 0;
     bool allPhasesPrimed_ = false;
 };
@@ -1479,6 +1514,12 @@ struct LaunchWarpPageBank : std::enable_shared_from_this<LaunchWarpPageBank> {
         return source->prime(slot,warmAllPhases) ? std::move(source) : nullptr;
     }
 };
+
+void ClipPlayback::setWarpRequestSnapshotProbeForTest(LaunchWarpSource& source,
+                                                       const RequestSnapshotProbeForTest* probe) noexcept {
+    if (auto* pages = dynamic_cast<PagedLaunchWarpSource*>(&source))
+        pages->bank().playback.setRequestSnapshotProbeForTest(probe);
+}
 
 // The private readers share the same projection of the unrolled source.
 static void appendLaunchSource(ClipProject& project, const ClipProject& original, const rows::Clip& authored,

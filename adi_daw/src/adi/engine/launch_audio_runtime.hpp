@@ -216,6 +216,7 @@ private:
         std::size_t size = 0;
         std::size_t tailCount = 0;
         LaunchPagedAudio* cuePages = nullptr;
+        LaunchWarpSource* warpCuePages = nullptr;
         std::int64_t cueClip = 0;
     };
     [[nodiscard]] TrackRanges* trackRanges(std::int64_t track) noexcept;

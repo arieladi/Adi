@@ -5,6 +5,7 @@
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
 #include "adi/engine/launch_paged_audio.hpp"
+#include "adi/engine/launch_warp_source.hpp"
 #include "adi/engine/transport.hpp"
 
 #include <algorithm>
@@ -474,6 +475,10 @@ void LaunchAudioRuntime::finish() noexcept {
             ranges.cuePages->releaseCue(ranges.cueClip);
             ranges.cuePages = nullptr;
         }
+        if (ranges.warpCuePages) {
+            ranges.warpCuePages->releaseCue();
+            ranges.warpCuePages = nullptr;
+        }
     }
 }
 
@@ -571,7 +576,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (&media != call.media) return;
         const auto* clip = media.clip(track.queued.clip);
         if (clip && clip->followsTempo())
-            clip->prefetchWarp(track.queued.tick,*track.queued.legatoSourceTick);
+            clip->prefetchWarp({due,track.queued.tick,*track.queued.legatoSourceTick});
         else if (clip && clip->pageReader()) {
             const auto* rendered = call.runtime.trackRanges(track.track);
             if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == clip->clip()) return;
@@ -611,13 +616,37 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
                      : cueAdmission != LaunchCueAdmission::Scheduled || target.mode == LaunchMode::Repeat) return true;
         const auto* pcm = call.media->clip(target.clip);
+        auto* nativePages = pcm ? pcm->warpPageReader() : nullptr;
+        if (nativePages && !nativePages->wholeSourceFitsPageCache() && target.loopEndTick <= target.loopStartTick) {
+            // Arrangement wraps, prepared scenes and Follow Actions can
+            // add another placement before this block's overlay. Their
+            // launches keep the usual reader path.
+            if (call.offset + call.block.frames != call.frames ||
+                (call.block.preparedScene &&
+                 call.block.preparedScene->token > call.driver.performedSceneToken()) ||
+                (call.block.followActionsEnabled && call.follow && call.follow->hasClipOrSceneActions(target.clip)))
+                return true;
+            auto* rendered = call.runtime.trackRanges(target.track);
+            if (!rendered || rendered->cuePages || rendered->warpCuePages) return true;
+            const auto sameReader = [nativePages](const Range& range) noexcept {
+                return range.pcm && range.pcm->warpPageReader() == nativePages;
+            };
+            for (std::size_t index = 0; index < rendered->size; ++index)
+                if (sameReader(rendered->items.data()[index])) return true;
+            for (std::size_t index = 0; index < rendered->tailCount; ++index)
+                if (sameReader(rendered->tails.data()[index].range)) return true;
+            const auto remaining = call.frames - call.offset - offset;
+            if (!pcm->reserveWarpCue({call.block.sample + offset,tick,cue.tick},remaining)) return false;
+            rendered->warpCuePages = nativePages;
+            return true;
+        }
         if (!pcm) return !physical;
         auto* pages = pcm->pageReader();
         if (!pages || (!physical && (pcm->latencySamples() == 0 || pcm->allWorkerPhasesPrimed()))) return true;
         const auto frame = physical ? cue.physicalFrame : pcm->frameForTick(cue.tick,call.media->bpm());
         if (cueAdmission == LaunchCueAdmission::None || frame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
-        if (!rendered || rendered->cuePages) return false;
+        if (!rendered || rendered->cuePages || rendered->warpCuePages) return false;
         // An earlier range on this source could trim the new reservation
         // before the due range reads it. Admit only an idle reader here.
         const auto sameReader = [pages,clip=target.clip](const Range& range) noexcept {

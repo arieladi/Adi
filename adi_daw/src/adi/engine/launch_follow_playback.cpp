@@ -193,6 +193,13 @@ LaunchFollowPlayer::LaunchFollowPlayer(const launch::LaunchData& data) {
     std::ranges::sort(entries_, {}, &Entry::clip);
 }
 
+bool LaunchFollowPlayer::hasClipOrSceneActions(std::int64_t clip) const noexcept {
+    if (!sceneEntries_.empty()) return true;
+    const auto entries = std::span<const Entry>(entries_.data(), entries_.size());
+    const auto entry = std::ranges::lower_bound(entries, clip, {}, &Entry::clip);
+    return entry != entries.end() && entry->clip == clip;
+}
+
 std::optional<LaunchFollowRequest> LaunchFollowPlayer::followOnLaunch(
     const LaunchTransition& transition, const LaunchView& view, std::uint64_t incarnation,
     bool globallyEnabled, std::uint64_t passSeed) const noexcept {

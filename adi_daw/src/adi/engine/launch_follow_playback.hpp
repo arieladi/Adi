@@ -53,6 +53,7 @@ struct FollowDrawKey {
 class LaunchFollowPlayer {
 public:
     explicit LaunchFollowPlayer(const launch::LaunchData&);
+    [[nodiscard]] bool hasClipOrSceneActions(std::int64_t clip) const noexcept;
 
     [[nodiscard]] std::optional<LaunchFollowRequest> followOnLaunch(
         const LaunchTransition&, const LaunchView&, std::uint64_t incarnation,
