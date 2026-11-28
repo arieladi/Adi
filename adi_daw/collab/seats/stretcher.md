@@ -156,11 +156,15 @@ The two-tile worker held sustained RMS at unity at 44.1, 48, and 96 kHz. With an
 
 A bounded stereo PCM remap reduced late landmarks from 13 of 63 to one and kept stereo peak skew within one sample. It left the known split attack with two crests. On a simultaneous 440 Hz sustain, the same windows bent pitch by as much as 1,152 cents and raised adjacent sample steps by 1.65 times. Even the entire gap between the adjacent landmarks in one 48 kHz fixture would require at least 148 cents of pitch excursion to reach the timing tolerance. The remap remains an experiment.
 
+A bandwise phase alignment probe improved some 440 Hz cuts. It still lost low-tone and four-partial energy. Holding the phase through the overlap and releasing it afterward increased mixed-pulse duplicates from 8 to 10 in mono and 9 to 13 in stereo. The measured two-tile history already held unity sustain RMS before correction. The known 111-frame split and 267-frame late crest remained. The production path still needs onset timing in the retimed worker voice.
+
 B. Which physical phase and bounds should a paused run use if the driver adopts a different clock after a saved trim edit or device format change? The current handover preserves the cue and reader when the physical shape and driver format agree.
 
 C. Long paged Legato in a tempo scene needs a cut that admits all targets before publishing the new clock. In the launcher probe, a receipt fired at 96,000 before either target checked pages. One warm track switched even as a second refused. A prefix press changed the latter cue from frame 104,191 to 20,191. The existing owner rollback needs a full callback of lead. I recommend keeping the current bank, clock, and every track if any cut-time reservation fails. Session can stage the new clock and share its final adoption with the driver rendezvous.
 
 A scratch Launcher proof now plans both due targets after running the actual old prefix. The 84,000 replacement gives the second target cue 20,191. A cold second target commits neither and emits no receipt. When both are ready, both checks precede the receipt and target transitions. The 1,943 checks include exact wrap, tied Back and stamped Stop, a gesture posted after the cut watermark, and zero callback allocations. The existing Launcher suite also passed all 519 checks. The page checks use a synthetic gate. The real Session graph and PCM transaction is open.
+
+The persisted two-track raw scratch proof now crosses the actual Session driver cut at sample 96,000, 139 frames into a 257-frame callback. Both warm targets land at source frames 12,800 and 12,000 with exact summed PCM and one scene receipt. Holding the second target cold at source 101,743 leaves both old runs at 120 BPM for the next 24,000 frames with no receipt. Callback allocations and I/O stay at zero. The prototype still needs post-ticket adoption effects and owner reconciliation after rejection before it can enter the chain.
 
 ## Readings owed
 
