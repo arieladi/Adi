@@ -168,6 +168,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-468 | `basics/test-chain-2` at `89aee0ff3` | Show the horizontal resize pointer over the existing Loop brace end grips. Arrangement seat. | The peerless pointer replay checks both grips, the middle, the band below, and exit. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-472 | `basics/test-chain-2` at `b2737141e` | Use plain punctuation in the three project-open progress labels. Project seat. | Source traces all three strings through the same narrow-string path. The native window is not opened by the headless gate. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-467 | `basics/test-chain-2` at `b8943be0b` | Expose Analyser Dock on Stack when the dock can fit. Mix View and look seats. | Peerless tests exercise the real checkbox, page switches and the exact size threshold. All 295 headless tests outside the performance label passed in Debug with warnings as errors. The later sync added one review document and kept all build and test inputs identical. | Pushed |
+| SC-461 | `basics/test-chain-2` at `9ba133e10` | Measure the source and destination edge points left by clip moves. Automation and Arrangement seats. | The same prepared move and commit path replayed both directions, an overlapping variant, lock and Undo. The observed data are recorded below. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Awaiting Live reading |
 
 ### Second test measurements and findings
 
@@ -362,3 +363,58 @@ Measured control and pane bounds are relative to the Mix View panel in Compact d
 | Stack, 419 px body | `(872, 66, 94, 17)` | Hidden | Dock hidden. Stack `(178, 121, 685, 419)` |
 | Stack, 420 px body | `(872, 66, 94, 17)` | `(872, 66, 94, 17)` | Dock `(503, 121, 360, 420)`, Stack `(4, 121, 493, 420)` |
 | Narrow Stack, 400 × 650 | `(8, 91, 94, 17)` | Hidden | Dock hidden. Stack `(4, 146, 392, 500)` |
+
+#### SC-461 · Automation left by a clip move
+
+A Linux headless probe ran the Arrangement's production `edit_plan::prepareMove` overload and the same `OpSubmitter::commitPrepared` path as `AdiRootComponent::placeClips`. The fresh song uses constant 120 BPM, 4/4, and 48,000 Hz. A quarter note is 5,765,760 ticks and 24,000 samples. Each move starts independently from the same two-quarter MIDI clip in track 2, at ticks `[23,063,040, 34,594,560)` and samples `[96,000, 144,000)`. The two tick-based Arrangement lanes are track Pan (default −0.10) and a device parameter (normalized default 0.20). Automation Follows Clips and Delete Overlaps are on for the four main trials.
+
+##### Initial stored points
+
+All points used linear outgoing segments. The table lists the original stored values before any interpolation.
+
+| Quarter from song start | Tick | Sample | Pan | Device |
+|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | −0.60 | 0.10 |
+| 2 | 11,531,520 | 48,000 | −0.20 | 0.25 |
+| 3.5 | 20,180,160 | 84,000 | 0.20 | 0.75 |
+| 4.5 | 25,945,920 | 108,000 | 0.80 | 0.30 |
+| 5.5 | 31,711,680 | 132,000 | −0.40 | 0.90 |
+| 6.5 | 37,477,440 | 156,000 | 0.60 | 0.40 |
+| 8 | 46,126,080 | 192,000 | −0.20 | 0.60 |
+| 10 | 57,657,600 | 240,000 | 0.20 | 0.20 |
+
+##### Moves and stored edge points
+
+Values in a cell are the two sequential stored points at that exact tick and sample. The second value takes effect at that sample. “No knot” means the edge is inside the moved automation and that timestamp has no stored point. Measurements round recurring decimals to eight places.
+
+| Move | Edge | Tick | Sample | Pan in stored order | Device in stored order |
+|---|---|---:|---:|---|---|
+| 3 quarters left | Source start | 23,063,040 | 96,000 | 0.50 → −0.10 | 0.525 → 0.20 |
+| 3 quarters left | Source end | 34,594,560 | 144,000 | −0.10 → 0.10 | 0.20 → 0.65 |
+| 3 quarters left | Destination start | 5,765,760 | 24,000 | −0.40 → 0.50 | 0.175 → 0.525 |
+| 3 quarters left | Destination end | 17,297,280 | 72,000 | 0.10 → 0.06666667 | 0.65 → 0.58333333 |
+| 3 quarters right | Source start | 23,063,040 | 96,000 | 0.50 → −0.10 | 0.525 → 0.20 |
+| 3 quarters right | Source end | 34,594,560 | 144,000 | −0.10 → 0.10 | 0.20 → 0.65 |
+| 3 quarters right | Destination start | 40,360,320 | 168,000 | 0.33333333 → 0.50 | 0.46666667 → 0.525 |
+| 3 quarters right | Destination end | 51,891,840 | 216,000 | 0.10 → 0.00 | 0.65 → 0.40 |
+| 1 quarter left | Source start | 23,063,040 | 96,000 | No knot, reads 0.20 | No knot, reads 0.60 |
+| 1 quarter left | Source end | 34,594,560 | 144,000 | −0.10 → 0.10 | 0.20 → 0.65 |
+| 1 quarter left | Destination start | 17,297,280 | 72,000 | 0.06666667 → 0.50 | 0.58333333 → 0.525 |
+| 1 quarter left | Destination end | 28,828,800 | 120,000 | 0.10 → −0.10 | 0.65 → 0.20 |
+| 1 quarter right | Source start | 23,063,040 | 96,000 | 0.50 → −0.10 | 0.525 → 0.20 |
+| 1 quarter right | Source end | 34,594,560 | 144,000 | No knot, reads 0.20 | No knot, reads 0.60 |
+| 1 quarter right | Destination start | 28,828,800 | 120,000 | −0.10 → 0.50 | 0.20 → 0.525 |
+| 1 quarter right | Destination end | 40,360,320 | 168,000 | 0.10 → 0.33333333 | 0.65 → 0.46666667 |
+
+The two authored interior values translate with the clip. Their initial ticks and samples were `25,945,920 / 108,000` and `31,711,680 / 132,000`. Their values stay `0.80 / 0.30` and `−0.40 / 0.90` respectively for Pan and device.
+
+| Move in ticks / samples | First point tick / sample | Second point tick / sample |
+|---|---:|---:|
+| −17,297,280 / −72,000 | 8,648,640 / 36,000 | 14,414,400 / 60,000 |
+| +17,297,280 / +72,000 | 43,243,200 / 180,000 | 49,008,960 / 204,000 |
+| −5,765,760 / −24,000 | 20,180,160 / 84,000 | 25,945,920 / 108,000 |
+| +5,765,760 / +24,000 | 31,711,680 / 132,000 | 37,477,440 / 156,000 |
+
+The planner copies from the original snapshot, clears the source to the lane default, and then places the copied material at the destination. The splicer preserves the old value before Start and after End. Both disjoint moves therefore leave two points at each old edge and two at each destination edge in both lanes. The overlapping move covers one old edge. Moving left leaves the source End pair to its right. Moving right leaves the source Start pair to its left. At an overlap boundary the surviving point on the cleared side is the lane default. This explains the two directions the director saw. In this probe, none of the original points sits at a splice edge. If an original point already owns the exact right edge, the splicer retains that point in place of inserting a new outer guard.
+
+With Automation Follows Clips off, a three-quarter move still changes the clip position and both automation streams remain byte-for-byte identical. One Undo restored both authored streams and the clip position in all five cases. The Werror probe ran with DISPLAY unset. The probe also collected point IDs, curve codes and the engine value one sample before, at and after each edge. The comparison to make in Live is the four moves from this same initial envelope, including the value left over the vacated span and whether there are two points or one at each edge.
