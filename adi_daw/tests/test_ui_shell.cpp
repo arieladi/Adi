@@ -24797,9 +24797,15 @@ void automationFollowsControl(AppCommands &commands, const std::filesystem::path
     knob.onDragEnd();
     const auto current = root.current();
     const auto *send = findSend(current->sends, track, returnTrack);
-    check(send != nullptr && send->gainDb == -12. && root.automationTarget(track) == sendTarget(send->id, {}) &&
-              root.undoTitle(false) == "Undo Change Send Level" && current->automationLanes.empty(),
-          "SC-458: the newly committed send selects its real routing lane with just the ordinary level edit");
+    // Apple clang contracts the slider's snap into a fused multiply-add, so the committed level can
+    // differ from -12 in its last bits there: compare within a millionth of a decibel, and say which
+    // part failed if one does.
+    check(send != nullptr && std::abs(send->gainDb + 12.) < 1e-6,
+          "SC-458: the first edit of a new send commits its level");
+    check(send != nullptr && root.automationTarget(track) == sendTarget(send->id, {}),
+          "SC-458: the newly committed send selects its real routing lane");
+    check(root.undoTitle(false) == "Undo Change Send Level" && current->automationLanes.empty(),
+          "SC-458: selecting the send's lane is just the ordinary level edit: one undo step, no lane written");
 }
 void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
