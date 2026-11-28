@@ -45,6 +45,8 @@ struct OpenResult {
     }
 };
 
+enum class CallbackResult { Ignored, Processed, Oversized };
+
 /// Drives one `engine::BlockProcessor` from whatever a device hands over.
 ///
 /// Thread discipline, which is the whole point of the type:
@@ -108,9 +110,11 @@ public:
     /// outputs silence and counts, because a callback that returns without
     /// touching the buffer hands the driver's uninitialised memory to somebody's
     /// monitors.
-    void process(float* const* out, std::int32_t numOut,
-                 const float* const* in, std::int32_t numIn,
-                 std::int32_t frames, engine::OutputChannelMap outputs = {}) noexcept;
+    // The caller can report an Oversized refusal to its active capture without
+    // passing unsafe buffers to the prepared processor.
+    CallbackResult process(float* const* out, std::int32_t numOut,
+                           const float* const* in, std::int32_t numIn,
+                           std::int32_t frames, engine::OutputChannelMap outputs = {}) noexcept;
 
     // --- observable state, so tests assert on what happened ----------------
 

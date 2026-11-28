@@ -3760,7 +3760,7 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     case F::None: return {};
     case F::Overflow: return "the input came faster than it could be written, and the take was stopped";
     case F::MissingInput: return "the audio device did not deliver the input channels the track records from";
-    case F::BlockSize: return "the audio device changed its block size while recording";
+    case F::BlockSize: return "the audio device sent a block larger than the size prepared for recording";
     case F::Discontinuity: return "the audio stream jumped while recording (a locate, a loop or a device change)";
     case F::Cancelled: return "the recording was cancelled";
     case F::Io: return "the take could not be written to disk" + (r.error.empty() ? std::string() : " (" + r.error + ")");

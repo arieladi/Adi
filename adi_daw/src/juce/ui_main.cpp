@@ -130,6 +130,10 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
         if (load > 1.f)
             cpuEvents_.fetch_or(kMissedDeadline, std::memory_order_release);
     }
+    void reportOversizedCallback() noexcept {
+        if (document_)
+            document_->session().recording().reportOversizedCallback();
+    }
     void release() override {
         resetCpuLoad();
         if (output_)
@@ -2601,7 +2605,9 @@ class AdiApplication final : public juce::JUCEApplication,
                                                    juce::Decibels::decibelsToGain(levelDb),
                                                    smokeOutput_ == juce::File{} ? &midiOutputFeed_ : nullptr);
         refreshTestTone();
-        bridge_ = std::make_unique<device::DeviceBridge>(*live_);
+        bridge_ = std::make_unique<device::DeviceBridge>(*live_, [](engine::BlockProcessor &processor) noexcept {
+            static_cast<LiveMidiProcessor &>(processor).reportOversizedCallback();
+        });
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
         applyInputChannels(); // the tracks' monitoring inputs (N65)

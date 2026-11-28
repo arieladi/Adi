@@ -675,6 +675,11 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     }
     return result;
 }
+void AudioInputRecorder::reportOversizedCallback() noexcept {
+    SnapshotPublisher<State>::AudioRead state(*impl_->published);
+    if (state.valid() && state->job)
+        state->job->fail(RecordingFailure::BlockSize);
+}
 std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,const Transport& transport,
                                                         RecordingPunch punch,const RecordingPunchWindow& window,
                                                         const TempoMap* clock,std::uint64_t clockGeneration)noexcept {

@@ -9,6 +9,7 @@
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/audio/io_audit.hpp"
+#include "juce/device_core.hpp"
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -660,6 +661,54 @@ void punchCapturesOnlyTheBrace() {
           "a sub-sample linear punch brace accepts neither audio nor MIDI");
     subSample.discard();
 }
+void oversizedDeviceBlockEndsTake() {
+    test::TempDirectory directory{"audio_recording","over-grant"};
+    struct Processor final : BlockProcessor {
+        AudioInputRecorder recorder;
+        Transport transport;
+        void prepare(double,std::int32_t) override {}
+        void process(const AudioIo& io) noexcept override {input(recorder,transport,io);}
+        void release() override {}
+    } processor;
+    device::DeviceCore driver;
+    check(driver.open(processor,48000,8,8).opened,"prepare an eight-frame device");
+    auto request=spec(directory.path());
+    request.maxFrames=8;
+    request.targets={{21,{0}}};
+    request.format=audio::WavFormat::Float32;
+    std::string error;
+    if(!processor.recorder.start(request,error))throw std::runtime_error(error);
+    processor.transport.play();
+    const std::array<float,9> prefix={.125f,.25f,.375f,.5f,-.125f,-.25f,-.375f,-.5f,0.f};
+    std::array<float,9> later{};
+    const float* channels[]={prefix.data()};
+    check(driver.process(nullptr,0,channels,1,8)==device::CallbackResult::Processed,
+          "the granted callback reaches the recorder");
+    channels[0]=later.data();
+    device::CallbackResult rejected;
+    {
+        audio::CallbackScope callback;
+        rejected=driver.process(nullptr,0,channels,1,9);
+        if(rejected==device::CallbackResult::Oversized)processor.recorder.reportOversizedCallback();
+    }
+    check(rejected==device::CallbackResult::Oversized && driver.oversizeRefusals()==1,
+          "the bridge receives explicit notification when the core has to drop input");
+    driver.process(nullptr,0,channels,1,8);
+    processor.recorder.stop();
+    driver.process(nullptr,0,channels,1,8);
+    auto result=finish(processor.recorder);
+    check(result.failure==RecordingFailure::BlockSize && result.frames==8 && result.hasAttachableAudio(),
+          "a dropped hardware block ends the take and reports the intact prefix");
+    if(result.hasAttachableAudio()) {
+        audio::WavReader wav(result.tracks.front().file);
+        std::array<float,8> recorded{};
+        check(wav.frames()==8 && wav.read(recorded.data(),8)==8 &&
+              std::equal(recorded.begin(),recorded.end(),prefix.begin()),
+              "the interrupted take contains exactly the original eight samples");
+    }
+    result.discard();
+    driver.close();
+}
 void boundedOverflow() {
     for(const bool looping:{false,true}) {
     test::TempDirectory directory{"audio_recording","overflow"};AudioInputRecorder recorder;std::string error;auto request=spec(directory.path());request.maxFrames=8;request.ringFrames=8;request.targets={{21,{0}}};
@@ -896,7 +945,7 @@ void loopDiscontinuities() {
 int main() {
     try {
         actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
-        boundedOverflow();actualQueueWraps();waveformPreviewUsesCapturedFrames();
+        oversizedDeviceBlockEndsTake();boundedOverflow();actualQueueWraps();waveformPreviewUsesCapturedFrames();
         discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
         keepPrefixAfterPartialDiskFailure();cancelAfterPartialDiskFailure();
 #if defined(_WIN32)

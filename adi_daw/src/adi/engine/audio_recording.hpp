@@ -169,6 +169,9 @@ public:
     /// and the worker has drained/finalized it. A result is returned once.
     /// deviceStopped=true requires the driver already quiescent.
     [[nodiscard]] std::optional<AudioRecordingResult> poll(bool deviceStopped=false);
+    // Callback only. A driver block larger than its grant was dropped before
+    // rendering. Stop the current recording and preserve its captured prefix.
+    void reportOversizedCallback() noexcept;
     // Callback only. Returns the sorted track IDs whose input was accepted in
     // this slice. The view is valid until the next capture call on the driver.
     std::span<const std::int64_t> capture(const AudioIo&,const Transport&,

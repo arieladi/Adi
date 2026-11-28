@@ -101,7 +101,7 @@ bool DeviceCore::setProcessor(engine::BlockProcessor& next) {
     return true;
 }
 
-void DeviceCore::process(float* const* out, std::int32_t numOut,
+CallbackResult DeviceCore::process(float* const* out, std::int32_t numOut,
                          const float* const* in, std::int32_t numIn,
                          std::int32_t frames, engine::OutputChannelMap outputs) noexcept {
     // Silence first, unconditionally, before any early return below. A callback
@@ -116,17 +116,17 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
         }
     };
 
-    if (frames <= 0) return;
-    if (!open_ || proc_ == nullptr) { silence(); return; }
+    if (frames <= 0) return CallbackResult::Ignored;
+    if (!open_ || proc_ == nullptr) { silence(); return CallbackResult::Ignored; }
 
     // The overrun ADR-0049 exists to prevent. The processor allocated for
     // `granted_`; a driver handing over more than that has changed its block
     // size without telling us, and processing it would write past every buffer
-    // the processor owns. Refuse loudly in the counter, silently in the audio.
+    // the processor owns. Return the refusal and keep the output silent.
     if (frames > granted_) {
         ++oversize_;
         silence();
-        return;
+        return CallbackResult::Oversized;
     }
 
     engine::AudioIo io;
@@ -143,6 +143,7 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
 
     streamTime_ += frames;
     ++callbacks_;
+    return CallbackResult::Processed;
 }
 
 }  // namespace adi::device

@@ -49,7 +49,9 @@ public:
     /// The processor is not owned. It outlives the bridge, because the graph
     /// outlives any particular device — which is the whole of ADR-0042's
     /// decision 5: changing block size must not disturb the project.
-    explicit DeviceBridge(engine::BlockProcessor& proc) : proc_(&proc) {}
+    using RejectedBlock = void (*)(engine::BlockProcessor&) noexcept;
+    explicit DeviceBridge(engine::BlockProcessor& proc, RejectedBlock rejected = nullptr)
+        : proc_(&proc), rejected_(rejected) {}
 
     /// What the user asked for, so a mismatch can be reported. Set before the
     /// device is opened; it has no effect on what is requested of the driver,
@@ -109,7 +111,8 @@ public:
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
         const engine::OutputChannelMap outputs{outputMask_.load(std::memory_order_acquire)};
-        core_.process(out, numOut, in, numIn, numSamples, outputs);
+        if (core_.process(out, numOut, in, numIn, numSamples, outputs) == CallbackResult::Oversized && rejected_)
+            rejected_(*proc_);
     }
 
     void audioDeviceStopped() override {
@@ -164,6 +167,7 @@ private:
         bool operator==(const DeviceName&) const = default;
     };
     engine::BlockProcessor* proc_ = nullptr;
+    RejectedBlock rejected_ = nullptr;
     DeviceCore core_;
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     std::atomic<std::uint64_t> outputMask_{0};
