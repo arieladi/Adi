@@ -11,8 +11,10 @@ Base of the chain: `origin/land/basics-1128c` until it is in main, then `origin/
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
-| F1 (no SC row yet: "Reserve" below) | `basics/review-undo-chain`, test `d04dc807f`, fix `c590fab36` + the commit after the SC-11 one | **Undo refused for good after the Loop switch.** Insert Silence, Delete Time and the other time edits record the saved loop before and after, and `arranger.splice` refused whenever the stored loop was not the recorded one. The Loop switch and the loop brace (`transport.setLoop`) write that value with no Undo step. So: insert time before the loop, click the Loop switch, press Undo: "loop changed after edit preparation", and every older step is out of reach too. Redo the same way. Fix in `src/adi/clip_edit_ops.cpp` (`arrangerApply`): a NEW edit is still refused when the loop changed since it was prepared; a replay from history (Undo, Redo, a move in the history list) no longer refuses. A loop whose brace still stands where the edit left it takes the edit's brace and keeps its own switch; a brace the user placed since is left alone. The project rows are restored exactly in both cases. | `loopSetAfterTimeEdit` in `tests/test_clip_edit.cpp` (beside `pureLoopAndCut`): the Loop switch, then Undo and Redo; the brace dragged, then Undo and Redo; a stale new edit still refused. Every stored row compared by `digestProject`. See "Slot checks" below for the runs. | see "Slot checks" |
+| F1 (no SC row yet: "Reserve" below) | `basics/review-undo-chain`, test `d04dc807f`, fix `c590fab36` + `c6129be8e` (the headers) | **Undo refused for good after the Loop switch.** Insert Silence, Delete Time and the other time edits record the saved loop before and after, and `arranger.splice` refused whenever the stored loop was not the recorded one. The Loop switch and the loop brace (`transport.setLoop`) write that value with no Undo step. So: insert time before the loop, click the Loop switch, press Undo: "loop changed after edit preparation", and every older step is out of reach too. Redo the same way. Fix in `src/adi/clip_edit_ops.cpp` (`arrangerApply`): a NEW edit is still refused when the loop changed since it was prepared; a replay from history (Undo, Redo, a move in the history list) no longer refuses. A loop whose brace still stands where the edit left it takes the edit's brace and keeps its own switch; a brace the user placed since is left alone. The project rows are restored exactly in both cases. | `loopSetAfterTimeEdit` in `tests/test_clip_edit.cpp` (beside `pureLoopAndCut`): the Loop switch, then Undo and Redo; the brace dragged, then Undo and Redo; a stale new edit still refused. Every stored row compared by `digestProject`. See "Slot checks" below for the runs. | see "Slot checks" |
 | SC-11 (proof only, no fault) | same chain, `5b142700a` | Nothing in the program. The tempo ops rewrite the length of Warp-off clips beside the tempo row (`_unwarpedLengths`), and that landed on 26 November with no Undo test at all. | `unwarpedRecordingTempoChanges` in `tests/test_recording_commands.cpp` now compares every stored row before the tempo change, after one Undo and after one Redo, at a faster and a slower tempo. | see "Slot checks" |
+| SC-186, SC-252, SC-158 (proof only, no fault) | same chain, `b6e824d5c` | Nothing in the program. Complete Fragmentary Bar and Delete Fragmentary Bar Time (SC-186, landed 28 Nov) had no core test at all; Copy Take to Main Lane (SC-252) had none; the audio-drop batch (SC-158) checked clip and track counts only, not the media pool. | `fragmentaryBarRepair` (beside `loopSetAfterTimeEdit`) and `takeToMainRoundTrip` (beside `ordinaryRangeLaneScope`) in `tests/test_clip_edit.cpp`; two more checks at the end of `batchImports` in `tests/test_material_commands.cpp`. Each compares every stored row before, after ONE Undo (the head back where it was) and after one Redo. The fragmentary bar is a 3/4 bar cut short by a 4/4 marker, with a clip, a tempo change and a locator across it. | see "Slot checks" |
+| SC-252 (proof only, no fault) | same chain, `4a67192ac` | Nothing in the program. A take that covers clips now also lands a "Previous Take" lane with copies of what it covered; `mixedLinearTake` checked its Redo by clip counts. | `mixedLinearTake` in `tests/test_recording_commands.cpp`: Redo compared with every stored row after the first commit. | see "Slot checks" |
 
 ## Slot checks
 
@@ -20,8 +22,17 @@ Base of the chain: `origin/land/basics-1128c` until it is in main, then `origin/
   alone): the test fails with "Undo of the time edit goes through after the Loop switch: undoing
   arranger.splice: loop changed after edit preparation", then "Redo ...: nothing to redo", and the same
   two after the brace was dragged. Eight FAIL lines, all from `loopSetAfterTimeEdit`.
-- **With the fix:** slot 11, core, the whole suite, at `a3a026130` (the chain with origin/main merged):
-  started 28 November; result in the line below when it finishes.
+- **With the fix:** slot 11, core, the whole suite, at `a3a026130` (the chain with origin/main merged),
+  finished 28 Nov 18:45: build OK with warnings as errors, 288 of 291 passed. `adi_clip_edit_tests` and
+  `adi_recording_commands_tests` pass, so F1 and the SC-11 proof hold. The three that failed are not
+  from this chain (it changes `arrangerApply` in `src/adi/clip_edit_ops.cpp` and three test files, and
+  none of the three reads a time edit): `adi_agent_log_tests` (three FAIL lines: three child processes
+  appending to one log at once), `adi_link_playback_tests` (two FAIL lines about the native performance
+  generation; it failed in the warm-up before the chain was ever built, too), `adi_ui_document_tests`
+  (one FAIL line: "opening yields to the owner between slow plug-in loads", a timing check, 345 s).
+  All three look like timing under a loaded build PC; I did not look further.
+- **The proofs of round 2:** slot 11, core, the whole suite, at `4a67192ac`: started 28 Nov 18:50; result
+  in the line below when it finishes.
 - The warm-up of slot 11 on another branch, before my first check: 1 of 291 failed,
   `adi_link_playback_tests` (eight FAIL lines about the Link tempo clock, 60 s). Not from this chain:
   the chain had not been built yet. A timing test under a loaded build PC is my guess; I did not look.
@@ -65,10 +76,24 @@ what the forward changes, Redo uses recorded values and not the surroundings, a 
    their edits"). I could not reproduce it headless: it needs a hosted plug-in with state that moved.
    Where to look: `engine/param_ops.cpp` `snapshotAll`. A way to fix it: put the captured state and the
    remove in one journal batch.
+   **Round 2: built so on purpose, so I no longer count it as a suspected fault.** `hotSwapLiveState` in
+   `tests/test_ui_document.cpp` (commit `a52cf70b8`, 27 Nov) asserts that ONE Undo after a Hot-Swap
+   brings the plug-in back with its latest live state; that needs the capture as its own step before the
+   swap. The extra step is the record of the tweak the user made in the plug-in's own window, written
+   late, not a second half of the Remove, and Undo and Redo stay exact. What is left is a detail: Copy
+   of a tweaked plug-in leaves that step in the list though Copy changes nothing. A one-batch fix would
+   break what that test asserts, so it is not mine to change.
 2. **Recorded automation and the take are probably separate Undo steps.** `landTake` commits the take;
    `closeAutomationWrites` commits the automation written during the pass through `commitCaptured`, its
    own transaction. Not reproduced: it needs a running session. Record Quantize as its own step is not a
    fault: as I remember Live's manual, record quantization is its own step in Live's Undo history too.
+   **Round 2, read further:** `stopRecording` (`src/adi/ui/project_document.cpp`) calls
+   `closeAutomationWrites`, which commits the mixer drag (`endMixerDrag`), then each touched plug-in
+   parameter on its own (`commitParameterAutomation`, one commit per parameter), then the native passes;
+   `landTake` commits the take after that. So one pass that records audio and moves two plug-in knobs
+   would leave three or four Undo steps. Still not reproduced headless. Whether Live 12 makes that one
+   "Record" step or one step per touched parameter is a reading I do not have; it decides whether this
+   is a fault.
 3. **Orphan clip envelope lanes.** `clip.delete` captures `automation_data` of the clip but not an
    `automation_lanes` row with `owner_kind='clip'`. Undo is exact (the lane never left), so this is a
    leak, not an Undo fault. Not tested.
@@ -94,28 +119,39 @@ what the forward changes, Redo uses recorded values and not the surroundings, a 
 
 ## For the next session
 
-Done in round 1: F1 (test + fix), the SC-11 proof. Both are on the chain. The chain's base is now
-origin/main (`land/basics-1128c` is in it); merge origin/main before each push.
+Done in round 1: F1 (test + fix), the SC-11 proof. Done in round 2: the proofs for SC-186, SC-252
+and SC-158 (no fault found), the full check of F1. All on the chain. The chain's base is origin/main
+(`land/basics-1128c` is in it); merge origin/main before each push.
+
+Round 2 worked in another worktree while the round-1 worktree still held the local branch
+`basics/review-undo-chain`: it used a local branch of another name and pushed with
+`git push origin HEAD:basics/review-undo-chain` (and the same for the log). Do the same if
+`git switch` says the branch is checked out elsewhere.
 
 For whoever merges the chain: `src/adi/clip_edit_ops.cpp` is also changed on the stretcher seat's
 branches (`seats/stretcher-session-integration`, "exact clip history"). My change is inside
 `arrangerApply` and one new function above it, `replayedLoop`. I touched the engine seat's file
-(`clip_edit_ops.cpp`) and two test files (`tests/test_clip_edit.cpp`, `tests/test_recording_commands.cpp`).
+(`clip_edit_ops.cpp`) and three test files (`tests/test_clip_edit.cpp`, `tests/test_recording_commands.cpp`,
+`tests/test_material_commands.cpp`).
 
 Not done, in the order I would take them:
 
-1. A digest round trip (before, Undo, Redo) for the commands that landed since 26 November and whose
-   tests check single fields only, all in `tests/test_clip_edit.cpp` and its neighbours:
-   `prepareTakeToMain` (no core test at all), `prepareCompleteFragmentaryBar` (SC-186, none),
+1. A digest round trip (before, Undo, Redo) for the commands whose tests check single fields only:
    `prepareStretchWarpedClip` (none), `prepareAudioDropReplacement` (only through the window),
-   `prepareReverse` (`tests/test_clip_playback.cpp`), `prepareMidiConsolidation`, the import batch in
-   `tests/test_material_commands.cpp` (six Undo calls, no digest).
-2. `cc.write` / `cc.delete` with the pitch-wheel address 129, `capture.createMidi`, and
-   `recording::prepareCommit` with audio and MIDI together: the same round trip.
+   `prepareReverse` (`tests/test_clip_playback.cpp` compares the sound, not the rows),
+   `prepareMidiConsolidation`. Round 2 did `prepareTakeToMain`, `prepareCompleteFragmentaryBar` and the
+   import batch.
+2. `capture.createMidi`: the same round trip. (Round 2 found the pitch wheel, address 129, already
+   proved byte for byte: `channelPitchBend` in `tests/test_controller_lanes.cpp`. The mixed audio and
+   MIDI take is proved by `mixedLinearTake`, Undo since round 1 and Redo since round 2.)
 3. `freeze::flatten` and `audioTrackConversion` (`freeze_commands.cpp`), the device hot-swap and preset
    recall (`device_presets.cpp`, `device_copy.cpp` `prepareDevicePaste` for a block).
-4. Suspected 1 and 2 above need a test double for a hosted plug-in or a session; `tests/test_param_ops.cpp`
-   has one for the first.
+4. Suspected 2 above needs a session that records with automation armed; `tests/test_ui_document.cpp`
+   drives a `ProjectDocument` with test devices (`SilentStateKnobs`) and is where such a test would go.
+5. Not undo, seen in passing: a right-edge resize of a clip is a raw `clip.resize`, the left edge goes
+   through `edit_plan::prepareTrim` with the overlap policy (`ArrangementCanvas::commitResize` in
+   `src/juce/ui_arrangement.cpp`). Both are one Undo step; whether the right edge should give up what it
+   covers is a question for the clip-edit queue, not for this review.
 
 How I worked, to save you time: the engine's own ops are careful and row-captured, so reading them one
 by one found nothing. F1 came from asking a different question: which values can change with NO Undo
