@@ -2769,8 +2769,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     if (!cell->clip) {
                         if (cell->hasStop) return false;
                         const auto old = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
-                        if (old != view.slots.end() && old->physicalFrames > 0 && !old->legato &&
-                            before->clip(clip.id)) {
+                        if (old != view.slots.end() && old->physicalFrames > 0 &&
+                            (!old->legato || !old->physicalLoopEndFrame) && before->clip(clip.id)) {
                             retainedPinned.push_back(clip.id);
                             return false;
                         }
