@@ -154,6 +154,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 |---|---|---|---|---|
 | SC-449 | `basics/test-chain-2` at `5cdad58fe` | Refresh the native Edit menu when Redo becomes available. Window and edit seats. | The peerless menu fixture follows real Undo and Redo and uses the platform chord. Physical macOS key delivery remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-475, SC-184 | `basics/test-chain-2` at `385447fcd` | Split uses the marker track or picked clips and ranges. The explicit all-tracks setting remains. Edit and window seats. | The focused display-free fixture failed seven checks before and passed 98 after, including one-step Undo and Redo. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-453, SC-229 | `basics/test-chain-2` at `b33ec13de` | Open Quantize Settings and route shortcuts into focused notes and picked Arrangement MIDI. Clips, edit and engine seats. | The dialog probe covers all ten timing choices, independent endpoints, Amount, Cancel and OK. The revised Functions fixture passed all 194 checks and both mixed-grid regressions passed. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -180,3 +181,17 @@ At 1440 × 900, the marker was canvas-local x18 y0 in integer coordinates. Each 
 A focused Debug replay compiled the candidate’s shell implementation, settings registry and exact `splitAndRangeEdits` fixture with the Werror CMake flags, linked read-only built dependencies, and ran with temporary ADI_HOME and DISPLAY unset. Passed 98 checks, zero failures and no unexpected JUCE assertions. The integrated test suite is the chain owner's separate gate.
 
 The same fixture linked without the two production replacements failed seven checks, including the new default, single-lane scope, picked-range retention, and picked-clip Split/Redo. Main's shell and settings sources are identical to those of the built baseline on these paths.
+
+#### SC-453 and SC-229
+
+Candidate 2015e58f3 on 6aeeed1b1. The old Edit command disabled Quantize Settings outside the Note Editor. In the editor the command changed the Functions tab and could leave its controls out of sight. The new command opens the Quantize Settings window from the Note Editor or a selected Arrangement MIDI clip. Cmd/Ctrl+U uses the mapped command and quantizes selected notes in the focused Note Editor. In the Arrangement it quantizes the MIDI clips selected there, using the Arrangement grid if Quantize To is Current Grid. The Sample Editor keeps its focused Warp quantization route. With no applicable MIDI selection the command offers a reason.
+
+The dialog uses the previous stored defaults and offers Current Grid; 1/4; 1/8; 1/8T; 1/16; 1/16T; 1/32; 1/32T; 1/8 + 1/8T; and 1/16 + 1/16T. Adjust Note Start and Adjust Note End are independent. Amount runs from 0 to 100%. OK updates those settings and commits the operation in one undo step. Cancel discards the pending changes. The two mixed grids offer the union of their timing lines. Exact ties move toward the later line. Existing projects without an alternate-grid field continue to use their original grid.
+
+The old command opened no window. The new content measures 340 × 156 px, excluding the native title bar. Logical local control bounds are Quantize To (124, 12, 204, 24), Adjust Note Start (124, 45, 92, 24), Adjust Note End (222, 45, 92, 24), Amount (124, 78, 204, 24), Cancel (180, 120, 68, 24) and OK (260, 120, 68, 24).
+
+The linked transform suite reproduced two targeted baseline failures and passed all 38 checks on the candidate. It verifies that straight and triplet lines both apply, ties choose the later point, and undo and replay preserve the transaction. Added shell fixtures reach the actual controls through a content callback. They exercise the mapped shortcut, applying end-only quarter-note quantization at 50% to one selected note, one-step undo, and the Arrangement keyboard route. Those tests create no native dialog or menu.
+
+A linked headless smoke of the actual JUCE dialog content passed. It selected the tenth grid, adjusted the two endpoint checkboxes and Amount, confirmed Cancel did not apply, then confirmed OK delivered the chosen settings. The measured content and settings rows match the bounds above. The Debug Werror syntax check passed for the shell, Clip View, and full shell fixture.
+
+The full gate exposed another inline Clip View fixture tied to the former shortcut. That fixture now opens the Functions tab directly, checks all ten grid choices and the existing Start, End, Amount and Swing controls, and undoes only the transaction it creates. The exact peerless fixture changed from 10 failures to all 194 checks passing, with zero unexpected JUCE assertions.
