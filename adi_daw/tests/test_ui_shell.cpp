@@ -4108,7 +4108,13 @@ void foldedDeviceGestures(AppCommands &commands, const std::filesystem::path &di
         click(spot, 1);
     };
     const auto flushClicks = [] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        // A software peer does not dispatch JUCE's posted timer messages. While
+        // one is outstanding, the timer worker can stop advancing its countdowns.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        do {
+            juce::Timer::callPendingTimersSynchronously();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < deadline);
         juce::Timer::callPendingTimersSynchronously();
     };
 
@@ -4138,12 +4144,13 @@ void foldedDeviceGestures(AppCommands &commands, const std::filesystem::path &di
     check(folded() && activations == 1 && !panel.enabled.getToggleState(),
           "SC-485: a single click still switches the folded device off");
 
+    const auto beforeReplacement = activations;
     click(panel.enabled.getBounds().getCentre());
     ++data.instance;
     publication = std::make_shared<ParameterPublication>(ParameterPublication{data});
     root.frame();
     flushClicks();
-    check(folded() && activations == 1 && root.devices.panels.size() == 1 &&
+    check(folded() && activations == beforeReplacement && root.devices.panels.size() == 1 &&
               root.devices.panels.front()->enabled.getToggleState(),
           "SC-485: a delayed click does not activate a replacement using the same device ID");
 }
