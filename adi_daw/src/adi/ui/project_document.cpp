@@ -2668,43 +2668,65 @@ bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesyste
     error_ = "Sample relinked. Playback could not refresh: " + error_;
     return false;
 }
-bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
-                                    const std::filesystem::path &defaultsIndex) {
-    // A new pool row takes the next id; a file already in the pool keeps its own (the capture
-    // reuses it by content).
-    // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
-    // One `RowIds` for the prepared row (DF-E16), past what the drop's earlier files took.
-    RowIds rows(store_->db());
+namespace {
+bool prepareDroppedAudio(Store &store, const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                         std::string &why, const std::filesystem::path &defaultsIndex, std::stop_token stop = {}) {
+    // Reserve past earlier files in the same drop. A file already in the pool keeps its id.
+    RowIds rows(store.db());
     if (out.firstFreeId > 1)
         rows.reserve("media_files", out.firstFreeId - 1);
-    const auto id = rows.next("media_files");
     OpRequest captured;
-    const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
+    const auto result = media::prepareImport(store, pathFromUtf8(utf8Path), rows.next("media_files"), nowUtc,
+                                             captured, nullptr, stop);
+    if (stop.stop_requested()) {
+        why = "Cancelled.";
+        return false;
+    }
     if (!result.ok) {
-        error_ = result.error.empty() ? "The file could not be read." : result.error;
+        why = result.error.empty() ? "The file could not be read." : result.error;
         return false;
     }
     if (!result.audio || result.audio->frames <= 0 || result.audio->sampleRate <= 0) {
-        error_ = "That file holds no audio ADI can play.";
+        why = "That file holds no audio ADI can play.";
         return false;
     }
     out.savedDefaults.reset();
     try {
         if (auto index = openSampleDefaults(defaultsIndex)) {
-            if (auto saved = clip_edit::loadSampleDefaults(*store_, *index, result, captured))
+            if (auto saved = clip_edit::loadSampleDefaults(store, *index, result, captured))
                 out.savedDefaults = std::make_shared<library::SampleSettings>(std::move(*saved));
         }
     } catch (const std::exception &e) {
-        error_ = utf8Path + " was not imported: " + e.what();
+        why = utf8Path + " was not imported: " + e.what();
         return false;
     }
     out.mediaId = result.mediaId;
     out.sampleRate = result.audio->sampleRate;
     out.frames = result.audio->frames;
     out.media = std::move(captured);
-    error_.clear();
+    why.clear();
     return true;
 }
+} // namespace
+
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                                    const std::filesystem::path &defaultsIndex) {
+    return prepareDroppedAudio(*store_, utf8Path, nowUtc, out, error_, defaultsIndex);
+}
+
+bool ProjectDocument::captureImport(const std::filesystem::path &project, const std::string &utf8Path,
+                                    std::int64_t nowUtc, AudioImport &out, std::string &why, std::stop_token stop,
+                                    const std::filesystem::path &defaultsIndex) {
+    // The worker owns its connection (SPEC 3.8). Media capture requires a writable store.
+    StoreError error{};
+    auto store = Store::open(project, error, false);
+    if (!store) {
+        why = "The project could not be read for the import: " + std::string(toString(error));
+        return false;
+    }
+    return prepareDroppedAudio(*store, utf8Path, nowUtc, out, why, defaultsIndex, stop);
+}
+
 bool ProjectDocument::saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex) {
     auto index = library::Index::open(defaultsIndex, error_, false);
     if (!index) {
@@ -3113,9 +3135,30 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
         session_.prepareWithGraphWorkers(rate, frames, graphWorkerCount_(frames), graphWorkerMinimumFrames_);
     else
         session_.prepare(rate, frames);
+    // SC-384: the engine refuses a format outside 44.1 to 768 kHz or above 4096 frames (ADR-0157), and the
+    // reason stayed inside the session while the window showed nothing. It is said in plain words.
+    std::string problem;
+    const auto hz = static_cast<long long>(std::llround(rate));
+    if (!(rate >= 44100.0) || rate > 768000.0)
+        problem = "ADI cannot run at " + std::to_string(hz) + " Hz: it needs 44.1 kHz to 768 kHz. Choose another "
+                  "sample rate in Settings > Audio.";
+    else if (frames > 4096)
+        problem = "ADI cannot run with a buffer of " + std::to_string(frames) + " samples: 4096 at most. Choose a "
+                  "smaller Buffer Size in Settings > Audio.";
+    {
+        const std::lock_guard lock(formatMutex_);
+        if (problem != formatProblem_) {
+            formatProblem_ = problem;
+            formatPending_ = problem;
+        }
+    }
     mailbox_.setSampleRate(rate);
     refreshLimiterReductionSources();
     analysis_->refreshSources(true);
+}
+std::optional<std::string> ProjectDocument::takeFormatProblem() {
+    const std::lock_guard lock(formatMutex_);
+    return std::exchange(formatPending_, std::nullopt);
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds

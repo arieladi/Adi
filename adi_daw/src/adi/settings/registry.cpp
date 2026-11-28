@@ -883,7 +883,8 @@ std::vector<Setting> build() {
     r.push_back(choice("audio.driverType", "Audio", "Driver Type",
                        "The audio driver. ASIO is opened only through JUCE's wrapper; there is "
                        "no raw bypass (ADR-0145 d5). Empty means the system default.",
-                       {"", "ASIO", "WASAPI", "DirectSound", "CoreAudio", "ALSA", "PipeWire/JACK"},
+                       {"", "ASIO", "WASAPI", "WASAPI Exclusive", "WASAPI Low Latency", "DirectSound",
+                        "CoreAudio", "ALSA", "PipeWire/JACK"},
                        ""));
     r.push_back(choice("audio.bufferSize", "Audio", "Buffer Size",
                        "Samples per block, chosen by hand: 64 to 4096. There is no 32 and no "

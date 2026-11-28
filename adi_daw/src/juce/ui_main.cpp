@@ -1672,7 +1672,7 @@ class AdiApplication final : public juce::JUCEApplication,
         live_.reset();
     }
     void auditionSample(std::filesystem::path path, double fraction) {
-        if (!document_ && !bridge_ && !noAudio_)
+        if (!document_ && !bridge_ && !noAudio_ && !audioEngineOff_)
             attachAudio();
         previewError_.clear();
         samplePreview_.play(std::move(path), fraction);
@@ -2351,6 +2351,63 @@ class AdiApplication final : public juce::JUCEApplication,
             });
             return true;
         };
+        // SC-377: a plain drop's files read on the import worker (a connection of its own), each
+        // file's name said as it is read; Esc stops it. Back on the message thread, to the same document only.
+        root->captureAudio = [this](std::vector<std::string> paths, AdiRootComponent::CaptureDone done) {
+            if (importing_ && importing_->load())
+                return false;
+            if (import_.joinable())
+                import_.join(); // the last one has finished
+            importing_ = std::make_shared<std::atomic<bool>>(true);
+            importStop_ = std::stop_source{};
+            const auto installed = installGeneration_;
+            const auto asker = juce::Component::SafePointer<AdiRootComponent>(root_);
+            const auto project = document_->projectPath();
+            const auto defaultsIndex = appdata::libraryIndexFile();
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            import_ = std::thread([this, paths = std::move(paths), finished = std::move(done), installed, asker,
+                                   project, defaultsIndex, now, running = importing_, stop = importStop_.get_token()] {
+                std::vector<AdiRootComponent::CapturedFile> captured;
+                std::string why;
+                std::int64_t nextId = 0;
+                for (std::size_t i = 0; i < paths.size() && why.empty(); ++i) {
+                    const auto name = pathFromUtf8(paths[i]).filename().u8string();
+                    juce::MessageManager::callAsync([this, asker, installed, line = "Reading “" +
+                                                         std::string(name.begin(), name.end()) + "”" +
+                                                         (paths.size() > 1 ? " (" + std::to_string(i + 1) + " of " +
+                                                                                 std::to_string(paths.size()) + ")"
+                                                                           : std::string()) +
+                                                         "… Esc cancels."] {
+                        if (asker != nullptr && asker.getComponent() == root_ && installGeneration_ == installed &&
+                            root_->capturing())
+                            root_->say(line);
+                    });
+                    AudioImport one;
+                    one.firstFreeId = nextId;
+                    std::string bad;
+                    if (!ProjectDocument::captureImport(project, paths[i], now, one, bad, stop, defaultsIndex)) {
+                        if (stop.stop_requested()) {
+                            why = "Cancelled.";
+                            break;
+                        }
+                        captured.push_back({std::nullopt, bad}); // SC-389: named, and the others go on
+                        continue;
+                    }
+                    if (!one.media.opType.empty())
+                        nextId = std::max(nextId, one.mediaId + 1);
+                    captured.push_back({std::move(one), {}});
+                }
+                running->store(false);
+                juce::MessageManager::callAsync([this, finished, installed, asker, captured = std::move(captured), why] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || installGeneration_ != installed ||
+                        asker == nullptr || asker.getComponent() != root_ || !document_)
+                        return;
+                    finished(captured, why);
+                });
+            });
+            return true;
+        };
+        root->cancelCapture = [this] { importStop_.request_stop(); };
         root->chooseAudioFile = [this](AdiRootComponent::ChosenAudioFile chosen) {
             if (chooser_)
                 return false;
@@ -2502,7 +2559,7 @@ class AdiApplication final : public juce::JUCEApplication,
             window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
-        if (!noAudio_)
+        if (!noAudio_ && !audioEngineOff_) // SC-385: an engine switched off stays off for the next project
             attachAudio();
         auto openNotice = document_->warning();
         if (const auto from = document_->store().upgradedFromMinor()) {
@@ -2556,6 +2613,9 @@ class AdiApplication final : public juce::JUCEApplication,
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
         setup.inputDeviceName = settings_->get("audio.inputDevice").get<std::string>();
+        const bool noInput = setup.inputDeviceName == kNoInputDevice; // SC-383: No Device, kept as itself
+        if (noInput)
+            setup.inputDeviceName = {};
         setup.outputDeviceName = settings_->get("audio.outputDevice").get<std::string>();
         setup.sampleRate = settings_->get("audio.sampleRate").get<double>();
         setup.bufferSize = settings_->get("audio.bufferSize").get<int>();
@@ -2564,8 +2624,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!requested.empty())
             for (auto *type : manager_.getAvailableDeviceTypes()) {
                 const auto name = type->getTypeName();
-                if (name == juce::String(requested) ||
-                    (requested == "WASAPI" && name.startsWith("Windows Audio"))) {
+                if (settings::driverSettingNames(requested, name.toStdString())) { // SC-379: the mode too
                     matched = true;
                     manager_.setCurrentAudioDeviceType(name, true);
                     break;
@@ -2581,6 +2640,10 @@ class AdiApplication final : public juce::JUCEApplication,
         // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
         else if (const auto error = openAudioDevice(manager_, setup, *settings_); error.isNotEmpty())
             report(error.toStdString());
+        // SC-381: with the system's input kept (a first run), none is open until it is wanted; say so once.
+        else if (setup.inputDeviceName.isEmpty() && !noInput && root_)
+            root_->say("No audio input is open: arming an audio track opens the system's input, or choose one in "
+                       "Settings > Audio.");
         if (document_)
             document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
                 if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
@@ -3284,6 +3347,23 @@ class AdiApplication final : public juce::JUCEApplication,
         return true;
     }
     bool applicationCommand(int id) {
+        if (id == AppCommands::AudioEngine) {
+            // SC-385: Live's audio engine switch. Off closes the device, freeing the interface for another
+            // program (or stopping a howl); on opens it again as the settings name it.
+            if (noAudio_ || !document_)
+                return false;
+            audioEngineOff_ = !audioEngineOff_;
+            if (audioEngineOff_) {
+                detachAudio();
+                if (root_)
+                    root_->say("The audio engine is off: the audio interface is free. Ctrl+Alt+Shift+E turns it on.");
+            } else {
+                attachAudio();
+                if (root_ && manager_.getCurrentAudioDevice() != nullptr)
+                    root_->say("The audio engine is on.");
+            }
+            return true;
+        }
         if (id == AppCommands::ManageProjectFiles)
             return showProjectMedia();
         if (id == AppCommands::ImportMidiFile || id == AppCommands::ExportMidiClip)
@@ -3404,6 +3484,8 @@ class AdiApplication final : public juce::JUCEApplication,
                     devices = [this]() -> std::unique_ptr<juce::Component> {
                         auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
                         page->onSetupChanged = [this](bool applied) {
+                            userChoseDevice_ = true; // SC-378: the user's own choice, saved as made
+                            inputForArm_ = false;    // SC-381: and an input chosen there is the user's
                             if (applied) {
                                 if (bridge_)
                                     bridge_->acknowledgeDeviceSetup();
@@ -3519,13 +3601,71 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;
+        // SC-378: an interface unplugged opens the system's device in its place, and plugged back nothing
+        // returned to it, the system's device saved over the user's choice. The choice is kept: while its
+        // device is missing nothing is saved over it and the Status Bar says what plays; when it is back,
+        // it is reopened. A change made on the Audio page is the user's, and saved as before.
+        {
+            settings::DeviceWatch watch;
+            watch.userChose = std::exchange(userChoseDevice_, false);
+            watch.chosenOutput = settings_->get("audio.outputDevice").get<std::string>();
+            watch.chosenInput = settings_->get("audio.inputDevice").get<std::string>();
+            if (watch.chosenInput == kNoInputDevice)
+                watch.chosenInput.clear(); // SC-383: No Device holds nothing to come back to
+            watch.openOutput = setup.outputDeviceName.toStdString();
+            watch.openInput = setup.inputDeviceName.toStdString();
+            if (auto *kind = manager_.getCurrentDeviceTypeObject()) {
+                for (const auto &n : kind->getDeviceNames(false)) watch.outputs.push_back(n.toStdString());
+                for (const auto &n : kind->getDeviceNames(true)) watch.inputs.push_back(n.toStdString());
+            }
+            const auto missing = [&watch] {
+                const bool out = !watch.chosenOutput.empty() && watch.chosenOutput != watch.openOutput;
+                return "“" + (out ? watch.chosenOutput : watch.chosenInput) + "”";
+            };
+            switch (settings::deviceChange(watch)) {
+            case settings::DeviceChange::Hold:
+                if (!holdingDevice_ && root_) {
+                    const auto playing = watch.openOutput.empty() ? std::string("no output")
+                                                                  : "“" + watch.openOutput + "”";
+                    root_->status.setAudioDeviceProblem(juce::String::fromUTF8(
+                        (missing() + " is not connected. ADI plays through " + playing + " until it is back.").c_str()));
+                }
+                holdingDevice_ = true;
+                if (settingsWindow_)
+                    settingsWindow_->panel().refreshValues();
+                return;
+            case settings::DeviceChange::Return: {
+                auto back = setup;
+                back.outputDeviceName = juce::String::fromUTF8(watch.chosenOutput.c_str());
+                back.inputDeviceName = juce::String::fromUTF8(watch.chosenInput.c_str());
+                const auto said = missing();
+                holdingDevice_ = false;
+                if (const auto error = manager_.setAudioDeviceSetup(back, true); error.isNotEmpty())
+                    report("The audio device " + said + " is back but did not open: " + error.toStdString());
+                else if (root_) {
+                    root_->status.setAudioDeviceProblem({});
+                    root_->say(said + " is back.");
+                }
+                return; // the reopen's own change message saves its grant
+            }
+            case settings::DeviceChange::Keep:
+                holdingDevice_ = false;
+                break;
+            }
+        }
         // A grant the setting does not offer (WASAPI's 480) keeps the request; the page shows the grant.
-        auto type = manager_.getCurrentAudioDeviceType();
-        if (type.startsWith("Windows Audio"))
-            type = "WASAPI";
+        // SC-379: Windows Audio's mode is kept, not folded into shared mode.
+        const auto type = juce::String(settings::driverSettingFor(manager_.getCurrentAudioDeviceType().toStdString()));
         std::string why;
+        // SC-381: an input opened for an armed track is the system's, as the setting keeps it: not saved by name.
+        const auto keptInput = settings_->get("audio.inputDevice").get<std::string>();
+        const bool systemInput = inputForArm_ && keptInput.empty();
+        // SC-383: No Device stays No Device while no input is open; an empty name would be the system's.
+        const bool noInput = keptInput == kNoInputDevice && setup.inputDeviceName.isEmpty();
         if (!settings::keepGrant(*settings_,
-                                 {type.toStdString(), setup.inputDeviceName.toStdString(),
+                                 {type.toStdString(), systemInput ? std::string()
+                                                      : noInput   ? keptInput
+                                                                  : setup.inputDeviceName.toStdString(),
                                   setup.outputDeviceName.toStdString(), static_cast<int>(setup.sampleRate),
                                   setup.bufferSize},
                                  {}, why))
@@ -3631,7 +3771,7 @@ class AdiApplication final : public juce::JUCEApplication,
             window_->setEnabled(true);
             if (historyWindow_)
                 historyWindow_->setEnabled(true);
-            if (!noAudio_)
+            if (!noAudio_ && !audioEngineOff_)
                 attachAudio();
             root_->undoHistory.refresh();
             root_->say(result.error.empty() ? "Restored project version." : result.error);
@@ -3677,12 +3817,36 @@ class AdiApplication final : public juce::JUCEApplication,
             if (bridge_)
                 if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
                     root_->status.setAudioDeviceProblem(std::move(problem));
+            // SC-384: a rate or buffer the engine cannot use, said; cleared when a usable one runs again.
+            if (auto format = document_->takeFormatProblem())
+                root_->status.setAudioDeviceProblem(juce::String::fromUTF8(format->c_str()));
             if (hotSwap_ && (!root_->browser.isShowing() ||
                              root_->arrangement.geometry.selection.track != hotSwap_->expected.track ||
                              !root_->devices.validExpected(hotSwap_->expected)))
                 leaveHotSwap();
             root_->transport.setCpuLoad(live_ ? live_->cpuLoad() : std::nullopt);
-            root_->setRecordStates(document_->recordStates());
+            const auto states = document_->recordStates();
+            root_->setRecordStates(states);
+            // SC-381: an audio track armed with no input open opens the system's input, once per arming.
+            if (!noAudio_ && settings_->get("audio.inputDevice").get<std::string>().empty()) {
+                bool armedAudio = false;
+                for (const auto &[id, state] : states)
+                    if (state.armed)
+                        if (const auto *t = root_->reader().findTrack(id); t != nullptr && t->kind == "audio")
+                            armedAudio = true;
+                if (armedAudio && !inputOpenedForArm_) {
+                    inputOpenedForArm_ = true;
+                    inputForArm_ = true;
+                    juce::String opened;
+                    if (const auto why = openDefaultInput(manager_, *settings_, opened); why.isNotEmpty())
+                        root_->say(why.toStdString());
+                    else if (opened.isNotEmpty())
+                        root_->say("The input “" + opened.toStdString() + "” is open for the armed track.");
+                    applyInputChannels();
+                }
+                if (!armedAudio)
+                    inputOpenedForArm_ = false;
+            }
             refreshRecordingPreview();
             refreshSamplePreview();
             root_->transport.capture.setEnabled(document_->canCaptureMidi());
@@ -3825,6 +3989,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // loader holds off.
     ProjectPluginLoad projectPlugins_;
     ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
+    bool userChoseDevice_ = false, holdingDevice_ = false; // SC-378
+    bool inputOpenedForArm_ = false, inputForArm_ = false; // SC-381
+    bool audioEngineOff_ = false;                           // SC-385
     std::optional<media::FileIdentity> untitledIdentity_;
     std::filesystem::path untitledFolder_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;

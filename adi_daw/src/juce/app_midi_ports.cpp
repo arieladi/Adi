@@ -442,6 +442,11 @@ void MidiPortsTable::rebuild() {
             auto toggle = std::make_unique<juce::ToggleButton>();
             toggle->setToggleState(on[i], juce::dontSendNotification);
             toggle->setTitle(juce::String(port.name) + " " + kFields[i]);
+            // SC-405: a switch nothing reads is not a switch: dimmed, unclickable, and its tooltip says why.
+            if (const auto inert = midiPortSwitchInert(port.input, kFields[i]); !inert.empty()) {
+                toggle->setEnabled(false);
+                toggle->setTooltip(juce::String::fromUTF8(inert.c_str()));
+            }
             toggle->onClick = [this, id = port.id, field = kFields[i], raw = toggle.get()] {
                 // Deferred: `set` rebuilds the rows, this button among them.
                 const bool state = raw->getToggleState();

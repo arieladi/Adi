@@ -39,6 +39,7 @@
 #include <map>
 #include <sqlite3.h>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -416,6 +417,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
         {"edit.consolidate", "Edit"}, // ConsolidateMidi
+        {"options.audio-engine", "Options"}, // AudioEngine
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -665,7 +667,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate", "Audio Engine On/Off"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -737,6 +739,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case AudioEngine:
+        // SC-385: Live's Ctrl+Alt+Shift+E (Cmd+Alt+Shift+E): the audio engine off, freeing the interface for
+        // another program or stopping a howl, and on again.
+        info.addDefaultKeypress('e', cmd | alt | shift);
         break;
     case SwitchDetailView:
         info.addDefaultKeypress(juce::KeyPress::tabKey, shift);
@@ -2475,6 +2482,11 @@ void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
     }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
+    // SC-377: Esc stops a drop whose files are still being read.
+    if (capturing_ && key == juce::KeyPress(juce::KeyPress::escapeKey) && cancelCapture) {
+        cancelCapture();
+        return true;
+    }
     // With Use Tab Key to Move Focus off, Shift+Tab switches the Detail View.
     // Tab's Arrangement/Session switch waits for Session View.
     const auto mods = key.getModifiers();
@@ -4355,7 +4367,7 @@ bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
 bool AdiRootComponent::loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &path) {
     if (!sampleInstrumentTarget(track))
         return fail("Choose a MIDI track to load the sample as an instrument.");
-    if (importing_ || importPrompt_)
+    if (importing_ || importPrompt_ || capturing_)
         return fail("Finish the current import before loading another sample.");
     if (!loadSampleInstrument)
         return fail("Loading a sample as an instrument needs the application.");
@@ -4378,7 +4390,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     }
     if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
         return fail(std::move(refusal));
-    if (importing_)
+    if (importing_ || capturing_)
         return fail("The last drop is still being imported.");
     if (importPrompt_)
         return fail("Answer the import prompt first.");
@@ -4479,39 +4491,136 @@ void AdiRootComponent::finishImport(std::int64_t first, std::int64_t onTrack, co
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {
     // The batch is built from the CURRENT cell.
+    if (captureAudio) {
+        // SC-377: the files are read (hashed, decoded) on the app's worker; the window stays alive, says
+        // what it reads, and Esc cancels. The batch lands as before, one undo step, when they are read --
+        // unless the project changed meanwhile, when the ids captured may be another row's.
+        std::vector<std::string> unique;
+        for (const auto &[path, name] : files)
+            if (std::find(unique.begin(), unique.end(), path) == unique.end())
+                unique.push_back(path);
+        const auto generation = view_.generation();
+        const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
+        const bool started = captureAudio(unique, [safe, files, track, pos, separate, unique, generation](
+                                                      std::vector<CapturedFile> captured, const std::string &why) {
+            if (!safe)
+                return;
+            safe->capturing_ = false;
+            if (!why.empty()) {
+                safe->say(why == "Cancelled." ? std::string("Nothing imported.") : why);
+                return;
+            }
+            if (safe->view_.generation() != generation || captured.size() != unique.size()) {
+                safe->fail("The project changed while the files were read: drop them again.");
+                return;
+            }
+            std::vector<DroppedAudio> dropped;
+            std::vector<std::pair<std::string, std::string>> failed;
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                const auto at = static_cast<std::size_t>(
+                    std::find(unique.begin(), unique.end(), files[i].first) - unique.begin());
+                const bool again = std::find_if(files.begin(), files.begin() + static_cast<std::ptrdiff_t>(i),
+                                                [&](const auto &f) { return f.first == files[i].first; }) !=
+                                   files.begin() + static_cast<std::ptrdiff_t>(i);
+                if (!captured[at].import) {
+                    if (!again)
+                        failed.emplace_back(files[i].second, captured[at].why);
+                    continue; // SC-389: the others still come in
+                }
+                DroppedAudio file{files[i].second, *captured[at].import};
+                if (again)
+                    file.import.media = {}; // a file dropped twice is captured, and imported, once
+                dropped.push_back(std::move(file));
+            }
+            (void)safe->landWhatRead(files, track, pos, separate, std::move(dropped), failed);
+        });
+        if (!started)
+            return fail("The last drop is still being read.");
+        capturing_ = true;
+        return true;
+    }
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
     // Capture each path once. Uncommitted pool rows are shared by content across the batch.
     std::vector<DroppedAudio> dropped;
-    std::map<std::string, std::int64_t> pendingMedia;
+    std::vector<std::pair<std::string, std::string>> failed;
+    std::unordered_map<std::string_view, std::optional<std::size_t>> captures;
     std::int64_t nextId = 0;
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        const auto &[path, name] = files[i];
+    for (const auto &[path, name] : files) {
+        const auto [capture, first] = captures.try_emplace(path);
         DroppedAudio file{name, {}};
-        std::size_t seen = 0;
-        while (seen < i && files[seen].first != path)
-            ++seen;
-        if (seen < i) {
-            file.import = dropped[seen].import;
-            file.import.media = {};
-        } else {
+        if (first) {
             file.import.firstFreeId = nextId;
             std::string why;
-            if (!importAudio(path, file.import, why))
-                return fail(why.empty() ? "The file could not be imported." : why);
-            if (file.import.media.opType == "media.import") {
-                const auto &hash = file.import.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
-                const auto [entry, inserted] = pendingMedia.try_emplace(hash, file.import.mediaId);
-                if (!inserted) {
-                    file.import.mediaId = entry->second;
-                    file.import.media = {};
-                }
+            if (!importAudio(path, file.import, why)) {
+                // SC-389: one bad file never stops the others; it is named when they have landed.
+                failed.emplace_back(name, why.empty() ? std::string("it could not be read") : why);
+                continue;
             }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
+            capture->second = dropped.size();
+        } else if (const auto previous = capture->second) {
+            file.import = dropped[*previous].import;
+            file.import.media = {};
+        } else {
+            continue; // A bad file dropped twice is named once.
         }
         dropped.push_back(std::move(file));
     }
+    return landWhatRead(files, track, pos, separate, std::move(dropped), failed);
+}
+bool AdiRootComponent::landWhatRead(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                                    std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped,
+                                    const std::vector<std::pair<std::string, std::string>> &failed) {
+    // SC-389: what was read lands, one undo step; what was not is named, with why.
+    const auto said = [&failed](std::size_t landed) {
+        std::string line;
+        if (failed.size() == 1)
+            line = "\u201c" + failed[0].first + "\u201d could not be imported: " + failed[0].second;
+        else {
+            line = std::to_string(failed.size()) + " files could not be imported:";
+            for (std::size_t i = 0; i < failed.size(); ++i)
+                line += (i ? "; " : " ") + ("\u201c" + failed[i].first + "\u201d (" + failed[i].second + ")");
+        }
+        if (landed > 0)
+            line += landed == 1 ? std::string(". The other file came in.")
+                                : ". The other " + std::to_string(landed) + " came in.";
+        return line;
+    };
+    if (dropped.empty())
+        return failed.empty() ? fail("Drop an audio file.") : fail(said(0));
+    const auto landed = dropped.size();
+    if (!landPlainDrop(files, track, pos, separate, std::move(dropped)))
+        return false;
+    if (!failed.empty())
+        say(said(landed));
+    return true;
+}
+bool AdiRootComponent::landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files,
+                                     std::int64_t track, std::int64_t pos, bool separate,
+                                     std::vector<DroppedAudio> dropped) {
+    (void)files;
+    if (!view_.current())
+        return fail("Dropping audio needs an open project.");
+    // Distinct paths may carry the same bytes, including captures that were made
+    // before any pool row existed. Repeated paths also reuse their captured ID.
+    std::map<std::string, std::int64_t> pendingMedia;
+    std::map<std::int64_t, std::int64_t> duplicateMedia;
+    for (auto &file : dropped) {
+        auto &captured = file.import;
+        if (captured.media.opType != "media.import")
+            continue;
+        const auto &hash = captured.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
+        const auto [entry, inserted] = pendingMedia.try_emplace(hash, captured.mediaId);
+        if (!inserted) {
+            duplicateMedia.try_emplace(captured.mediaId, entry->second);
+            captured.media = {};
+        }
+    }
+    for (auto &file : dropped)
+        if (const auto original = duplicateMedia.find(file.import.mediaId); original != duplicateMedia.end())
+            file.import.mediaId = original->second;
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
                                    &commands_.recordingDefaults(), &submitter_.store(), editRate());
     if (!edit.refusal.empty())
@@ -6499,7 +6608,7 @@ bool AdiRootComponent::command(int id) {
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
         (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About ||
-        id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
+        id == AppCommands::AudioEngine || id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -6834,7 +6943,7 @@ bool AdiRootComponent::command(int id) {
             return fail("Select an audio track to import a file.");
         if (importPrompt_)
             return fail("Answer the import prompt first.");
-        if (importing_)
+        if (importing_ || capturing_)
             return fail("The last file is still being imported.");
         if (!chooseAudioFile)
             return fail("The audio file chooser is unavailable.");

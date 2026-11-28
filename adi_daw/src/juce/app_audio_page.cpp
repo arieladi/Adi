@@ -110,9 +110,9 @@ juce::String useChannelConfig(juce::AudioDeviceManager &manager, const settings:
 }
 juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::AudioDeviceManager::AudioDeviceSetup &setup,
                              const settings::AppSettings &store) {
-    // JUCE names the type's default device for an empty name only on a side asked for channels:
-    // asked for none, a first run opened no input and F9 had nothing to record (A16).
-    auto error = manager.initialise(2, 2, nullptr, true, {}, &setup);
+    // JUCE names the type's default device for an empty name only on a side asked for channels. An empty
+    // input is not asked for (SC-381): arming a track opens it (openDefaultInput), as F9 needs (A16).
+    auto error = manager.initialise(setup.inputDeviceName.isEmpty() ? 0 : 2, 2, nullptr, true, {}, &setup);
     // A default input that cannot open beside the output leaves the output to open alone, as before.
     if (error.isNotEmpty() && setup.inputDeviceName.isEmpty())
         if (const auto alone = manager.initialise(0, 2, nullptr, true, {}, &setup); alone.isEmpty())
@@ -135,6 +135,30 @@ juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::Audi
     return "The audio output " + output + " could not be opened: " + error +
            (input.isNotEmpty() ? " The input \"" + input + "\" is open." : juce::String()) +
            " Choose an output in Settings > Audio.";
+}
+juce::String openDefaultInput(juce::AudioDeviceManager &manager, const settings::AppSettings &store, juce::String &opened) {
+    auto *device = manager.getCurrentAudioDevice();
+    auto *type = manager.getCurrentDeviceTypeObject();
+    if (device != nullptr && device->getActiveInputChannels().countNumberOfSetBits() > 0) {
+        opened = manager.getAudioDeviceSetup().inputDeviceName;
+        return {};
+    }
+    if (type == nullptr)
+        return "No audio driver is open.";
+    const auto names = type->getDeviceNames(true);
+    if (names.isEmpty())
+        return "This computer has no audio input to record from.";
+    const auto chosen = names[juce::jmax(0, type->getDefaultDeviceIndex(true))];
+    auto setup = manager.getAudioDeviceSetup();
+    const auto before = setup;
+    setup.inputDeviceName = chosen;
+    setup.useDefaultInputChannels = true;
+    if (auto error = manager.setAudioDeviceSetup(setup, true); error.isNotEmpty()) {
+        (void)manager.setAudioDeviceSetup(before, true);
+        return "The input \"" + chosen + "\" could not be opened: " + error;
+    }
+    opened = chosen;
+    return useChannelConfig(manager, store);
 }
 AudioDevicePage::ChannelButtons::ChannelButtons() {
     setTitle("Channel Configuration");
@@ -160,6 +184,21 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
         addAndMakeVisible(c);
     addAndMakeVisible(channels);
     channels.input.onClick = [this] { openConfig(true); };
+    addAndMakeVisible(hardware);
+    hardware.onClick = [this] {
+        auto *device = manager_.getCurrentAudioDevice();
+        if (device == nullptr || !device->hasControlPanel())
+            return;
+        // As JUCE's own device selector: the panel is the driver's; when it says something changed, the
+        // device is closed and opened again, and the page shows what it grants now.
+        if (device->showControlPanel()) {
+            manager_.closeAudioDevice();
+            manager_.restartLastAudioDevice();
+            error_ = manager_.getCurrentAudioDevice() == nullptr ? juce::String("The device did not reopen after its Hardware Setup.")
+                                                                : juce::String();
+        }
+        finishSetupChange();
+    };
     channels.output.onClick = [this] { openConfig(false); };
     driver_.onChange = [this] {
         manager_.setCurrentAudioDeviceType(driver_.getText(), true);
@@ -167,9 +206,12 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
         finishSetupChange();
     };
     input_.onChange = [this] {
-        apply([this](auto &setup) {
-            setup.inputDeviceName = input_.getSelectedId() == 1 ? juce::String() : input_.getText();
-        });
+        // SC-383: No Device is kept as itself, apart from the empty name of the system's input.
+        std::string why;
+        const bool none = input_.getSelectedId() == 1;
+        if (none)
+            (void)settings_.set("audio.inputDevice", std::string(kNoInputDevice), {settings::Actor::User, {}, 0}, why);
+        apply([none, this](auto &setup) { setup.inputDeviceName = none ? juce::String() : input_.getText(); });
     };
     output_.onChange = [this] {
         apply([this](auto &setup) {
@@ -234,6 +276,7 @@ std::vector<AudioDevicePage::Line> AudioDevicePage::lines(std::array<int, 3> &he
             chooser("Audio Input Device", input_, SettingRow::kWide);
             chooser("Audio Output Device", output_, SettingRow::kWide);
             chooser("Channel Configuration", channels, SettingRow::kWide);
+            chooser("Hardware Setup", hardware, SettingRow::kNarrow);
             held(s);
             break;
         case 1:
@@ -368,6 +411,10 @@ void AudioDevicePage::refresh() {
     auto *open = manager_.getCurrentAudioDevice();
     channels.input.setEnabled(open != nullptr && !open->getInputChannelNames().isEmpty());
     channels.output.setEnabled(open != nullptr && !open->getOutputChannelNames().isEmpty());
+    hardware.setEnabled(open != nullptr && open->hasControlPanel());
+    hardware.setTooltip(open == nullptr ? juce::String("No device is open.")
+                        : open->hasControlPanel() ? "Opens " + open->getName() + "'s own control panel."
+                                                  : juce::String("This driver has no control panel of its own (ASIO drivers do)."));
     if (auto *device = open) {
         int item = 1;
         for (const auto rate : device->getAvailableSampleRates())

@@ -1233,6 +1233,73 @@ void testDeviceGrant() {
           "an offered grant becomes the setting (the Audio page's own change): " + why);
 }
 
+void testDriverModeKept() {
+    section("SC-379: Windows Audio's mode is kept: Exclusive and Low Latency reopen as themselves");
+    using adi::settings::driverSettingFor;
+    using adi::settings::driverSettingNames;
+    check(driverSettingFor("Windows Audio") == "WASAPI" &&
+              driverSettingFor("Windows Audio (Exclusive Mode)") == "WASAPI Exclusive" &&
+              driverSettingFor("Windows Audio (Low Latency Mode)") == "WASAPI Low Latency" &&
+              driverSettingFor("ASIO") == "ASIO" && driverSettingFor("DirectSound") == "DirectSound",
+          "each mode has a setting of its own; other types keep their names");
+    const std::vector<std::string> types{"Windows Audio", "Windows Audio (Exclusive Mode)",
+                                         "Windows Audio (Low Latency Mode)", "DirectSound", "ASIO"};
+    for (const auto& type : types) {
+        int matches = 0;
+        std::string matched;
+        for (const auto& candidate : types)
+            if (driverSettingNames(driverSettingFor(type), candidate)) {
+                ++matches;
+                matched = candidate;
+            }
+        check(matches == 1 && matched == type, "\"" + type + "\" saved reopens as itself, and only itself");
+    }
+    check(driverSettingNames("WASAPI", "Windows Audio") && !driverSettingNames("WASAPI", "Windows Audio (Exclusive Mode)"),
+          "an older file's \"WASAPI\" is shared mode, as it was");
+    check(!driverSettingNames("", "Windows Audio"), "an empty setting names no type (the system's default)");
+    adi::test::TempDirectory temp("settings", "driver-mode");
+    AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
+    std::string why;
+    for (const auto* mode : {"WASAPI Exclusive", "WASAPI Low Latency", "WASAPI"})
+        check(keepGrant(s, {mode, "", "Speakers", 48000, 512}, kUser, why) && s.get("audio.driverType") == mode,
+              std::string("the store keeps ") + mode + ": " + why);
+}
+
+void testDeviceUnpluggedAndBack() {
+    section("SC-378: an interface unplugged keeps the user's choice, and comes back when it does");
+    using adi::settings::DeviceChange;
+    using adi::settings::DeviceWatch;
+    using adi::settings::deviceChange;
+    DeviceWatch w;
+    w.chosenOutput = "Interface";
+    w.chosenInput = "Interface";
+    w.openOutput = "Interface";
+    w.openInput = "Interface";
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Keep, "the chosen device open: its grant is kept as before");
+    w.openOutput = "Speakers";
+    w.openInput = "Microphone";
+    w.outputs = {"Speakers"};
+    w.inputs = {"Microphone"};
+    check(deviceChange(w) == DeviceChange::Hold,
+          "unplugged, the system's device opened in its place: the choice is held, nothing saved over it");
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Return, "plugged back: it is reopened");
+    w.userChose = true;
+    check(deviceChange(w) == DeviceChange::Keep, "a device the user chose on the Audio page is saved, whatever was chosen before");
+    DeviceWatch system;
+    system.openOutput = "Speakers";
+    system.outputs = {"Speakers"};
+    check(deviceChange(system) == DeviceChange::Keep, "the system's default chosen (empty): nothing to hold");
+    DeviceWatch outputOnly = w;
+    outputOnly.userChose = false;
+    outputOnly.chosenInput.clear();
+    outputOnly.outputs = {"Speakers"};
+    check(deviceChange(outputOnly) == DeviceChange::Hold, "the output alone missing holds");
+}
+
 void testChannelConfig() {
     section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
     const Setting* c = find("audio.channelConfig");
@@ -1471,6 +1538,8 @@ int runAll() {
     testWindowZoom();
     testChannelConfig();
     testDeviceGrant();
+    testDriverModeKept();
+    testDeviceUnpluggedAndBack();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

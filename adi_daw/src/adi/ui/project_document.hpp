@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <span>
@@ -177,6 +178,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
                                std::int32_t minimumFrames);
     void prepare(double rate, std::int32_t frames) override;
+    // SC-384: a rate or buffer the engine cannot use, in plain words, taken once by the window: the new
+    // sentence, an empty string when a usable format runs again after one, nothing when nothing changed.
+    // (The 44.1 kHz floor is ruled, ADR-0157.) Any thread; the device's start calls prepare.
+    std::optional<std::string> takeFormatProblem();
     void release() override;
     void process(const engine::AudioIo &) noexcept override;
     Store &store() noexcept { return *store_; }
@@ -398,6 +403,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
                        const std::filesystem::path &defaultsIndex = {});
+    // SC-377: capture on a worker with its own connection and cancellation.
+    static bool captureImport(const std::filesystem::path &project, const std::string &utf8Path, std::int64_t nowUtc,
+                              AudioImport &out, std::string &why, std::stop_token stop = {},
+                              const std::filesystem::path &defaultsIndex = {});
+    [[nodiscard]] std::filesystem::path projectPath() const { return store_->path(); }
     // An explicit Library write, available even for a read-only project.
     bool saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex);
     struct ClipRelinkTarget {
@@ -526,6 +536,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool followSaveAs(const StoreFileResult &, bool keptTake);
     struct SaveJob;
     std::unique_ptr<Store> store_;
+    std::mutex formatMutex_;                 // SC-384
+    std::string formatProblem_;              // the last one said
+    std::optional<std::string> formatPending_; // for the window
     std::string name_;
     DailyHistorySnapshots dailyHistory_;
     AppliedSource dailyHistorySource_;

@@ -372,6 +372,28 @@ void testAProjectLoadsAndPlays() {
     eqi(loader.made[0]->unpreparedBlocks, 0, "nothing processed an unprepared device");
 }
 
+void testRateChangeKeepsThePlace() {
+    const adi::test::TempDirectory scratch("session", "rate-place");
+    section("SC-382 -- a sample-rate change keeps the song where it was, in time");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+    Loader loader;
+    Session s;
+    SessionSpec spec;
+    spec.sampleRate = 44100.0;
+    spec.maxFrames = 512;
+    check(s.load(*store, loader.fn(), spec), "load: " + s.error());
+    s.transport().locate(static_cast<std::int64_t>(4.01 * 44100.0));
+    s.transport().play();
+    s.prepare(96000.0, 512);
+    eqi(s.transport().position(), std::llround(4.01 * 96000.0), "4.01 s at 44.1 kHz is 4.01 s at 96 kHz");
+    check(s.transport().playing(), "and it goes on playing");
+    s.prepare(96000.0, 256);
+    eqi(s.transport().position(), std::llround(4.01 * 96000.0), "a block size change alone moves nothing");
+    s.prepare(48000.0, 256);
+    eqi(s.transport().position(), std::llround(4.01 * 48000.0), "and back down, still 4.01 s");
+}
+
 void testBlockSizeChangesWithoutReload() {
     const adi::test::TempDirectory scratch("session", "resize");
     section("ADR-0042 d5 / ADR-0122 d3 -- a format change rebuilds; it never reloads");
@@ -855,6 +877,7 @@ int main() {
     std::printf("adi_session_tests -- a project, live (ADR-0122)\n\n");
     testAProjectLoadsAndPlays();
     testBlockSizeChangesWithoutReload();
+    testRateChangeKeepsThePlace();
     testRefreshFollowsTheRows();
     testStateAndTheMirror();
     testAProjectWithoutAMasterIsRefusedNotCrashed();

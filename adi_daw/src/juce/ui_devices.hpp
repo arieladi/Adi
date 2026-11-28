@@ -148,7 +148,7 @@ class SampleTile final : public juce::Component,
     std::shared_ptr<const media::MediaPeaks> peaks_;
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
-// the name and Configure; the controls in columns that fit the strip's height.
+// the name and Configure where available; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component,
                               public juce::FileDragAndDropTarget,
                               public juce::DragAndDropTarget,
@@ -272,6 +272,7 @@ class DevicePanelView final : public juce::Component,
 
   private:
     SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
+    bool allowsConfigure() const noexcept;
     void endRename(bool commit);
     void showParameterList();
     void closeConfigure();

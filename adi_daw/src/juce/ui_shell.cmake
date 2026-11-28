@@ -174,6 +174,10 @@ if(ADI_WITH_JUCE)
             COMMAND /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription"
                 "$<TARGET_BUNDLE_CONTENT_DIR:adi_app>/Info.plist")
     endif()
+    if(WIN32)
+        # SC-388: a sample at a path over 260 characters imports (where Windows allows long paths).
+        target_sources(adi_app PRIVATE src/juce/long_paths.manifest)
+    endif()
     if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The build tree works without an install. Only the installer decides where to stage the kit.
         add_custom_target(adi_starter_drums

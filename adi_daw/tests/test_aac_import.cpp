@@ -54,10 +54,13 @@ using Bytes=std::vector<std::uint8_t>;
 Bytes bytes(const fs::path& file){std::ifstream in(file,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
 void save(const fs::path& file,const Bytes& value){std::ofstream out(file,std::ios::binary);out.write(reinterpret_cast<const char*>(value.data()),static_cast<std::streamsize>(value.size()));}
 std::vector<float> wave(const fs::path& file){WavReader r(file);std::vector<float> result(static_cast<std::size_t>(r.frames())*r.channels());if(r.read(result.data(),static_cast<std::uint32_t>(r.frames()))!=r.frames())throw std::runtime_error("read comparison");return result;}
-bool closeAudio(const std::vector<float>& actual,const std::vector<float>& reference){
+// paddingTail: the last coded access unit of an ADTS file, past the authored end, is the encoder's padding;
+// its decode depends on how a decoder ends the last overlap (Windows 10's differs from FFmpeg's by 0.0052).
+// It counts in the error, not in the largest-difference bound.
+bool closeAudio(const std::vector<float>& actual,const std::vector<float>& reference,std::size_t paddingTail=0){
     if(actual.empty() || reference.size()<actual.size())return false;
-    double error=0,energy=0;float maximum=0;
-    for(std::size_t i=0;i<actual.size();++i){if(!std::isfinite(actual[i]))return false;const auto difference=actual[i]-reference[i];error+=static_cast<double>(difference)*difference;energy+=static_cast<double>(reference[i])*reference[i];maximum=std::max(maximum,std::abs(difference));}
+    double error=0,energy=0;float maximum=0;const auto bounded=actual.size()>paddingTail?actual.size()-paddingTail:0;
+    for(std::size_t i=0;i<actual.size();++i){if(!std::isfinite(actual[i]))return false;const auto difference=actual[i]-reference[i];error+=static_cast<double>(difference)*difference;energy+=static_cast<double>(reference[i])*reference[i];if(i<bounded)maximum=std::max(maximum,std::abs(difference));}
     return energy>0 && error/energy<1e-4 && maximum<0.005f;
 }
 DecodeCacheLimits roomy(){return {std::uint64_t{1}<<30,0};}
@@ -96,13 +99,43 @@ void transport(){
     check(captured.ok && !captured.audio && request.payload.at("row").at("format")=="mp4","generic media capture retains an opaque non-audio MP4 without claiming video playback");
 }
 void decode(){
-    if(!aacCodecAvailable()){std::puts("native AAC unavailable; transport checks remain active");return;}
+    if(!aacCodecAvailable()){
+        // SC-376: a machine with the platform's AAC decoder must decode; "unavailable" there is a failure.
+        const auto why="the platform has an AAC decoder, yet ADI refuses AAC: "+aacUnavailableReason();
+        check(!aacPlatformDecoderPresent(),why.c_str());
+        std::printf("native AAC unavailable (%s); transport checks remain active\n",aacUnavailableReason().c_str());return;}
     test::TempDirectory temp{"aac_import","decode"};DecodeCache cache(temp.path()/"cache",roomy(),hooks());
     for(const std::string name:{"mono","stereo"})for(const bool adts:{false,true}){
         const auto source=fixture(name+(adts?".aac":".m4a"));const auto output=cache.playable(source);WavReader reader(output);
         check(reader.format()==WavFormat::Float32 && reader.channels()==(name=="mono"?1:2) && reader.sampleRate()==(name=="mono"?44100u:48000u),"general AAC cache retains native rate and mono/stereo as float32");
         const auto expected=adts?readAdts(source).frames:readAacAudioMovie(source).tracks.front().frames;
-        check(reader.frames()==expected && closeAudio(wave(output),wave(fixture(name+(adts?"-adts-reference.wav":"-reference.wav")))),"all decoded frames/priming/channel order agree with an independent encoder/demuxer/decoder reference");
+        const auto got=wave(output),want=wave(fixture(name+(adts?"-adts-reference.wav":"-reference.wav")));
+        const bool agree=reader.frames()==expected && closeAudio(got,want,adts?std::size_t{1024}*reader.channels():0);
+        if(!agree){
+            // Where it differs: frames, and the best lag of the decoded audio against the reference.
+            double best=1e9;int lag=0;const auto ch=reader.channels();
+            for (int offset = -4096; offset <= 4096; ++offset) {
+                double error = 0, energy = 0;
+                for (std::size_t i = 0; i < got.size(); i += 97) {
+                    const auto j = static_cast<std::int64_t>(i) + static_cast<std::int64_t>(offset) * ch;
+                    if (j < 0 || j >= static_cast<std::int64_t>(want.size())) continue;
+                    const auto reference = want[static_cast<std::size_t>(j)];
+                    const double difference = got[i] - reference;
+                    error += difference * difference;
+                    energy += static_cast<double>(reference) * reference;
+                }
+                if (energy > 0 && error / energy < best) {
+                    best = error / energy;
+                    lag = offset;
+                }
+            }
+            float worst=0;std::size_t at=0;
+            for(std::size_t i=0;i<got.size() && i<want.size();++i)if(std::abs(got[i]-want[i])>worst){worst=std::abs(got[i]-want[i]);at=i;}
+            std::printf("  %s%s: frames %llu, expected %llu, reference %zu; best lag %d frames, error/energy %.2e; largest difference %.4f at frame %zu\n",name.c_str(),adts?" ADTS":"",
+                        static_cast<unsigned long long>(reader.frames()),static_cast<unsigned long long>(expected),want.size()/ch,lag,best,
+                        static_cast<double>(worst),at/ch);
+        }
+        check(agree,"all decoded frames/priming/channel order agree with an independent encoder/demuxer/decoder reference");
         const auto renamed=temp.path()/(name+(adts?"-adts.bin":"-mp4.bin"));fs::copy_file(source,renamed);
         const auto before=cache.stats().decodes;const auto hit=cache.playable(renamed);
         check(hit==output && hit.filename()==media::blake3File(source).hex+".wav" && cache.stats().decodes==before,"same source bytes at another name reuse the source-hash cache without decoding");

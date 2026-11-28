@@ -3599,6 +3599,14 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work
     if (changed) {
         ++runtimeEpoch_;
         ++stats_.formatChanges;
+        // SC-382: the song stays where it was. The position is kept in samples, so a new rate moved it
+        // (4.01 s became 1.85 s from 44.1 to 96 kHz); it is carried over as time. Loops follow from their
+        // ticks at the rebuild.
+        if (sampleRate != spec_.sampleRate && spec_.sampleRate > 0 && sampleRate > 0) {
+            const auto seconds = static_cast<long double>(transport_.position()) / spec_.sampleRate;
+            const auto moved = static_cast<std::int64_t>(std::llround(seconds * sampleRate));
+            transport_.locate(moved); // playing or not, as it was
+        }
         spec_.sampleRate = sampleRate;
         spec_.maxFrames = maxFrames;
     }

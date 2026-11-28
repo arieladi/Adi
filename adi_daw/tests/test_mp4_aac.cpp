@@ -98,6 +98,22 @@ void structure() {
     mutate([](Bytes &b) { put(b, tag(b, "stsc") + 12, 0, 4); }, "zero first chunk refused");
     mutate([](Bytes &b) { put(b, tag(b, "stsc") + 20, 2, 4); }, "unknown sample description refused");
     mutate([](Bytes &b) { put(b, tag(b, "stts") + 16, 2048, 4); }, "non-AAC packet timing refused");
+    {
+        // SC-376: Media Foundation writes the media duration one tick short of its sample table (its
+        // 100-ns rounding). That reads as the table's total; two ticks short is still refused.
+        auto b = valid;
+        put(b, tag(b, "mdhd") + 28, 1024 + 1811 - 1, 8);
+        save(broken, b);
+        bool read = false;
+        try {
+            const auto rounded = readAacMovie(broken);
+            read = rounded.tracks.size() == 5 && rounded.tracks[0].frames == 1811 && rounded.tracks[0].priming == 1024;
+        } catch (const std::exception &) {
+        }
+        check(read, "a media duration one tick short of the sample table (Media Foundation's rounding) is read");
+    }
+    mutate([](Bytes &b) { put(b, tag(b, "mdhd") + 28, 1024 + 1811 - 2, 8); },
+           "a media duration two ticks short of the sample table is still refused");
     mutate([](Bytes &b) { put(b, tag(b, "mvhd") + 24, 0, 4); },
            "zero movie clock refused without division by zero");
     mutate([](Bytes &b) { put(b, tag(b, "elst") + 20, 0x7fffffffffffffffULL, 8); },
@@ -182,7 +198,15 @@ float signal(std::uint32_t frame, unsigned channel, std::uint32_t rate) {
 }
 void codecs() {
     if (!aacCodecAvailable()) {
-        std::puts("AAC codec runtime unavailable; structural tests still run");
+        // SC-376: a machine with the platform's AAC decoder must decode; "unavailable" there is a failure.
+        const auto why = "the platform has an AAC decoder, yet ADI refuses AAC: " + aacUnavailableReason();
+        check(!aacPlatformDecoderPresent(), why.c_str());
+        std::printf("AAC codec runtime unavailable (%s); structural tests still run\n", aacUnavailableReason().c_str());
+        return;
+    }
+    if (!aacEncoderAvailable()) {
+        // The round trip below encodes with sample-exact priming, the NI Stems export's requirement.
+        std::puts("AAC decoding available; this encoder gives no sample-exact priming, so the encode round trip is skipped");
         return;
     }
     adi::test::TempDirectory dir{"mp4_aac", "codec"};

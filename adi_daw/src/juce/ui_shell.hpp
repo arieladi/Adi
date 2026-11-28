@@ -215,7 +215,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         LockEnvelopes,
         OpenBackup,
         ConsolidateMidi,
-        LastId = ConsolidateMidi
+        AudioEngine, // SC-385: Live's audio engine off and on, Ctrl+Alt+Shift+E: frees the interface
+        LastId = AudioEngine
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -572,6 +573,21 @@ class AdiRootComponent final : public juce::Component,
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // SC-377: the plain drop's files read off the message thread (the document's `captureImport`, on the
+    // app's import worker): `done` comes on the message thread with each file's capture in order, or with
+    // why not ("Cancelled." after cancelCapture). False when it could not start. Set, a plain drop uses it
+    // and the window stays alive; unset, `importAudio` reads them in place.
+    // One result per file asked, in order: its capture, or why it could not be imported (SC-389: one bad
+    // file never stops the others). `why` alone says the whole read stopped ("Cancelled.").
+    struct CapturedFile {
+        std::optional<AudioImport> import;
+        std::string why;
+    };
+    using CaptureDone = std::function<void(std::vector<CapturedFile> captured, const std::string &why)>;
+    std::function<bool(std::vector<std::string> utf8Paths, CaptureDone done)> captureAudio;
+    std::function<void()> cancelCapture;
+    // Whether a plain drop's files are still being read (Esc cancels).
+    bool capturing() const noexcept { return capturing_; }
     // The explicit sample-defaults write belongs to the active Library profile.
     std::function<bool(std::int64_t clip, std::string &why)> saveSampleDefaults;
     // The drop with Warp, edge fades and copy is prepared off the message thread and committed as
@@ -1220,6 +1236,12 @@ class AdiRootComponent final : public juce::Component,
     // E5: the prompt while open and the optional warning for the drop in progress.
     std::unique_ptr<ImportPrompt> importPrompt_;
     std::optional<std::string> importing_;
+    bool landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                       std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped);
+    bool landWhatRead(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                      std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped,
+                      const std::vector<std::pair<std::string, std::string>> &failed);
+    bool capturing_ = false; // SC-377
     bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
                    bool separate);
     void finishImport(std::int64_t first, std::int64_t onTrack, const std::string &why);

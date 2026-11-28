@@ -6773,6 +6773,160 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+// SC-377: a plain drop's files are read off the window: the drop returns at once, the window says what it
+// reads, Esc cancels, and the batch lands as one step when they are read -- refused when the project
+// changed meanwhile.
+void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plain-drop-worker.adi", true, {}, error);
+    check(document != nullptr, "SC-377: a project to drop into");
+    if (!document)
+        return;
+    const auto wav = dir / "Long.wav";
+    {
+        std::vector<float> samples(24000, .2f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    std::string why;
+    const auto wasOptions = settings.get("editing.importOptions");
+    settings.set("editing.importOptions", std::string("never"), {}, why);
+    check(keepImportChoices(settings, ImportChoices{}, why), "SC-377: plain drops, no choices");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plain-drop-worker");
+    root.afterEdit = [&] { document->synchronise(); };
+    int inPlace = 0;
+    root.importAudio = [&](const std::string &, AudioImport &, std::string &) {
+        ++inPlace;
+        return false;
+    };
+    std::vector<std::vector<std::string>> asked;
+    AdiRootComponent::CaptureDone pending;
+    int cancels = 0;
+    const auto queueCapture = [&](std::vector<std::string> paths, AdiRootComponent::CaptureDone done) {
+        asked.push_back(paths);
+        pending = std::move(done);
+        return true;
+    };
+    root.captureAudio = queueCapture;
+    root.cancelCapture = [&] { ++cancels; };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto audioTrack = [&] {
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&] {
+        const auto *t = root.reader().findTrack(audioTrack);
+        return t != nullptr ? t->clips.size() : std::size_t{0};
+    };
+    const auto capture = [&] {
+        AudioImport out;
+        std::string reason;
+        const bool ok = ProjectDocument::captureImport(document->projectPath(), wav.string(), 1'700'000'000'000'000, out, reason);
+        check(ok, ("SC-377: the worker's capture reads the file: " + reason).c_str());
+        return out;
+    };
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && root.capturing() && asked.size() == 1 &&
+              inPlace == 0 && clipsOn() == 0,
+          "a drop returns at once: its file is read on the worker, never in the window (SC-377)");
+    check(!root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 1,
+          "a second drop waits for the first");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && cancels == 1, "Esc asks the read to stop");
+    if (pending) std::exchange(pending, nullptr)({}, "Cancelled.");
+    check(!root.capturing() && clipsOn() == 0 && root.error().find("Nothing imported") != std::string::npos,
+          "cancelled, nothing lands and the Status Bar says so");
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 2, "a new drop reads again");
+    if (pending) std::exchange(pending, nullptr)({{capture(), {}}}, "");
+    root.frame(); // the window's view of the project takes the landed clip on its next frame
+    check(!root.capturing() && clipsOn() == 1, ("read, the clip lands as the plain drop always did: " + root.error()).c_str());
+    const auto broken = (dir / "Broken.wav").string();
+    {
+        // SC-389: one bad file among the dropped: the others land, one step, and the bad one is named.
+        const auto clipsBefore = clipsOn();
+        check(root.dropAudioFiles({{wav.string(), "Long"}, {broken, "Broken"}}, audioTrack, textproj::kWhole, false) &&
+                  asked.size() == 3 && asked.back().size() == 2,
+              "SC-389: two files are read together");
+        if (pending) std::exchange(pending, nullptr)({{capture(), {}}, {std::nullopt, "it is not audio ADI can read"}}, "");
+        root.frame();
+        check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos &&
+                  root.error().find("not audio") != std::string::npos && root.error().find("other file came in") != std::string::npos,
+              ("SC-389: the good file lands and the bad one is named, with why: " + root.error()).c_str());
+        check(root.dropAudioFiles({{broken, "Broken"}}, audioTrack, 0, false), "SC-389: a lone bad file");
+        if (pending) std::exchange(pending, nullptr)({{std::nullopt, "it is not audio ADI can read"}}, "");
+        root.frame();
+        check(clipsOn() == clipsBefore + 1 && root.error().find("\u201cBroken\u201d could not be imported") != std::string::npos,
+              "SC-389: alone, it is refused, named");
+    }
+    const auto before = clipsOn();
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Long") && asked.size() == 5, "a third drop");
+    auto stale = capture();
+    check(root.submitEdit("track.rename", {{"id", audioTrack}, {"name", "Renamed meanwhile"}}, "Rename Track"),
+          "the project changes while the file is read");
+    root.frame();
+    if (pending) std::exchange(pending, nullptr)({{stale, {}}}, "");
+    root.frame();
+    check(clipsOn() == before && root.error().find("changed while the files were read") != std::string::npos,
+          ("a capture older than the project is refused, not landed with ids another row may hold: " + root.error()).c_str());
+    root.captureAudio = {};
+    root.importAudio = [&](const std::string &path, AudioImport &out, std::string &reason) {
+        ++inPlace;
+        if (document->prepareImport(path, 1'700'000'000'000'000, out))
+            return true;
+        reason = document->error();
+        return false;
+    };
+    check(root.dropAudioFiles({{broken, "Broken"}, {wav.string(), "Long"}, {wav.string(), "Long again"},
+                               {broken, "Broken again"}},
+                              audioTrack, 2 * textproj::kWhole, false),
+          "SC-389: the synchronous importer handles a repeated file after a bad one");
+    root.frame();
+    check(inPlace == 2 && clipsOn() == before + 2 && root.error().find("other 2 came in") != std::string::npos &&
+              root.error().find("Broken again") == std::string::npos,
+          "SC-389: each file is read once, the two good clips land, and the bad file is named once");
+
+    // Byte-identical files can be captured under different paths and provisional IDs.
+    const auto original = dir / "New.wav", alias = dir / "New copy.wav";
+    {
+        std::vector<float> samples(2400, .125f);
+        audio::WavWriter writer(original, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    std::filesystem::copy_file(original, alias);
+    const auto originalPath = media::pathUtf8(original), aliasPath = media::pathUtf8(alias);
+    root.captureAudio = queueCapture;
+    const auto mediaRows = [&] { return document->store().db().execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto originalRows = mediaRows();
+    const auto originalClips = clipsOn();
+    AudioImport first, second;
+    const bool capturedFirst = ProjectDocument::captureImport(document->projectPath(), originalPath,
+                                                               1'700'000'000'000'000, first, why);
+    second.firstFreeId = first.mediaId + 1;
+    const bool capturedSecond = ProjectDocument::captureImport(document->projectPath(), aliasPath,
+                                                                1'700'000'000'000'000, second, why);
+    const auto sharedMedia = first.mediaId;
+    check(capturedFirst && capturedSecond && first.mediaId != second.mediaId &&
+              root.dropAudioFiles({{originalPath, "New"}, {aliasPath, "New copy"}, {aliasPath, "Again"}},
+                                  audioTrack, 3 * textproj::kWhole, false) &&
+              asked.back().size() == 2 && pending,
+          "SC-377/389: request two distinct reads for three drops with identical bytes");
+    if (pending) {
+        std::exchange(pending, nullptr)({{std::move(first), {}}, {std::move(second), {}}}, "");
+        root.frame();
+        const auto *destination = root.reader().findTrack(audioTrack);
+        check(destination && mediaRows() == originalRows + 1 && clipsOn() == originalClips + 3 &&
+                  std::count_if(destination->clips.begin(), destination->clips.end(), [&](const auto &clip) {
+                      return clip->audio && clip->audio->mediaId == sharedMedia;
+                  }) == 3,
+              "SC-377/389: both distinct files and the repeated alias land on one new media row");
+    }
+    settings.set("editing.importOptions", wasOptions, {}, why);
+    commands.detach(root);
+    document->release();
+}
 // E5: ADI's import prompt (Live 12 manual 9.2; ADR-0132 d6): a drop asks while
 // `editing.importOptions` is "ask", its choices all off by default and kept as the last ones.
 void importPrompt(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
@@ -20525,6 +20679,55 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     root.pluginHost = nullptr;
     document->release();
 }
+void builtinPanelWithoutConfigure(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "builtin-panel.adi", true, {}, error);
+    check(document != nullptr, "SC-454: a project for the Device View");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "builtin-panel");
+
+    DevicePanelData hosted;
+    hosted.id = 17;
+    hosted.name = "Hosted device";
+    hosted.uid = "org.adidaw.builtin.eq-eight";
+    hosted.format = "clap";
+    hosted.plugin = true;
+    hosted.resolved.showsConfigureHint = true;
+    auto builtin = hosted;
+    builtin.name = "EQ Eight";
+    builtin.format = "internal";
+    builtin.plugin = false;
+    builtin.available = true;
+    builtin.resolved = {};
+    builtin.declared.push_back({"frequency", "Frequency"});
+    builtin.records.push_back({.id = "frequency", .name = "Frequency", .text = "1.00 kHz"});
+    builtin.resolved.entries.push_back({"frequency"});
+
+    DevicePanelView panel(root.devices, hosted);
+    panel.setSize(170, 180);
+    const auto hasConfigure = [&] {
+        const auto menu = panel.commands();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Configure") return true;
+        return false;
+    };
+    check(panel.configureButton.isVisible() && hasConfigure(),
+          "SC-454: a hosted device with the same UID still offers Configure");
+    panel.configure();
+    check(panel.configuring && panel.search.isVisible(), "SC-454: Configure still opens search on the hosted device");
+
+    panel.present(builtin);
+    check(!panel.configureButton.isVisible() && !hasConfigure() && !panel.configuring && !panel.search.isVisible(),
+          "SC-454: a built-in panel offers neither the hosted Configure commands nor their search");
+    check(panel.controls.size() == 1 && panel.controls.front()->getTitle() == "Frequency" &&
+              panel.controls.front()->slider.isVisible(),
+          "SC-454: the built-in panel displays its declared control");
+    DevicePanelView builtinPanel(root.devices, builtin);
+    builtinPanel.configure();
+    check(!builtinPanel.configuring && !builtinPanel.search.isVisible(),
+          "SC-454: direct Configure does not open on the built-in");
+}
 void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "plugin-touches.adi", true, test::knobsLoader("0000001f", "clap"), error);
@@ -29286,6 +29489,10 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
               AppCommands::stableId(AppCommands::Redo) == std::string("edit.redo"),
           "the stable ids read as the plan's: view.browser, edit.redo");
     check(AppCommands::commandFor("view.nothing") == 0, "an unknown stable id names no command");
+    check(AppCommands::stableId(AppCommands::AudioEngine) == std::string("options.audio-engine") &&
+              AppCommands::commandFor("options.audio-engine") == AppCommands::AudioEngine &&
+              std::string(AppCommands::category(AppCommands::AudioEngine)) == "Options",
+          "SC-385: Live's audio engine switch is a command of its own, in Options");
     std::string why;
     bool roundTrip = true;
     for (const char *preset : {"live", "cubase", "bitwig"}) {
@@ -29675,10 +29882,38 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
     check(none.isEmpty(), "a first run keeps no input device: the system's");
     const auto [input, ins, output] =
         open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), none, why);
-    check(why.isEmpty() && input == "Cable Output" && ins == 2 && output == "Speakers",
-          ("the system's default input opens with the output, inputs 1/2 on: " + input.toStdString() + ", " +
-           std::to_string(ins) + " in; " + why.toStdString())
+    check(why.isEmpty() && input.isEmpty() && ins == 0 && output == "Speakers",
+          ("SC-381: a first run opens the output alone, no input taken until one is wanted: " + input.toStdString() +
+           ", " + std::to_string(ins) + " in; " + why.toStdString())
               .c_str());
+    {
+        // SC-381 with A16: an armed audio track opens the system's default input beside the output, 1/2 on.
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.outputDeviceName = "Speakers";
+        (void)openAudioDevice(manager, setup, fresh);
+        juce::String opened;
+        const auto error = openDefaultInput(manager, fresh, opened);
+        const auto *device = manager.getCurrentAudioDevice();
+        check(error.isEmpty() && opened == "Cable Output" && device != nullptr &&
+                  device->getActiveInputChannels().countNumberOfSetBits() == 2 &&
+                  manager.getAudioDeviceSetup().outputDeviceName == "Speakers",
+              ("arming opens the system's default input beside the output, inputs 1/2 on: " + error.toStdString()).c_str());
+        juce::String again;
+        check(openDefaultInput(manager, fresh, again).isEmpty() && again == "Cable Output", "an open input is left as it is");
+    }
+    {
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{}, 0));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.outputDeviceName = "Speakers";
+        (void)openAudioDevice(manager, setup, fresh);
+        juce::String opened;
+        check(openDefaultInput(manager, fresh, opened).contains("no audio input") && opened.isEmpty() &&
+                  manager.getCurrentAudioDevice() != nullptr,
+              "a machine with no input says so when a track is armed, and the output stays open");
+    }
     const auto [chosen, chosenIns, chosenOut] =
         open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), "Microphone", why);
     check(why.isEmpty() && chosen == "Microphone" && chosenIns == 2 && chosenOut == "Speakers",
@@ -31376,7 +31611,7 @@ int main(int argc, char **argv) {
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
                       C::ReverseAudio == C::ToggleCollectionGray + 1 &&
                       C::LockEnvelopes == C::ReverseAudio + 1 && C::OpenBackup == C::LockEnvelopes + 1 &&
-                      C::ConsolidateMidi == C::OpenBackup + 1 && C::LastId == C::ConsolidateMidi,
+                      C::ConsolidateMidi == C::OpenBackup + 1 && C::AudioEngine == C::ConsolidateMidi + 1 && C::LastId == C::AudioEngine,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -31385,7 +31620,7 @@ int main(int argc, char **argv) {
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
                   "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
                   "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), Lock Envelopes, "
-                  "Open Backup and Consolidate");
+                  "Open Backup, Consolidate, and Audio Engine");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -33459,6 +33694,17 @@ int main(int argc, char **argv) {
               "a click on Track writes the port's record at once, and the host follows");
         table.rebuild();
         check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        {
+            // SC-405: every switch does something, or is not a switch.
+            const auto &in = table.rows()[0]->switches, &out = table.rows()[1]->switches;
+            check(in[0]->isEnabled() && in[3]->isEnabled() && !in[1]->isEnabled() && !in[2]->isEnabled() &&
+                      in[1]->getTooltip().contains("sync") && in[2]->getTooltip().contains("Remote"),
+                  "an input's Track and MPE are switches; Sync and Remote, read by nothing yet, are dimmed and say why");
+            check(out[0]->isEnabled() && !out[1]->isEnabled() && !out[2]->isEnabled() && !out[3]->isEnabled() &&
+                      out[1]->getTooltip().contains("sync") && out[2]->getTooltip().contains("Remote") &&
+                      out[3]->getTooltip().contains("input"),
+                  "an output's Track switch enables hardware routing; Sync, Remote and MPE are dimmed and say why");
+        }
         check(settings.get("midi.ports")["in:port-1"].value("name", std::string()) == "Keystation 61",
               "the record keeps the port's name (N61)");
         check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
@@ -33663,6 +33909,34 @@ int main(int argc, char **argv) {
             });
             check(compensation != audio.rows().end() && (*compensation)->getY() == y("Driver Error Compensation"),
                   "a held row stands at its line");
+            // SC-383: No Device for the input is kept as itself, apart from the system's input (the empty name
+            // a first run keeps), so the next launch, or an armed track, does not open the microphone again.
+            if (page != nullptr) {
+                juce::ComboBox *inputBox = nullptr;
+                for (auto *child : page->getChildren())
+                    if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Audio Input Device")
+                        inputBox = box;
+                std::string kept;
+                if (inputBox != nullptr && inputBox->onChange) {
+                    // The user's pick of No Device, as the box reports it (JUCE says nothing when the box
+                    // already shows it, as it does with no input open).
+                    inputBox->setSelectedId(1, juce::dontSendNotification);
+                    inputBox->onChange();
+                    kept = settings.get("audio.inputDevice").get<std::string>();
+                }
+                check(inputBox != nullptr && kept == kNoInputDevice,
+                      ("No Device chosen for the input is kept as \"No Device\", not as the system's: " + kept).c_str());
+                std::string unset;
+                settings.set("audio.inputDevice", std::string(), {}, unset);
+            }
+            // SC-380: Live's Hardware Setup under the device's lines; with no device open, there is no panel.
+            // A device the suite opens (Windows Audio here) has no panel of its own either.
+            check(page != nullptr && y("Channel Configuration") < y("Hardware Setup") && y("Hardware Setup") < y("Sample Rate") &&
+                      page->hardware.isVisible() && !page->hardware.isEnabled() &&
+                      page->hardware.getTooltip().isNotEmpty(),
+                  ("Hardware Setup stands under Channel Configuration, off with no panel to open, and says why: " +
+                   (page != nullptr ? page->hardware.getTooltip().toStdString() : std::string()))
+                      .c_str());
             // The two pages at twice their size, for the PR's pictures (ADI_UI_PARITY).
             if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
                 pictures.isNotEmpty())
@@ -34004,6 +34278,7 @@ int main(int argc, char **argv) {
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
+    trace("builtinPanelWithoutConfigure", [&] { builtinPanelWithoutConfigure(commands, temp.path()); });
     trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("deviceAutomationPlayback", [&] { deviceAutomationPlayback(commands, temp.path()); });
@@ -34048,6 +34323,7 @@ int main(int argc, char **argv) {
     trace("deviceDropInstructions", [&] { deviceDropInstructions(commands, temp.path()); });
     trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
+    trace("plainDropReadsOffTheWindow", [&] { plainDropReadsOffTheWindow(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("browserRoster", [&] { browserRoster(commands, temp.path()); });
     trace("browserStarterDrums", [&] { browserStarterDrums(commands, temp.path()); });
