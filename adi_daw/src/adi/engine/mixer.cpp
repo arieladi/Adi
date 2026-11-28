@@ -129,6 +129,17 @@ void StripNode::prepare(double sampleRate, std::int32_t) {
     rampFrames_.store(static_cast<std::int32_t>(std::max<long>(1, frames)), std::memory_order_relaxed);
 }
 
+bool StripNode::midiAudible(const NodeIo& io) const noexcept {
+    const auto gates = hearingGates_.load(std::memory_order_relaxed);
+    if ((gates & kAudible) == 0) return false;
+    const bool unmuted = (gates & kUnmuted) != 0;
+    const auto* lanes = lanesFor(io);
+    const auto* clock = transport_.load(std::memory_order_acquire);
+    if (!lanes || !lanes->mute || !clock) return unmuted;
+    const auto sample = clock->sampleAt(clock->playing() ? io.blockOffset : 0);
+    return heldValueAt(*lanes->mute, sample, unmuted ? 0.0 : 1.0) < 0.5;
+}
+
 StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {
     double vol = volumeDb_.load(std::memory_order_relaxed);
     double pan = pan_.load(std::memory_order_relaxed);
@@ -274,29 +285,50 @@ void StripNode::silenceTaps(const NodeIo& io) noexcept {
 void StripNode::release() {
     meter_.peak.store(0, std::memory_order_relaxed);
     meter_.rms.store(0, std::memory_order_relaxed);
+    for (auto& channel : meter_.stereo) {
+        channel.peak.store(0, std::memory_order_relaxed);
+        channel.rms.store(0, std::memory_order_relaxed);
+    }
 }
 
 template <typename T>
 void StripNode::writeMeter(const NodeIo& io, const T* const* audio) noexcept {
     if (io.frames <= 0 || io.channels <= 0) return;
-    if (io.blockOffset == 0) meterPeak_ = meterEnergy_ = meterCount_ = 0;
+    if (io.blockOffset == 0) {
+        meterPeak_ = meterEnergy_ = meterCount_ = meterFrames_ = 0;
+        meterChannelPeak_.fill(0);
+        meterChannelEnergy_.fill(0);
+    }
     double segmentPeak = 0;
     constexpr double ceiling = std::numeric_limits<float>::max();
     for (std::int32_t c = 0; c < io.channels; ++c) {
         if (audio == nullptr || audio[c] == nullptr) continue;
+        double channelPeak = 0, channelEnergy = 0;
         for (std::int32_t i = 0; i < io.frames; ++i) {
             const double sample = static_cast<double>(audio[c][io.blockOffset+i]);
             // Bound only the readout, never the audio. Wide audio can exceed
             // float's range; neither that nor a bad device may publish NaN/Inf.
             const double magnitude = std::isnan(sample) ? 0.0 : std::min(std::abs(sample), ceiling);
-            meterPeak_ = std::max(meterPeak_, magnitude);
-            segmentPeak = std::max(segmentPeak, magnitude);
-            meterEnergy_ += magnitude*magnitude;
+            channelPeak = std::max(channelPeak, magnitude);
+            channelEnergy += magnitude * magnitude;
+        }
+        segmentPeak = std::max(segmentPeak, channelPeak);
+        meterEnergy_ += channelEnergy;
+        if (const auto channel = static_cast<std::size_t>(c); channel < meter_.stereo.size()) {
+            meterChannelPeak_[channel] = std::max(meterChannelPeak_[channel], channelPeak);
+            meterChannelEnergy_[channel] += channelEnergy;
         }
     }
-    meterCount_ += static_cast<double>(io.frames)*io.channels;
+    meterPeak_ = std::max(meterPeak_, segmentPeak);
+    meterCount_ += static_cast<double>(io.frames) * io.channels;
+    meterFrames_ += io.frames;
     meter_.peak.store(static_cast<float>(meterPeak_), std::memory_order_relaxed);
-    meter_.rms.store(static_cast<float>(std::sqrt(meterEnergy_/meterCount_)), std::memory_order_relaxed);
+    meter_.rms.store(static_cast<float>(std::sqrt(meterEnergy_ / meterCount_)), std::memory_order_relaxed);
+    for (std::size_t channel = 0; channel < meter_.stereo.size(); ++channel) {
+        meter_.stereo[channel].peak.store(static_cast<float>(meterChannelPeak_[channel]), std::memory_order_relaxed);
+        const auto rms = static_cast<float>(std::sqrt(meterChannelEnergy_[channel] / meterFrames_));
+        meter_.stereo[channel].rms.store(rms, std::memory_order_relaxed);
+    }
     // A frame can consume the hold between processing parts. Republishing the
     // cumulative callback peak would resurrect an already consumed transient.
     meter_.holdPeak(static_cast<float>(segmentPeak));

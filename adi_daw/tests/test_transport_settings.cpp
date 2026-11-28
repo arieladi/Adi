@@ -149,16 +149,29 @@ void receivingLoopClock() {
         clock.loop(0, 96000);
         clock.locate(located);
         clock.play();
-        const auto phase = located - 96000;
-        check(clock.position() == located && clock.inputSample(0, 1024) == phase - 1024,
-              "starting at or beyond loop End keeps the located position and a linear input preroll");
+        check(!clock.looping() && clock.sampleAt(0) == located && clock.inputSample(0, 1024) == located - 1024,
+              "SC-445: starting at or beyond Loop End follows the position with linear input preroll");
         clock.advance(512);
-        check(clock.inputSample(0, 1024) == phase - 512 && clock.delayedSample(0, 1024) == -1,
-              "folding the first position does not create a false lap in the receiving preroll");
+        check(clock.position() == located + 512 && clock.inputSample(0, 1024) == located - 512 &&
+                  clock.delayedSample(0, 1024) == -1 && clock.contiguousFrames(0, 512) == 512 &&
+                  clock.inputContiguousFrames(located + 512, 512) == 512,
+              "SC-445: playback and its audio and MIDI readers stay linear beyond Loop End");
         clock.advance(512);
-        check(clock.inputSample(0, 1024) == phase && clock.delayedSample(0, 1024) == phase,
-              "both clocks reach the folded start after one latency interval");
+        clock.retimeLoop(0, 96000);
+        check(clock.position() == located + 1024 && clock.inputSample(0, 1024) == located &&
+                  clock.delayedSample(0, 1024) == located,
+              "SC-445: publishing the same brace leaves after-End playback and both delayed clocks on course");
+        clock.locate(47999);
+        check(clock.looping() && clock.sampleAt(0) == 47999 && clock.sampleAt(48001) == 0,
+              "SC-445: a locate before the same End resumes looping when playback reaches it");
     }
+    Transport lead;
+    lead.loop(100, 200);
+    lead.locate(90);
+    lead.play();
+    check(lead.looping() && lead.sampleAt(9) == 99 && lead.sampleAt(10) == 100 &&
+              lead.contiguousFrames(0, 120) == 110 && lead.sampleAt(110) == 100,
+          "SC-445: playback before the brace runs in without a seek and wraps at End");
 
     Transport retimed;
     retimed.loop(0, 1000);

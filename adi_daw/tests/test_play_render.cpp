@@ -80,13 +80,14 @@ bool persistentCatalogueContracts() {
     fs::copy_file(adi::media::pathFromUtf8(ADI_CATALOGUE_CLAP),clapPath);
 #endif
     adi::device::Vst3Host discovery;juce::KnownPluginList vstTypes;
-    const auto discovered=discovery.scanFile(ADI_CATALOGUE_FIXTURE,vstTypes,config);
+    // The persisted catalogue stores canonical paths, including for symlinked build trees.
+    const auto vstPath=text(fs::canonical(adi::media::pathFromUtf8(ADI_CATALOGUE_FIXTURE)));
+    const auto discovered=discovery.scanFile(juce::String::fromUTF8(vstPath.c_str()),vstTypes,config);
     if(!check(discovered.complete && discovered.failures.empty() && vstTypes.getNumTypes()==3,"real VST3 catalogue population"))return false;
     std::string error;auto scanner=adi::scan::Scanner::open(config,error);
     if(!check(scanner && scanner->probe("clap",clapPath).state==adi::scan::State::Ready,"real CLAP catalogue population"))return false;
     scanner.reset();const auto stored=adi::scan::readCatalogue(config.registry,error);
     if(!check(stored && stored->pluginCount==4,"four persisted real fixture descriptions"))return false;
-    const auto vstPath=text(fs::canonical(adi::media::pathFromUtf8(ADI_CATALOGUE_FIXTURE)));
     const auto clapCanonical=text(fs::canonical(clapPath));
     const auto* vstModule=stored->find("vst3",vstPath);const auto* clapModule=stored->find("clap",clapCanonical);
     if(!vstModule || !clapModule)return false;

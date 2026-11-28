@@ -143,8 +143,10 @@ void liveHistoryPublication() {
     LiveMidiInput input;
     GraphHost graph;
     Transport transport;
-    const auto first = std::make_shared<InputHistory>(1, 11, 48000);
-    const auto second = std::make_shared<InputHistory>(2, 12, 48000);
+    constexpr auto port = midiInputKey("in:test");
+    constexpr MidiInputFilter filter{port, 4};
+    const auto first = std::make_shared<InputHistory>(1, 11, 48000, filter);
+    const auto second = std::make_shared<InputHistory>(2, 12, 48000, MidiInputFilter{});
     const std::array histories{first, second};
     const auto render = [&](std::int64_t sample, std::span<const std::shared_ptr<InputHistory>> selected) {
         AudioIo io;
@@ -152,20 +154,21 @@ void liveHistoryPublication() {
         io.streamTimeSamples = sample;
         auto block = graph.beginRender();
         audio::CallbackScope callback;
-        input.render(block, io, {}, selected, transport, nullptr, RecordingPunch::Within, {});
+        input.render(block, io, {}, selected, transport, {}, nullptr, RecordingPunch::Within, {});
     };
-    check(input.push(1, note(), 1), "queue one event for both listening tracks");
+    check(input.push(1, note(), 1, port), "queue one event for both listening tracks");
     render(0, histories);
     const auto beforeSilence = input.historyRevision();
     render(64, histories);
     MidiMemorySnapshot left, right;
     std::string error;
     check(first->memory.snapshot(left, error) && second->memory.snapshot(right, error) &&
+              left.events.size() == 1 && right.events.size() == 1 &&
               left.endSample == 128 && right.endSample == left.endSample &&
               input.historyRevision() == beforeSilence + 2,
           "a silent callback publishes both histories' new end in one revision");
 
-    const auto newlyArmed = std::make_shared<InputHistory>(3, 13, 48000);
+    const auto newlyArmed = std::make_shared<InputHistory>(3, 13, 48000, filter);
     const std::array changed{first, newlyArmed};
     const auto beforeArm = input.historyRevision();
     render(128, changed);
