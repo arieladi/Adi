@@ -45,6 +45,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-02 Arrangement import isolation | Excluded zero-origin slot rows in the single-file and consecutive-batch drop overlap probes (`84e4b3329`). | The native test executes both import operations and checks their new clips, preserved slot ownership and preserved Volume automation bytes. | Pushed. Full headless rerun pending. |
 | TM-SV-03 native pitch wheel | Prepared the newly landed native pitch-wheel stream in Session and shared its pending neutral with the Arrangement handover (`8fba6d61b`). | The native graph fixture exercises pitch and CC7 at frames 55 and 548, with one center and a note release at 730. | Pushed. Full headless rerun pending. |
 | TM-SV-04 centered wheel capture | Preserved an isolated held wheel as a literal ACTL stream when it returns to center before the run ends (`704c6f660`). | The native replay fixture checks the wheel at frames 55, 548 and 655, event and byte equality, Undo, Redo and reopen. Off-center exits remain outside the admission proof. | Pushed. Full headless rerun pending. |
+| Session slot record input routing | Kept stable input port IDs and routed note, expression and controller material through each frozen track input filter (`b63805023`). | The native mixed-route fixture records three independent port and channel selections, then checks slot material and one Undo and Redo against unchanged Arrangement material. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
