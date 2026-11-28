@@ -1267,7 +1267,9 @@ void consolidateMidi() {
           "SC-178 prepares one operation for two single-pass MIDI clips without changing the journal");
     if (!prepared.edit.ok)
         throw std::runtime_error(prepared.edit.error);
+    const auto rowsBefore = digestProject(store).text;
     const auto committed = clip_edit::commitPrepared(store, prepared.edit);
+    const auto rowsAfter = digestProject(store).text;
     check(committed.ok && db.execAndGet("SELECT count(*) FROM clips WHERE id IN (71,72,73)").getInt() == 1,
           "SC-178 removes both sources and keeps the clip touching the right boundary");
     if (!committed.ok)
@@ -1294,10 +1296,12 @@ void consolidateMidi() {
               store.getNoteExpression(72, sharedId, timbre) == secondTimbre &&
               !store.getNoteExpression(prepared.clip, 2, pressure),
           "SC-178 one Undo restores both original streams and their clip-local expression");
+    check(digestProject(store).text == rowsBefore, "SC-178 one Undo of Consolidate restores every project row");
     check(History(store).redo().ok && notes::captureNotes(store, prepared.clip).records().size() == 3 &&
               store.getNoteExpression(prepared.clip, 2, pressure) == secondPressure &&
               store.getNoteExpression(prepared.clip, 2, timbre) == secondTimbre,
           "SC-178 Redo restores the consolidated clip and exact remapped expression");
+    check(digestProject(store).text == rowsAfter, "SC-178 Redo of Consolidate repeats every project row");
 }
 } // namespace
 namespace {

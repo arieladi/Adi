@@ -190,6 +190,30 @@ void actionAndHistory() {
     check(physicalGrid && std::all_of(unwarped.begin()+72000,unwarped.end(),[](float x){return x==0;}),"disabled Warp is heard at physical source speed and ends at its new boundary");
     check(history.undo().ok && digestProject(*f.store).text==enabled && render(f)==heard,"undo Warp off restores the complete stretched clip and its PCM");
 }
+// A drag that stretches a warped clip by its edge (prepareStretchWarpedClip,
+// 27 Nov) is one edit: one Undo restores every stored row, Redo repeats them.
+void stretchHistory() {
+    for(const bool left:{false,true}) {
+        Fixture f;auto& db=f.store->db();
+        if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,f.options(),48000),"warp the clip before stretching it"))return;
+        const auto position=db.execAndGet("SELECT pos_ticks FROM clips WHERE id=7").getInt64();
+        const auto length=db.execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64();
+        const auto before=digestProject(*f.store).text;History history(*f.store);const auto head=history.head();
+        const auto begin=left?position-q/2:position;
+        if(!apply(f,clip_edit::prepareStretchWarpedClip(*f.store,7,begin,length+q/2,48000),
+                  left?"stretch the warped clip by its left edge":"stretch the warped clip by its right edge"))continue;
+        check(db.execAndGet("SELECT pos_ticks FROM clips WHERE id=7").getInt64()==begin &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64()==length+q/2,
+              "the stretched clip takes the dragged extent");
+        const auto after=digestProject(*f.store).text;
+        check(history.undo().ok && history.head()==head && digestProject(*f.store).text==before,
+              left?"one Undo of a left-edge Warp stretch restores every project row":
+                   "one Undo of a right-edge Warp stretch restores every project row");
+        check(history.redo().ok && digestProject(*f.store).text==after,
+              left?"Redo of a left-edge Warp stretch repeats every project row":
+                   "Redo of a right-edge Warp stretch repeats every project row");
+    }
+}
 void editedSourceWindow() {
     Fixture f;
     auto& db=f.store->db();
@@ -479,6 +503,7 @@ void cancellationAndCaptureGuards() {
 int main() {
     try {
         actionAndHistory();
+        stretchHistory();
         replaceClipSource();
         replaceWarpedSource();
         replaceUnwarpedSourcePastStart();

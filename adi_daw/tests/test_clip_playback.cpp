@@ -4,6 +4,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/audio/decode.hpp"
@@ -395,11 +396,13 @@ void reverseSelectedRange() {
         check(false,edit.error.c_str());
         return;
     }
+    const auto rowsBefore = digestProject(*f.store).text;
     const auto committed = clip_edit::commitPrepared(*f.store,edit);
     if (!committed.ok) {
         check(false,committed.error.c_str());
         return;
     }
+    const auto rowsAfter = digestProject(*f.store).text;
     check(edit.requests.size()==1,"Reverse captures both cuts and the selected audio in one edit");
     f.load(block);
     const auto matches=[&](bool reversed) {
@@ -418,6 +421,10 @@ void reverseSelectedRange() {
     check(matches(true),"the reversed middle plays only the selected audio with forward material on both sides");
     check(History(*f.store).undo().ok && f.session.refresh(*f.store) && matches(false),
           "one undo restores the original uninterrupted playback");
+    // The sound is not the whole project: every stored row too, both ways.
+    check(digestProject(*f.store).text==rowsBefore,"one Undo of Reverse restores every project row");
+    check(History(*f.store).redo().ok && digestProject(*f.store).text==rowsAfter,
+          "Redo of Reverse repeats every project row");
 }
 void reverseSelectedRepeats() {
     constexpr int block=256, loopSource=7, nextSource=500;
