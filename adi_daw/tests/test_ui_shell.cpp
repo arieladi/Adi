@@ -20383,6 +20383,92 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     check(show && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"},
           "choosing Show on Device Panel also adds the latest touch in order");
 
+    {
+        // The old lane reference is decimal while the CLAP control's stored panel ID is hexadecimal.
+        automation::LaneSpec lane;
+        lane.id = 91;
+        lane.ownerKind = "device";
+        lane.ownerId = id;
+        lane.paramRef = "31";
+        lane.paramName = "Cutoff";
+        lane.enabled = false;
+        auto points = automation::writePoints(92, lane.id, nullptr, Payload::array({
+            {{"id", 1}, {"time", textproj::kPPQ}, {"value", .65}, {"curve", 1}, {"tension", 0.}}
+        }));
+        const bool saved = document->ops().submit({automation::createLane(lane), std::move(points)}).ok &&
+                           document->synchronise();
+        const auto bytes = document->store().getAutomationData(lane.id, {});
+        check(saved && bytes && !bytes->empty(), "SC-326: the panel includes a control with a disabled legacy automation lane");
+        if (saved && bytes && !bytes->empty()) {
+            const auto automationIntact = [&] {
+                SQLite::Statement row(document->store().db(), "SELECT param_ref,enabled FROM automation_lanes WHERE id=?");
+                row.bind(1, lane.id);
+                return row.executeStep() && row.getColumn(0).getString() == lane.paramRef && row.getColumn(1).getInt() == 0 &&
+                       document->store().getAutomationData(lane.id, {}) == bytes;
+            };
+            panel.configureButton.onClick();
+            frame();
+            const std::vector<std::string> full{original.front(), "0000001f", "gain"};
+            const std::vector<std::string> withoutCutoff{original.front(), "gain"};
+            int warnings = 0;
+            juce::String warningText;
+            std::function<void(bool)> pendingWarning;
+            panel.onPanelRemovalWarning = [&](juce::MessageBoxOptions options, std::function<void(bool)> reply) {
+                ++warnings;
+                warningText = options.getTitle() + " " + options.getMessage();
+                pendingWarning = std::move(reply);
+            };
+            const auto chooseParameter = [&](const juce::String &name) {
+                bool found = false;
+                panel.onParameterListMenu = [&](juce::PopupMenu menu, std::function<void(int)> choose) {
+                    for (juce::PopupMenu::MenuItemIterator at(menu); at.next();) {
+                        const auto &item = at.getItem();
+                        if (item.text == name && item.isEnabled) {
+                            found = true;
+                            choose(item.itemID);
+                            return;
+                        }
+                    }
+                    choose(0);
+                };
+                panel.parameterList.onClick();
+                panel.onParameterListMenu = {};
+                return found;
+            };
+            const auto answer = [&](bool confirmed) {
+                if (auto reply = std::exchange(pendingWarning, {})) reply(confirmed);
+            };
+            const auto before = OpJournal(document->store()).headSeq();
+            const auto edits = panelEdits;
+            check(chooseParameter("Cutoff") && warnings == 1 && pendingWarning && warningText.containsIgnoreCase("automation") &&
+                      ordered() == full && OpJournal(document->store()).headSeq() == before,
+                  "SC-326: requesting removal warns before touching the automated control or the journal");
+            answer(false);
+            frame();
+            check(ordered() == full && panelEdits == edits && OpJournal(document->store()).headSeq() == before && automationIntact(),
+                  "SC-326: cancelling the warning writes no operation and leaves the panel and lane intact");
+            check(chooseParameter("Cutoff") && warnings == 2 && pendingWarning,
+                  "SC-326: removing the control again asks for confirmation");
+            answer(true);
+            frame();
+            const auto step = document->ops().nextUndo();
+            check(ordered() == withoutCutoff && panelEdits == edits + 1 && step && step->opCount == 1 && automationIntact(),
+                  "SC-326: confirming removes only the control in one undo step and keeps the authored lane and points");
+            check(root.command(AppCommands::Undo) && ordered() == full && automationIntact(),
+                  "SC-326: one Undo restores the panel's exact order and leaves the lane intact");
+            frame();
+            check(chooseParameter("Gain") && warnings == 2 && !pendingWarning &&
+                      ordered() == std::vector<std::string>{original.front(), "0000001f"} && automationIntact(),
+                  "SC-326: an unautomated control can be removed without a warning");
+            frame();
+            check(chooseParameter("Clear panel") && warnings == 3 && pendingWarning,
+                  "SC-326: clearing the panel also warns before dropping an automated control");
+            answer(false);
+            panel.onPanelRemovalWarning = {};
+            panel.configureButton.onClick();
+        }
+    }
+
     check(reset(), "reset the panel before choosing a touched parameter without Device View demand");
     root.setAutomationMode(false);
     root.devices.suspendParameters(true);
