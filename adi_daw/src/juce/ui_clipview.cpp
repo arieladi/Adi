@@ -627,10 +627,42 @@ bool NoteEditor::fitToRange() {
         return fitNotesToRange(of, within, from, to);
     }));
 }
+std::vector<std::uint64_t> NoteEditor::notesInTime() const {
+    std::vector<std::uint64_t> ids;
+    const auto *clip = panel.details();
+    const auto span = timeSelection();
+    if (clip == nullptr || !span || anySelected())
+        return ids;
+    const auto window = ClipWindow::of(*clip);
+    for (const auto &n : clip->notes)
+        if (const auto at = window.toArrangement(n.startTicks); at >= span->first && at < span->second)
+            ids.push_back(n.id);
+    return ids;
+}
 bool NoteEditor::copySelected() {
     const auto *clip = panel.details();
-    if (clip == nullptr || !anySelected())
+    if (clip == nullptr)
         return false;
+    if (!anySelected()) {
+        // SC-233: time selected and no note: the notes that begin in it, counted from the selection's
+        // start, so a paste keeps their place in the time copied.
+        const auto span = timeSelection();
+        const auto ids = notesInTime();
+        if (!span || ids.empty())
+            return false;
+        const auto window = ClipWindow::of(*clip);
+        std::vector<engine::ClipNote> copied;
+        for (const auto &n : clip->notes)
+            if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                copied.push_back(n);
+                copied.back().startTicks = window.toArrangement(n.startTicks) - span->first;
+            }
+        panel.noteClipboardClips.assign(copied.size(), clip->id);
+        panel.noteClipboard = std::move(copied);
+        panel.noteClipboardShown = panel.shownClips();
+        panel.noteClipboardEdited = clip->id;
+        return true;
+    }
     // Each note with its place in the song, so notes of several clips keep their places to each
     // other; then counted from the earliest.
     std::vector<engine::ClipNote> copied;
@@ -665,9 +697,12 @@ bool NoteEditor::copySelected() {
     return true;
 }
 bool NoteEditor::cutSelected() {
+    const auto timed = notesInTime();
     if (!copySelected())
         return false;
-    auto cut = across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); });
+    auto cut = !timed.empty() && panel.details() != nullptr
+                   ? deleteNotes(*panel.details(), timed)
+                   : across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); });
     for (auto &o : cut.ops)
         o.label = cut.ops.size() == 1 ? "Cut Note" : "Cut Notes";
     return commit(std::move(cut));
@@ -723,8 +758,24 @@ bool NoteEditor::paste() {
 }
 bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
-    if (clip == nullptr || selected_.empty())
+    if (clip == nullptr)
         return false;
+    if (selected_.empty()) {
+        // SC-233: time selected and no note: the notes that begin in it are copied to the time after
+        // it, which becomes the time selected, as Live's Duplicate does.
+        const auto span = timeSelection();
+        if (!span || anySelected())
+            return false;
+        const auto window = ClipWindow::of(*clip);
+        const auto ids = notesInTime();
+        const auto length = window.toSource(span->second) - window.toSource(span->first);
+        if (!ids.empty() && !commit(copyNotes(*clip, ids, length, 0, ids.size() == 1 ? "Duplicate Note" : "Duplicate Notes")))
+            return false;
+        // The copies are not selected: the time after the selection is.
+        selected_.clear();
+        selectTime(span->second, span->second + (span->second - span->first));
+        return true;
+    }
     return commit(copyNotes(*clip, selected(), spanOf(*clip, selected()), 0,
                             selected_.size() == 1 ? "Duplicate Note" : "Duplicate Notes"));
 }
@@ -1700,17 +1751,20 @@ NoteEditor::ContextEntry NoteEditor::contextEntry(int item) const {
     if (clip == nullptr)
         return {{}, false, false};
     const bool notes = anySelected(), timed = timeSelection().has_value();
+    // SC-233: with time selected and no note, Cut, Copy and Delete act on the notes that begin in it,
+    // and Duplicate on the time.
+    const bool timedNotes = !notes && timed && !notesInTime().empty();
     switch (item) {
     case kCut:
-        return {"Cut", notes};
+        return {"Cut", notes || timedNotes};
     case kCopy:
-        return {"Copy", notes};
+        return {"Copy", notes || timedNotes};
     case kPaste:
         return {"Paste", !panel.noteClipboard.empty()};
     case kDuplicate:
-        return {"Duplicate", !selected_.empty()};
+        return {"Duplicate", !selected_.empty() || (!notes && timed)};
     case kDelete:
-        return {"Delete", notes};
+        return {"Delete", notes || timedNotes};
     case kDeactivate: {
         bool allOff = notes;
         for (const auto &n : clip->notes)
@@ -1789,7 +1843,7 @@ bool NoteEditor::chooseContextItem(int item) {
     case kDuplicate:
         return duplicate();
     case kDelete:
-        return anySelected() && key(juce::KeyPress::deleteKey);
+        return (anySelected() || !notesInTime().empty()) && key(juce::KeyPress::deleteKey);
     case kDeactivate:
         return anySelected() && key('0');
     case kSelectAll:
@@ -2673,6 +2727,8 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
         if (anySelected())
             commit(across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); }));
+        else if (const auto timed = notesInTime(); !timed.empty())
+            commit(deleteNotes(*clip, timed)); // SC-233: the notes that begin in the time selected
         return true;
     }
     // Quantize, Split or Chop, and Join are the editor's while it has the keyboard.

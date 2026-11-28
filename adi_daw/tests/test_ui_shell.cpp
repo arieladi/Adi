@@ -12024,6 +12024,51 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
 
+    // SC-233: with time selected and no note, Copy, Cut, Delete and Duplicate act on the notes that
+    // begin in it (E3, from beat 5 to 6 of the song); with no note in it, only Duplicate is offered.
+    {
+        const auto offered = [&](int item) { return ed.contextEntry(item).enabled; };
+        const auto undo = [&] {
+            const bool done = root.command(AppCommands::Undo);
+            root.frame();
+            return done;
+        };
+        ed.select({});
+        ed.selectTime(5 * beat, 6 * beat);
+        check(offered(NoteEditor::kCopy) && offered(NoteEditor::kCut) && offered(NoteEditor::kDelete) &&
+                  offered(NoteEditor::kDuplicate),
+              "SC-233: time selected over E3 and no note: Cut, Copy, Delete and Duplicate are offered");
+        panel.noteClipboard.clear();
+        check(ed.keyPressed(key('c', command)) && panel.noteClipboard.size() == 1 && panel.noteClipboard.front().key == 64 &&
+                  panel.noteClipboard.front().startTicks == 0 && ed.timeSelection() == Span({5 * beat, 6 * beat}),
+              "SC-233: Copy takes E3, counted from the selection's start, and leaves the time selected");
+        const auto beforeDuplicate = submitter.nextUndo()->txnId;
+        check(ed.keyPressed(key('d', command)) && panel.details()->notes.size() == 5 &&
+                  std::any_of(panel.details()->notes.begin(), panel.details()->notes.end(),
+                              [&](const engine::ClipNote &n) { return n.id > 4 && n.key == 64 && n.startTicks == 2 * beat; }) &&
+                  ed.selected().empty() && ed.timeSelection() == Span({6 * beat, 7 * beat}) &&
+                  submitter.nextUndo()->txnId != beforeDuplicate && submitter.nextUndo()->label == "Duplicate Note",
+              "SC-233: Duplicate copies E3 to the beat after the selection, one undo step, and selects that beat");
+        check(undo() && panel.details()->notes.size() == 4, "undo the duplicate");
+        ed.selectTime(5 * beat, 6 * beat);
+        check(ed.keyPressed(key(juce::KeyPress::deleteKey)) && panel.details()->notes.size() == 3 && note(2).id == 0 &&
+                  submitter.nextUndo()->label == "Delete Note" && ed.timeSelection() == Span({5 * beat, 6 * beat}),
+              "SC-233: Delete removes E3 and leaves the time selected");
+        check(undo() && panel.details()->notes.size() == 4, "undo the delete");
+        ed.selectTime(5 * beat, 6 * beat);
+        panel.noteClipboard.clear();
+        check(ed.keyPressed(key('x', command)) && panel.details()->notes.size() == 3 && note(2).id == 0 &&
+                  panel.noteClipboard.size() == 1 && submitter.nextUndo()->label == "Cut Note",
+              "SC-233: Cut takes E3 to the clipboard and out of the clip");
+        check(undo() && panel.details()->notes.size() == 4, "undo the cut");
+        ed.selectTime(10 * beat, 11 * beat);
+        check(!offered(NoteEditor::kCopy) && !offered(NoteEditor::kCut) && !offered(NoteEditor::kDelete) &&
+                  offered(NoteEditor::kDuplicate),
+              "SC-233: over time that holds no note, only Duplicate is offered");
+        ed.select({});
+        ed.selectTime(5 * beat, 5 * beat);
+    }
+
     // Z zooms to the time selection; X goes back.
     ed.select({});
     ed.selectTime(5 * beat, 6 * beat);

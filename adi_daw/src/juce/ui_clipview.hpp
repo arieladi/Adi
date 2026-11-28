@@ -258,6 +258,10 @@ class NoteEditor final : public juce::Component {
     std::optional<std::pair<std::int64_t, std::int64_t>> timeSelection() const noexcept;
     void selectTime(std::int64_t from, std::int64_t to);
     bool toggleTimeAndNotes();
+    // SC-233: with time selected and no note, the edited clip's notes that begin in it, which Cut,
+    // Copy, Delete and Duplicate act on (Copy counts them from the selection's start, and Duplicate
+    // copies them to the time after it, which it then selects); empty otherwise.
+    std::vector<std::uint64_t> notesInTime() const;
     // Every note that was not selected, and none that was (Ctrl/Cmd+Shift+A).
     void invertSelection();
     // Cut, Copy and Paste of notes (manual 10.5.4; Ctrl/Cmd+X, C, V): the selected notes of every
