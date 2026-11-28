@@ -1,8 +1,18 @@
-Ready for review: basics/integrate-3 at 269d4c14767efb79b3e6a71cb83003cd2b28b9dd
+Integrating basics/integrate-4. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
+## Integrate-4
+
+Started from `land/basics-1128c` at `16064c0a6d8e3f435ed5cb9626e09d2b73f042cd` while #838 was open. [Landing stack](https://github.com/arieladi/Adi/pull/838)
+
+| Ready source tip | Integration merge | Composition and checks |
+|---|---|---|
+| `basics/test-chain-2` `b8943be0b99f10b773178719540ac5e76585062f` | `c07b8e6e409e1f03cbd2e945b3b30e590475cf95` | Merged first and pushed for the director. Resolved three conflicts in the shell header and window fixtures. Kept stopped locators and opening-state history with Quantize, explicit Split scope, source-length trim tests, and the hover and Info View checks. Shared Spectrum uses a single software renderer with words masked in compared pictures. Passed six validators, strict shell and spectrum syntax, and all 500 focused no-display spectrum checks. |
+
 ## Integrate-3
+
+Review head `269d4c14767efb79b3e6a71cb83003cd2b28b9dd`.
 
 `basics/integrate-3` starts from `6aeeed1b19b6f45cb15ec1bb65ce1084058bb127`, with PR #830 in its history. The table numbers follow the 27 November review. [Gemini review](https://github.com/arieladi/Adi/blob/98a21833c54c539bf0f334b88e0a684f637aa3c9/adi_daw/collab/gemini.md#L7-L33)
 
