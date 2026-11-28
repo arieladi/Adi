@@ -432,9 +432,7 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
             testTone_ = false;
         if (onChange)
             onChange();
-        std::string why;
-        if (!store.save(why))
-            setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
+        store.saveSoon();
         for (auto &row : rows_)
             row->refresh();
     };
@@ -643,7 +641,7 @@ bool SettingsPanel::acceptLibraryFolder(const settings::Setting &setting, const 
     return edited == folders || change(setting, edited);
 }
 bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v) {
-    // Applied at once and written at once: Live has no OK button (Master Reference V.1).
+    // The value takes effect immediately. Persist once the changes settle.
     std::string why;
     if (!settingAvailable(s.key)) {
         setHelp(unavailable);
@@ -664,10 +662,7 @@ bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v)
     // The value is in force from here, written or not.
     if (onChange)
         onChange();
-    if (!store.save(why)) {
-        setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
-        return false;
-    }
+    store.saveSoon();
     return true;
 }
 settings::Value SettingsPanel::value(const settings::Setting &s) const {

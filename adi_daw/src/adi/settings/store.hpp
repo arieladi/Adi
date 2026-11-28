@@ -11,6 +11,8 @@
 //   * A key this build does not know -- a newer build's -- survives a save.
 //   * A file that does not parse is moved aside, never overwritten silently,
 //     and the application starts from defaults.
+//     A read/inspection failure instead leaves the path untouched and refuses
+//     edits/save until a fresh instance loads successfully.
 //   * Only App-scope settings are written here. A Project setting is a row in
 //     the .adi and changes through its op; the store refuses it by name.
 //
@@ -24,6 +26,7 @@
 #include "adi/appdata.hpp"
 #include "adi/settings/registry.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -44,6 +47,8 @@ enum class LoadStatus {
     CorruptKept,   // did not parse; moved aside to `keptAside`, defaults in use
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
     NewerSchema,   // written by a newer build: read familiar values, refuse writes
+    MigrationFailed, // unsupported/broken older migration: original untouched, writes refused
+    Unavailable,   // inspection/read/recovery failed; reload before edits/save
 };
 [[nodiscard]] const char* toString(LoadStatus);
 
@@ -60,6 +65,11 @@ struct ChangeContext {
 class AppSettings {
 public:
     using SaveRename = std::error_code (*)(const std::filesystem::path&, const std::filesystem::path&);
+    using SaveClock = std::chrono::steady_clock;
+    struct SaveAttempt {
+        bool saved;
+        std::string diagnostic;
+    };
 
     /// This application's own file: appdata::pathsFor(app).config/settings.json.
     [[nodiscard]] static AppSettings forApp(appdata::App app);
@@ -71,6 +81,8 @@ public:
     [[nodiscard]] const std::filesystem::path& file() const { return file_; }
     [[nodiscard]] const std::optional<std::filesystem::path>& keptAside() const { return aside_; }
     [[nodiscard]] appdata::App app() const { return app_; }
+    [[nodiscard]] const std::string& migrationError() const { return migrationError_; }
+    [[nodiscard]] const std::string& loadError() const { return loadError_; }
 
     /// The value in force: the stored one if it is legal for this build, the
     /// registry's default otherwise. Unknown keys return null.
@@ -94,6 +106,13 @@ public:
     /// directory-durability warning in why.
     bool save(std::string& why, SaveRename rename = nullptr);
 
+    /// Schedule pending changes after 500 ms without an edit. Poll and flush
+    /// on the settings owner's thread. An empty result means no write was
+    /// attempted. A successful write can include a durability warning.
+    void saveSoon(SaveClock::time_point now = SaveClock::now()) noexcept;
+    [[nodiscard]] std::optional<SaveAttempt> tick(SaveClock::time_point now = SaveClock::now());
+    [[nodiscard]] std::optional<SaveAttempt> flush();
+
     /// The raw stored values, unknown keys included -- what save writes.
     [[nodiscard]] const Value& stored() const { return values_; }
 
@@ -112,8 +131,13 @@ private:
     std::filesystem::path file_;
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
+    std::string migrationError_;
+    std::string loadError_;
     Value values_ = Value::object();
     std::set<std::string> pendingKeys_;
+    std::optional<SaveClock::time_point> quietUntil_;
+    std::optional<SaveClock::time_point> retryAfter_;
+    std::chrono::seconds retryDelay_{1};
     bool logUsers_ = true;
 };
 
