@@ -14490,6 +14490,25 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
           "SC-253: Insert Take Lane adds a visible empty row through the peerless header menu");
     check(headers.keyPressed(show) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
           "SC-253: Hide Take Lanes restores the normal track layout");
+    {
+        // The audio track has no take lane: its Show Take Lanes is dimmed, and the shortcut says why
+        // instead of turning the menu's wording to Hide with nothing to show.
+        const auto showItem = [&] {
+            const auto trackMenu = arrangement.headerMenu(2);
+            for (juce::PopupMenu::MenuItemIterator entry(trackMenu); entry.next();)
+                if (entry.getItem().text.endsWith("Take Lanes"))
+                    return std::pair{entry.getItem().text, entry.getItem().isEnabled};
+            return std::pair{juce::String(), false};
+        };
+        const auto dimmed = showItem();
+        const auto priorTrack = geo.selection.track;
+        geo.selection.track = 2;
+        const bool refused = !headers.keyPressed(show) && root.error().find("take lanes") != std::string::npos;
+        geo.selection.track = priorTrack;
+        check(dimmed == std::pair{juce::String("Show Take Lanes"), false} && refused && showItem() == dimmed &&
+                  !geo.shownTakeLanes.contains(2) && geo.rowTop(root.reader(), 2) == rowWithoutTakes,
+              "SC-253: a track with no take lanes dims Show Take Lanes, and its shortcut says why and shows nothing");
+    }
 
     root.setAutomationMode(true);
     const auto pan = panTarget(1);
