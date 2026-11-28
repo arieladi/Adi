@@ -8,6 +8,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/peaks.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/history.hpp"
 #include "adi/digest.hpp"
@@ -15,14 +16,19 @@
 #include "adi/material_commands.hpp"
 #include "adi/render/freeze_capture.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <bit>
+#include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <array>
 #include <algorithm>
+#include <optional>
 namespace {
 using namespace adi;
 namespace fs = std::filesystem;
@@ -439,6 +445,136 @@ void movedProjectKeepsExternalSample() {
           media::mediaRow(reopened->db(), 10).at("abs_path_hint") == media::pathUtf8(fs::canonical(newSource)),
           "relink captures a new original location");
 }
+std::optional<std::uint64_t> ownerReadBytes() {
+#if defined(__linux__)
+    std::ifstream stats("/proc/thread-self/io");
+    std::string field;
+    std::uint64_t bytes = 0;
+    while (stats >> field >> bytes)
+        if (field == "rchar:")
+            return bytes;
+#endif
+    return std::nullopt;
+}
+void warmRelocatedWarpRefresh() {
+    using Clock = std::chrono::steady_clock;
+    constexpr std::uint32_t rate = 48000, fileFrames = 2U * 1024U * 1024U, blockFrames = 16384;
+    constexpr std::int64_t windowFrames = 1000, windowTicks = 240240; // 1,000 frames at 120 BPM.
+    Fixture f;
+    const auto sample = f.temp.path() / "Library" / "long.wav";
+    fs::create_directory(sample.parent_path());
+    {
+        audio::WavWriter writer(sample, rate, 1, audio::WavFormat::Float32);
+        std::array<float, blockFrames> pcm;
+        pcm.fill(0.25f);
+        for (std::uint32_t first = 0; first < fileFrames; first += blockFrames)
+            writer.write(pcm.data(), blockFrames);
+        writer.close();
+    }
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1)");
+    OpRequest imported;
+    const auto prepared = media::prepareImport(*f.store, sample, 10, 123, imported);
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+    const std::vector<OpRequest> initial{imported,
+        request("clip.create", {{"id",5},{"track",1},{"kind","audio"},{"pos",0},{"length",windowTicks}}),
+        request("clip.attachAudio", {{"id",5},{"media",10},{"frames",windowFrames}})};
+    if (!OpJournal(*f.store).commit(initial).ok) throw std::runtime_error("relocated Warp fixture");
+    {
+        const std::array<WarpMarker, 2> anchors{{{0, 0}, {windowFrames, windowTicks}}};
+        const auto markers = audio::writeWarpMap(anchors, windowFrames);
+        if (!markers) throw std::runtime_error("relocated Warp markers");
+        SQLite::Statement warp(f.store->db(), "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=5");
+        warp.bind(1, markers.bytes.data(), static_cast<int>(markers.bytes.size()));
+        warp.exec();
+    }
+
+    const auto relocated = f.temp.path() / "Moved" / "Set" / "song.adi";
+    const auto preferred = relocated.parent_path().parent_path() / "Library" / sample.filename();
+    fs::create_directories(relocated.parent_path());
+    fs::create_directories(preferred.parent_path());
+    f.store.reset();
+    fs::rename(f.folder() / "song.adi", relocated);
+    StoreError error{};
+    auto reopened = Store::open(relocated, error);
+    if (!reopened) throw std::runtime_error(toString(error));
+    fs::copy_file(sample, preferred);
+    const auto originalTime = fs::last_write_time(preferred);
+    const auto setFinalSample = [&](float value) {
+        // The fixture is a Float32 WAV. Change its last sample outside the clip window.
+        auto bits = std::bit_cast<std::uint32_t>(value);
+        std::fstream file(preferred, std::ios::binary | std::ios::in | std::ios::out);
+        file.seekp(-4, std::ios::end);
+        for (int byte = 0; byte < 4; ++byte, bits >>= 8)
+            file.put(static_cast<char>(bits & 0xffU));
+        file.close();
+        if (!file) throw std::runtime_error("replace relocated WAV sample");
+        fs::last_write_time(preferred, originalTime);
+    };
+    setFinalSample(0.5f);
+    check(fs::file_size(preferred) == fs::file_size(sample), "shadowing Warp source has the same file size");
+    const auto load = [&](engine::Session& session) {
+        session.graph().setFadeFrames(0);
+        if (!session.load(*reopened, {}, engine::SessionSpec{2, rate, 64}))
+            throw std::runtime_error(session.error());
+    };
+    const auto plays = [](engine::Session& session, const fs::path& expected) {
+        const auto* clips = session.clips();
+        if (!clips || !clips->problems().empty() || clips->externalSources().size() != 1 ||
+            !fs::equivalent(clips->externalSources().front().path, expected)) return false;
+        session.transport().locate(0);
+        session.transport().play();
+        if (!session.clips()->prime()) return false;
+        std::array<float, 64> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = output;
+        io.numOut = 2;
+        io.frames = 64;
+        session.process(io);
+        session.transport().play(false);
+        return left == right && std::all_of(left.begin(), left.end(), [](float value) { return value == 0.25f; });
+    };
+    const auto refresh = [&](engine::Session& session) {
+        if (!session.refresh(*reopened)) throw std::runtime_error(session.error());
+    };
+
+    {
+        engine::Session session;
+        load(session);
+        check(plays(session, sample), "relocated Warp uses the verified original despite a wrong preferred WAV");
+        if (!op(*reopened, "track.rename", {{"id",1},{"name","Edited"}}).ok)
+            throw std::runtime_error("edit relocated Warp project");
+        const auto rebuilds = session.stats().rebuilds;
+        const auto before = ownerReadBytes();
+        const auto start = Clock::now();
+        refresh(session);
+        const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        const auto after = ownerReadBytes();
+        std::printf("relocated 8 MiB Warp WAV warm refresh: %.3f ms", elapsed);
+        if (before && after && *after >= *before)
+            std::printf(", %llu owner read bytes", static_cast<unsigned long long>(*after - *before));
+        std::printf("\n");
+        check(session.stats().rebuilds == rebuilds + 1, "the warm refresh rebuilds the playback graph");
+#if defined(__linux__)
+        // Other volumes may supply too little native revision data to cache.
+        // The PCM and candidate-selection checks still cover those volumes.
+        if (before && after && media::blake3FileWithRevision(sample, {}).revision &&
+            media::blake3FileWithRevision(preferred, {}).revision)
+            check(*after >= *before && *after - *before < 1024U * 1024U,
+                  "warm relocated Warp rebuild reads less than 1 MiB on the owner");
+#endif
+        check(plays(session, sample), "warm relocated Warp rebuild preserves the verified source and PCM");
+        setFinalSample(0.25f);
+        refresh(session);
+        check(fs::last_write_time(preferred) == originalTime && plays(session, preferred),
+              "a matching preferred WAV takes priority even when its timestamp is restored");
+    }
+    setFinalSample(0.75f);
+    engine::Session reopenedSession;
+    load(reopenedSession);
+    check(fs::last_write_time(preferred) == originalTime && plays(reopenedSession, sample),
+          "a previously verified preferred WAV falls back after its bytes change with restored timestamp");
+}
 void captureDecodeAndDedup() {
     Fixture f;audio::DecodeCache cache(f.temp.path()/"decoded",{1024*1024,0});
     OpRequest captured;
@@ -509,7 +645,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); longPathImports(); plainWordsForUnreadable(); movedProjectKeepsExternalSample(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); moreThanTwoChannelsRefused(); longPathImports(); plainWordsForUnreadable(); movedProjectKeepsExternalSample(); warmRelocatedWarpRefresh(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

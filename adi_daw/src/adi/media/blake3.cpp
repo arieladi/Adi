@@ -26,6 +26,20 @@ HashResult blake3Bytes(std::span<const std::byte> bytes) noexcept {
         return finish(hasher);
     } catch (...) { return {{}, HashError::resource}; }
 }
+HashResult detail::blake3Read(void* context, DigestRead read, std::stop_token stop) noexcept {
+    try {
+        blake3_hasher hasher;
+        blake3_hasher_init(&hasher);
+        std::array<char, 65536> buffer;
+        while (!stop.stop_requested()) {
+            const auto count = read(context, buffer);
+            if (count < 0 || static_cast<std::size_t>(count) > buffer.size()) return {{}, HashError::read};
+            if (!count) return finish(hasher);
+            blake3_hasher_update(&hasher, buffer.data(), static_cast<std::size_t>(count));
+        }
+        return {{}, HashError::cancelled};
+    } catch (...) { return {{}, HashError::resource}; }
+}
 HashResult blake3File(const std::filesystem::path& path) noexcept { return blake3File(path, {}); }
 HashResult blake3File(const std::filesystem::path& path, std::stop_token stop) noexcept {
     try {
@@ -34,17 +48,12 @@ HashResult blake3File(const std::filesystem::path& path, std::stop_token stop) n
             return {{}, HashError::open};
         std::ifstream input(path, std::ios::binary);
         if (!input) return {{}, HashError::open};
-        blake3_hasher hasher;
-        blake3_hasher_init(&hasher);
-        std::array<char, 65536> buffer{};
-        while (input) {
-            if (stop.stop_requested()) return {{}, HashError::cancelled};
-            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const auto count = input.gcount();
-            if (count > 0) blake3_hasher_update(&hasher, buffer.data(), static_cast<std::size_t>(count));
-        }
-        if (input.bad() || !input.eof()) return {{}, HashError::read};
-        return finish(hasher);
+        return detail::blake3Read(&input, [](void* context, std::span<char> buffer) -> std::ptrdiff_t {
+            auto& stream = *static_cast<std::ifstream*>(context);
+            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            if (stream.bad() || (stream.fail() && !stream.eof())) return -1;
+            return static_cast<std::ptrdiff_t>(stream.gcount());
+        }, stop);
     } catch (...) { return {{}, HashError::resource}; }
 }
 } // namespace adi::media

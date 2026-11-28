@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "media_ops.hpp"
 #include "blake3.hpp"
+#include "publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
@@ -11,8 +12,10 @@
 #include <array>
 #include <algorithm>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 namespace adi::media {
 namespace fs = std::filesystem;
 namespace {
@@ -181,6 +184,75 @@ MediaPaths mediaPaths(const fs::path& folder, const fs::path& relative, const fs
         paths.candidates.push_back(hint.is_absolute() ? hint : fs::path{});
     return paths;
 }
+
+class PlaybackDigests {
+  public:
+    HashResult operator()(const fs::path& path, std::stop_token stop) {
+        std::error_code error;
+        const auto revision = readFileRevision(path, error);
+        if (!revision)
+            return blake3File(path, stop);
+        {
+            const std::lock_guard lock(mutex_);
+            const auto found = entries_.find(path);
+            if (found != entries_.end() && found->second.revision == *revision) {
+                found->second.lastUse = ++use_;
+                return {found->second.hash};
+            }
+        }
+        auto verified = blake3FileWithRevision(path, stop);
+        if (!verified.revision)
+            return std::move(verified.hash);
+
+        const std::lock_guard lock(mutex_);
+        entries_.insert_or_assign(path, Entry{*verified.revision, verified.hash.hex, ++use_});
+        if (entries_.size() > capacity) {
+            const auto oldest = std::min_element(entries_.begin(), entries_.end(), [](const auto& a, const auto& b) {
+                return a.second.lastUse < b.second.lastUse;
+            });
+            entries_.erase(oldest);
+        }
+        return std::move(verified.hash);
+    }
+
+  private:
+    struct Entry {
+        FileRevision revision;
+        std::string hash;
+        std::uint64_t lastUse;
+    };
+    static constexpr std::size_t capacity = 4096;
+    std::mutex mutex_;
+    std::unordered_map<fs::path, Entry> entries_;
+    std::uint64_t use_ = 0;
+};
+
+template<class ReadDigest>
+fs::path resolveMediaPaths(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                           const std::string& originalName, const std::string& expectedHash,
+                           std::string& error, std::stop_token stop, ReadDigest&& readDigest) {
+    error.clear();
+    const auto paths = mediaPaths(folder, relative, hint, originalName, error);
+    for (const auto& path : paths.candidates) {
+        if (stop.stop_requested()) return {};
+        if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
+        std::error_code ec;
+        const bool exists = fs::exists(path, ec);
+        if (!exists && !ec) continue;
+        const auto fail = [&](std::string detail) {
+            if (error.empty()) error = std::move(detail);
+        };
+        if (ec) fail("cannot inspect " + pathUtf8(path));
+        else {
+            const auto hash = readDigest(path, stop);
+            if (hash.error == HashError::cancelled) return {};
+            if (hash && hash.hex == expectedHash) { error.clear(); return path; }
+            fail((hash ? "hash mismatch: " : "cannot hash ") + pathUtf8(path));
+        }
+        if (!paths.distinctHint) return {};
+    }
+    return {};
+}
 } // namespace
 fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
     return resolveMedia(folder, row, error, {});
@@ -202,27 +274,13 @@ fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& e
 fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
                       const std::string& originalName, const std::string& expectedHash,
                       std::string& error, std::stop_token stop) {
-    error.clear();
-    const auto paths = mediaPaths(folder, relative, hint, originalName, error);
-    for (const auto& path : paths.candidates) {
-        if (stop.stop_requested()) return {};
-        if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
-        std::error_code ec;
-        const bool exists = fs::exists(path, ec);
-        if (!exists && !ec) continue;
-        const auto fail = [&](std::string detail) {
-            if (error.empty()) error = std::move(detail);
-        };
-        if (ec) fail("cannot inspect " + pathUtf8(path));
-        else {
-            const auto hash = blake3File(path, stop);
-            if (hash.error == HashError::cancelled) return {};
-            if (hash && hash.hex == expectedHash) { error.clear(); return path; }
-            fail((hash ? "hash mismatch: " : "cannot hash ") + pathUtf8(path));
-        }
-        if (!paths.distinctHint) return {};
-    }
-    return {};
+    return resolveMediaPaths(folder, relative, hint, originalName, expectedHash, error, stop,
+                             [](const fs::path& path, std::stop_token token) { return blake3File(path, token); });
+}
+fs::path resolvePlaybackMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                              const std::string& originalName, const std::string& expectedHash, std::string& error) {
+    static PlaybackDigests digests;
+    return resolveMediaPaths(folder, relative, hint, originalName, expectedHash, error, {}, digests);
 }
 fs::path mediaPathForBrowser(const Store& store, std::int64_t id, std::string& error) {
     error.clear();

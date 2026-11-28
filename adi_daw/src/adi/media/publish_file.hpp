@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "blake3.hpp"
 #include <array>
 #include <filesystem>
 #include <functional>
@@ -41,6 +42,13 @@ struct FileRevision {
 /// Like readFileIdentity, but refuses a final symlink or reparse point.
 [[nodiscard]] std::optional<FileRevision> readFileRevision(const std::filesystem::path&,
                                                           std::error_code&) noexcept;
+struct FileRevisionDigest {
+    HashResult hash;
+    std::optional<FileRevision> revision;
+};
+/// Read the digest and its cacheable revision through the same open file.
+/// Symlinks and storage without a reliable revision still produce an uncached digest.
+[[nodiscard]] FileRevisionDigest blake3FileWithRevision(const std::filesystem::path&, std::stop_token) noexcept;
 // Roll back one exposed publication only when a Windows DELETE handle proves
 // its expected identity. The handle denies concurrent opens/rename/delete and
 // never follows a final reparse point. Missing paths are already clean.

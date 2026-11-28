@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -26,8 +27,13 @@
 #include <sys/stat.h>
 #if defined(__APPLE__)
 #include <stdio.h> // renamex_np, RENAME_EXCL; no CRT stream operations
+#include <sys/mount.h>
 #else
 #include <sys/syscall.h>
+#if defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+#endif
 #endif
 #endif
 namespace adi::media {
@@ -217,6 +223,25 @@ std::optional<FileRevision> windowsRevisionOf(NativeFile file, std::error_code& 
     return FileRevision{*identity,static_cast<std::uint64_t>(dimensions.EndOfFile.QuadPart),
                         {times.LastWriteTime.QuadPart,0},{times.ChangeTime.QuadPart,0}};
 }
+#else
+std::optional<FileRevision> statRevision(const struct stat& info, std::error_code& error) noexcept {
+    if (!S_ISREG(info.st_mode) || info.st_size < 0) {
+        error = std::make_error_code(std::errc::invalid_argument);
+        return {};
+    }
+#if defined(__APPLE__)
+    const auto modified = info.st_mtimespec;
+    const auto changed = info.st_ctimespec;
+#else
+    const auto modified = info.st_mtim;
+    const auto changed = info.st_ctim;
+#endif
+    error.clear();
+    return FileRevision{{static_cast<std::uint64_t>(info.st_dev), static_cast<std::uint64_t>(info.st_ino)},
+                        static_cast<std::uint64_t>(info.st_size),
+                        {static_cast<std::int64_t>(modified.tv_sec), static_cast<std::int64_t>(modified.tv_nsec)},
+                        {static_cast<std::int64_t>(changed.tv_sec), static_cast<std::int64_t>(changed.tv_nsec)}};
+}
 #endif
 std::optional<FileIdentity> identityOf(NativeFile file,std::error_code& error) noexcept {
 #if defined(_WIN32)
@@ -285,6 +310,57 @@ struct NativeOwner {
     NativeFile value=invalidFile;
     ~NativeOwner(){closeNative(value);}
 };
+std::optional<FileRevision> revisionOf(NativeFile file, std::error_code& error) noexcept {
+#if defined(_WIN32)
+    return windowsRevisionOf(file, error);
+#else
+    struct stat info{};
+    if (::fstat(file, &info) != 0) {
+        error = nativeError();
+        return {};
+    }
+    return statRevision(info, error);
+#endif
+}
+bool cacheableRevision(NativeFile file, const FileRevision& revision) noexcept {
+    // Storage with missing, coarse or nonlocal change times cannot vouch for
+    // a digest after an in-place edit that restores the modified time.
+#if defined(_WIN32)
+    if (!revision.changed[0]) return false;
+    std::array<wchar_t, 32> type{};
+    if (!GetVolumeInformationByHandleW(file, nullptr, 0, nullptr, nullptr, nullptr,
+                                       type.data(), static_cast<DWORD>(type.size()))) return false;
+    const std::wstring_view name(type.data());
+    return name == L"NTFS" || name == L"ReFS";
+#elif defined(__APPLE__)
+    struct statfs volume{};
+    if (!revision.changed[1] || ::fstatfs(file, &volume) != 0 || !(volume.f_flags & MNT_LOCAL)) return false;
+    const std::string_view name(volume.f_fstypename);
+    return name == "apfs" || name == "hfs";
+#elif defined(__linux__)
+    struct statfs volume{};
+    if (!revision.changed[1] || ::fstatfs(file, &volume) != 0) return false;
+    const auto type = static_cast<std::uint32_t>(volume.f_type);
+    return type == EXT4_SUPER_MAGIC || type == XFS_SUPER_MAGIC || type == BTRFS_SUPER_MAGIC ||
+           type == OVERLAYFS_SUPER_MAGIC || type == TMPFS_MAGIC;
+#else
+    (void)file;
+    (void)revision;
+    return false;
+#endif
+}
+std::ptrdiff_t readDigestChunk(void* context, std::span<char> buffer) noexcept {
+    const auto file = *static_cast<const NativeFile*>(context);
+#if defined(_WIN32)
+    DWORD bytes = 0;
+    if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes, nullptr)) return -1;
+    return static_cast<std::ptrdiff_t>(bytes);
+#else
+    ssize_t bytes;
+    do { bytes = ::read(file, buffer.data(), buffer.size()); } while (bytes < 0 && errno == EINTR);
+    return bytes;
+#endif
+}
 std::error_code syncStaged(const fs::path& path) noexcept {
     NativeOwner file;
 #if defined(_WIN32)
@@ -428,24 +504,36 @@ std::optional<FileRevision> readFileRevision(const fs::path& path,std::error_cod
     file.value=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
     if(file.value==invalidFile){error=nativeError();return {};}
-    return windowsRevisionOf(file.value, error);
+    return revisionOf(file.value, error);
 #else
     struct stat info{};
     if(::lstat(path.c_str(),&info)!=0){error=nativeError();return {};}
-    if(!S_ISREG(info.st_mode) || info.st_size<0){error=std::make_error_code(std::errc::invalid_argument);return {};}
-#if defined(__APPLE__)
-    const auto modified=info.st_mtimespec;
-    const auto changed=info.st_ctimespec;
+    return statRevision(info, error);
+#endif
+}
+FileRevisionDigest blake3FileWithRevision(const fs::path& path, std::stop_token stop) noexcept {
+    if (audio::onAudioThread) return {{{}, HashError::open}, std::nullopt};
+    if (stop.stop_requested()) return {{{}, HashError::cancelled}, std::nullopt};
+    std::error_code error;
+    const auto initial = readFileRevision(path, error);
+    if (!initial) return {blake3File(path, stop), std::nullopt};
+
+    NativeOwner file;
+#if defined(_WIN32)
+    file.value = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 #else
-    const auto modified=info.st_mtim;
-    const auto changed=info.st_ctim;
+    file.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
 #endif
-    error.clear();
-    return FileRevision{{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)},
-                        static_cast<std::uint64_t>(info.st_size),
-                        {static_cast<std::int64_t>(modified.tv_sec),static_cast<std::int64_t>(modified.tv_nsec)},
-                        {static_cast<std::int64_t>(changed.tv_sec),static_cast<std::int64_t>(changed.tv_nsec)}};
-#endif
+    if (file.value == invalidFile) return {{{}, HashError::open}, std::nullopt};
+    const auto before = revisionOf(file.value, error);
+    if (before != initial) return {{{}, HashError::read}, std::nullopt};
+    auto digest = detail::blake3Read(&file.value, readDigestChunk, stop);
+    if (!digest) return {std::move(digest), std::nullopt};
+    const bool cacheable = cacheableRevision(file.value, *before);
+    if (revisionOf(file.value, error) != before || readFileRevision(path, error) != before)
+        return {{{}, HashError::read}, std::nullopt};
+    return {std::move(digest), cacheable ? before : std::nullopt};
 }
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
