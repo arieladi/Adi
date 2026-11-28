@@ -8,6 +8,7 @@
 #include "../src/juce/ui_mix_analysers.hpp"
 #include "ui_fake_peer.hpp"
 #include "ui_picture_compare.hpp"
+#include "adi/dsp/masking.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include <algorithm>
@@ -25,15 +26,36 @@ using adi::ui::SharedAnalysis;
 using adi::ui::SharedSpectrumView;
 using adi::uitest::samePicturePixels;
 namespace adi::ui {
+struct MixAnalysersTestAccess {
+    static auto projectionBuilds(const MixAnalysers &pages) { return pages.comparisonProjectionBuildsForTest(); }
+};
 struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
     static bool hasScaledPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.scaledSpectrum_); }
+    static void projectSpectrum(SharedSpectrumView &view, std::shared_ptr<const SharedAnalysis::Result> result) {
+        view.shown_ = std::move(result);
+        view.updateSpectrumProjection();
+        view.updateScaledSpectrum();
+    }
     static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
     static void showFilled(SharedSpectrumView &view, std::shared_ptr<const SharedAnalysis::Result> result) {
         view.shown_ = std::move(result);
     }
     static void pointFilled(SharedSpectrumView &view, juce::Point<int> pointer) { view.filledPointer_ = pointer; }
+    static juce::String cursorText(const SharedSpectrumView &view) {
+        if (view.spectrumCursorPosition_) {
+            if (const auto reading = view.spectrumCursorReading(*view.spectrumCursorPosition_)) return reading->text();
+        }
+        return {};
+    }
+    static juce::String moveCursor(SharedSpectrumView &view, juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys{}, 0.f, 0.f, 0.f, 0.f, 0.f, &view, &view, now, at, now, 0, false};
+        view.mouseMove(event);
+        return cursorText(view).removeCharacters(",");
+    }
 };
 }
 namespace {
@@ -63,8 +85,8 @@ struct Fixture {
     std::shared_ptr<SharedAnalysis> broker = std::make_shared<SharedAnalysis>(
         [this](std::int64_t, ScopePoint) { ++acquired; return tap; },
         [this](std::int64_t, ScopePoint) { ++released; }, SharedAnalysis::Mode::Manual);
-    void write(std::int64_t stamp = 0) {
-        std::vector<float> samples(1024);
+    void write(std::int64_t stamp = 0, std::size_t frames = 1024) {
+        std::vector<float> samples(frames);
         for (std::size_t i = 0; i < samples.size(); ++i)
             samples[i] = .5f * static_cast<float>(std::sin(2 * std::numbers::pi * 16 * static_cast<double>(i) / 1024));
         tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true);
@@ -425,6 +447,10 @@ void cappedFrozenHistoryAndIdleReset() {
     check(missingBlank && currentVisible,
           "software spectrogram leaves the missing hop blank instead of compressing history time");
     check(originalRasterPixels(live, *live.snapshot()), "default capped/gapped raster pixels match the original display law");
+    live.enableSpectrumCursor();
+    check(adi::ui::SharedSpectrumViewTestAccess::moveCursor(live, {131.5f, 149.f}).isEmpty() &&
+              adi::ui::SharedSpectrumViewTestAccess::moveCursor(live, {132.5f, 149.f}).contains("Heard 512 samples"),
+          "a dropped Spectrogram hop has no cursor while its adjacent recovered column is readable");
     live.clear();
     SharedAnalysis::Request scope{1}; scope.outputs = SharedAnalysis::Scope;
     auto extra = broker->acquire(scope); broker->pump(); live.frame();
@@ -500,6 +526,7 @@ void mainMetersSharedPresentation() {
     check(text.contains("Main aggregate programme / pre-cue") && text.contains("M -14.2") &&
           text.contains("S -15.3") && text.contains("I -16.4 LUFS") && text.contains("TP (held) -0.7 dBTP"),
           "Main text names aggregate pre-cue programme, independent LUFS windows and held dBTP at one decimal");
+    check(text.contains("PLR 15.7 dB"), "Main PLR uses held true peak minus integrated loudness");
     (void)softwarePicture(full); (void)softwarePicture(info); (void)softwarePicture(window);
     const int minimisedReads = reads; root.fake->minimized = true; floating.fake->minimized = true;
     full.frame(); info.frame(); window.frame();
@@ -512,6 +539,8 @@ void mainMetersSharedPresentation() {
     full.frame(); check(reads == frozenReads && full.mainMeterSnapshot() == beforeFreeze,
                         "Freeze keeps only a local Main picture without polling or pausing the shared service");
     info.frame(); check(info.mainMeterSnapshot() == values, "another live view keeps reading while its peer is frozen");
+    check(full.mainMeterText().contains("PLR 15.7 dB") && info.mainMeterText().contains("PLR 11.8 dB"),
+          "PLR follows each view's held or current Main readout");
     const auto peer = info.mainMeterSnapshot(); full.clear(); full.frame();
     check(!full.mainMeterSnapshot() && info.mainMeterSnapshot() == peer,
           "Reset clears one frozen presentation without altering another view or Main values");
@@ -544,6 +573,7 @@ void mainMetersSharedPresentation() {
     check(full.mainMeterText().contains("M --") && full.mainMeterText().contains("TP (held) -- dBTP") &&
           !full.mainMeterText().containsIgnoreCase("warming"),
           "negative infinity is shown honestly without claiming silence is necessarily an unwarmed window");
+    check(full.mainMeterText().contains("PLR --"), "missing integrated loudness or true peak makes PLR unavailable");
     values.truePeakDb = std::numeric_limits<float>::quiet_NaN(); full.frame();
     check(!full.mainMeterSnapshot(), "invalid readout numbers never leak into the display");
     values.truePeakDb = -.5f; full.frame(); full.freeze(true);
@@ -934,6 +964,15 @@ void wordsMaskedInComparison() {
     check(textPainted && samePicturePixels(before, after), "raster comparisons mask the glyphs of both labels");
     check(!samePicturePixels(before, draw("A different label", juce::Colours::green)),
           "raster comparisons still detect changes to the drawn trace");
+}
+void cumulativeAverageTitlePaint() {
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 300, 180);
+    const auto realtime = softwarePicture(view);
+    view.setMode(SharedSpectrumView::Mode::SpectrumCumulativeAverage);
+    const auto average = softwarePicture(view);
+    check(view.getTitle() == "Cumulative Average" && !samePixels(realtime, average),
+          "Cumulative Average paints its own title while the source is still waiting");
 }
 void paletteMenuTheme() {
     using namespace adi::ui;
@@ -1593,6 +1632,91 @@ void colourWaveformSurface() {
           "the detached analyser offers the colour waveform with its fixed scroll and colour stack");
 }
 
+void spectrumWideCachedGeometry() {
+    using namespace adi::ui;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(32000., SharedAnalysis::kTapSeconds);
+    Root root;
+    root.setBounds(0, 0, 680, 390);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 640, 360);
+    root.addAndMakeVisible(view);
+    view.present(f.broker, 1);
+    check(!SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "Wide does not prepare a plot while waiting for the first spectrum");
+
+    // Keep both frequency projections clear of the 10 kHz grid line.
+    constexpr int frames = 1024, lowBin = 8, highBin = 420;
+    constexpr auto sampleRate = 32000.;
+    const auto gain = std::pow(10., -36. / 20.);
+    std::array<float, frames> signal;
+    for (std::size_t i = 0; i < signal.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / frames;
+        signal[i] = static_cast<float>(gain * (std::sin(lowBin * phase) + std::sin(highBin * phase)));
+    }
+    f.tap->write(signal.data(), signal.data(), frames, 0, true);
+    f.broker->pump();
+    view.frame();
+    const auto result = view.snapshot();
+    check(result && result->sampleRate == sampleRate && result->request.fftSize == frames &&
+              SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "a visible Wide publication prepares its retained graph before paint");
+
+    const auto traceAt = [](const juce::Image &image, int bin, double db, double ceiling) {
+        const auto width = static_cast<double>(image.getWidth()) - 28.;
+        const auto height = static_cast<double>(image.getHeight()) - 55.;
+        const auto hz = static_cast<double>(bin) * sampleRate / frames;
+        const auto x = juce::roundToInt(5. + width * std::log(hz / 20.) / std::log(ceiling / 20.));
+        const auto y = juce::roundToInt(21. - height * db / 96.);
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx)
+                if (image.getPixelAt(x + dx, y + dy) != look::display) return true;
+        return false;
+    };
+    constexpr auto nyquist = sampleRate * .5;
+    const auto flat = softwarePicture(view);
+    check(traceAt(flat, lowBin, -36., nyquist) &&
+              traceAt(flat, lowBin - 1, -42., nyquist) && traceAt(flat, lowBin + 1, -42., nyquist) &&
+              traceAt(flat, highBin, -36., nyquist) && !traceAt(flat, highBin, -36., 20000.),
+          "Wide keeps both shoulders and calibrates the high tone against the lower Nyquist edge");
+
+    const auto sameWork = [](const SharedAnalysis::Stats &a, const SharedAnalysis::Stats &b) {
+        return a.transforms == b.transforms && a.analysisWindows == b.analysisWindows &&
+            a.publications == b.publications && a.cursorReads == b.cursorReads &&
+            a.workerPasses == b.workerPasses && a.consumers == b.consumers &&
+            a.taps == b.taps && a.domains == b.domains && a.frameRequests == b.frameRequests &&
+            a.spectralPlans == b.spectralPlans;
+    };
+    view.freeze(true);
+    const auto flatFrozen = softwarePicture(view);
+    const auto frozen = f.broker->stats();
+    view.setSpectrumSlope(SpectrumSlope::Tilt45);
+    const auto tilted = softwarePicture(view);
+    check(traceAt(tilted, lowBin, -45., nyquist) && !traceAt(tilted, lowBin, -36., nyquist) &&
+              view.snapshot() == result && SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "a frozen Wide graph updates its cached tilt while retaining the raw publication");
+    view.setSize(420, 360);
+    const auto resized = softwarePicture(view);
+    view.frame();
+    check(traceAt(resized, lowBin, -45., nyquist) && samePixels(resized, softwarePicture(view)) &&
+              view.snapshot() == result && sameWork(frozen, f.broker->stats()),
+          "resize and repeated frozen Wide paint reuse the same publication without broker work");
+    view.setSize(640, 360);
+    view.setSpectrumSlope(SpectrumSlope::Flat);
+    check(samePixels(flatFrozen, softwarePicture(view)) && f.acquired == 1 && sameWork(frozen, f.broker->stats()),
+          "restoring Wide size and slope restores the same graph without renewed demand");
+
+    root.setVisible(false);
+    const auto hidden = f.broker->stats();
+    view.frame();
+    f.broker->pump();
+    check(!view.snapshot() && !view.subscribed() && !SharedSpectrumViewTestAccess::hasScaledPlot(view) &&
+              hidden.consumers == 0 && f.released == 1 && sameWork(hidden, f.broker->stats()),
+          "hiding a frozen Wide view discards its retained plot and stays idle");
+}
+
 void spectrumDetailScale() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -1713,6 +1837,53 @@ void spectrumDetailScale() {
           "20 kHz axis is fixed while the trace stops at Nyquist on a lower-rate source");
 }
 
+void spectrumExtendedGridGeometry() {
+    using namespace adi::ui;
+    SharedSpectrumView view;
+    view.setSize(8192, 320);
+    view.setSpectrumScale(SharedSpectrumView::SpectrumScale::Extended);
+
+    constexpr double rate = 48000.;
+    constexpr int size = 8192;
+    auto window = std::make_shared<SharedAnalysis::Result>();
+    window->request.track = 1;
+    window->request.fftSize = size;
+    window->sampleRate = rate;
+    window->binsDbfs.assign(size / 2 + 1, -90.f);
+    window->binsDbfs[2] = -20.f;
+    window->binsDbfs[3] = -84.f;
+    window->binsDbfs[2051] = -12.f;
+    window->binsDbfs.back() = -24.f;
+    SharedSpectrumViewTestAccess::projectSpectrum(view, window);
+
+    const auto picture = softwarePicture(view);
+    const float width = static_cast<float>(picture.getWidth()) - 10.f - 18.f - look::fontCaption * 3.f;
+    const float height = static_cast<float>(picture.getHeight()) - 10.f - 16.f - 29.f - look::fontCaption;
+    const auto xAt = [width](double unit) { return juce::roundToInt(5. + (width - 1.f) * unit); };
+    const auto xHz = [xAt](double hz) { return xAt(std::log(hz / 10.) / std::log(3000.)); };
+    const auto filled = [&](int x, float db) {
+        const auto y = juce::roundToInt(21.f - (height - 1.f) * db / 100.f);
+        return picture.getPixelAt(x, y) != look::display;
+    };
+
+    // Bin 2051 shares its cell with several quiet bins and lands near its right edge.
+    // Only moving the undiluted peak to the cell's centre paints this column at -23 dB.
+    const auto projected = xAt(906.5 / 1024.);
+    const auto raw = xHz(2051. * rate / size);
+    check(raw - projected >= 3 && filled(projected, -23.f) && !filled(raw, -23.f),
+          "a crowded Extended cell retains its narrow peak and draws it at the log cell centre");
+
+    // Cell 46's centre is 14.38456 Hz. Its dB interpolation from the two
+    // neighbouring FFT bins is about -49.12 rather than the old log segment's -52.4.
+    const auto lowGap = xAt(46.5 / 1024.);
+    check(filled(lowGap, -51.3f) && !filled(lowGap, -47.f) && !filled(xHz(11.), -37.f),
+          "an empty interior log cell interpolates at its centre while the unavailable low end stays empty");
+
+    const auto boundary = xHz(rate * .5);
+    check(filled(boundary - 2, -61.f) && !filled(boundary + 4, -61.f),
+          "a final partial cell preserves its peak and ends at the actual Nyquist limit");
+}
+
 void spectrumExtendedScale() {
     using namespace adi::ui;
     using Scale = SharedSpectrumView::SpectrumScale;
@@ -1742,7 +1913,10 @@ void spectrumExtendedScale() {
     const auto unchanged = [&](const auto &stats) {
         const auto now = f.broker->stats();
         return now.transforms == stats.transforms && now.publications == stats.publications &&
-            now.cursorReads == stats.cursorReads && now.consumers == stats.consumers && now.taps == stats.taps;
+            now.cursorReads == stats.cursorReads && now.consumers == stats.consumers && now.taps == stats.taps &&
+            now.workerPasses == stats.workerPasses && now.frameRequests == stats.frameRequests &&
+            now.spectralPlans == stats.spectralPlans && now.analysisWindows == stats.analysisWindows &&
+            now.domains == stats.domains;
     };
     check(pane.view.spectrumScale() == Scale::Extended && source && source == pane.view.snapshot() &&
               source == sibling.snapshot() && f.acquired == 1 && unchanged(before),
@@ -1764,6 +1938,15 @@ void spectrumExtendedScale() {
         grid = grid && extended.getPixelAt(x(37.), y(level)) != look::display &&
             extended.getPixelAt(x(37.), y(level) + 2) == look::display;
     check(grid, "Extended paints 10 dB divisions on the shared plot");
+    pane.setSize(420, 360);
+    const auto resized = softwarePicture(pane.view);
+    pane.frame(f.broker, 1, 1);
+    check(pane.view.snapshot() == source && samePixels(resized, softwarePicture(pane.view)) &&
+              unchanged(before),
+          "Extended resize and repeated paints reuse the same raw frame and worker plan");
+    pane.setSize(640, 360);
+    check(samePixels(extended, softwarePicture(pane.view)) && unchanged(before),
+          "restoring Extended size restores the same fixed-grid picture without worker work");
 
     pane.view.freeze(true);
     const auto held = f.broker->stats();
@@ -1781,6 +1964,69 @@ void spectrumExtendedScale() {
     check(!pane.view.subscribed() && !SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) &&
               hidden.consumers == 0 && unchanged(hidden),
           "hidden Extended keeps only its view-local preference");
+}
+
+void pinnedSpectrumWaitsForHeardPrimary() {
+    using Source = SharedSpectrumView::SpectrumOverlayTrack;
+    constexpr std::int32_t frames = 1024;
+    constexpr std::uint64_t transport = 37;
+    auto primary = std::make_shared<ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+    auto pin = std::make_shared<ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](std::int64_t track, ScopePoint) { return track == 1 ? primary : pin; },
+        [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    Root root;
+    root.setBounds(0, 0, 680, 380);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 640, 360);
+    root.addAndMakeVisible(view);
+    const std::array<Source, 1> pins{{{2, "Pinned", adi::ui::look::accent}}};
+    view.setSpectrumOverlayTracks(pins);
+    view.present(broker, 1);
+    view.frame();
+    const auto write = [&](ScopeTap &tap, std::int64_t stamp, int bin, float gain) {
+        std::array<float, frames> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = gain * static_cast<float>(std::sin(
+                2. * std::numbers::pi * static_cast<double>(bin) * static_cast<double>(i) / frames));
+        tap.write(samples.data(), samples.data(), frames, stamp, true, transport);
+        broker->pump();
+        view.frame();
+    };
+    const auto heard = [&](std::int64_t stamp) {
+        const auto result = view.snapshot();
+        return result && result->advancing && result->transportRevision == transport && result->firstStamp == stamp;
+    };
+
+    write(*primary, 0, 16, .125f);
+    check(heard(0) && broker->stats().taps == 2 && broker->stats().spectralPlans == 2,
+          "pinned Spectrum starts with a current primary and both expected source plans");
+    const auto primaryOnly = softwarePicture(view);
+    write(*pin, frames, 32, .75f);
+    check(heard(0) && samePixels(primaryOnly, softwarePicture(view)),
+          "a future pin in the same transport epoch does not lead the current primary");
+
+    write(*primary, frames, 16, .125f);
+    const auto paired = softwarePicture(view);
+    check(heard(frames) && !samePixels(primaryOnly, paired),
+          "the retained pin picture becomes visible when the primary reaches its heard sample");
+    write(*pin, 2 * frames, 64, .5f);
+    check(heard(frames) && samePixels(paired, softwarePicture(view)),
+          "a later pin frame preserves the previous visible pin while it waits");
+    write(*pin, 3 * frames, 80, .6f);
+    check(heard(frames) && samePixels(paired, softwarePicture(view)),
+          "another future publication leaves the previous visible pin intact");
+    write(*primary, 2 * frames, 16, .125f);
+    const auto caughtUp = softwarePicture(view);
+    check(heard(2 * frames) && !samePixels(paired, caughtUp),
+          "the first waiting frame becomes visible even after a newer future publication");
+    write(*pin, 4 * frames, 96, .7f);
+    write(*primary, 3 * frames, 16, .125f);
+    check(heard(3 * frames) && !samePixels(caughtUp, softwarePicture(view)),
+          "a continuously leading pin still advances one admissible frame at a time");
+    root.removeFromDesktop();
 }
 
 void spectrumDeviceScale() {
@@ -1826,6 +2072,39 @@ void spectrumDeviceScale() {
             device.getPixelAt(x(37.), y(level) + 2) == look::display;
     check(grid, "Device uses 12 dB divisions and preserves the calibrated range");
 
+    const juce::Point<float> at{left + (width - 1.f) * static_cast<float>(std::log(44.) / std::log(2400.)),
+                                top + (height - 1.f) * .3f};
+    const auto move = [&](juce::Point<float> position) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), position,
+            juce::ModifierKeys(), 1.f, 0.f, 0.f, 0.f, 0.f, &pane.view, &pane.view, now, position, now, 0, false};
+        pane.view.mouseMove(event);
+        return event;
+    };
+    const auto event = move(at);
+    const auto withCursor = softwarePicture(pane.view);
+    const auto column = juce::roundToInt(at.x);
+    const auto probe = y(-60.f) + 3;
+    check(pane.view.getComponentAt(at.roundToInt()) == &pane.view &&
+              withCursor.getPixelAt(column, probe) != device.getPixelAt(column, probe),
+          "the full Device spectrum accepts a hover and paints its guide inside the graph");
+    check(pane.view.getTooltip().isEmpty(), "the stock tooltip does not cover the live pointer readout");
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view) == "440.0 Hz   A3   -36.0 dBFS",
+          "the cursor inverts the log frequency and level scales with ADI note spelling");
+    const auto hoverRepaints = root.fake->repaints;
+    move(at);
+    check(root.fake->repaints == hoverRepaints, "a repeated pointer position does not repaint");
+    pane.view.mouseExit(event);
+    check(softwarePicture(pane.view).getPixelAt(column, probe) == device.getPixelAt(column, probe) &&
+              SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "the guide clears on pointer exit");
+    move(at);
+    move({at.x, top - 2.f});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "moving into the ruler clears the cursor");
+    const auto hovered = f.broker->stats();
+    check(pane.view.snapshot() == source && hovered.taps == after.taps && hovered.consumers == after.consumers &&
+              hovered.transforms == after.transforms && hovered.publications == after.publications &&
+              hovered.frameRequests == after.frameRequests, "cursor movement does not do analysis work");
+
     pane.setMode(SharedSpectrumView::Mode::SpectrumAverage);
     writeFrames(f, 1024); f.broker->pump(); pane.frame(f.broker, 1, 1);
     const auto measured = pane.view.snapshot();
@@ -1834,6 +2113,60 @@ void spectrumDeviceScale() {
     check(pane.scaleBox.getSelectedId() == 4 && measured && bins && measured == pane.view.snapshot() &&
               bins == pane.view.spectrumBins().data() && SharedSpectrumViewTestAccess::hasScaledPlot(pane.view),
           "Device projection also leaves the existing averaged publication intact");
+    Fixture lowRate;
+    lowRate.tap = std::make_shared<ScopeTap>(32000, SharedAnalysis::kTapSeconds);
+    pane.setMode(SharedSpectrumView::Mode::Spectrum);
+    pane.frame(lowRate.broker, 1, 1);
+    move(at);
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "the cursor waits for the new source's picture");
+    lowRate.write(); lowRate.broker->pump(); pane.frame(lowRate.broker, 1, 1);
+    check(pane.view.snapshot() && pane.view.snapshot()->sampleRate == 32000.,
+          "the cursor boundary test uses the actual source's 32 kHz rate");
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view) == "440.0 Hz   A3   -36.0 dBFS",
+          "a stationary pointer becomes active as soon as fresh audio appears");
+    move({static_cast<float>(x(12000.)), at.y});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isNotEmpty(), "the cursor reads below the measured Nyquist");
+    move({static_cast<float>(x(20000.)), at.y});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(),
+          "the wide device graph does not suggest bins above the source's measured Nyquist");
+    const auto stable = lowRate.broker->stats();
+    const auto fullWidth = static_cast<float>(pane.view.getWidth()) - 10.f - 18.f;
+    const auto fullHeight = static_cast<float>(pane.view.getHeight()) - 10.f - 16.f - 29.f;
+    const auto read = [&](Scale scale, double low, double high, double hz) {
+        pane.setSpectrumScale(scale);
+        const auto isWide = scale == Scale::Wide;
+        const auto inset = isWide ? 0.f : 1.f;
+        const auto w = fullWidth - (isWide ? 0.f : look::fontCaption * 3.f);
+        const auto h = fullHeight - (isWide ? 0.f : look::fontCaption);
+        move({5.f + (w - inset) * static_cast<float>(std::log(hz / low) / std::log(high / low)),
+              21.f + (h - inset) * .25f});
+        return SharedSpectrumViewTestAccess::cursorText(pane.view);
+    };
+    check(read(Scale::Wide, 20., 16000., 440.) == "440.0 Hz   A3   -24.0 dBFS",
+          "Wide describes its own cursor ordinate and rate-limited frequency axis");
+    check(read(Scale::Detail, 20., 20000., 440.) == "440.0 Hz   A3   -33.0 dBFS",
+          "Detail describes its narrower displayed dB range");
+    check(read(Scale::Extended, 10., 30000., 440.) == "440.0 Hz   A3   -25.0 dBFS",
+          "Extended describes its own frequency and dB window");
+    check(read(Scale::Extended, 10., 30000., 20000.).isEmpty(),
+          "Extended does not claim frequencies outside the source's measured Nyquist");
+    const auto moved = lowRate.broker->stats();
+    check(moved.taps == stable.taps && moved.consumers == stable.consumers &&
+              moved.transforms == stable.transforms && moved.frameRequests == stable.frameRequests,
+          "the expanded cursor across scales keeps one tap and does no analysis work");
+    read(Scale::Wide, 20., 16000., 440.);
+    pane.setVisible(false);
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty() && !pane.view.subscribed(),
+          "hiding the analyser clears its cursor and releases its lease");
+
+    SharedSpectrumView compact;
+    compact.setBounds(0, 0, 320, 220);
+    compact.setSpectrumScale(Scale::Device);
+    root.addAndMakeVisible(compact);
+    compact.present(lowRate.broker, 1);
+    lowRate.write(1024); lowRate.broker->pump(); compact.frame();
+    check(compact.snapshot() && compact.getComponentAt(juce::Point<int>{100, 80}) == nullptr,
+          "a compact Device projection stays passive so the parent handles preview clicks");
 }
 
 void spectrogramHistoryMotion() {
@@ -1954,6 +2287,641 @@ void spectrogramHistoryMotion() {
               !SharedSpectrumViewTestAccess::hasRaster(view) && sameWork(hidden, f.broker->stats()) &&
               f.acquired == 1 && f.released == 1,
           "hiding the last observers releases their raster and acquisition and hidden settings do no analysis work");
+}
+
+void spectrogramFrequencyScales() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int left = 5, top = 21, width = 128, height = 256, fft = 1024, hop = fft / 4, toneBin = 86;
+    constexpr std::array names{"Linear", "Log", "Mel", "Bark", "ERB"};
+    const auto findScale = [](AnalysisPane &pane) -> juce::ComboBox * {
+        for (auto *child : pane.getChildren())
+            if (auto *box = dynamic_cast<juce::ComboBox *>(child);
+                box && box->getTitle() == "Spectrogram frequency scale") return box;
+        return nullptr;
+    };
+    const auto pick = [](juce::ComboBox &box, int id) {
+        box.setSelectedId(id, juce::dontSendNotification);
+        if (box.onChange) box.onChange();
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.spectralPlans == after.spectralPlans &&
+            before.historyBytes == after.historyBytes;
+    };
+    const auto ordinate = [](int id, double frequency) {
+        switch (id) {
+            case 1: return frequency;
+            case 2: return std::log(frequency);
+            case 3: return std::log10(1. + frequency / 700.);
+            case 4: return 26.81 * frequency / (1960. + frequency) - .53;
+            default: return std::log10(1. + .00437 * frequency);
+        }
+    };
+    const auto toneRow = [&](int id, double rate) {
+        const auto hz = rate * toneBin / fft;
+        const auto low = ordinate(id, 20.);
+        const auto high = ordinate(id, std::min(20000., rate * .5));
+        const auto normalized = (ordinate(id, hz) - low) / (high - low);
+        return top + height - 1 - static_cast<int>(normalized * height);
+    };
+    const auto ridgeAt = [&](const juce::Image &image, const SharedAnalysis::Result &result, int x, int id) {
+        if (result.columns.empty() || !result.columns.back().binsDbfs) return false;
+        const auto &bins = *result.columns.back().binsDbfs;
+        if (bins.empty() || std::ranges::max_element(bins) - bins.begin() != toneBin) return false;
+        const auto intensity = static_cast<std::uint8_t>(255.f *
+            std::clamp((bins[static_cast<std::size_t>(toneBin)] + 96.f) / 96.f, 0.f, 1.f));
+        const auto expected = analysisPaletteColour(palettes::defaultIndex, intensity);
+        const auto y = toneRow(id, result.sampleRate);
+        for (int offset = -1; offset <= 1; ++offset)
+            if (image.getPixelAt(x, y + offset) == expected) return true;
+        return false;
+    };
+
+    AnalysisPane controls;
+    auto *scale = findScale(controls);
+    check(scale && !scale->isVisible(), "the Spectrogram frequency scale does not occupy another analysis mode");
+    if (!scale) return;
+    controls.setMode(Mode::Spectrogram);
+    bool ordered = scale->isVisible() && scale->getSelectedId() == 2 &&
+                   scale->getNumItems() == static_cast<int>(names.size());
+    for (std::size_t i = 0; i < names.size(); ++i)
+        ordered = ordered && scale->getItemText(static_cast<int>(i)) == names[i];
+    check(ordered, "Spectrogram offers Linear, Log, Mel, Bark and ERB with Log selected by default");
+    pick(*scale, 5);
+    controls.setMode(Mode::Spectrum); controls.setMode(Mode::Spectrogram);
+    check(scale->isVisible() && scale->getSelectedId() == 5,
+          "the Spectrogram frequency scale is retained across mode changes");
+
+    for (const double rate : {48000., 32000.}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(rate, SharedAnalysis::kTapSeconds);
+        Root root;
+        AnalysisPane pane;
+        SharedSpectrumView sibling;
+        root.setBounds(0, 0, 460, 420); root.setVisible(true); root.addToDesktop(0);
+        root.addAndMakeVisible(pane); pane.setBounds(0, 0, 280, 420);
+        pane.setMode(Mode::Spectrogram);
+        // A logical pixel per raster cell exposes the real projected bin edges.
+        pane.view.setBounds(0, 0, 156, 311);
+        root.addAndMakeVisible(sibling); sibling.setBounds(295, 0, 156, 311);
+        sibling.setMode(Mode::Spectrogram);
+        const auto frame = [&] {
+            pane.frame(f.broker, 1, 1);
+            sibling.present(f.broker, 1); sibling.frame();
+        };
+        const auto write = [&](int frames) {
+            std::vector<float> samples(static_cast<std::size_t>(frames));
+            const auto start = f.tap->written();
+            for (std::size_t i = 0; i < samples.size(); ++i)
+                samples[i] = .5f * static_cast<float>(std::sin(2. * std::numbers::pi * toneBin *
+                    static_cast<double>((start + static_cast<std::int64_t>(i)) % fft) / fft));
+            f.tap->write(samples.data(), samples.data(), frames, start, true);
+            f.broker->pump(); frame();
+        };
+        auto *picker = findScale(pane);
+        check(picker && picker->isShowing(), "the software-peer Spectrogram exposes its frequency scale");
+        if (!picker) continue;
+        frame();
+        write(fft + 2 * hop);
+        const auto initial = pane.view.snapshot();
+        const auto started = f.broker->stats();
+        const auto logImage = softwarePicture(pane.view), siblingImage = softwarePicture(sibling);
+        check(initial && initial == sibling.snapshot() && initial->columns.size() == 3 &&
+                  initial->request.fftSize == fft && initial->sampleRate == rate && started.consumers == 2 &&
+                  originalRasterPixels(pane.view, *initial) && ridgeAt(logImage, *initial, left + width - 1, 2),
+              "default Log exactly preserves the existing pixels on the shared history at the actual source rate");
+        if (!initial || initial->columns.empty()) continue;
+        for (const auto id : {1, 3, 4, 5}) {
+            pick(*picker, id);
+            const auto projected = softwarePicture(pane.view);
+            check(!samePixels(logImage, projected) && ridgeAt(projected, *initial, left + width - 1, id) &&
+                      pane.view.snapshot() == initial && sibling.snapshot() == initial &&
+                      samePixels(siblingImage, softwarePicture(sibling)) && sameWork(started, f.broker->stats()),
+                  "an independent frequency mapping moves the tone ridge on the same columns without broker work");
+        }
+        pick(*picker, 2);
+        check(samePixels(logImage, softwarePicture(pane.view)),
+              "returning to Log restores every pixel without replacing the immutable publication");
+
+        pane.setHistoryMotion(Motion::Sweep);
+        pane.view.clear();
+        write(hop);
+        const auto fresh = pane.view.snapshot();
+        check(fresh && fresh == sibling.snapshot() && fresh->historySerial == initial->historySerial + 1 &&
+                  fresh->columns.size() == initial->columns.size() + 1,
+              "the local Clear keeps pre-fence history available to its sibling");
+        if (!fresh) continue;
+        pane.view.freeze(true);
+        const auto held = f.broker->stats();
+        const auto frozenLog = softwarePicture(pane.view);
+        pick(*picker, 1);
+        const auto frozenLinear = softwarePicture(pane.view);
+        bool noRetiredPixels = true;
+        // Only x=0 is a post-Clear data column. x=1 is the sweep cursor.
+        for (int x = 2; x < width; ++x) for (int y = 0; y < height; ++y)
+            noRetiredPixels = noRetiredPixels && frozenLinear.getPixelAt(left + x, top + y) == look::display;
+        pane.view.frame();
+        check(held.consumers == 1 && !pane.view.subscribed() && pane.view.snapshot() == fresh &&
+                  pane.view.historyMotion() == Motion::Sweep && noRetiredPixels &&
+                  !samePixels(frozenLog, frozenLinear) && ridgeAt(frozenLinear, *fresh, left, 1) &&
+                  sameWork(held, f.broker->stats()),
+              "a frozen scale change keeps the Sweep origin and never restores pixels from before Clear");
+        pick(*picker, 2);
+        check(samePixels(frozenLog, softwarePicture(pane.view)) && sameWork(held, f.broker->stats()),
+              "restoring the frozen scale preserves the exact held raster with no work");
+        const auto repaints = root.fake->repaints;
+        for (int i = 0; i < 5; ++i) pane.view.frame();
+        check(root.fake->repaints == repaints && sameWork(held, f.broker->stats()),
+              "unchanged frozen frames do no repaint or analysis after switching scales");
+        root.removeFromDesktop();
+    }
+}
+
+void spectrogramRangeControls() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 540, 480); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    juce::Slider *floor = nullptr, *ceiling = nullptr;
+    for (auto *child : pane.getChildren()) {
+        auto *slider = dynamic_cast<juce::Slider *>(child);
+        if (!slider) continue;
+        if (slider->getTitle() == "Spectrogram floor") floor = slider;
+        if (slider->getTitle() == "Spectrogram ceiling") ceiling = slider;
+    }
+    check(floor && ceiling && !floor->isShowing() && !ceiling->isShowing(),
+          "Spectrogram range controls are discoverable and stay hidden in other modes");
+    if (!floor || !ceiling) return;
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+
+    pane.setMode(Mode::Spectrogram); frame();
+    check(floor->isShowing() && ceiling->isShowing() && floor->isEnabled() && ceiling->isEnabled() &&
+              floor->getValue() == -96. && ceiling->getValue() == 0. && !pane.view.snapshot(),
+          "the waiting Spectrogram presents its original floor and ceiling and accepts edits");
+    check(floor->getValueFromText("Floor -65 dB") == -65. && ceiling->getValueFromText("+12 dB") == 12. &&
+              floor->getValueFromText("-40 dBx") == -96., "range text accepts complete values and rejects malformed text");
+    floor->setValue(-100., juce::sendNotificationSync);
+    ceiling->setValue(-36., juce::sendNotificationSync);
+    f.write(); f.broker->pump(); frame();
+    pane.view.freeze(true); frame();
+    check(pane.view.snapshot() && !pane.view.subscribed() && floor->isEnabled() && ceiling->isEnabled() &&
+              floor->getValue() == -100. && ceiling->getValue() == -36.,
+          "a frozen Spectrogram retains its valid range and allows edits without opening a tap again");
+    ceiling->setValue(-100., juce::sendNotificationSync);
+    check(ceiling->getValue() - floor->getValue() >= 1.,
+          "the endpoint controls never produce an empty or inverted dB range");
+    pane.setMode(Mode::Spectrum);
+    check(!floor->isShowing() && !ceiling->isShowing(), "leaving Spectrogram immediately hides both range controls");
+    root.removeFromDesktop();
+}
+
+void spectrogramRangePixels() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int fft = 1024, toneBin = 13, width = 128, height = 256, left = 5, top = 21;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 540, 480); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    SharedSpectrumView sibling;
+    root.addAndMakeVisible(pane); pane.setBounds(0, 0, 350, 480);
+    root.addAndMakeVisible(sibling); sibling.setBounds(365, 0, 156, 311);
+    pane.setMode(Mode::Spectrogram); sibling.setMode(Mode::Spectrogram);
+    pane.view.setBounds(0, 0, 156, 311);
+    pane.frame(f.broker, 1, 1); sibling.present(f.broker, 1); sibling.frame();
+    juce::Slider *floor = nullptr, *ceiling = nullptr;
+    juce::ComboBox *gamma = nullptr;
+    for (auto *child : pane.getChildren()) {
+        if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Spectrogram gamma") gamma = box;
+        auto *slider = dynamic_cast<juce::Slider *>(child);
+        if (!slider) continue;
+        if (slider->getTitle() == "Spectrogram floor") floor = slider;
+        if (slider->getTitle() == "Spectrogram ceiling") ceiling = slider;
+    }
+    check(gamma && gamma->isShowing() && gamma->getText() == "Gamma 1.00",
+          "Spectrogram offers neutral gamma by default");
+    if (!floor || !ceiling) return;
+
+    std::array<float, fft> signal{};
+    for (std::size_t i = 0; i < signal.size(); ++i)
+        signal[i] = .1f * static_cast<float>(std::sin(2. * std::numbers::pi * toneBin * static_cast<double>(i) / fft));
+    f.tap->write(signal.data(), signal.data(), fft, 48000, true);
+    f.broker->pump(); pane.frame(f.broker, 1, 1); sibling.frame();
+    const auto shown = pane.view.snapshot();
+    const auto initial = pane.view.spectrogramImage(), siblingImage = sibling.spectrogramImage();
+    const bool original = shown && originalRasterPixels(pane.view, *shown);
+    const auto read = [&](int column) {
+        return SharedSpectrumViewTestAccess::moveCursor(pane.view, {left + column + .5f, top + height * .5f});
+    };
+    const auto level = read(width - 1);
+    check(shown && shown == sibling.snapshot() && level.contains("-20.0 dBFS") &&
+              initial.getWidth() == width && initial.getHeight() == height && samePixels(initial, siblingImage) &&
+              original,
+          "default range retains the old image exactly and a shared calibrated -20 dBFS cursor");
+    if (!shown || initial.isNull()) return;
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains && before.taps == after.taps &&
+            before.historyBytes == after.historyBytes;
+    };
+    const auto png = [](const juce::Image &image) {
+        juce::MemoryOutputStream bytes;
+        juce::PNGImageFormat format;
+        if (image.isNull() || !format.writeImageToStream(image, bytes)) return juce::Image{};
+        juce::MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+        return format.decodeImage(input);
+    };
+    const auto colour = [](std::uint8_t index) { return analysisPaletteColour(palettes::defaultIndex, index, false); };
+    const auto pixel = [](const juce::Image &image, int column) { return image.getPixelAt(column, height / 2); };
+
+    const auto active = f.broker->stats();
+    floor->setValue(-100., juce::sendNotificationSync);
+    ceiling->setValue(-36., juce::sendNotificationSync);
+    const auto bright = png(pane.view.spectrogramImage());
+    check(!bright.isNull() && pixel(bright, width - 1) == colour(255) && pixel(bright, 0) == look::display &&
+              read(width - 1) == level && pane.view.snapshot() == shown &&
+              samePixels(siblingImage, sibling.spectrogramImage()) && sameWork(active, f.broker->stats()),
+          "a live range clamps above the ceiling, keeps gaps and cursor values, and creates no analysis work");
+
+    pane.view.freeze(true);
+    const auto held = f.broker->stats();
+    ceiling->setValue(0., juce::sendNotificationSync);
+    floor->setValue(-36., juce::sendNotificationSync);
+    pane.setHistoryMotion(Motion::Sweep);
+    const auto middle = png(pane.view.spectrogramImage());
+    // This mid-cell value stays inside a single byte even if the float FFT
+    // bin differs from -20 dBFS by the last digit.
+    check(!middle.isNull() && pixel(middle, 0) == colour(113) && pixel(middle, 1) == look::display &&
+              read(0) == level && pane.view.snapshot() == shown && !pane.view.subscribed() &&
+              sameWork(held, f.broker->stats()),
+          "frozen Sweep exports its normalized history without changing time, raw level or demand");
+    if (gamma) {
+        gamma->setText("Gamma 2.00", juce::sendNotificationSync);
+        const auto changed = png(pane.view.spectrogramImage());
+        check(!changed.isNull() && pixel(changed, 0) == colour(50) && pixel(changed, 1) == look::display &&
+                  read(0) == level && pane.view.snapshot() == shown && samePixels(siblingImage, sibling.spectrogramImage()) &&
+                  sameWork(held, f.broker->stats()),
+              "gamma remaps the held Sweep colors without changing its cursor, gaps, source or analysis demand");
+        gamma->setText("Gamma 1.00", juce::sendNotificationSync);
+        check(samePixels(middle, png(pane.view.spectrogramImage())), "neutral gamma restores the exact frozen PNG pixels");
+    }
+    floor->setValue(-12., juce::sendNotificationSync);
+    const auto dim = png(pane.view.spectrogramImage());
+    check(!dim.isNull() && pixel(dim, 0) == colour(0) && read(0) == level,
+          "a measured cell below the floor is clamped without being mistaken for unwritten history");
+
+    floor->setValue(-96., juce::sendNotificationSync);
+    pane.setHistoryMotion(Motion::Scroll);
+    check(samePixels(initial, pane.view.spectrogramImage()) && samePixels(siblingImage, sibling.spectrogramImage()) &&
+              read(width - 1) == level && sameWork(held, f.broker->stats()),
+          "restoring the default range reproduces the exact frozen and sibling pixels");
+    if (gamma) {
+        pane.setMode(Mode::Spectrum);
+        check(!gamma->isShowing(), "leaving Spectrogram hides the gamma control");
+    }
+    root.removeFromDesktop();
+}
+
+void spectrogramRulerControl() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    AnalysisPane pane;
+    pane.usePageControls(); pane.setBounds(0, 0, 540, 480);
+    juce::ToggleButton *ruler = nullptr;
+    for (auto *child : pane.getChildren()) {
+        auto *toggle = dynamic_cast<juce::ToggleButton *>(child);
+        if (toggle && toggle->getTitle() == "Spectrogram frequency ruler") ruler = toggle;
+    }
+    check(ruler && !ruler->isVisible(), "the Spectrogram frequency ruler does not occupy other analyzer pages");
+    if (!ruler) return;
+    pane.setMode(Mode::Spectrogram);
+    check(ruler->isVisible() && ruler->isEnabled() && !ruler->getToggleState(),
+          "the dedicated Spectrogram offers an optional ruler with its original layout as the default");
+    ruler->setToggleState(true, juce::dontSendNotification); ruler->onClick();
+    pane.setMode(Mode::Spectrum);
+    check(!ruler->isVisible(), "leaving Spectrogram hides its frequency ruler control");
+    pane.setMode(Mode::Spectrogram);
+    check(ruler->isVisible() && ruler->getToggleState(), "returning to Spectrogram keeps its local ruler choice");
+}
+
+void spectrogramFrequencyRuler() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int left = 5, top = 21, viewWidth = 276, viewHeight = 359;
+    constexpr double plotHeight = viewHeight - top - 34.;
+    for (const int rate : {32000, 48000}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(rate, SharedAnalysis::kTapSeconds);
+        Root root; root.setBounds(0, 0, 660, 530); root.setVisible(true); root.addToDesktop(0);
+        AnalysisPane pane;
+        SharedSpectrumView compact;
+        root.addAndMakeVisible(pane); pane.usePageControls(); pane.setBounds(0, 0, 440, 530);
+        pane.setMode(Mode::Spectrogram); pane.setHistoryMotion(Motion::Sweep);
+        pane.view.setBounds(0, 0, viewWidth, viewHeight);
+        compact.setMode(Mode::Spectrogram); compact.setBounds(455, 0, 156, 311);
+        root.addAndMakeVisible(compact); compact.present(f.broker, 1);
+        pane.frame(f.broker, 1, 1);
+        juce::ToggleButton *ruler = nullptr;
+        for (auto *child : pane.getChildren()) {
+            auto *toggle = dynamic_cast<juce::ToggleButton *>(child);
+            if (toggle && toggle->getTitle() == "Spectrogram frequency ruler") ruler = toggle;
+        }
+        if (!ruler) return;
+        f.write(); f.broker->pump(); pane.frame(f.broker, 1, 1); compact.frame();
+        const auto shown = pane.view.snapshot();
+        const auto compactPicture = softwarePicture(compact);
+        pane.view.freeze(true);
+        const auto held = f.broker->stats();
+        const auto sameWork = [](const auto &before, const auto &after) {
+            return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+                before.publications == after.publications && before.cursorReads == after.cursorReads &&
+                before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+                before.consumers == after.consumers && before.domains == after.domains && before.taps == after.taps &&
+                before.historyBytes == after.historyBytes;
+        };
+        const auto read = [&](int x, float y) {
+            return SharedSpectrumViewTestAccess::moveCursor(pane.view, {static_cast<float>(x) + .5f, y});
+        };
+        const auto firstCell = [&](float y) {
+            for (int x = 0; x < viewWidth; ++x) {
+                auto reading = read(x, y);
+                if (!reading.isEmpty()) return std::pair{x, std::move(reading)};
+            }
+            return std::pair{-1, juce::String{}};
+        };
+        const auto setRuler = [&](bool enabled) {
+            ruler->setToggleState(enabled, juce::dontSendNotification);
+            ruler->onClick();
+        };
+        const auto tickNear = [](const juce::Image &plain, const juce::Image &ruled, int edge, float y) {
+            if (edge < 9) return false;
+            const auto row = juce::roundToInt(y);
+            for (int py = row - 1; py <= row + 1; ++py) {
+                for (int px = edge - 7; px <= edge - 2; ++px) {
+                    if (ruled.getPixelAt(px, py) != plain.getPixelAt(px, py)) return true;
+                }
+            }
+            return false;
+        };
+        const auto high = std::min(20000., .5 * rate);
+        const std::array yForOneKhz{
+            static_cast<float>(top + plotHeight * (1. - std::log(1000. / 20.) / std::log(high / 20.))),
+            static_cast<float>(top + plotHeight * (1. - (1000. - 20.) / (high - 20.)))
+        };
+        using Scale = SharedSpectrumView::SpectrogramScale;
+        for (const auto scale : {Scale::Log, Scale::Linear}) {
+            pane.view.setSpectrogramScale(scale);
+            const auto y = yForOneKhz[scale == Scale::Log ? 0u : 1u];
+            (void)read(-1, -1.f);
+            const auto plain = softwarePicture(pane.view);
+            const auto data = pane.view.spectrogramImage();
+            const auto [plainLeft, plainReading] = firstCell(y);
+            check(shown && plainLeft == left && plainReading.contains("1000.0 Hz") && !data.isNull(),
+                  "ruler-off preserves the original plot coordinates on each frequency scale");
+            (void)read(-1, -1.f);
+            setRuler(true);
+            const auto picture = softwarePicture(pane.view);
+            const auto [rulerLeft, rulerReading] = firstCell(y);
+            check(rulerLeft > plainLeft && rulerReading == plainReading && read(rulerLeft - 1, y).isEmpty() &&
+                      tickNear(plain, picture, rulerLeft, y),
+                  "the ruler marks 1 kHz in a separate gutter with the same cursor and frequency projection");
+            check(pane.view.snapshot() == shown && !pane.view.subscribed() &&
+                      samePixels(data, pane.view.spectrogramImage()) && samePixels(compactPicture, softwarePicture(compact)) &&
+                      sameWork(held, f.broker->stats()),
+                  "the ruler changes only its expanded presentation, preserving native PNG, compact pixels and worker demand");
+            (void)read(-1, -1.f);
+            setRuler(false);
+            check(samePixels(plain, softwarePicture(pane.view)), "disabling the ruler restores the exact old drawing");
+        }
+        root.removeFromDesktop();
+    }
+}
+
+void spectrogramCursor() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int fft = 1024, hop = fft / 4, left = 5, width = 128;
+    constexpr float centreY = 149.f;
+    constexpr std::int64_t heardStart = 48000, parkedPlayhead = 192000;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 360, 420); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    pane.setMode(Mode::Spectrogram);
+    pane.view.setBounds(0, 0, 156, 311);
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+    const auto write = [&](int frames, float amplitude, bool advancing) {
+        const auto from = f.tap->written();
+        std::vector<float> samples(static_cast<std::size_t>(frames));
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = amplitude * static_cast<float>(std::sin(2. * std::numbers::pi * 13. *
+                static_cast<double>((from + static_cast<std::int64_t>(i)) % fft) / fft));
+        f.tap->write(samples.data(), samples.data(), frames, advancing ? heardStart + from : parkedPlayhead,
+                     advancing, advancing ? 1 : 2);
+        f.broker->pump(); frame();
+    };
+    const auto read = [&](int column) {
+        return SharedSpectrumViewTestAccess::moveCursor(pane.view,
+            {static_cast<float>(left + column) + .5f, centreY});
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.historyBytes == after.historyBytes;
+    };
+
+    frame();
+    check(read(width - 1).isEmpty(), "Spectrogram has no cursor reading before the first published window");
+    write(fft, .415f, true);
+    write(fft, .1f, true);
+    const auto shown = pane.view.snapshot();
+    check(shown && shown->advancing && shown->columns.size() == 5 &&
+              pane.view.getComponentAt(juce::Point<int>{left + width - 1, static_cast<int>(centreY)}) == &pane.view,
+          "the expanded Spectrogram observes five historical columns and accepts hover");
+    const auto stable = f.broker->stats();
+    const auto first = read(width - 5);
+    const auto newest = read(width - 1);
+    check(first.contains("632.5 Hz") && first.contains("-7.6 dBFS") &&
+              first.contains("Heard 48000 samples") && first.contains("1000.0 ms"),
+          "the centre reads the Log frequency and the older cell's raw peak and heard stamp");
+    check(newest.contains("-20.0 dBFS") && newest.contains("Heard 49024 samples") &&
+              newest.contains("1021.3 ms"),
+          "the newest column reads its own sample and level rather than the older column or colour");
+    check(read(width - 6).isEmpty(), "the unwritten Scroll raster has no invented sample or frequency");
+    pane.setHistoryMotion(Motion::Sweep);
+    check(!first.isEmpty() && read(0) == first && !newest.isEmpty() && read(4) == newest &&
+              read(10).isEmpty() && pane.view.snapshot() == shown && sameWork(stable, f.broker->stats()),
+          "Sweep maps back to the same retained columns and does no analysis work");
+
+    pane.setHistoryMotion(Motion::Scroll);
+    pane.view.clear();
+    check(read(width - 1).isEmpty(), "Clear immediately fences the old Spectrogram cursor reading");
+    write(hop, .1f, true);
+    const auto fresh = pane.view.snapshot();
+    check(fresh && fresh->columns.size() == 6 && read(width - 2).isEmpty() &&
+              read(width - 1).contains("Heard 49280 samples"),
+          "the cursor rejects Clear-masked retained columns and reads the first fresh hop");
+
+    const auto capturedAt = f.tap->written();
+    write(fft, .415f, false);
+    write(hop, .415f, false);
+    const auto monitoring = pane.view.snapshot();
+    const auto monitored = f.broker->stats();
+    const auto captured = [&](std::int64_t sequence) {
+        return "Capture " + juce::String(static_cast<juce::int64>(sequence)) + " samples";
+    };
+    const auto previousMonitor = read(width - 2), currentMonitor = read(width - 1);
+    check(monitoring && !monitoring->advancing && monitoring->columns.size() == 2 &&
+              monitoring->columns[0].firstStamp == parkedPlayhead &&
+              monitoring->columns[1].firstStamp == parkedPlayhead &&
+              previousMonitor.contains(captured(capturedAt)) && currentMonitor.contains(captured(capturedAt + hop)) &&
+              previousMonitor.contains("48.0 ms") && currentMonitor.contains("53.3 ms") &&
+              !previousMonitor.contains("Heard") && !currentMonitor.contains("Heard") &&
+              sameWork(monitored, f.broker->stats()),
+          "stopped monitoring reports advancing capture samples, independently of the repeated playhead stamp");
+    write(fft, .00000316227766f, false);
+    check(read(width - 1).contains("-110.0 dBFS"),
+          "the cursor retains level precision below the palette floor");
+    pane.setVisible(false);
+    check(!pane.view.subscribed() && SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(),
+          "hiding Spectrogram releases its demand and clears the pointer reading");
+    root.removeFromDesktop();
+}
+
+void spectrogramPngControl() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 420, 420); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+    juce::Button *save = nullptr;
+    for (auto *child : pane.getChildren())
+        if (auto *button = dynamic_cast<juce::Button *>(child);
+            button && button->getTitle() == "Export Spectrogram PNG") save = button;
+    check(save && !save->isShowing(), "the accessible PNG export control stays out of other analysis modes");
+    if (!save) return;
+
+    // Exercise only presentation and state. Opening the native save chooser
+    // belongs to the live retest, never to this software-peer check.
+    pane.setMode(Mode::Spectrogram);
+    frame();
+    check(save->isShowing() && !save->isEnabled(),
+          "PNG export is visible while waiting for Spectrogram audio, but cannot save an empty raster");
+    f.write(); f.broker->pump(); frame();
+    check(pane.view.snapshot() && save->isEnabled(), "a real Spectrogram raster enables PNG export");
+    pane.view.freeze(true); frame();
+    check(!pane.view.subscribed() && save->isEnabled(), "Freeze keeps PNG export available without analysis demand");
+    pane.resetButton.onClick(); frame();
+    check(!pane.view.snapshot() && !save->isEnabled(), "Clear disables export of the retired picture");
+    pane.setMode(Mode::Spectrum);
+    check(!save->isShowing(), "leaving Spectrogram hides the PNG control immediately");
+}
+
+void spectrogramPngRoundtrip() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int width = 128, height = 256, left = 5, top = 21, window = 1024, hop = window / 4;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 350, 350); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView view, sibling;
+    view.setBounds(0, 0, 156, 311); sibling.setBounds(178, 0, 156, 311);
+    for (auto *observer : {&view, &sibling}) {
+        observer->setMode(Mode::Spectrogram);
+        root.addAndMakeVisible(*observer);
+        observer->present(f.broker, 1);
+        observer->frame();
+    }
+    const auto update = [&](int frames) {
+        writeFrames(f, frames);
+        f.broker->pump();
+        view.frame(); sibling.frame();
+    };
+    const auto png = [](const juce::Image &image) {
+        juce::MemoryOutputStream bytes;
+        juce::PNGImageFormat format;
+        if (image.isNull() || !format.writeImageToStream(image, bytes)) return juce::Image{};
+        juce::MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+        return format.decodeImage(input);
+    };
+    const auto plotPixels = [](SharedSpectrumView &observer) {
+        return softwarePicture(observer).getClippedImage({left, top, width, height});
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.historyBytes == after.historyBytes;
+    };
+
+    check(view.spectrogramImage().isNull(), "no empty Spectrogram raster is exportable");
+    update(window + 2 * hop);
+    const auto windowShown = view.snapshot();
+    const auto active = f.broker->stats();
+    const auto exported = view.spectrogramImage();
+    const auto decoded = png(exported);
+    check(windowShown && windowShown == sibling.snapshot() && windowShown->columns.size() == 3 &&
+              decoded.getWidth() == width && decoded.getHeight() == height &&
+              originalRasterPixels(view, *windowShown) && samePixels(decoded, plotPixels(view)) &&
+              sameWork(active, f.broker->stats()),
+          "default Scroll exports the exact native Log raster and PNG decodes without work or new demand");
+
+    view.setHistoryMotion(Motion::Sweep);
+    const auto sweep = png(view.spectrogramImage());
+    bool rotates = !decoded.isNull() && !sweep.isNull() && sweep.getBounds() == decoded.getBounds();
+    if (rotates) for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x)
+        rotates = rotates && sweep.getPixelAt(x, y) == decoded.getPixelAt((x + width - 3) % width, y);
+    check(rotates && !samePixels(decoded, sweep) && sameWork(active, f.broker->stats()),
+          "Sweep PNG rotates the same history and omits the transient write guide");
+
+    view.freeze(true);
+    const auto held = f.broker->stats();
+    view.setHistoryMotion(Motion::Scroll);
+    view.setPalette("viridis", true);
+    view.setSpectrogramScale(SharedSpectrumView::SpectrogramScale::Linear);
+    const auto frozen = png(view.spectrogramImage());
+    check(held.consumers == 1 && !view.subscribed() && view.snapshot() == windowShown &&
+              !frozen.isNull() && !samePixels(decoded, frozen) && samePixels(frozen, plotPixels(view)) &&
+              samePixels(exported, decoded) && sameWork(held, f.broker->stats()),
+          "frozen PNG uses its selected palette and scale and cannot change the earlier export image");
+
+    view.freeze(false);
+    update(hop);
+    view.clear();
+    check(view.spectrogramImage().isNull(), "local Clear makes the old image unavailable to a subsequent export");
+    update(hop);
+    view.setHistoryMotion(Motion::Sweep);
+    const auto afterClear = view.snapshot();
+    const auto cleared = png(view.spectrogramImage());
+    bool blank = cleared.getWidth() == width && cleared.getHeight() == height, hasFresh = false;
+    if (blank) for (int y = 0; y < height; ++y) {
+        hasFresh = hasFresh || cleared.getPixelAt(0, y) != look::display;
+        for (int x = 1; x < width; ++x) blank = blank && cleared.getPixelAt(x, y) == look::display;
+    }
+    check(afterClear && afterClear == sibling.snapshot() && afterClear->columns.size() > 1 && blank && hasFresh &&
+              samePixels(exported, decoded),
+          "a post-Clear Sweep PNG contains only its fresh column while the shared and earlier images remain intact");
+    root.setVisible(false);
+    check(view.spectrogramImage().isNull() && sibling.spectrogramImage().isNull() &&
+              f.broker->stats().consumers == 0 && samePixels(exported, decoded),
+          "hiding releases the raster and leaves the export copy intact");
+    root.removeFromDesktop();
 }
 
 void classicScopeSurface() {
@@ -2186,6 +3154,196 @@ void classicScopeUnchangedTrace() {
     root.removeFromDesktop();
 }
 
+void detailedPhasePreservesHighFrequencyTrace() {
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 300, 260);
+    SharedSpectrumView view;
+    view.setBounds(root.getLocalBounds());
+    view.enablePhaseBands();
+    view.setMode(SharedSpectrumView::Mode::Phase);
+    root.addAndMakeVisible(view);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    view.present(f.broker, 1);
+    std::array<float, 4096> samples{};
+    constexpr std::array cycle{0.f, 1.f, 0.f, -1.f};
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = cycle[i % cycle.size()];
+    f.tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), 0, true);
+    f.broker->pump();
+    view.frame();
+
+    // Isolated software paint, never a desktop capture. The L=R trace must
+    // reach both ends even when the source period matches the old stride.
+    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+    { juce::Graphics graphics(image); view.paint(graphics); }
+    const auto target = adi::ui::look::value;
+    const auto hasTrace = [&](int top, int bottom) {
+        for (int y = top; y < bottom; ++y) {
+            for (int x = 125; x < 160; ++x) {
+                const auto pixel = image.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - target.getRed()) <= 2 &&
+                    std::abs(pixel.getGreen() - target.getGreen()) <= 2 &&
+                    std::abs(pixel.getBlue() - target.getBlue()) <= 2) return true;
+            }
+        }
+        return false;
+    };
+    check(view.snapshot() && view.snapshot()->scopeLeft.size() == samples.size() &&
+              hasTrace(24, 85) && hasTrace(135, 205),
+          "detailed Phase draws positive and negative peaks of a 12 kHz in-phase signal");
+    const auto shown = view.snapshot();
+    const auto transforms = f.broker->stats().transforms;
+    view.setChannel(SharedAnalysis::Channel::Left);
+    f.broker->pump();
+    view.frame();
+    check(shown && view.snapshot() == shown && view.getTitle() == "Phase" &&
+              f.broker->stats().transforms == transforms,
+          "a Spectrum channel preference retains the stereo Phase picture");
+    root.removeFromDesktop();
+}
+
+void mixPhaseRailViews() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Mode = SharedSpectrumView::Mode;
+    auto project = std::make_shared<adi::engine::Snapshot>();
+    auto main = std::make_shared<adi::engine::TrackNode>();
+    main->id = 1; main->name = "Main"; main->kind = "master";
+    project->tracks = {main};
+    const SnapshotReader reader{project};
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 760, 460);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    const auto frame = [&] { pages.frame(f.broker, reader, 1, 1); };
+    const auto findRail = [&]() -> juce::ComboBox * {
+        for (auto *child : pages.getChildren())
+            if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Phase band display")
+                return box;
+        return nullptr;
+    };
+    pages.setPage(Page::Phase);
+    frame();
+    auto *rail = findRail();
+    check(rail && rail->isShowing() && rail->getNumItems() == 3 && rail->getText() == "Correlation" &&
+              rail->getItemText(1) == "Width" && rail->getItemText(2) == "Pan",
+          "expanded Phase offers accessible Correlation, Width and Pan with Correlation first");
+    if (!rail) { root.removeFromDesktop(); return; }
+
+    constexpr auto window = 4096;
+    constexpr double sampleRate = 48000., toneBin = 86.;
+    const auto tone = toneBin * sampleRate / window;
+    const auto lower = adi::dsp::erbRate(20.);
+    const auto upper = adi::dsp::erbRate(20000.);
+    const auto band = static_cast<std::size_t>(static_cast<double>(SharedAnalysis::kPhaseBandCount) *
+                                               (adi::dsp::erbRate(tone) - lower) / (upper - lower));
+    const auto writeTone = [&](float rightRatio) {
+        std::array<float, window> left{}, right{};
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            left[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * toneBin * static_cast<double>(i) / window));
+            right[i] = rightRatio * left[i];
+        }
+        f.tap->write(left.data(), right.data(), window, f.tap->written(), true);
+        for (int pass = 0; pass < 4; ++pass) f.broker->pump();
+        frame();
+    };
+    const auto matches = [band](const auto &values, float expected) {
+        return values[band] && std::abs(*values[band] - expected) < 2.e-4f;
+    };
+    const auto barColourAt = [&](float fractionFromBottom) {
+        auto &view = pages.detail.view;
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+        { juce::Graphics graphics(image); view.paint(graphics); }
+        const auto bandWidth = (static_cast<float>(view.getWidth()) - 28.f) /
+                               static_cast<float>(SharedAnalysis::kPhaseBandCount);
+        const auto x = juce::roundToInt(5.f + (static_cast<float>(band) + .5f) * bandWidth);
+        const auto y = juce::roundToInt(static_cast<float>(view.getHeight()) - 34.f -
+                                        fractionFromBottom * static_cast<float>(look::fieldHeight));
+        return image.getPixelAt(x, y);
+    };
+    const auto selectRail = [&](int index) {
+        rail->setSelectedId(rail->getItemId(index), juce::sendNotificationSync);
+        frame();
+    };
+
+    writeTone(.5f);
+    const auto correlation = pages.detail.view.snapshot();
+    check(correlation && correlation->phaseBands && matches(*correlation->phaseBands, 1.f) &&
+              !correlation->phaseBandSpatial,
+          "default Phase shows correlation without requesting spatial bands");
+    const auto baseDemand = f.broker->stats();
+    const auto attached = f.acquired;
+    selectRail(1);
+    const auto adding = f.broker->stats();
+    check(correlation && pages.detail.view.snapshot() == correlation && adding.taps == baseDemand.taps &&
+              adding.domains == baseDemand.domains && adding.consumers == baseDemand.consumers &&
+              adding.spectralPlans == baseDemand.spectralPlans && adding.transforms == baseDemand.transforms &&
+              f.acquired == attached && f.released == 0,
+          "requesting Width retains the compatible vector picture, physical tap and prepared plan");
+    writeTone(-1.f);
+    const auto width = pages.detail.view.snapshot();
+    check(width && width->phaseBandSpatial && matches(width->phaseBandSpatial->width, 1.f) &&
+              matches(width->phaseBandSpatial->pan, 0.f) && barColourAt(.75f) == static_cast<juce::Colour>(look::accent),
+          "equal antiphase audio fills the Width bar upward while Pan stays centred");
+    writeTone(.5f);
+    const auto stereo = pages.detail.view.snapshot();
+    const auto beforePan = f.broker->stats();
+    selectRail(2);
+    const auto afterPan = f.broker->stats();
+    check(stereo && stereo->phaseBandSpatial && matches(stereo->phaseBandSpatial->width, .1f) &&
+              matches(stereo->phaseBandSpatial->pan, -.6f),
+          "the Phase page receives the Width and Pan of a 2:1 stereo signal");
+    check(barColourAt(.35f) == static_cast<juce::Colour>(look::value),
+          "Pan paints a left-heavy signal below the centre");
+    check(pages.detail.view.snapshot() == stereo && afterPan.transforms == beforePan.transforms &&
+              afterPan.spectralPlans == baseDemand.spectralPlans && f.acquired == attached && f.released == 0,
+          "switching from Width to Pan reuses the spectrum result and prepared plan");
+
+    const auto expanded = pages.getBounds();
+    pages.setBounds(expanded.withWidth(look::mixChannelMinWidth));
+    frame();
+    writeTone(.5f);
+    const auto compact = pages.detail.view.snapshot();
+    check(!rail->isShowing() && rail->getText() == "Pan" && compact && compact->phaseBands &&
+              !compact->phaseBandSpatial && f.broker->stats().spectralPlans == baseDemand.spectralPlans,
+          "compact Phase restores correlation-only demand and remembers Pan");
+    pages.setBounds(expanded);
+    frame();
+    writeTone(.5f);
+    check(rail->isShowing() && rail->getText() == "Pan" && pages.detail.view.snapshot() &&
+              pages.detail.view.snapshot()->phaseBandSpatial,
+          "expanding Phase restores the remembered spatial rail");
+
+    pages.setPage(Page::All);
+    frame();
+    writeTone(.5f);
+    const SharedSpectrumView *allPhase = nullptr;
+    for (const auto *child : pages.getChildren()) {
+        if (const auto *tile = dynamic_cast<const SharedSpectrumView *>(child); tile && tile->mode() == Mode::Phase)
+            allPhase = tile;
+    }
+    const auto all = allPhase ? allPhase->snapshot() : nullptr;
+    check(!rail->isShowing() && all && all->phaseBands && !all->phaseBandSpatial,
+          "the All Phase tile stays correlation-only");
+    pages.setPage(Page::Phase);
+    frame();
+    check(rail->isShowing() && rail->getText() == "Pan", "Phase remembers its local rail after visiting another page");
+    pages.setVisible(false);
+    const auto hidden = f.broker->stats();
+    frame();
+    f.broker->pump();
+    check(!rail->isShowing() && hidden.taps == 0 && hidden.consumers == 0 && hidden.spectralPlans == 0 &&
+              f.broker->stats().workerPasses == hidden.workerPasses,
+          "hiding Phase drops the spatial demand and leaves no scheduled work");
+    root.removeFromDesktop();
+}
+
 void mixAnalyserPages() {
     using namespace adi::ui;
     using Page = MixAnalysers::Page;
@@ -2241,6 +3399,34 @@ void mixAnalyserPages() {
     check(f.broker->pump() == 1, "All can publish a 1024-frame spectrogram while the filled spectrum waits for its block");
     pages.frame(f.broker, reader, main->id, first->id);
     check(loudnessReads > 0, "All reads Main loudness through the persistent measurement");
+    f.write(1024, 3072);
+    f.broker->pump();
+    pages.frame(f.broker, reader, main->id, first->id);
+    const SharedSpectrumView *summaryPhase = nullptr;
+    for (int child = 0; child < pages.getNumChildComponents(); ++child) {
+        const auto *tile = dynamic_cast<const SharedSpectrumView *>(pages.getChildComponent(child));
+        if (tile && tile->mode() == SharedSpectrumView::Mode::Phase) summaryPhase = tile;
+    }
+    const auto phasePicture = summaryPhase ? summaryPhase->snapshot() : nullptr;
+    check(phasePicture && phasePicture->phaseBands && !phasePicture->scopeLeft.empty() &&
+              phasePicture->request.fftSize == 4096,
+          "All displays detailed Phase bands and the vectorscope from one completed window");
+
+    using SpectrumScale = SharedSpectrumView::SpectrumScale;
+    pages.setPage(Page::Spectrum);
+    pages.detail.scaleBox.setSelectedId(static_cast<int>(SpectrumScale::Extended) + 1, juce::sendNotificationSync);
+    pages.setPage(Page::All);
+    pages.frame(f.broker, reader, main->id, first->id);
+    const SharedSpectrumView *summarySpectrum = nullptr;
+    for (int child = 0; child < pages.getNumChildComponents(); ++child) {
+        const auto *tile = dynamic_cast<const SharedSpectrumView *>(pages.getChildComponent(child));
+        if (tile && tile->mode() == SharedSpectrumView::Mode::Spectrum) summarySpectrum = tile;
+    }
+    check(summarySpectrum && summarySpectrum->isShowing() &&
+              summarySpectrum->spectrumScale() == SpectrumScale::Extended &&
+              f.broker->stats().spectralPlans == all.spectralPlans && f.broker->stats().taps == all.taps,
+          "the All spectrum tile uses the selected layout without another analysis plan");
+
 
     for (const auto &[page, mode] : std::array{
          std::pair{Page::Spectrogram, SharedSpectrumView::Mode::Spectrogram},
@@ -2258,7 +3444,32 @@ void mixAnalyserPages() {
                   pages.detail.view.subscribed() && individual.consumers == 1 && individual.taps == 1,
               "each individual analyser page keeps only its actual display subscribed");
     }
-    f.write(1024); f.broker->pump();
+    pages.setPage(Page::Phase);
+    const auto phaseTransforms = f.broker->stats().transforms;
+    std::array<float, 4096> left{}, right{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / static_cast<double>(left.size());
+        const auto low = static_cast<float>(.3 * std::sin(16. * phase));
+        const auto high = static_cast<float>(.23 * std::sin(256. * phase));
+        left[i] = low + high;
+        right[i] = low - high;
+    }
+    f.tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 4096, true);
+    f.broker->pump();
+    pages.frame(f.broker, reader, main->id, first->id);
+    const auto detailPhase = pages.detail.view.snapshot();
+    check(detailPhase && detailPhase->phaseBands && f.broker->stats().transforms == phaseTransforms + 2,
+          "the individual Phase page requests exactly one stereo transform pair for its detailed result");
+    pages.detail.view.freeze(true);
+    f.write(8192, 4096);
+    f.broker->pump();
+    check(detailPhase && pages.detail.view.snapshot() == detailPhase &&
+              f.broker->stats().transforms == phaseTransforms + 2 && f.broker->stats().taps == 0 &&
+              f.broker->stats().spectralPlans == 0,
+          "holding Phase keeps its existing picture and performs no transform or capture");
+    pages.detail.view.freeze(false);
+    pages.setPage(Page::Loudness);
+    f.write(12288); f.broker->pump();
     pages.frame(f.broker, reader, main->id, first->id);
     check(pages.detail.view.mainMeterSnapshot().has_value(), "the Main Loudness page displays native Main LUFS");
 
@@ -2269,7 +3480,7 @@ void mixAnalyserPages() {
     pages.frame(f.broker, reader, main->id, fixed->id);
     check(pages.detail.view.track() == fixed->id && f.broker->stats().taps == 1,
           "Follow selection retargets without retaining the old tap");
-    f.write(2048); f.broker->pump();
+    f.write(13312); f.broker->pump();
     pages.frame(f.broker, reader, main->id, fixed->id);
     check(!pages.detail.view.mainMeterSnapshot() && loudnessReads == priorLoudnessReads,
           "a channel Loudness page never reads or attributes Main loudness");
@@ -2299,7 +3510,7 @@ void mixAnalyserPages() {
         SharedAnalysis::Request meterRequest{main->id};
         meterRequest.outputs = SharedAnalysis::Meters;
         auto sharedMeter = f.broker->acquire(meterRequest);
-        f.write(3072);
+        f.write(14336);
         f.broker->pump();
         const auto result = sharedMeter.read();
         const auto shared = f.broker->stats();
@@ -2390,14 +3601,18 @@ void compareAndAveragePages() {
               pair.a.metadata->endpoint.request.track == main && pair.b.metadata->endpoint.request.track == guitar &&
               pair.a.binsDbfs[16] > pair.b.binsDbfs[16],
           "Compare presents the two calibrated broker windows on their explicit channels");
-    const auto displayShowsBothTraces = [&](int scaleId) {
-        auto *compare = pages.compareA.getParentComponent();
-        if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
+    auto *compare = pages.compareA.getParentComponent();
+    const auto comparePicture = [&] {
+        if (!compare || compare->getLocalBounds().isEmpty()) return juce::Image{};
         juce::Image image(juce::Image::RGB, compare->getWidth(), compare->getHeight(), true, juce::SoftwareImageType{});
-        {
-            juce::Graphics graphics(image);
-            compare->paint(graphics);
-        }
+        juce::Graphics graphics(image);
+        compare->paint(graphics);
+        return image;
+    };
+    const auto projectionBuilds = [&] { return MixAnalysersTestAccess::projectionBuilds(pages); };
+    const auto displayShowsBothTraces = [&](int scaleId) {
+        if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
+        const auto image = comparePicture();
         auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
             .reduced(look::gap).withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
         struct Axis { double lowHz, highHz; float upper, lower; };
@@ -2439,10 +3654,25 @@ void compareAndAveragePages() {
             }
             return true;
         };
-        return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent);
+        const auto sampleHz = 16 * 48000. / 1024.;
+        const auto sampleX = plot.getX() + (plot.getWidth() - inset) *
+            static_cast<float>(std::log(sampleHz / axis.lowHz) / std::log(axis.highHz / axis.lowHz));
+        // Below both traces, away from the horizontal divisions and the vertical decade marks.
+        const auto sampleY = plot.getY() + (plot.getHeight() - inset) *
+            ((axis.upper + 56.f) / (axis.upper - axis.lower));
+        const auto beneath = image.getPixelAt(juce::roundToInt(sampleX), juce::roundToInt(sampleY));
+        const bool filled = scaleId == 2 || scaleId == 3;
+        return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent) &&
+               ((beneath != look::display) == filled);
     };
     check(pages.compareScale.isShowing() && pages.compareScale.getSelectedId() == 1 && displayShowsBothTraces(1),
           "Wide is the initial Compare projection and both paths draw adjacent measured bins");
+    const auto stablePicture = comparePicture();
+    const auto stableBuilds = projectionBuilds();
+    check(!stablePicture.isNull() && stableBuilds[0] > 0 && stableBuilds[1] > 0 &&
+              samePixels(stablePicture, comparePicture()) && samePixels(stablePicture, comparePicture()) &&
+              projectionBuilds() == stableBuilds,
+          "two repeated Compare paints retain exact pixels and reuse both path projections");
     const auto unchanged = [](const auto &before, const auto &after) {
         return before.consumers == after.consumers && before.taps == after.taps && before.domains == after.domains &&
             before.spectralPlans == after.spectralPlans && before.transforms == after.transforms &&
@@ -2489,22 +3719,39 @@ void compareAndAveragePages() {
     pages.holdB.onClick();
     check(pages.comparisonView().status == Comparison::Held && broker->stats().taps == 1,
           "holding B retains its actual bins and releases its live tap");
+    const auto heldPicture = comparePicture();
+    const auto heldBuilds = projectionBuilds();
     write(*first, .1f, 4096, 3); broker->pump();
     pages.frame(broker, renamed, main, main);
     pair = pages.comparisonView();
     check(pair.status == Comparison::Held && pair.b.binsDbfs[16] == reference &&
               pair.a.metadata->transportRevision == 3,
           "a deliberately held reference survives a new live transport revision");
+    check(!samePixels(heldPicture, comparePicture()) &&
+              projectionBuilds() == std::array{heldBuilds[0] + 1, heldBuilds[1]},
+          "a new A publication rebuilds only A while held B keeps its path");
     const auto immutableA = pair.a.binsDbfs.data(), immutableB = pair.b.binsDbfs.data();
     const auto beforeScale = broker->stats();
     for (const int id : {2, 3, 4, 1}) {
+        const auto beforeProjection = projectionBuilds();
         pages.compareScale.setSelectedId(id, juce::sendNotificationSync);
         pair = pages.comparisonView();
         check(pair.status == Comparison::Held && pair.a.binsDbfs.data() == immutableA &&
                   pair.b.binsDbfs.data() == immutableB && unchanged(beforeScale, broker->stats()) &&
                   pages.detail.scaleBox.getSelectedId() == 1 && displayShowsBothTraces(id),
               "Compare scales redraw both calibrated traces without changing the held bins, tap or Spectrum preference");
+        const auto scaledPicture = comparePicture();
+        check(samePixels(scaledPicture, comparePicture()) &&
+                  projectionBuilds() == std::array{beforeProjection[0] + 1, beforeProjection[1] + 1},
+              "changing Compare scale rebuilds both projections once, including the fill where used");
     }
+    const auto beforeResize = projectionBuilds();
+    const auto originalBounds = pages.getBounds();
+    pages.setSize(originalBounds.getWidth() - 32, originalBounds.getHeight() - 24);
+    check(displayShowsBothTraces(1) &&
+              projectionBuilds() == std::array{beforeResize[0] + 1, beforeResize[1] + 1},
+          "Compare geometry changes rebuild both lanes at their new pixel positions");
+    pages.setBounds(originalBounds);
     root.setVisible(false);
     check(broker->stats().consumers == 0 && !pages.comparisonView().visible && pages.comparisonView().referenceHeld,
           "ancestor hide releases live Compare demand without a frame and retains the deliberate B reference");
@@ -2712,16 +3959,317 @@ void compareHoldSurvivesInvalidA() {
     root.removeFromDesktop();
 }
 
+void spectrogramComparisonPage() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Source = adi::engine::ScopeSource;
+    constexpr std::int64_t mainId = 1, trackId = 2;
+    constexpr std::uint64_t revision = 71;
+    constexpr int window = 1024;
+    const auto main = std::make_shared<adi::engine::TrackNode>();
+    const auto selected = std::make_shared<adi::engine::TrackNode>();
+    main->id = mainId; main->name = "Main"; main->kind = "master";
+    selected->id = trackId; selected->name = "Comparison source"; selected->kind = "audio";
+    auto snapshot = std::make_shared<adi::engine::Snapshot>();
+    snapshot->tracks = {main, selected};
+    const SnapshotReader reader(snapshot);
+    const auto ordinaryTap = std::make_shared<ScopeTap>(48000., .25);
+    const auto pre = std::make_shared<ScopeTap>(48000., .25);
+    const auto post = std::make_shared<ScopeTap>(48000., .25);
+    std::array<unsigned, 3> opens{};
+    const auto broker = std::make_shared<SharedAnalysis>(
+        [&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+            if (source.track != trackId || source.device != 0) return {};
+            if (source.point == ScopePoint::ChainInput) { ++opens[0]; return pre; }
+            if (source.point == ScopePoint::PreFader) { ++opens[1]; return post; }
+            if (source.point == ScopePoint::PostFader) { ++opens[2]; return ordinaryTap; }
+            return {};
+        }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    Root root;
+    root.setBounds(0, 0, 1040, 620);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    pages.followSelection(true);
+
+    juce::ToggleButton *compared = nullptr;
+    juce::ToggleButton *sweep = nullptr;
+    juce::TextButton *freeze = nullptr;
+    juce::Button *exportPng = nullptr;
+    juce::ToggleButton *ruler = nullptr;
+    juce::ComboBox *frequencyScale = nullptr;
+    juce::Label *cursor = nullptr;
+    juce::Component *plot = nullptr;
+    for (auto *child : pages.getChildren()) {
+        if (child->getTitle() == "Spectrogram comparison") compared = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram comparison Sweep") sweep = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram post minus pre") plot = child;
+    }
+    if (plot) for (auto *child : plot->getChildren()) {
+        if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
+        if (child->getTitle() == "Export Spectrogram comparison PNG") exportPng = dynamic_cast<juce::Button *>(child);
+        if (child->getTitle() == "Spectrogram comparison frequency ruler") ruler = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram comparison frequency scale")
+            frequencyScale = dynamic_cast<juce::ComboBox *>(child);
+        if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
+    }
+    check(compared && sweep && freeze && exportPng && ruler && frequencyScale && cursor && plot &&
+              !compared->isShowing() && !sweep->isShowing() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !ruler->isShowing() && !frequencyScale->isShowing() && !plot->isShowing(),
+          "All keeps the dedicated Spectrogram comparison controls and plot hidden");
+    if (!compared || !sweep || !freeze || !exportPng || !ruler || !frequencyScale || !cursor || !plot) {
+        root.removeFromDesktop();
+        return;
+    }
+
+    const auto frame = [&](std::int64_t heardEnd, std::uint64_t minimum) {
+        pages.frame(broker, reader, mainId, trackId, 1, nullptr, heardEnd, minimum);
+    };
+    const auto click = [](juce::ToggleButton &button, bool value) {
+        button.setToggleState(value, juce::dontSendNotification);
+        if (button.onClick) button.onClick();
+    };
+    const auto picture = [&] {
+        const auto bounds = plot->getLocalBounds();
+        if (bounds.isEmpty()) return juce::Image{};
+        juce::Image image(juce::Image::RGB, bounds.getWidth(), bounds.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        plot->paint(graphics);
+        return image;
+    };
+    const auto dataBounds = [&] {
+        return plot->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap).toFloat();
+    };
+    const auto readCursor = [&](juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys{}, 0.f, 0.f, 0.f, 0.f, 0.f, plot, plot, now, at, now, 0, false};
+        plot->mouseMove(event);
+        return cursor->getText();
+    };
+    const auto readCell = [&](juce::Rectangle<float> bounds, float column, float row) {
+        return readCursor({bounds.getX() + bounds.getWidth() * column / 128.f,
+                           bounds.getY() + bounds.getHeight() * row / 128.f});
+    };
+    const auto moveCursor = [&](float column, float row) {
+        return readCell(dataBounds(), column, row);
+    };
+    pages.setPage(Page::Spectrogram);
+    frame(0, revision);
+    check(compared->isShowing() && !compared->getToggleState() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !plot->isShowing() &&
+              pages.detail.view.subscribed() && opens[2] != 0 && broker->stats().taps == 1,
+          "dedicated Spectrogram begins with the selected track's ordinary source");
+    click(*compared, true);
+    frame(0, revision);
+    check(plot->isShowing() && freeze->isShowing() && !freeze->isEnabled() &&
+              !pages.detail.view.subscribed() && opens[0] != 0 && opens[1] != 0 &&
+              broker->stats().taps == 2 && broker->stats().consumers == 2,
+          "comparison replaces the ordinary lease with the selected track's pre and post taps");
+    check(exportPng->isShowing() && !exportPng->isEnabled(), "comparison export waits for matched audio");
+    check(ruler->isShowing() && !ruler->getToggleState(), "the signed frequency ruler defaults to off");
+    check(sweep->isShowing() && !sweep->getToggleState(), "the signed Spectrogram opens in Scroll mode");
+    check(frequencyScale->isShowing() && frequencyScale->getSelectedId() == 2 && frequencyScale->getNumItems() == 5,
+          "the signed frequency scale offers five options and defaults to Log");
+    const auto waiting = picture();
+
+    std::array<float, window> input, output;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / window;
+        const auto low = static_cast<float>(std::sin(16. * phase));
+        const auto high = static_cast<float>(std::sin(120. * phase));
+        input[i] = .125f * low + .25f * high;
+        output[i] = .25f * low + .125f * high;
+    }
+    pre->write(input.data(), input.data(), window, 0, true, revision);
+    post->write(output.data(), output.data(), window, 0, true, revision);
+    broker->pump();
+    frame(window - 1, revision);
+    check(!waiting.isNull() && samePixels(waiting, picture()) && !freeze->isEnabled() && !exportPng->isEnabled(),
+          "an unheard analysis window cannot be displayed, frozen or exported");
+    frame(window, revision);
+    check(exportPng->isEnabled(), "comparison export becomes available with heard matched audio");
+    const auto painted = picture();
+    const auto containsInk = [&](juce::Colour target) {
+        for (int y = 0; y < painted.getHeight(); ++y)
+            for (int x = 0; x < painted.getWidth(); ++x) {
+                const auto pixel = painted.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - target.getRed()) <= 2 &&
+                    std::abs(pixel.getGreen() - target.getGreen()) <= 2 &&
+                    std::abs(pixel.getBlue() - target.getBlue()) <= 2) return true;
+            }
+        return false;
+    };
+    constexpr float transfer = 6.0206f / 24.f;
+    check(freeze->isEnabled() && !samePixels(waiting, painted) &&
+              containsInk(look::frame.interpolatedWith(look::accent, transfer)) &&
+              containsInk(look::frame.interpolatedWith(look::record, transfer)),
+          "the heard comparison paints separate positive and negative changes for the two tones");
+    const auto cursorWork = broker->stats();
+    check(moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == cursorWork.frameRequests &&
+              broker->stats().transforms == cursorWork.transforms && broker->stats().workerPasses == cursorWork.workerPasses,
+          "the comparison cursor reports the bins that painted both signs, clears over a gap and requests no analysis");
+
+    if (freeze->onClick) freeze->onClick();
+    frame(window, revision);
+    const auto frozen = picture();
+    const auto held = broker->stats();
+    frame(0, revision + 1);
+    check(freeze->getButtonText() == "Thaw" && samePixels(frozen, picture()) && held.taps == 0 && held.consumers == 0 &&
+              broker->stats().transforms == held.transforms,
+          "Freeze holds the signed plot across a later epoch and releases both taps");
+    check(exportPng->isShowing() && exportPng->isEnabled(), "the frozen comparison stays available for export after a seek");
+    check(moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == held.frameRequests &&
+              broker->stats().transforms == held.transforms && broker->stats().workerPasses == held.workerPasses,
+          "the frozen comparison cursor uses the held epoch without restarting analysis");
+
+    const auto plainBounds = dataBounds();
+    const auto ruledBounds = plainBounds.withTrimmedLeft(4.f * look::fontCaption + static_cast<float>(look::gap));
+    const juce::Point<float> remapped{
+        plainBounds.getRight() - (plainBounds.getWidth() + ruledBounds.getWidth()) / 256.f,
+        plainBounds.getY() + plainBounds.getHeight() * 60.5f / 128.f,
+    };
+    const auto beforeRuler = picture();
+    check(readCursor(remapped) == "750.0 Hz   +6.02 dB   Sample 0",
+          "the point between the plain and ruled column edges initially reads the newest column");
+    click(*ruler, true);
+    frame(0, revision + 1);
+    const auto withRuler = picture();
+    const auto oneKhzY = juce::roundToInt(plainBounds.getY() +
+        plainBounds.getHeight() * static_cast<float>(1. - std::log(1000. / 20.) / std::log(20000. / 20.)));
+    const auto tickEdge = juce::roundToInt(ruledBounds.getX());
+    bool oneKhzTick = false;
+    for (int y = oneKhzY - 1; y <= oneKhzY + 1; ++y)
+        for (int x = tickEdge - 8; x < tickEdge; ++x)
+            oneKhzTick = oneKhzTick || beforeRuler.getPixelAt(x, y) != withRuler.getPixelAt(x, y);
+    check(oneKhzTick, "the signed ruler marks 1 kHz at its logarithmic plot position");
+    check(readCursor(remapped).isEmpty() &&
+              readCursor({(plainBounds.getX() + ruledBounds.getX()) / 2.f, remapped.y}).isEmpty() &&
+              readCell(ruledBounds, 127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0",
+          "the frozen cursor follows the narrower raster and excludes its frequency gutter");
+
+    // Cell centres for 750 and 5625 Hz on each 128-row axis from 20 Hz to 20 kHz.
+    constexpr std::array<std::array<float, 2>, 5> scaleRows{{
+        {123.5f, 92.5f}, // Linear
+        {60.5f, 23.5f}, // Log
+        {101.5f, 45.5f}, // Mel
+        {90.5f, 24.5f}, // Bark
+        {88.5f, 36.5f}, // ERB
+    }};
+    for (std::size_t i = 0; i < scaleRows.size(); ++i) {
+        const auto id = static_cast<int>(i) + 1;
+        frequencyScale->setSelectedId(id, juce::sendNotificationSync);
+        frame(0, revision + 1);
+        check(frequencyScale->getSelectedId() == id && freeze->getButtonText() == "Thaw" &&
+                  readCell(ruledBounds, 127.5f, scaleRows[i][0]) == "750.0 Hz   +6.02 dB   Sample 0" &&
+                  readCell(ruledBounds, 127.5f, scaleRows[i][1]) == "5625.0 Hz   -6.02 dB   Sample 0",
+              "the selected frequency scale moves the frozen signed tones to their expected rows");
+    }
+    check(broker->stats().transforms == held.transforms && broker->stats().frameRequests == held.frameRequests &&
+              broker->stats().workerPasses == held.workerPasses && broker->stats().taps == held.taps,
+          "changing the frozen frequency scale starts no analysis work");
+    frequencyScale->setSelectedId(2, juce::sendNotificationSync);
+    click(*ruler, false);
+    frame(0, revision + 1);
+    check(readCursor(remapped) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              broker->stats().taps == held.taps && broker->stats().consumers == held.consumers &&
+              broker->stats().frameRequests == held.frameRequests && broker->stats().workerPasses == held.workerPasses &&
+              broker->stats().transforms == held.transforms,
+          "turning the ruler off restores the original cursor mapping without restarting analysis");
+
+    moveCursor(64.5f, 60.5f);
+    const auto scrolled = picture();
+    click(*sweep, true);
+    frame(0, revision + 1);
+    check(!samePixels(scrolled, picture()) && freeze->getButtonText() == "Thaw" &&
+              moveCursor(.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 60.5f).isEmpty(),
+          "Sweep places the frozen stamp-zero column at the left and leaves the rightmost column empty");
+    click(*sweep, false);
+    frame(0, revision + 1);
+    moveCursor(64.5f, 60.5f);
+    check(samePixels(scrolled, picture()) && moveCursor(.5f, 60.5f).isEmpty() &&
+              moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              broker->stats().taps == held.taps && broker->stats().transforms == held.transforms &&
+              broker->stats().workerPasses == held.workerPasses && broker->stats().frameRequests == held.frameRequests,
+          "returning to Scroll restores the held plot and cursor without starting analysis");
+
+    pages.setPage(Page::Spectrum);
+    frame(0, revision + 1);
+    check(!compared->isShowing() && !sweep->isShowing() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !ruler->isShowing() &&
+              !frequencyScale->isShowing() && !plot->isShowing() &&
+              pages.detail.view.subscribed() && broker->stats().taps == 1,
+          "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
+
+    pages.setPage(Page::Spectrogram);
+    if (!compared->getToggleState()) click(*compared, true);
+    frame(0, revision + 1);
+    if (freeze->getButtonText() == "Thaw" && freeze->onClick) freeze->onClick();
+    frame(0, revision + 1);
+    check(plot->isShowing() && broker->stats().taps == 2 && broker->stats().consumers == 2,
+          "returning and resuming the comparison reacquires only its pair");
+    check(!exportPng->isEnabled(), "thaw waits for a fresh heard pair before enabling export again");
+    click(*sweep, true);
+    constexpr int hop = window / 4;
+    constexpr int blocks = 34;
+    for (int block = 0; block < blocks; ++block) {
+        const auto stamp = static_cast<std::int64_t>(block) * window;
+        pre->write(input.data(), input.data(), window, stamp, true, revision + 1);
+        post->write(output.data(), output.data(), window, stamp, true, revision + 1);
+        broker->pump();
+        frame(stamp + window, revision + 1);
+    }
+    const auto newestHop = (blocks - 1) * window / hop;
+    const auto newestCell = static_cast<float>(newestHop % 128) + .5f;
+    const auto priorSweepCell = static_cast<float>((newestHop + 1) % 128) + .5f;
+    const auto sample = [](int hopIndex) { return "750.0 Hz   +6.02 dB   Sample " + juce::String(hopIndex * hop); };
+    check(moveCursor(newestCell, 60.5f) == sample(newestHop) &&
+              moveCursor(priorSweepCell, 60.5f) == sample(newestHop - 127),
+          "the sweep wraps and holds the prior pass immediately after its write head");
+    click(*sweep, false);
+    check(moveCursor(127.5f, 60.5f) == sample(newestHop),
+          "scroll shows the same wrapped history with its latest pair on the right");
+    const auto visibleBounds = pages.getBounds();
+    pages.setBounds(visibleBounds.withSize(0, 0));
+    check(broker->stats().consumers == 0 && broker->stats().taps == 0,
+          "a zero-area resize releases the comparison before another frame");
+    pages.setBounds(visibleBounds);
+    frame(0, revision + 1);
+    check(broker->stats().consumers == 2 && broker->stats().taps == 2,
+          "restoring the comparison plot resumes only its two sources");
+    click(*compared, false);
+    frame(0, revision + 1);
+    check(!plot->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && pages.detail.view.subscribed() &&
+              broker->stats().taps == 1 && broker->stats().consumers == 1,
+          "disabling comparison releases both comparison taps and restores the ordinary view");
+    pages.setVisible(false);
+    check(broker->stats().consumers == 0 && broker->stats().taps == 0,
+          "hiding the analyser releases its remaining source");
+    root.removeFromDesktop();
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); phaseGoniometer(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
           linkedMainMeter(); parkedMainLoudnessProjection();
-          compactAnalyzerDock(); wordsMaskedInComparison(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); colourWaveformSurface(); spectrumDetailScale(); spectrumExtendedScale();
-          spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
-          classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
+          compactAnalyzerDock(); wordsMaskedInComparison(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection();
+          filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); colourWaveformSurface(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
+          pinnedSpectrumWaitsForHeardPrimary();
+          spectrogramRangeControls(); spectrogramRangePixels();
+          spectrogramRulerControl(); spectrogramFrequencyRuler();
+          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); spectrogramPngControl(); spectrogramPngRoundtrip(); classicScopeSurface();
+          classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
+          compareAndAveragePages(); compareHoldSurvivesInvalidA(); spectrogramComparisonPage(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

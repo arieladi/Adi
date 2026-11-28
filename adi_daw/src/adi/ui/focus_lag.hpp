@@ -7,9 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace adi::ui {
 struct FocusLagRequest {
@@ -29,16 +31,24 @@ struct FocusLagPreview {
 
 namespace focus_lag_detail {
 inline constexpr auto frames = FocusLagRequest::kFrames;
-inline constexpr std::size_t minimumSupport = 64, maxRadius = (frames - minimumSupport) / 2;
-inline constexpr double minimumCorrelation = .70;
-using MidWindows = std::array<std::array<double, frames>, 2>;
+inline constexpr std::size_t minimumSupport = 64, directRadius = (frames - minimumSupport) / 2;
+inline constexpr double searchSeconds = .020, maxSampleRate = 768000.;
+inline constexpr auto maxRadius = static_cast<std::size_t>(searchSeconds * maxSampleRate);
+inline constexpr double minimumCorrelation = .70, rmsFloor = 1e-6;
+
+inline std::size_t captureFrames(std::size_t radius) noexcept {
+    // Preserve the original common interval where it fits. At higher rates a
+    // +/-20 ms search uses 40 ms of common support and 20 ms on either side.
+    return radius <= directRadius ? frames : 4 * radius;
+}
 
 inline std::optional<std::int64_t> requestedEnd(const FocusLagRequest &request) noexcept {
     if (!request.transportRevision || request.firstStamp < 0 || request.maxLagSamples <= 0 ||
         static_cast<std::size_t>(request.maxLagSamples) > maxRadius ||
         request.sources[0].source.track == request.sources[1].source.track)
         return {};
-    const auto end = focusWindowEnd(request.firstStamp, static_cast<std::int64_t>(frames));
+    const auto count = captureFrames(static_cast<std::size_t>(request.maxLagSamples));
+    const auto end = focusWindowEnd(request.firstStamp, static_cast<std::int64_t>(count));
     return end && *end <= request.heardEnd ? end : std::nullopt;
 }
 
@@ -48,8 +58,8 @@ inline bool validSource(const FocusScopeBarSource &identity, std::uint64_t gener
 }
 
 inline bool validRate(const FocusLagRequest &request, double sampleRate) noexcept {
-    return std::isfinite(sampleRate) && sampleRate > 0. &&
-           static_cast<double>(request.maxLagSamples) <= std::round(.020 * sampleRate);
+    return std::isfinite(sampleRate) && sampleRate > 0. && sampleRate <= maxSampleRate &&
+           static_cast<double>(request.maxLagSamples) <= std::round(searchSeconds * sampleRate);
 }
 
 inline std::optional<engine::ScopeTap::ReadResult> advancingHead(const engine::ScopeTap &tap,
@@ -65,8 +75,8 @@ inline std::optional<engine::ScopeTap::ReadResult> advancingHead(const engine::S
 }
 
 inline bool mixToMid(std::span<const float> left, std::span<const float> right,
-                     std::array<double, frames> &mid) noexcept {
-    for (std::size_t i = 0; i < frames; ++i) {
+                     std::span<double> mid) noexcept {
+    for (std::size_t i = 0; i < mid.size(); ++i) {
         const double mono = .5 * (static_cast<double>(left[i]) + right[i]);
         if (!std::isfinite(mono)) return false;
         mid[i] = mono;
@@ -74,13 +84,58 @@ inline bool mixToMid(std::span<const float> left, std::span<const float> right,
     return true;
 }
 
-inline std::optional<FocusLagPreview> measure(const FocusLagRequest &request, MidWindows &mid) noexcept {
-    constexpr double rmsFloor = 1e-6, peakSeparation = .05;
-    const auto radius = static_cast<std::size_t>(request.maxLagSamples);
-    const auto support = frames - 2 * radius;
+inline std::optional<FocusLagPreview> selectPeak(std::span<const double> scores,
+                                                 std::size_t radius, std::size_t support) noexcept {
+    constexpr double peakSeparation = .05;
+    std::size_t winner = 0;
+    double best = 0.;
+    for (std::size_t offset = 0; offset < scores.size(); ++offset) {
+        if (const auto magnitude = std::abs(scores[offset]); magnitude > best) {
+            best = magnitude;
+            winner = offset;
+        }
+    }
+    if (!winner || winner + 1 == scores.size()) return {};
+    // Equal signal and noise power can pull a clearly isolated peak below .70.
+    // Admit that narrow band only with a long common window and stronger separation.
+    const bool nearFloor = best < minimumCorrelation;
+    if (nearFloor && (support < frames / 2 || best < .68)) return {};
+    const double separation = nearFloor ? .15 : peakSeparation;
+
+    // The shoulders of the best lobe are not separate hypotheses. A competing
+    // local maximum, including a tie or flat peak, makes the shift uncertain.
+    for (std::size_t i = 0; i < scores.size(); ++i) {
+        const auto magnitude = std::abs(scores[i]);
+        if (i == winner || best - magnitude >= separation) continue;
+        if ((i == 0 || magnitude >= std::abs(scores[i - 1])) &&
+            (i + 1 == scores.size() || magnitude >= std::abs(scores[i + 1]))) return {};
+    }
+    return FocusLagPreview{static_cast<std::int32_t>(winner) - static_cast<std::int32_t>(radius),
+                           scores[winner], scores[radius]};
+}
+
+std::optional<FocusLagPreview> measureWide(std::span<const double> a, std::span<const double> b,
+                                           std::size_t radius, double aEnergy);
+
+inline double correlationAt(std::span<const double> a, std::span<const double> b, double aEnergy,
+                            double weight, double minimumEnergy) noexcept {
+    const double bMean = std::accumulate(b.begin(), b.end(), 0.) / weight;
+    double bEnergy = 0., cross = 0.;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const double centred = b[i] - bMean;
+        bEnergy += centred * centred;
+        cross += a[i] * centred;
+    }
+    return bEnergy >= minimumEnergy
+        ? std::clamp(cross / std::sqrt(aEnergy * bEnergy), -1., 1.) : 0.;
+}
+
+inline std::optional<FocusLagPreview> measure(std::size_t radius, std::span<double> main,
+                                              std::span<const double> target) {
+    const auto support = main.size() - 2 * radius;
     const auto scale = static_cast<double>(support);
     const double minimumEnergy = rmsFloor * rmsFloor * scale;
-    const auto a = std::span(mid[0]).subspan(radius, support);
+    const auto a = main.subspan(radius, support);
     const double aMean = std::accumulate(a.begin(), a.end(), 0.) / scale;
     double aEnergy = 0.;
     for (double &sample : a) {
@@ -88,40 +143,23 @@ inline std::optional<FocusLagPreview> measure(const FocusLagRequest &request, Mi
         aEnergy += sample * sample;
     }
     if (aEnergy < minimumEnergy) return {};
+    if (radius > directRadius) return measureWide(a, target, radius, aEnergy);
 
     // Use the same interior A frames at every lag. B index i + lag means
     // a positive result should advance B by that many samples.
-    std::array<double, 2 * maxRadius + 1> scores;
+    std::array<double, 2 * directRadius + 1> scores;
     const auto candidates = 2 * radius + 1;
-    std::size_t winner = 0;
-    double best = 0.;
-    for (std::size_t offset = 0; offset < candidates; ++offset) {
-        const auto b = std::span(mid[1]).subspan(offset, support);
-        const double bMean = std::accumulate(b.begin(), b.end(), 0.) / scale;
-        double bEnergy = 0., cross = 0.;
-        for (std::size_t i = 0; i < support; ++i) {
-            const double centred = b[i] - bMean;
-            bEnergy += centred * centred;
-            cross += a[i] * centred;
-        }
-        const auto score = bEnergy >= minimumEnergy ? std::clamp(cross / std::sqrt(aEnergy * bEnergy), -1., 1.) : 0.;
-        scores[offset] = score;
-        if (std::abs(score) > best) {
-            best = std::abs(score);
-            winner = offset;
-        }
-    }
-    if (best < minimumCorrelation || !winner || winner + 1 == candidates) return {};
+    for (std::size_t offset = 0; offset < candidates; ++offset)
+        scores[offset] = correlationAt(a, target.subspan(offset, support), aEnergy, scale, minimumEnergy);
+    return selectPeak(std::span(scores).first(candidates), radius, support);
+}
 
-    // The shoulders of the best lobe are not separate hypotheses. A competing
-    // local maximum, including a tie or flat peak, makes the shift uncertain.
-    for (std::size_t i = 0; i < candidates; ++i) {
-        const auto magnitude = std::abs(scores[i]);
-        if (i == winner || best - magnitude >= peakSeparation) continue;
-        if ((i == 0 || magnitude >= std::abs(scores[i - 1])) &&
-            (i + 1 == candidates || magnitude >= std::abs(scores[i + 1]))) return {};
-    }
-    return FocusLagPreview{static_cast<std::int32_t>(winner) - request.maxLagSamples, scores[winner], scores[radius]};
+template <class Sample, std::size_t Capacity>
+std::span<Sample> captureStorage(std::array<Sample, Capacity> &local, std::vector<Sample> &wide,
+                                 std::size_t count) {
+    if (count <= Capacity) return std::span(local).first(count);
+    wide.resize(count);
+    return wide;
 }
 } // namespace focus_lag_detail
 
@@ -133,10 +171,13 @@ focusLagPreviewRequest(const std::array<const SharedAnalysis::Result *, 2> &wind
                        const std::array<SharedAnalysis::Lease::SourcePosition, 2> &heads,
                        std::uint64_t settledRevision, std::int64_t heardEnd) noexcept {
     using namespace focus_lag_detail;
-    constexpr auto frameCount = static_cast<std::int64_t>(FocusLagRequest::kFrames);
-    if (!settledRevision || heardEnd < frameCount || !windows[0] || !windows[1]) return {};
+    if (!settledRevision || !windows[0] || !windows[1]) return {};
     const auto sampleRate = windows[0]->sampleRate;
-    if (!std::isfinite(sampleRate) || sampleRate <= 0. || windows[1]->sampleRate != sampleRate) return {};
+    if (!std::isfinite(sampleRate) || sampleRate <= 0. || sampleRate > maxSampleRate ||
+        windows[1]->sampleRate != sampleRate) return {};
+    const auto radius = static_cast<std::size_t>(std::round(searchSeconds * sampleRate));
+    const auto frameCount = static_cast<std::int64_t>(captureFrames(radius));
+    if (!radius || heardEnd < frameCount) return {};
 
     FocusLagRequest request;
     request.transportRevision = settledRevision;
@@ -158,8 +199,7 @@ focusLagPreviewRequest(const std::array<const SharedAnalysis::Result *, 2> &wind
     }
     if (end < frameCount) return {};
     request.firstStamp = end - frameCount;
-    request.maxLagSamples = static_cast<std::int32_t>(
-        std::min(std::round(.020 * sampleRate), static_cast<double>(maxRadius)));
+    request.maxLagSamples = static_cast<std::int32_t>(radius);
     return requestedEnd(request) ? std::optional{request} : std::nullopt;
 }
 
@@ -167,13 +207,17 @@ focusLagPreviewRequest(const std::array<const SharedAnalysis::Result *, 2> &wind
 // current transport/source witnesses and excludes ambiguous loop passes.
 [[nodiscard]] inline std::optional<FocusLagPreview>
 focusFindLag(const FocusLagRequest &request, const SharedAnalysis::Result &main,
-             const SharedAnalysis::Result &target) noexcept {
+             const SharedAnalysis::Result &target) noexcept try {
     using namespace focus_lag_detail;
     const auto end = requestedEnd(request);
     if (!end || main.sampleRate != target.sampleRate || !validRate(request, main.sampleRate)) return {};
 
+    const auto radius = static_cast<std::size_t>(request.maxLagSamples);
+    const auto count = captureFrames(radius);
     const std::array inputs{&main, &target};
-    MidWindows mid;
+    std::array<double, 2 * frames> localMid;
+    std::vector<double> wideMid;
+    auto mid = captureStorage(localMid, wideMid, 2 * count);
     for (std::size_t side = 0; side < inputs.size(); ++side) {
         const auto &source = *inputs[side];
         const auto &expected = request.sources[side];
@@ -184,22 +228,29 @@ focusFindLag(const FocusLagRequest &request, const SharedAnalysis::Result &main,
         const auto sourceEnd = focusWindowEnd(range->first, static_cast<std::int64_t>(range->frames));
         if (!sourceEnd || *sourceEnd < *end || *sourceEnd > request.heardEnd) return {};
         const auto offset = static_cast<std::size_t>(request.firstStamp - range->first);
-        if (!mixToMid(std::span(source.scopeLeft).subspan(offset, frames),
-                      std::span(source.scopeRight).subspan(offset, frames), mid[side])) return {};
+        if (!mixToMid(std::span(source.scopeLeft).subspan(offset, count),
+                      std::span(source.scopeRight).subspan(offset, count), mid.subspan(side * count, count))) return {};
     }
-    return measure(request, mid);
-}
+    return measure(radius, mid.first(count), mid.last(count));
+} catch (const std::bad_alloc &) { return {}; }
 
 [[nodiscard]] inline std::optional<FocusLagPreview>
 focusFindLagOnTaps(const FocusLagRequest &request,
-                  const std::array<std::shared_ptr<const engine::ScopeTap>, 2> &taps) noexcept {
+                  const std::array<std::shared_ptr<const engine::ScopeTap>, 2> &taps) noexcept try {
     using namespace focus_lag_detail;
     const auto wantedEnd = requestedEnd(request);
     if (!wantedEnd || !taps[0] || !taps[1] || taps[0]->sampleRate() != taps[1]->sampleRate() ||
         !validRate(request, taps[0]->sampleRate())) return {};
 
-    MidWindows mid;
-    std::array<float, frames> left, right;
+    const auto radius = static_cast<std::size_t>(request.maxLagSamples);
+    const auto count = captureFrames(radius);
+    std::array<double, 2 * frames> localMid;
+    std::array<float, 2 * frames> localStereo;
+    std::vector<double> wideMid;
+    std::vector<float> wideStereo;
+    auto mid = captureStorage(localMid, wideMid, 2 * count);
+    const auto stereo = captureStorage(localStereo, wideStereo, 2 * count);
+    const auto left = stereo.first(count), right = stereo.last(count);
     std::array<engine::ScopeTap::ReadResult, 2> heads;
     using Status = engine::ScopeTap::ReadStatus;
     for (std::size_t side = 0; side < taps.size(); ++side) {
@@ -217,11 +268,12 @@ focusFindLagOnTaps(const FocusLagRequest &request,
         const auto beginning = last->firstSequence - back;
         engine::ScopeTap::Cursor cursor{tap.generation(), beginning};
         const auto read = tap.read(cursor, left, right);
-        if (read.status != Status::Ready || read.frames != static_cast<std::int32_t>(frames) ||
+        if (read.status != Status::Ready || read.frames != static_cast<std::int32_t>(count) ||
             read.firstSequence != beginning || read.firstStamp != request.firstStamp || !read.advancing ||
-            read.transportRevision != request.transportRevision || !mixToMid(left, right, mid[side])) return {};
+            read.transportRevision != request.transportRevision ||
+            !mixToMid(left, right, mid.subspan(side * count, count))) return {};
     }
-    const auto preview = measure(request, mid);
+    const auto preview = measure(radius, mid.first(count), mid.last(count));
     if (!preview) return {};
     // A seek or Stop can occur while the worker correlates the immutable input.
     for (std::size_t side = 0; side < taps.size(); ++side) {
@@ -233,5 +285,5 @@ focusFindLagOnTaps(const FocusLagRequest &request,
         if (!expected || *expected != latest->firstStamp) return {};
     }
     return preview;
-}
+} catch (const std::bad_alloc &) { return {}; }
 } // namespace adi::ui

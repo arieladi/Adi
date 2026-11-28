@@ -80,6 +80,9 @@ class Core final {
                  const Settings &, BlockContext) noexcept;
     bool process(double *const *main, const double *const *key, std::int32_t keyChannels, std::int32_t frames,
                  const Settings &, BlockContext) noexcept;
+    void trackEqSilenceForSuspension(bool enabled) noexcept;
+    [[nodiscard]] bool hasStationaryEqSilence() const noexcept;
+    void skipSilentEqFrames(std::uint32_t frames) noexcept;
     // Audio-owner diagnostics, or after stopping. Not a concurrent UI snapshot.
     [[nodiscard]] Statistics statistics() const noexcept;
     [[nodiscard]] double learnedThreshold(std::size_t band) const noexcept;

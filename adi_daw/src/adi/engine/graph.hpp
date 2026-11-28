@@ -272,6 +272,10 @@ public:
     /// Audio owner, once on entry to suspension, after the tail has drained.
     /// Keep this as cheap as silenceTaps. Stateful effects can arm a wake reset.
     virtual void didSuspend() noexcept {}
+    /// Audio owner, once per skipped graph slice, after the entry notification
+    /// when applicable. The frame count matches silenceTaps for this slice.
+    /// Opt-in bookkeeping only. No allocation, locks or calls into a plugin.
+    virtual void didSkip(std::int32_t /*frames*/) noexcept {}
 
     /// Capture ports have a lifetime independent of the node. A retired graph can release
     /// its node before a later callback detaches its old scope publication safely.

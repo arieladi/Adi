@@ -16,16 +16,42 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <new>
 #include <numbers>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+namespace {
+thread_local bool auditingStackDemandIds = false;
+thread_local unsigned stackDemandIdAllocations = 0;
+}
+void *operator new(std::size_t bytes) {
+    if (auditingStackDemandIds && bytes == sizeof(std::int64_t)) ++stackDemandIdAllocations;
+    if (auto *memory = std::malloc(bytes ? bytes : 1)) return memory;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t bytes) { return operator new(bytes); }
+void *operator new(std::size_t bytes, const std::nothrow_t &) noexcept {
+    try { return operator new(bytes); }
+    catch (...) { return nullptr; }
+}
+void *operator new[](std::size_t bytes, const std::nothrow_t &tag) noexcept { return operator new(bytes, tag); }
+void operator delete(void *memory) noexcept { std::free(memory); }
+void operator delete[](void *memory) noexcept { std::free(memory); }
+void operator delete(void *memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void *memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void *memory, const std::nothrow_t &) noexcept { std::free(memory); }
+void operator delete[](void *memory, const std::nothrow_t &) noexcept { std::free(memory); }
 
 using namespace adi;
 using namespace adi::ui;
@@ -58,7 +84,103 @@ struct MixFocusTestAccess {
     static bool differencePulseAt(const MixFocus &focus, float position, float value) {
         return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
     }
+    static bool foldedLayerAt(const MixFocus &focus, std::int64_t track, float position, float value) {
+        const auto layer = std::ranges::find(focus.members_, track, &MixFocus::Member::id);
+        return layer != focus.members_.end() && layer->scopePaths[1].isEmpty() &&
+               scopePulseAt(focus.plot_, layer->scopePaths[0], position, value);
+    }
+    static bool hasScopeTrace(const MixFocus &focus) { return focus.scopeHasTrace_; }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
+    static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
+    static auto scopeGrid(const MixFocus &focus) {
+        std::vector<std::pair<int, bool>> lines;
+        if (focus.scopeGridStamp_ && focus.scopeTraceRevision())
+            for (const auto &line : focus.scopeGrid_) lines.emplace_back(line.x, line.bar);
+        return lines;
+    }
+    static auto scopePlot(const MixFocus &focus) { return focus.plot_.toNearestInt(); }
+    static auto scopeVisibleRange(const MixFocus &focus) { return focus.scopeVisibleRange(); }
+    static float transformedScopeX(const MixFocus &focus, float captureFraction) {
+        const auto &plot = focus.plot_;
+        const auto source = juce::Point<float>{plot.getX() + captureFraction * plot.getWidth(), plot.getY()};
+        return (source.transformedBy(focus.scopeTimeTransform()).x - plot.getX()) / plot.getWidth();
+    }
+    static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
+    static bool hasScopeSummarySpace(const MixFocus &focus) { return !focus.sumLabel_.isEmpty(); }
+    static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
+    static juce::MouseEvent moveScopePointer(MixFocus &focus, float x, float y) {
+        const auto &plot = focus.plot_;
+        const juce::Point<float> at{plot.getX() + x * plot.getWidth(), plot.getY() + y * plot.getHeight()};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys{},
+            0.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, at, now, 0, false};
+        static_cast<juce::Component &>(focus).mouseMove(event);
+        return event;
+    }
+    static void wheelScope(MixFocus &focus, float x, float y, float delta,
+                           int modifiers = juce::ModifierKeys::altModifier) {
+        const auto &plot = focus.plot_;
+        const juce::Point<float> at{plot.getX() + x * plot.getWidth(), plot.getY() + y * plot.getHeight()};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys{modifiers},
+            0.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, at, now, 0, false};
+        static_cast<juce::Component &>(focus).mouseWheelMove(event,
+            juce::MouseWheelDetails{0.f, delta, false, false, false});
+    }
+    static juce::String scopeCursorText(const MixFocus &focus) {
+        for (auto *child : focus.getChildren())
+            if (const auto *label = dynamic_cast<const juce::Label *>(child);
+                label && label->isVisible() && label->getTitle() == "Scope cursor")
+                return label->getText();
+        return {};
+    }
+    static void scopeRegionPointer(MixFocus &focus, void (juce::Component::*handler)(const juce::MouseEvent &),
+                                   juce::Point<float> start, juce::Point<float> end) {
+        const auto &plot = focus.plot_;
+        const auto pointInPlot = [&](juce::Point<float> relative) {
+            return juce::Point<float>{plot.getX() + relative.x * plot.getWidth(),
+                                      plot.getY() + relative.y * plot.getHeight()};
+        };
+        const auto now = juce::Time::getCurrentTime();
+        const auto pressed = handler != &juce::Component::mouseUp;
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), pointInPlot(end),
+            juce::ModifierKeys{pressed ? juce::ModifierKeys::leftButtonModifier : 0},
+            1.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, pointInPlot(start), now, 1, start != end};
+        (static_cast<juce::Component &>(focus).*handler)(event);
+    }
+    static void dragScopeRegion(MixFocus &focus, juce::Point<float> start, juce::Point<float> end) {
+        scopeRegionPointer(focus, &juce::Component::mouseDown, start, start);
+        scopeRegionPointer(focus, &juce::Component::mouseDrag, start, end);
+        scopeRegionPointer(focus, &juce::Component::mouseUp, start, end);
+    }
+    static juce::String scopeRegionText(const MixFocus &focus) {
+        for (auto *child : focus.getChildren())
+            if (const auto *label = dynamic_cast<const juce::Label *>(child);
+                label && label->isVisible() && label->getTitle() == "Scope region")
+                return label->getText().removeCharacters(",");
+        return {};
+    }
+    static std::optional<std::int64_t> scopeMidpoint(const MixFocus &focus) {
+        if (!focus.scopeRange_) return {};
+        return focus.scopeRange_->first + static_cast<std::int64_t>(focus.scopeRange_->frames / 2);
+    }
+    static bool requestsResidualSpectrum(const MixFocus &focus) {
+        return focus.differenceRequest_ && focus.differenceRequest_->spectrum;
+    }
+    static auto layerAdjustment(MixFocus &focus) {
+        const auto *layer = focus.selectedScopeLayer();
+        return layer ? layer->scopeAdjustment : FocusScopeLayerAdjustment{};
+    }
+    static juce::PopupMenu layerMenu(MixFocus &focus) {
+        const auto *layer = focus.selectedScopeLayer();
+        return layer ? focus.scopeLayerMenu(*layer) : juce::PopupMenu{};
+    }
+    static void chooseLayerItem(MixFocus &focus, int id) {
+        focus.applyScopeLayerAction(focus.active_, focus.membershipPose_, static_cast<MixFocus::ScopeLayerAction>(id));
+    }
+    static auto cachedLayerAdjustment(const MixFocus &focus, std::size_t index) {
+        return focus.scopeAdjustments_.at(index);
+    }
     static bool scopePulseAt(juce::Rectangle<float> plot, const juce::Path &path, float position, float value) {
         if (plot.isEmpty()) return false;
         juce::Path::Iterator vertices(path);
@@ -693,6 +815,40 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
         root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
         root.setMixView(true, false);
         root.frame();
+        {
+            using Scale = SharedSpectrumView::SpectrumScale;
+            auto &mix = root.mixViewPanel;
+            auto &info = mix.channels;
+            const auto originalBroker = root.sharedAnalysis;
+            const auto tap = std::make_shared<engine::ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+            auto broker = std::make_shared<SharedAnalysis>(
+                [tap](std::int64_t, engine::ScopePoint) { return tap; },
+                [](std::int64_t, engine::ScopePoint) {}, SharedAnalysis::Mode::Manual);
+            root.sharedAnalysis = broker;
+            info.infoMode.setSelectedId(info.infoMode.getItemId(1), juce::sendNotificationSync);
+            root.frame();
+            std::array<float, 1024> audio;
+            audio.fill(.25f);
+            tap->write(audio.data(), audio.data(), static_cast<std::int32_t>(audio.size()), 0, true);
+            broker->pump();
+            root.frame();
+            const auto shown = info.preview.snapshot();
+            const auto before = broker->stats();
+            mix.analysis.detail.setSpectrumScale(Scale::Extended);
+            root.frame();
+            const auto after = broker->stats();
+            check(info.preview.isShowing() && info.preview.mode() == SharedSpectrumView::Mode::Spectrum &&
+                      info.preview.spectrumScale() == Scale::Extended,
+                  "Mix View Info spectrum uses the current Analysers layout");
+            check(shown && info.preview.snapshot() == shown && after.taps == before.taps &&
+                      after.domains == before.domains && after.spectralPlans == before.spectralPlans &&
+                      after.transforms == before.transforms,
+                  "changing the Info layout keeps the existing spectrum publication and analysis work");
+            info.infoMode.setSelectedId(info.infoMode.getItemId(0), juce::sendNotificationSync);
+            mix.analysis.detail.setSpectrumScale(Scale::Wide);
+            root.sharedAnalysis = originalBroker;
+            root.frame();
+        }
         auto &stack = root.mixViewPanel.stack;
         root.arrangement.geometry.selection.track = 2;
         root.publishSelection();
@@ -1245,8 +1401,20 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     int acquisitions = 0;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
                           document->views(), document->sessionState(), "stack-limiter-reduction");
-    root.devices.publication = [&] { return document->parameterFeed().current(); };
-    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    bool auditFrame = false;
+    unsigned publicationReads = 0, demandUpdates = 0;
+    std::size_t demandedCount = 0;
+    root.devices.publication = [&] {
+        if (auditFrame && ++publicationReads == 2) auditingStackDemandIds = false;
+        auto picture = document->parameterFeed().current();
+        if (auditFrame && publicationReads == 1) auditingStackDemandIds = true;
+        return picture;
+    };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) {
+        ++demandUpdates;
+        demandedCount = ids.size();
+        document->setParameterDemand(owner, ids);
+    };
     root.state().mixView = true;
     root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
     root.arrangement.geometry.selection.track = 2;
@@ -1275,6 +1443,29 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     check(found != nullptr, "the reduction plot lives in the existing Stack device card");
     if (!found) return;
     juce::Component::SafePointer<DevicePanelView> card(found);
+    surface.frameAt(root.reader(), 505);
+    const auto steadyUpdates = demandUpdates;
+    bool demandScanReached = true;
+    stackDemandIdAllocations = 0;
+    auditFrame = true;
+    for (const auto at : {506, 507, 508, 509}) {
+        // Bracket the demand scan before the second publication read, so card text and
+        // rendering allocations do not contribute to the per-device allocation count.
+        publicationReads = 0;
+        surface.frameAt(root.reader(), at);
+        auditingStackDemandIds = false;
+        demandScanReached = demandScanReached && publicationReads >= 2;
+    }
+    auditFrame = false;
+    const bool sameCard = card && locate(locate, surface) == card.getComponent();
+    if (!demandScanReached || demandUpdates != steadyUpdates || demandedCount != 1 || !sameCard)
+        std::printf("STACK idle fixture: demand scan reached=%d, last reads=%u, demand=%u/%u, IDs=%zu, same card=%d\n",
+                    demandScanReached, publicationReads, demandUpdates, steadyUpdates, demandedCount, sameCard);
+    if (stackDemandIdAllocations != 0)
+        std::printf("STACK idle device-ID allocations: %u\n", stackDemandIdAllocations);
+    check(demandScanReached && demandUpdates == steadyUpdates && demandedCount == 1 && sameCard,
+          "unchanged Stack frames keep the same view and native parameter demand");
+    check(stackDemandIdAllocations == 0, "the steady Stack demand scan allocates no temporary device IDs");
     const auto paint = [](DevicePanelView &panel) {
         juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
         juce::Graphics g(image);
@@ -1313,12 +1504,15 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     surface.model().setBaseHeight(184, 980);
     surface.frameAt(root.reader(), 1330);
     check(mailbox->observed() && acquisitions == 2, "re-expansion reacquires an empty observation");
+    const auto beforeFold = demandUpdates;
     root.devices.fold(device);
     surface.frameAt(root.reader(), 1360);
     check(!mailbox->observed(), "folded Limiter has no reduction subscription");
+    check(demandUpdates == beforeFold + 1 && demandedCount == 0, "folding releases parameter demand once");
     root.devices.fold(device);
     surface.frameAt(root.reader(), 1600);
     check(mailbox->observed() && acquisitions == 3, "unfolding reopens one subscription");
+    check(demandUpdates == beforeFold + 2 && demandedCount == 1, "unfolding restores parameter demand once");
     surface.filterChannels(std::nullopt);
     surface.setSize(1200, 165);
     surface.frameAt(root.reader(), 1640);
@@ -1336,6 +1530,1312 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     sibling.reset();
     check(!mailbox->observed(), "the last hidden view leaves no producer demand");
     peer.removeChildComponent(&surface); peer.removeFromDesktop();
+}
+
+void foldedChannelBrowserSearch(AppCommands &commands, const std::filesystem::path &directory) {
+    const auto path = directory / "folded-channel-browser-search.adi";
+    StoreError status{};
+    auto store = Store::create(path, status);
+    check(store != nullptr, "a hundred-channel browser fixture creates its project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'master','Main',0);"
+        "WITH RECURSIVE channel_numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM channel_numbers WHERE n<100)"
+        " INSERT INTO tracks(id,kind,name,index_in_parent) "
+        "SELECT 100+n,'audio',CASE n "
+        "WHEN 3 THEN 'Caf\xc3\xa9 003' "
+        "WHEN 54 THEN 'Stra\xc3\x9f" "e 054' "
+        "WHEN 99 THEN '\xc3\x86ther 099' "
+        "ELSE printf('Channel %03d',n) END,n FROM channel_numbers;"
+        "INSERT INTO device_chains(id,track_id,name) VALUES(77,151,'Devices'),(78,152,'Devices');"
+        "INSERT INTO plugin_refs(id,format,uid,name) VALUES(77,'internal','owned.key','Search fixture');"
+        "INSERT INTO devices(id,chain_id,ord,name,plugin_ref_id)"
+        "VALUES(77,77,0,'P\xc3\xa9" "ch\xc3\xa9 Lead',77),(78,78,0,'Spare tool',77);");
+    store.reset();
+
+    std::string error;
+    auto document = ProjectDocument::open(path, false,
+        [](const engine::DeviceRequest &, std::string &) { return std::make_unique<KeyProbe>(); }, error);
+    check(document != nullptr, "the ordinary named tools load through the headless document");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "folded-channel-browser-search");
+    std::size_t publicationReads = 0;
+    root.devices.publication = [&] {
+        ++publicationReads;
+        return document->parameterFeed().current();
+    };
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1400, 900);
+    root.setBounds(peer.getLocalBounds());
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    const bool softwarePeer = peer.getPeer() && !peer.getPeer()->getNativeHandle();
+    check(softwarePeer && root.setMixView(true, false),
+          "the hundred-channel search is exercised on the normal Mix View software peer");
+    root.frame();
+    auto &browser = root.mixViewPanel.channels;
+    check(browser.isShowing() && browser.trackAt(100) != 0 && browser.trackAt(101) == 0,
+          "the browser contains all one hundred tracks and Main");
+    root.arrangement.geometry.selection.track = 101;
+    root.publishSelection();
+    root.frame();
+
+    const auto search = [&](const char *query) {
+        browser.search.setText(query, false);
+        browser.search.onTextChange();
+    };
+    const auto only = [&](std::int64_t track) { return browser.trackAt(0) == track && browser.trackAt(1) == 0; };
+    const auto head = History(document->store()).head();
+    search("  cAfE 003  ");
+    check(only(103), "accent-insensitive search finds the first named channel");
+    search("STRASSE 054");
+    check(only(154), "search folds the middle channel's sharp s");
+    search("aether 099");
+    check(only(199), "search folds the end channel's ligature");
+    search("peche lead");
+    check(only(151), "a folded device name finds its differently named channel");
+    const auto reads = publicationReads;
+    for (int i = 0; i < 4; ++i) browser.frame(root.reader());
+    check(publicationReads == reads && document->sessionState().selection().track == 101,
+          "the retained query does not scan devices again or change selection on unchanged browser frames");
+    if (only(151)) browser.list.selectRow(0);
+    root.frame();
+    check(document->sessionState().selection().track == 151 && root.mixViewPanel.stack.focused() == 151 &&
+              History(document->store()).head() == head,
+          "choosing the matching channel focuses its actual Stack row without authoring any search edit");
+
+    search("cafe 003");
+    const auto renamedTrack = document->deviceAction("track.rename", {{"id", 103}, {"name", "Renamed channel"}});
+    root.frame();
+    const bool removedTrackMatch = browser.trackAt(0) == 0;
+    const auto newTrack = document->deviceAction("track.rename", {{"id", 197}, {"name", "Caf\xc3\xa9 003"}});
+    root.frame();
+    check(renamedTrack && removedTrackMatch && newTrack && only(197),
+          "a retained query uses the new folded track names after same-size snapshot updates");
+
+    search("peche lead");
+    const bool renamedTool = document->deviceAction("device.rename", {{"id", 77}, {"name", "Old tool"}});
+    root.frame();
+    const bool removedToolMatch = browser.trackAt(0) == 0;
+    const bool newTool = document->deviceAction("device.rename", {{"id", 78}, {"name", "P\xc3\xa9" "ch\xc3\xa9 Lead"}});
+    root.frame();
+    const bool movedToolMatch = only(152);
+    const bool removedTool = document->deviceAction("device.remove", {{"id", 78}});
+    root.frame();
+    check(renamedTool && removedToolMatch && newTool && movedToolMatch && removedTool &&
+              browser.trackAt(0) == 0 && document->sessionState().selection().track == 151,
+          "renamed and removed devices update the folded tool matches without moving the chosen channel");
+    peer.removeChildComponent(&root);
+    peer.removeFromDesktop();
+}
+
+void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &directory,
+                           int rate, std::int32_t overviewFft) {
+    constexpr std::int64_t main = 1, first = 11, wide = 5000000001, missing = 9000000001;
+    constexpr std::int32_t normalFft = 1024;
+    const auto path = directory / ("pinned-spectrum-" + std::to_string(rate) + ".adi");
+    StoreError status{};
+    auto store = Store::create(path, status);
+    check(store != nullptr, "pinned Spectrum fixture creates a project");
+    if (!store) return;
+    store->db().exec(
+        "UPDATE project SET sample_rate=44100;"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'master','Main',0),(5000000001,'audio','Wide ID',40);"
+        "WITH RECURSIVE pin_numbers(n) AS (SELECT 11 UNION ALL SELECT n+1 FROM pin_numbers WHERE n<30)"
+        " INSERT INTO tracks(id,kind,name,index_in_parent) "
+        "SELECT n,'audio',printf('Pinned %d',n),n FROM pin_numbers;");
+    store.reset();
+
+    std::string error;
+    auto doc = ProjectDocument::open(path, false, {}, error);
+    check(doc != nullptr, "pinned Spectrum opens its headless project");
+    if (!doc) return;
+    const std::vector<std::int64_t> pins{main, first, first, wide, missing};
+    check(doc->views().saveStackPins({}, pins, error), "establish persisted project pins with duplicate and missing IDs");
+    const auto head = History(doc->store()).head();
+
+    using Source = engine::ScopeSource;
+    using Tap = engine::ScopeTap;
+    std::map<Source, std::shared_ptr<Tap>> taps;
+    std::size_t attachments = 0;
+    auto tapRate = static_cast<double>(rate);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](Source source, double) -> std::shared_ptr<const Tap> {
+            auto &tap = taps[source];
+            if (!tap || tap->sampleRate() != tapRate) {
+                tap = std::make_shared<Tap>(tapRate, 1.);
+                ++attachments;
+            }
+            return tap;
+        },
+        [&](Source source) { taps.erase(source); }, SharedAnalysis::Mode::Manual);
+    const auto key = [](std::int64_t track) { return Source{track, engine::ScopePoint::PostFader, 0}; };
+    const auto attached = [&](std::int64_t track) { return taps.contains(key(track)); };
+    const auto tapFor = [&](std::int64_t track) -> std::shared_ptr<Tap> {
+        const auto found = taps.find(key(track));
+        return found == taps.end() ? nullptr : found->second;
+    };
+
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands,
+                          doc->views(), doc->sessionState(), "pinned-spectrum");
+    root.sharedAnalysis = broker;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1400, 900);
+    root.setBounds(peer.getLocalBounds());
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    const bool softwarePeer = peer.getPeer() && !peer.getPeer()->getNativeHandle();
+    const auto detachPeer = [&] { peer.removeChildComponent(&root); peer.removeFromDesktop(); };
+    check(softwarePeer && root.setMixView(true, false) &&
+              root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis)),
+          "the test opens the real Mix View Analysers on a software peer");
+    root.frame();
+    auto &pages = root.mixViewPanel.analysis;
+    using Page = MixAnalysers::Page;
+    const auto sendTone = [](Tap &tap, std::int32_t frames, int bin, std::int64_t stamp) {
+        std::vector<float> samples(static_cast<std::size_t>(frames));
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * static_cast<double>(bin) *
+                static_cast<double>(i) / static_cast<double>(frames)));
+        tap.write(samples.data(), samples.data(), frames, stamp, true, 4);
+    };
+    const auto select = [](juce::ComboBox &menu, const juce::String &name) {
+        for (int item = 0; item < menu.getNumItems(); ++item) {
+            if (menu.getItemText(item) != name) continue;
+            menu.setSelectedId(menu.getItemId(item), juce::sendNotificationSync);
+            return true;
+        }
+        return false;
+    };
+    pages.setPage(Page::Spectrum);
+    pages.followSelection(false);
+    root.frame();
+    broker->pump();
+    const auto findToggle = [](const auto &walk, juce::Component &parent) -> juce::ToggleButton * {
+        if (auto *toggle = dynamic_cast<juce::ToggleButton *>(&parent); toggle && toggle->getTitle() == "Pinned tracks")
+            return toggle;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    auto *control = findToggle(findToggle, pages);
+    juce::ComboBox *blockSize = nullptr, *overlap = nullptr, *smoothing = nullptr;
+    for (auto *child : pages.detail.getChildren()) {
+        if (child->getTitle() == "Spectrum block size") blockSize = dynamic_cast<juce::ComboBox *>(child);
+        if (child->getTitle() == "Spectrum overlap") overlap = dynamic_cast<juce::ComboBox *>(child);
+        if (child->getTitle() == "Spectrum smoothing") smoothing = dynamic_cast<juce::ComboBox *>(child);
+    }
+    check(blockSize && blockSize->isShowing() && blockSize->getNumItems() == 6 && blockSize->getSelectedId() == 1,
+          "the dedicated Spectrum offers six block-size choices and defaults to Auto");
+    check(overlap && overlap->isShowing() && overlap->getNumItems() == 4 && overlap->getSelectedId() == 3,
+          "the dedicated Spectrum offers four overlap choices and defaults to 75 percent");
+    check(smoothing && smoothing->isShowing() && smoothing->getNumItems() == 16 && smoothing->getSelectedId() == 1,
+          "the dedicated Spectrum offers the full smoothing range and defaults to Off");
+    check(control && control->isShowing() && !control->getToggleState() &&
+              attached(main) && !attached(first) && !attached(wide) && !attached(missing),
+          "Spectrum offers Pinned tracks default off with no extra demand");
+    auto primaryTap = tapFor(main);
+    if (!control || !primaryTap) { detachPeer(); return; }
+    sendTone(*primaryTap, normalFft, 16, 0);
+    broker->pump();
+    root.frame();
+    const auto normal = pages.detail.view.snapshot();
+    check(normal && normal->sampleRate == static_cast<double>(rate) &&
+              normal->request.fftSize == normalFft && normal->hopSize == normalFft / 4,
+          "ordinary Spectrum starts at its original 1024-point profile on the matched format");
+    auto ordinaryReader = broker->acquire({main, pages.detail.point(), normalFft, pages.detail.view.channel()});
+    const auto renderSpectrum = [&] {
+        auto &view = pages.detail.view;
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        view.paint(graphics);
+        return image;
+    };
+    const auto samePixels = [](const juce::Image &a, const juce::Image &b, juce::Rectangle<int> area) {
+        area = area.getIntersection(a.getBounds()).getIntersection(b.getBounds());
+        for (int y = area.getY(); y < area.getBottom(); ++y)
+            for (int x = area.getX(); x < area.getRight(); ++x)
+                if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
+        return true;
+    };
+    if (smoothing && normal) {
+        auto &view = pages.detail.view;
+        view.freeze(true);
+        const auto raw = renderSpectrum();
+        const auto before = broker->stats();
+        for (const auto item : {2, smoothing->getNumItems()}) {
+            smoothing->setSelectedId(item, juce::sendNotificationSync);
+            check(!samePixels(raw, renderSpectrum(), raw.getBounds()), "changing Spectrum smoothing reprojects a held plot");
+        }
+        smoothing->setSelectedId(1, juce::sendNotificationSync);
+        const auto after = broker->stats();
+        check(samePixels(raw, renderSpectrum(), raw.getBounds()) && view.snapshot() == normal &&
+                  before.transforms == after.transforms && before.taps == after.taps &&
+                  before.consumers == after.consumers && before.spectralPlans == after.spectralPlans,
+              "smoothing is reversible on the same held bins and requests no audio work");
+        view.freeze(false);
+        sendTone(*primaryTap, normalFft, 16, primaryTap->written());
+        broker->pump();
+        root.frame();
+    }
+    const auto baseline = broker->stats();
+    const auto attachmentsBeforeToggle = attachments;
+    const auto choose = [&](bool enabled) {
+        control->setToggleState(enabled, juce::dontSendNotification);
+        if (control->onClick) control->onClick();
+        root.frame();
+    };
+    const auto noExtraPins = [&] {
+        return !attached(first) && !attached(wide) && !attached(missing) &&
+               broker->stats().consumers == baseline.consumers;
+    };
+
+    choose(true);
+    const auto single = broker->stats();
+    auto firstTap = tapFor(first), wideTap = tapFor(wide);
+    // The ordinary reader still uses its 1024-point plan. Overview needs
+    // three more plans, but both primary readers share a physical tap.
+    check(firstTap && wideTap && !attached(missing) && single.consumers == baseline.consumers + 2 &&
+              single.taps == baseline.taps + 2 && single.spectralPlans == baseline.spectralPlans + 3 &&
+              History(doc->store()).head() == head,
+          "only live non-primary pins lease two realtime spectra without authoring an edit");
+    check(tapFor(main) == primaryTap && attachments == attachmentsBeforeToggle + 2,
+          "enabling pinned Spectrum retains the original primary tap and attaches only the pins");
+    broker->pump();
+    const auto settled = broker->stats();
+    const auto attachedBefore = attachments;
+    for (int frame = 0; frame < 4; ++frame) {
+        root.frame();
+        broker->pump();
+    }
+    const auto idle = broker->stats();
+    check(attachments == attachedBefore && idle.workerPasses == settled.workerPasses &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "unchanged Spectrum frames neither reacquire pinned taps nor add worker work");
+    if (firstTap && wideTap) {
+        adi::ui::SharedAnalysis::Request request{main, pages.detail.point(), overviewFft,
+                                                pages.detail.view.channel()};
+        request.hopSize = overviewFft / 4;
+        auto primary = broker->acquire(request);
+        request.track = first;
+        auto low = broker->acquire(request);
+        request.track = wide;
+        auto high = broker->acquire(request);
+        const auto shared = broker->stats();
+        check(primary && low && high && shared.taps == idle.taps &&
+                  shared.spectralPlans == idle.spectralPlans && shared.domains == idle.domains,
+              "Overview primary and pins reuse explicit 75 percent-overlap observers without extra plans");
+
+        // Supply an extra primary hop so earlier demand cannot shift the comparison boundary.
+        const auto start = primaryTap->written();
+        sendTone(*primaryTap, overviewFft + overviewFft / 4, 20, start);
+        sendTone(*firstTap, overviewFft, 4, start);
+        sendTone(*wideTap, overviewFft, 32, start);
+        for (int pass = 0; pass < 12; ++pass) broker->pump();
+        root.frame();
+
+        const auto picture = pages.detail.view.snapshot();
+        check(picture && picture == primary.read() && picture->sampleRate == static_cast<double>(rate) &&
+                  picture->request.fftSize == overviewFft && picture->hopSize == overviewFft / 4 &&
+                  pages.detail.view.spectrumBins().size() == static_cast<std::size_t>(overviewFft / 2 + 1),
+              "visible Overview adopts its rate-sized realtime profile and shared immutable primary");
+        const auto ordinary = ordinaryReader.read();
+        check(ordinary && ordinary->request.track == main && ordinary->request.fftSize == normalFft &&
+                  ordinary->hopSize == normalFft / 4 && ordinary->generation == primaryTap->generation(),
+              "an ordinary observer retains its 1024-point plan and shares Overview's primary tap");
+        const auto a = low.read(), b = high.read();
+        const auto peakBin = [](const auto &bins) { return std::ranges::max_element(bins) - bins.begin(); };
+        check(a && b && a->request.track == first && b->request.track == wide &&
+                  a->request.fftSize == overviewFft && b->request.fftSize == overviewFft &&
+                  a->hopSize == overviewFft / 4 && b->hopSize == overviewFft / 4 &&
+                  peakBin(a->binsDbfs) == 4 && peakBin(b->binsDbfs) == 32,
+              "matching pinned observers keep their real source identities and distinct tone bins");
+
+        if (rate == 48000 && blockSize) {
+            constexpr int fixedFft = 2048;
+            constexpr std::int64_t fixedStamp = 20000, thawStamp = fixedStamp + fixedFft;
+            auto &view = pages.detail.view;
+            const auto attachmentCount = attachments;
+            const auto selectBlockSize = [&](int id) {
+                blockSize->setSelectedId(id, juce::sendNotificationSync);
+                root.frame();
+            };
+            const auto writeBlock = [&](int size, std::int64_t stamp) {
+                sendTone(*primaryTap, size, 16, stamp);
+                sendTone(*firstTap, size, 4, stamp);
+                sendTone(*wideTap, size, 32, stamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            };
+            selectBlockSize(3);
+            const auto selected = broker->stats();
+            auto fixedRequest = request;
+            fixedRequest.fftSize = fixedFft;
+            fixedRequest.hopSize = fixedFft / 4;
+            const auto observeFixed = [&](std::int64_t track) {
+                fixedRequest.track = track;
+                return broker->acquire(fixedRequest);
+            };
+            auto fixedMain = observeFixed(main), fixedLow = observeFixed(first), fixedHigh = observeFixed(wide);
+            check(broker->stats().spectralPlans == selected.spectralPlans && broker->stats().domains == selected.domains,
+                  "the selected block size is already requested by the primary and both pins");
+            writeBlock(fixedFft, fixedStamp);
+            const auto fixedPicture = view.snapshot(), fixedA = fixedLow.read(), fixedB = fixedHigh.read();
+            const auto coherent = [&](const auto &item, std::int64_t track, int bin) {
+                return item && item->request.track == track && item->request.fftSize == fixedFft &&
+                    item->hopSize == fixedFft / 4 && item->firstStamp == fixedStamp &&
+                    item->binsDbfs.size() == static_cast<std::size_t>(fixedFft / 2 + 1) && peakBin(item->binsDbfs) == bin;
+            };
+            check(fixedPicture == fixedMain.read() && coherent(fixedPicture, main, 16) &&
+                      coherent(fixedA, first, 4) && coherent(fixedB, wide, 32) &&
+                      tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap &&
+                      attachments == attachmentCount,
+                  "2048 uses a fresh coherent primary and both pins on their existing physical taps");
+
+            view.freeze(true);
+            const auto held = broker->stats();
+            if (smoothing && fixedA && fixedB) {
+                const auto raw = renderSpectrum();
+                smoothing->setSelectedId(smoothing->getNumItems(), juce::sendNotificationSync);
+                const auto smoothed = renderSpectrum();
+                // At each raw pin's peak the other traces are far below its level.
+                for (const auto &pin : {fixedA, fixedB}) {
+                    const auto bin = static_cast<std::size_t>(peakBin(pin->binsDbfs));
+                    const auto hz = static_cast<double>(bin) * pin->sampleRate / fixedFft;
+                    const auto x = juce::roundToInt(5. + (raw.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (raw.getHeight() - 55.) * pin->binsDbfs[bin] / 96.);
+                    check(!samePixels(raw, smoothed, {x - 4, y - 4, 9, 9}),
+                          "the held pin's own peak reprojects with the shared smoothing choice");
+                }
+                smoothing->setSelectedId(1, juce::sendNotificationSync);
+                check(samePixels(raw, renderSpectrum(), raw.getBounds()) &&
+                          broker->stats().transforms == held.transforms,
+                      "turning smoothing off restores both held pin paths without a transform");
+            }
+            selectBlockSize(1);
+            check(view.frozen() && view.snapshot() == fixedPicture && broker->stats().consumers == held.consumers &&
+                      broker->stats().spectralPlans == held.spectralPlans && broker->stats().transforms == held.transforms,
+                  "selecting Auto while frozen preserves the displayed 2048-point picture and demand");
+            view.freeze(false);
+            root.frame();
+            check(!view.snapshot(), "thaw waits for a fresh window using the newly selected block size");
+            writeBlock(overviewFft, thawStamp);
+            const auto automatic = view.snapshot();
+            check(automatic && automatic == primary.read() && automatic->request.fftSize == 4096 &&
+                      automatic->hopSize == 1024 && automatic->firstStamp >= thawStamp && blockSize->getSelectedId() == 1 &&
+                      attachments == attachmentCount,
+                  "thaw restores the 48 kHz Auto profile on the existing taps");
+
+            if (overlap) {
+                constexpr auto halfStamp = thawStamp + 4096, restoredStamp = halfStamp + 4096;
+                const auto selectOverlap = [&](int id) {
+                    overlap->setSelectedId(id, juce::sendNotificationSync);
+                    root.frame();
+                };
+                selectOverlap(2);
+                check(!view.snapshot(), "changing overlap waits for fresh audio at the new hop");
+                const auto halfDemand = broker->stats();
+                auto halfRequest = request;
+                halfRequest.hopSize = overviewFft / 2;
+                const auto observeHalf = [&](std::int64_t track) {
+                    halfRequest.track = track;
+                    return broker->acquire(halfRequest);
+                };
+                auto halfMain = observeHalf(main), halfLow = observeHalf(first), halfHigh = observeHalf(wide);
+                check(broker->stats().spectralPlans == halfDemand.spectralPlans && broker->stats().domains == halfDemand.domains,
+                      "primary and both pins already request the 50 percent overlap");
+                writeBlock(overviewFft, halfStamp);
+                const std::array windows{halfMain.read(), halfLow.read(), halfHigh.read()};
+                check(view.snapshot() == windows[0] && std::ranges::all_of(windows, [&](const auto &item) {
+                          return item && item->request.fftSize == overviewFft && item->hopSize == overviewFft / 2 &&
+                              item->firstStamp == halfStamp;
+                      }) && tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap &&
+                          attachments == attachmentCount,
+                      "50 percent overlap gives the primary and both pins fresh matched 4096/2048 windows on the same taps");
+                selectOverlap(3);
+                writeBlock(overviewFft, restoredStamp);
+                const auto restored = view.snapshot();
+                check(restored && restored == primary.read() && restored->hopSize == overviewFft / 4 &&
+                          restored->firstStamp == restoredStamp && attachments == attachmentCount,
+                      "restoring 75 percent selects a fresh quarter-hop window without replacing taps");
+            }
+        }
+
+        if (rate == 48000) {
+            using Mode = SharedSpectrumView::Mode;
+            const auto beforeAverage = broker->stats();
+            const auto attachmentCount = attachments;
+            const bool offered = select(pages.spectrumTraceBox, "Realtime Average");
+            root.frame();
+            check(offered && pages.page() == Page::Spectrum && pages.detail.mode() == Mode::SpectrumAverage &&
+                      control->isEnabled() && control->getToggleState(),
+                  "Realtime Average stays on Spectrum and keeps the pinned tracks enabled");
+            if (offered) {
+                constexpr std::int64_t newStamp = 100000;
+                constexpr std::array<int, 3> bin{16, 4, 32};
+                const auto writeOverview = [&](std::int64_t stamp) {
+                    sendTone(*primaryTap, overviewFft, bin[0], stamp);
+                    sendTone(*firstTap, overviewFft, bin[1], stamp);
+                    sendTone(*wideTap, overviewFft, bin[2], stamp);
+                    for (int pass = 0; pass < 12; ++pass) broker->pump();
+                    root.frame();
+                };
+                writeOverview(newStamp);
+                const std::array raw{primary.read(), low.read(), high.read()};
+                check(std::ranges::all_of(raw, [](const auto &item) {
+                    return item && (item->outputs & SharedAnalysis::Average1s) && item->sampleRate == 48000. &&
+                           item->request.fftSize == 4096 && item->hopSize == 1024;
+                }) && tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap,
+                      "the actual primary and pin consumers admit Average1s on their 4096/1024 sources");
+
+                auto readAverage = [&](std::int64_t track) {
+                    auto averageRequest = request;
+                    averageRequest.track = track;
+                    averageRequest.outputs = SharedAnalysis::Average1s;
+                    return broker->acquire(averageRequest);
+                };
+                auto averageMain = readAverage(main), averageFirst = readAverage(first), averageWide = readAverage(wide);
+                const std::array averaged{averageMain.readAverage(), averageFirst.readAverage(), averageWide.readAverage()};
+                const auto firstHopDb = 20. * std::log10(1. - std::pow(.1, 1024. / 48000.));
+                const std::array<std::int64_t, 3> expectedTracks{main, first, wide};
+                bool samePublishedWindows = true;
+                for (std::size_t side = 0; side < averaged.size(); ++side) {
+                    const auto k = static_cast<std::size_t>(bin[side]);
+                    const auto &item = averaged[side];
+                    samePublishedWindows = samePublishedWindows && item && raw[side] && item->window == raw[side] && item->binsDbfs &&
+                        item->window->request.track == expectedTracks[side] && item->processedWindows == 1 &&
+                        k < item->binsDbfs->size() && k < raw[side]->binsDbfs.size() &&
+                        std::abs((*item->binsDbfs)[k] - raw[side]->binsDbfs[k] - firstHopDb) < .01;
+                }
+                check(samePublishedWindows && pages.detail.view.snapshot() == raw[0] && averaged[0] &&
+                          averaged[0]->binsDbfs && pages.detail.view.spectrumBins().data() == averaged[0]->binsDbfs->data(),
+                      "Realtime Average shares the actual immutable windows and presents the existing magnitude law");
+
+                auto &view = pages.detail.view;
+                juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+                juce::Graphics g(image);
+                view.paint(g);
+                const auto peakInk = [&](std::size_t side) {
+                    if (!averaged[side] || !averaged[side]->binsDbfs) return false;
+                    const auto k = static_cast<std::size_t>(bin[side]);
+                    if (k >= averaged[side]->binsDbfs->size()) return false;
+                    const auto hz = static_cast<double>(bin[side]) * 48000. / 4096.;
+                    const auto x = juce::roundToInt(5. + (image.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (image.getHeight() - 55.) * (*averaged[side]->binsDbfs)[k] / 96.);
+                    for (int dy = -2; dy <= 2; ++dy)
+                        for (int dx = -2; dx <= 2; ++dx)
+                            if (image.getPixelAt(x + dx, y + dy) != look::display) return true;
+                    return false;
+                };
+                check(view.spectrumScale() == SharedSpectrumView::SpectrumScale::Wide &&
+                          peakInk(0) && peakInk(1) && peakInk(2),
+                      "the rendered Realtime Average shows both pinned peaks at their averaged heights");
+
+                const auto warm = broker->stats();
+                for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+                const auto still = broker->stats();
+                check(warm.taps == beforeAverage.taps && warm.domains == beforeAverage.domains &&
+                          warm.spectralPlans == beforeAverage.spectralPlans && attachments == attachmentCount &&
+                          still.transforms == warm.transforms && still.publications == warm.publications &&
+                          still.workerPasses == warm.workerPasses && still.cursorReads == warm.cursorReads,
+                      "Realtime Average adds no FFT plans, taps or unchanged-frame worker work");
+                averageMain.reset(); averageFirst.reset(); averageWide.reset();
+
+                const bool restoredMode = select(pages.spectrumTraceBox, "Realtime");
+                root.frame();
+                writeOverview(newStamp + overviewFft);
+                const auto now = broker->stats();
+                const auto restored = primary.read(), pinA = low.read(), pinB = high.read();
+                check(restoredMode && pages.detail.mode() == Mode::Spectrum && restored && pinA && pinB &&
+                          pages.detail.view.snapshot() == restored &&
+                          pages.detail.view.spectrumBins().data() == restored->binsDbfs.data() &&
+                          !(restored->outputs & SharedAnalysis::Average1s) &&
+                          !(pinA->outputs & SharedAnalysis::Average1s) && !(pinB->outputs & SharedAnalysis::Average1s) &&
+                          now.spectralPlans == beforeAverage.spectralPlans && now.taps == beforeAverage.taps,
+                      "returning to Realtime restores raw primary and pin traces on the same plans");
+            }
+
+            const bool offeredSigma = select(pages.spectrumTraceBox, "Realtime Sigma");
+            root.frame();
+            check(offeredSigma && pages.page() == Page::Spectrum && control->isEnabled() &&
+                      control->getToggleState() && tapFor(main) == primaryTap && tapFor(first) == firstTap,
+                  "Realtime Sigma is a Spectrum trace that keeps its existing pinned sources");
+            if (offeredSigma) {
+                constexpr std::int64_t sigmaStamp = 300000;
+                constexpr std::size_t mainBin = 8, pinBin = 4;
+                broker->pump();
+                const auto beforeSigma = broker->stats();
+                sendTone(*primaryTap, overviewFft, static_cast<int>(mainBin), sigmaStamp);
+                sendTone(*firstTap, overviewFft, static_cast<int>(pinBin), sigmaStamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto rawMain = primary.read(), rawPin = low.read();
+                const auto produced = broker->stats();
+                check(rawMain && rawPin && rawMain->firstStamp == sigmaStamp && rawPin->firstStamp == sigmaStamp &&
+                          rawMain->request.fftSize == overviewFft && rawPin->request.fftSize == overviewFft &&
+                          rawMain->hopSize == 1024 && rawPin->hopSize == 1024 &&
+                          (rawMain->outputs & SharedAnalysis::RealtimeSigma) &&
+                          (rawPin->outputs & SharedAnalysis::RealtimeSigma),
+                      "the visible primary and fresh pin already request sigma on their 4096/1024 plans");
+
+                auto sigmaRequest = request;
+                sigmaRequest.outputs = SharedAnalysis::RealtimeSigma;
+                sigmaRequest.track = main;
+                auto sigmaMainLease = broker->acquire(sigmaRequest);
+                sigmaRequest.track = first;
+                auto sigmaPinLease = broker->acquire(sigmaRequest);
+                const auto mainSigma = sigmaMainLease.readRealtimeSigma(), pinSigma = sigmaPinLease.readRealtimeSigma();
+                const auto step = 1. - std::pow(.1, 1024. / (48000. * .5));
+                const auto firstHopDb = 20. * std::log10((1. - step) * std::sqrt(step));
+                const auto matches = [&](const auto &sigma, const auto &raw, std::size_t bin) {
+                    return sigma && raw && sigma->window == raw &&
+                        bin < sigma->binsDbfs.size() && bin < raw->binsDbfs.size() &&
+                        std::abs(sigma->binsDbfs[bin] - raw->binsDbfs[bin] - firstHopDb) < .01;
+                };
+                auto &view = pages.detail.view;
+                check(matches(mainSigma, rawMain, mainBin) && matches(pinSigma, rawPin, pinBin) &&
+                          view.snapshot() == rawMain && view.spectrumBins().data() == mainSigma->binsDbfs.data(),
+                      "Sigma projects the first-hop standard deviation from the actual shared immutable windows");
+
+                if (pinSigma && pinBin < pinSigma->binsDbfs.size()) {
+                    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+                    juce::Graphics g(image);
+                    view.paint(g);
+                    const auto hz = static_cast<double>(pinBin) * 48000. / 4096.;
+                    const auto x = juce::roundToInt(5. + (image.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (image.getHeight() - 55.) * pinSigma->binsDbfs[pinBin] / 96.);
+                    bool visiblePinPeak = false;
+                    for (int dy = -2; dy <= 2; ++dy)
+                        for (int dx = -2; dx <= 2; ++dx)
+                            visiblePinPeak = visiblePinPeak || (image.getBounds().contains(x + dx, y + dy) &&
+                                image.getPixelAt(x + dx, y + dy) != look::display);
+                    check(view.spectrumScale() == SharedSpectrumView::SpectrumScale::Wide && visiblePinPeak,
+                          "the pinned trace is painted at the sigma level rather than its raw peak");
+                }
+                const auto observed = broker->stats();
+                check(produced.taps == beforeSigma.taps && produced.domains == beforeSigma.domains &&
+                          produced.spectralPlans == beforeSigma.spectralPlans &&
+                          observed.spectralPlans == produced.spectralPlans &&
+                          produced.transforms > beforeSigma.transforms &&
+                          produced.transforms - beforeSigma.transforms ==
+                              produced.analysisWindows - beforeSigma.analysisWindows,
+                      "Sigma adds no plan and each real window has just its existing analyser transform");
+                sigmaMainLease.reset(); sigmaPinLease.reset();
+                select(pages.spectrumTraceBox, "Realtime");
+                root.frame();
+            }
+        }
+    }
+    const bool renamed = doc->deviceAction("track.rename", {{"id", wide}, {"name", "Renamed wide ID"}});
+    root.frame();
+    check(renamed && firstTap && wideTap && tapFor(first) == firstTap && tapFor(wide) == wideTap,
+          "renaming a pinned 64-bit channel preserves both live tap identities");
+
+    std::vector<std::int64_t> many{main};
+    for (std::int64_t track = first; track <= 30; ++track) many.push_back(track);
+    many.push_back(wide);
+    many.push_back(missing);
+    check(doc->views().saveStackPins(pins, many, error), "update project pins while Spectrum is visible");
+    root.frame();
+    const auto capped = broker->stats();
+    check(capped.consumers == baseline.consumers + 15 && capped.taps == baseline.taps + 15 &&
+              !attached(missing), "project pins are bounded to sixteen total curves including the visible primary");
+    check(doc->views().saveStackPins(many, pins, error), "restore the small pin set for page transitions");
+    root.frame();
+    const auto attachmentsBeforeRestore = attachments;
+    choose(false);
+    check(noExtraPins() && tapFor(main) == primaryTap && attachments == attachmentsBeforeRestore &&
+              broker->stats().spectralPlans == baseline.spectralPlans,
+          "turning Pinned tracks off drops pin leases and retains the primary tap");
+    ordinaryReader.reset();
+    {
+        adi::ui::SharedAnalysis::Request request{main, pages.detail.point(), normalFft,
+                                                pages.detail.view.channel()};
+        const auto before = broker->stats();
+        auto ordinary = broker->acquire(request);
+        sendTone(*primaryTap, normalFft, 16, primaryTap->written());
+        broker->pump();
+        root.frame();
+        const auto restored = pages.detail.view.snapshot();
+        check(ordinary && restored && restored == ordinary.read() && restored->request.fftSize == normalFft &&
+                  restored->hopSize == normalFft / 4 && broker->stats().spectralPlans == before.spectralPlans,
+              "turning Pinned tracks off restores and shares the ordinary 1024-point plan");
+    }
+    choose(true);
+    pages.setPage(Page::All);
+    {
+        // All may keep a physical tap for a visible table row's meters.
+        // Neither pinned spectrum plan should survive the page switch.
+        const auto before = broker->stats().spectralPlans;
+        SharedAnalysis::Request request{first, pages.detail.point(), overviewFft, pages.detail.view.channel()};
+        request.hopSize = overviewFft / 4;
+        auto probeFirst = broker->acquire(request);
+        request.track = wide;
+        auto probeWide = broker->acquire(request);
+        check(probeFirst && probeWide && broker->stats().spectralPlans == before + 2,
+              "switching to All immediately drops both pinned spectrum plans");
+    }
+    pages.setPage(Page::Spectrum);
+    root.frame();
+    choose(true);
+    pages.setPage(Page::Compare);
+    check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
+    check(blockSize && !blockSize->isShowing() && overlap && !overlap->isShowing() &&
+              smoothing && !smoothing->isShowing(),
+          "Compare hides the dedicated Spectrum block-size, overlap and smoothing controls");
+
+    root.frame();
+    const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");
+    root.frame();
+    const auto a = tapFor(first), b = tapFor(wide);
+    check(pairSelected && a && b, "Compare still opens its own two explicitly selected identities");
+    if (a && b) {
+        std::array<float, 1024> audio;
+        audio.fill(.5f);
+        a->write(audio.data(), audio.data(), 1024, 0, true, 4);
+        audio.fill(.25f);
+        b->write(audio.data(), audio.data(), 1024, 0, true, 4);
+        broker->pump();
+        root.frame();
+        const auto pair = pages.comparisonView();
+        check(pair.status == AnalysisComparison::Status::Independent && pair.b.metadata &&
+                  pair.b.metadata->endpoint.request.track == wide,
+              "Compare publishes B from its original authored track");
+        const auto heldValue = pair.b.binsDbfs.empty() ? 0.f : pair.b.binsDbfs.front();
+        if (pages.holdB.onClick) pages.holdB.onClick();
+        check(pages.comparisonView().status == AnalysisComparison::Status::Held && !attached(wide),
+              "Hold B keeps its picture and releases its own live demand");
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        check(pages.comparisonView().referenceHeld && attached(wide),
+              "Spectrum may reopen pinned B without clearing Compare's local hold");
+        if (rate == 48000 && select(pages.spectrumTraceBox, "Realtime Average")) {
+            root.frame();
+            check(pages.comparisonView().referenceHeld && attached(wide),
+                  "Realtime Average may open a pinned live tap without replacing Compare's held reference");
+            select(pages.spectrumTraceBox, "Realtime");
+        }
+        if (rate == 48000 && select(pages.spectrumTraceBox, "Realtime Sigma")) {
+            root.frame();
+            check(pages.comparisonView().referenceHeld && attached(wide),
+                  "Realtime Sigma keeps Compare's separate held reference while its own pin is live");
+            select(pages.spectrumTraceBox, "Realtime");
+        }
+        pages.setPage(Page::Compare);
+        root.frame();
+        const auto held = pages.comparisonView();
+        check(held.referenceHeld && !held.b.binsDbfs.empty() && held.b.binsDbfs.front() == heldValue && !attached(wide),
+              "returning to Compare keeps the original held bins and no live B tap");
+    }
+    if (rate == 48000) {
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        const auto primaryBefore = tapFor(main), firstBefore = tapFor(first), wideBefore = tapFor(wide);
+        const auto count = attachments;
+        const auto previous = broker->stats();
+        const bool averaged = select(pages.spectrumTraceBox, "Realtime Average");
+        root.frame();
+        const auto active = broker->stats();
+        check(averaged && primaryBefore && firstBefore && wideBefore && tapFor(main) == primaryBefore &&
+                  tapFor(first) == firstBefore && tapFor(wide) == wideBefore && attachments == count &&
+                  active.consumers == previous.consumers && active.spectralPlans == previous.spectralPlans,
+              "the view's own leases retain all three physical taps when changing to Realtime Average");
+        pages.setPage(Page::Average);
+        root.frame();
+        const auto averageTap = tapFor(main);
+        if (averageTap) sendTone(*averageTap, normalFft, 8, averageTap->written());
+        broker->pump();
+        root.frame();
+        const auto averagePicture = pages.detail.view.snapshot();
+        check(!control->isVisible() && !attached(first) && !attached(wide) && averagePicture &&
+                  averagePicture->request.fftSize == normalFft && (averagePicture->outputs & SharedAnalysis::Average1s),
+              "the separate Average page releases the pins and uses its original analysis size");
+        pages.setPage(Page::Spectrum);
+        select(pages.spectrumTraceBox, "Realtime");
+
+        choose(false);
+        const bool cumulative = select(pages.spectrumTraceBox, "Cumulative Average");
+        root.frame();
+        auto &view = pages.detail.view;
+        const auto selectedTap = tapFor(main);
+        check(cumulative && selectedTap && pages.page() == Page::Spectrum &&
+                  control->isShowing() && control->isEnabled() && !attached(first) && !attached(wide) &&
+                  pages.detail.resetButton.isShowing(),
+              "Cumulative Average is a single-source Spectrum trace with its own Reset");
+        if (cumulative && selectedTap) {
+            constexpr auto hop = normalFft / 4;
+            constexpr std::int64_t start = 200000;
+            constexpr std::size_t toneBin = 8;
+            const auto writeTone = [&](Tap &tap, int count, float magnitude, std::int64_t stamp) {
+                std::vector<float> samples(static_cast<std::size_t>(count));
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = magnitude * static_cast<float>(std::sin(
+                        2. * std::numbers::pi * static_cast<double>(toneBin) * static_cast<double>(i) / normalFft));
+                tap.write(samples.data(), samples.data(), count, stamp, true, 4);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            };
+            writeTone(*selectedTap, normalFft, .5f, start);
+            const auto firstView = view.snapshot();
+            const auto firstBins = view.spectrumBins();
+            const auto initialDb = firstBins.size() > toneBin ? firstBins[toneBin] : 0.f;
+            check(firstView && firstView->request.track == main &&
+                      firstView->request.fftSize == normalFft && firstView->hopSize == hop &&
+                      (firstView->outputs & SharedAnalysis::CumulativeAverage) &&
+                      std::abs(initialDb - 20. * std::log10(.5)) < .02,
+                  "the ordinary cumulative trace projects a real calibrated tone from its 1024-point source");
+
+            writeTone(*selectedTap, hop, 0.f, start + normalFft);
+            const auto diluted = view.spectrumBins();
+            check(diluted.size() > toneBin && diluted[toneBin] < initialDb - .05f &&
+                      diluted[toneBin] > initialDb - 3.f,
+                  "a fresh quieter window reduces the displayed cumulative magnitude");
+            const auto beforeReset = broker->stats();
+            if (pages.detail.resetButton.onClick) pages.detail.resetButton.onClick();
+            root.frame();
+            broker->pump();
+            root.frame();
+            check(!view.snapshot() && view.spectrumBins().empty() && tapFor(main) == selectedTap &&
+                      broker->stats().transforms == beforeReset.transforms,
+                  "Reset clears only the current display interval without opening another tap or running an FFT");
+
+            constexpr auto resetStamp = start + normalFft + hop;
+            writeTone(*selectedTap, hop, .125f, resetStamp);
+            check(!view.snapshot(), "Cumulative Average waits for a whole post-Reset window");
+            writeTone(*selectedTap, normalFft - hop, .125f, resetStamp + hop);
+            const auto restarted = view.snapshot();
+            const auto restartedBins = view.spectrumBins();
+            check(restarted && restarted->firstStamp == resetStamp && restartedBins.size() > toneBin &&
+                      std::abs(restartedBins[toneBin] - 20. * std::log10(.125)) < .02,
+                  "the first complete post-Reset window sets the new cumulative level without older audio");
+
+            pages.setPage(Page::Average);
+            root.frame();
+            const auto separateTap = tapFor(main);
+            if (separateTap) writeTone(*separateTap, normalFft, .125f, resetStamp + 3 * normalFft);
+            const auto exponential = view.snapshot();
+            const auto expBins = view.spectrumBins();
+            const auto step = 1. - std::pow(.1, hop / 48000.);
+            check(separateTap && exponential && view.mode() == SharedSpectrumView::Mode::SpectrumAverage &&
+                      (exponential->outputs & SharedAnalysis::Average1s) &&
+                      !(exponential->outputs & SharedAnalysis::CumulativeAverage) &&
+                      expBins.size() > toneBin && std::abs(expBins[toneBin] - 20. * std::log10(.125 * step)) < .02,
+                  "the separate one-second page keeps its exponential average after the cumulative trace");
+
+            pages.setPage(Page::Spectrum);
+            // Isolate the source from the visible Main meter and the mirrored Info pane.
+            constexpr std::int64_t isolatedTrack = 12;
+            const bool isolatedSource = select(pages.sourceBox, "Pinned 12");
+            const bool infoWasVisible = commands.infoView();
+            const bool infoClosed = !infoWasVisible || commands.setInfoView(false, error);
+            root.frame();
+            broker->pump();
+            const auto hiddenTap = tapFor(isolatedTrack);
+            pages.setVisible(false);
+            const bool released = !view.subscribed() && !view.snapshot() && !attached(isolatedTrack);
+            const auto hidden = broker->stats();
+            if (hiddenTap) writeTone(*hiddenTap, normalFft, .5f, resetStamp + 5 * normalFft);
+            const auto still = broker->stats();
+            check(isolatedSource && infoClosed && hiddenTap && released && !view.subscribed() && !view.snapshot(),
+                  "hiding Cumulative Average drops its subscription and discards its picture");
+            check(still.spectralPlans == hidden.spectralPlans && still.transforms == hidden.transforms &&
+                      still.workerPasses == hidden.workerPasses && still.publications == hidden.publications,
+                  "fresh input does not drive work for a hidden Cumulative Average");
+            if (infoWasVisible) commands.setInfoView(true, error);
+            pages.setVisible(true);
+            pages.followSelection(false);
+            choose(true);
+            const auto pinnedPrimaryTap = tapFor(main), pinnedFirstTap = tapFor(first), pinnedWideTap = tapFor(wide);
+            SharedAnalysis::Request pinRequest{first, pages.detail.point(), overviewFft, view.channel()};
+            pinRequest.hopSize = overviewFft / 4;
+            auto pinA = broker->acquire(pinRequest);
+            pinRequest.track = wide;
+            auto pinB = broker->acquire(pinRequest);
+            constexpr std::int64_t pinStamp = resetStamp + 7 * normalFft;
+            if (pinnedPrimaryTap && pinnedFirstTap && pinnedWideTap) {
+                sendTone(*pinnedPrimaryTap, overviewFft, 8, pinStamp);
+                sendTone(*pinnedFirstTap, overviewFft, 4, pinStamp);
+                sendTone(*pinnedWideTap, overviewFft, 16, pinStamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            }
+            const auto pinnedMain = view.snapshot(), pinnedA = pinA.read(), pinnedB = pinB.read();
+            check(pinnedMain && pinnedA && pinnedB && pinnedMain->request.fftSize == overviewFft &&
+                      (pinnedMain->outputs & SharedAnalysis::CumulativeAverage) &&
+                      (pinnedA->outputs & SharedAnalysis::CumulativeAverage) &&
+                      (pinnedB->outputs & SharedAnalysis::CumulativeAverage),
+                  "Cumulative Average subscribes the primary and both pins on their shared Overview plans");
+            choose(false);
+            select(pages.spectrumTraceBox, "Realtime");
+            root.frame();
+        }
+    }
+    if (rate == 96000) {
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        const auto oldPrimary = tapFor(main), oldFirst = tapFor(first), oldWide = tapFor(wide);
+        check(oldPrimary && oldFirst && oldWide && oldPrimary->sampleRate() == 96000.,
+              "the same Spectrum panel has its normal primary and pins attached before a format rebind");
+        if (oldPrimary && oldFirst && oldWide) {
+            sendTone(*oldPrimary, overviewFft, 16, 0);
+            sendTone(*oldFirst, overviewFft, 4, 0);
+            sendTone(*oldWide, overviewFft, 32, 0);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+        }
+        const auto oldPicture = pages.detail.view.snapshot();
+        check(oldPicture && oldPicture->sampleRate == 96000.,
+              "the Spectrum panel has a published 96 kHz picture before the format rebind");
+
+        // The device prepares another rate while the stored project stays at 44.1 kHz.
+        constexpr double reboundRate = 48000.;
+        constexpr std::int32_t reboundFft = 4096;
+        tapRate = reboundRate;
+        broker->refreshSources(true);
+        root.frame();
+        const auto newPrimary = tapFor(main), newFirst = tapFor(first), newWide = tapFor(wide);
+        check(newPrimary && newFirst && newWide && newPrimary != oldPrimary && newFirst != oldFirst &&
+                  newWide != oldWide && newPrimary->sampleRate() == reboundRate,
+              "the prepared rate replaces the primary and both pinned physical taps");
+        const auto pending = pages.detail.view.snapshot();
+        check(!pending || (pending->sampleRate == reboundRate && pending->request.fftSize == reboundFft),
+              "changing the prepared rate clears the previous Spectrum picture before new samples");
+        if (newPrimary && newFirst && newWide) {
+            SharedAnalysis::Request request{main, pages.detail.point(), reboundFft, pages.detail.view.channel()};
+            request.hopSize = reboundFft / 4;
+            const auto before = broker->stats();
+            auto primary = broker->acquire(request);
+            request.track = first;
+            auto left = broker->acquire(request);
+            request.track = wide;
+            auto right = broker->acquire(request);
+            const auto sharing = broker->stats();
+            check(primary && left && right && sharing.taps == before.taps &&
+                      sharing.domains == before.domains && sharing.spectralPlans == before.spectralPlans,
+                  "a prepared rate change reuses exactly one new profile per visible Spectrum source");
+            sendTone(*newPrimary, reboundFft, 16, 0);
+            sendTone(*newFirst, reboundFft, 4, 0);
+            sendTone(*newWide, reboundFft, 32, 0);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            const auto picture = pages.detail.view.snapshot(), pinA = left.read(), pinB = right.read();
+            check(picture && pinA && pinB && picture == primary.read() && picture->sampleRate == reboundRate &&
+                      pinA->sampleRate == reboundRate && pinB->sampleRate == reboundRate &&
+                      picture->request.fftSize == reboundFft && picture->hopSize == reboundFft / 4 &&
+                      pinA->request.track == first && pinB->request.track == wide,
+                  "the existing panel publishes the new 48 kHz primary and pin profiles after a 96 kHz rebind");
+        }
+    }
+    if (rate == 48000) {
+        const auto findLabel = [](const auto &walk, juce::Component &parent, const juce::String &name) -> juce::Label * {
+            if (auto *label = dynamic_cast<juce::Label *>(&parent); label && label->getTitle() == name) return label;
+            for (auto *child : parent.getChildren())
+                if (auto *label = walk(walk, *child, name)) return label;
+            return nullptr;
+        };
+        const auto statistic = [&](const juce::String &name) {
+            const auto *label = findLabel(findLabel, pages, name);
+            return label && label->isShowing() && !label->getBounds().isEmpty() ? label->getText() : juce::String{};
+        };
+        const auto balance = [&] { return statistic("RMS Balance"); };
+        const auto correlation = [&] { return statistic("Stereo Correlation"); };
+        const auto integratedRms = [&] { return statistic("Integrated RMS"); };
+        const auto maxCrest = [&] { return statistic("Max Crest"); };
+        const auto samplePeak = [&] { return statistic("Sample Peak"); };
+        const auto sampleClips = [&] { return statistic("Sample Clips"); };
+        std::uint64_t stereoRevision = 4;
+        const auto sendLevels = [&](float left, float right, bool newEpoch = false) {
+            const auto tap = tapFor(main);
+            if (!tap) return false;
+            const std::vector<float> a(static_cast<std::size_t>(overviewFft), left);
+            const std::vector<float> b(static_cast<std::size_t>(overviewFft), right);
+            if (newEpoch) ++stereoRevision;
+            tap->write(a.data(), b.data(), overviewFft, tap->written(), true, stereoRevision);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            return true;
+        };
+
+        pages.setPage(Page::Spectrum);
+        choose(false);
+        check(balance().isEmpty() && correlation().isEmpty() && integratedRms().isEmpty() && maxCrest().isEmpty() &&
+                  samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
+              "ordinary Spectrum has no pinned readouts or level history");
+        choose(true);
+        const auto plan = broker->stats();
+        bool wroteInverted = true;
+        for (int block = 0; block < 4; ++block) wroteInverted = sendLevels(.5f, -.25f) && wroteInverted;
+        const auto picture = pages.detail.view.snapshot();
+        const auto observedBalance = balance(), observedCorrelation = correlation();
+        check(wroteInverted && picture && picture->rms[0] == .5f && picture->rms[1] == .25f &&
+                  picture->correlation == -1. && observedBalance.contains("L 6.0") &&
+                  observedCorrelation.contains("-1.00"),
+              "pinned readouts use the primary window's RMS direction and signed anti-correlation");
+        const auto observedRms = integratedRms(), observedCrest = maxCrest();
+        check(observedRms.contains("L -6.0") && observedRms.contains("R -12.0") &&
+                  observedCrest.contains("L 0.0") && observedCrest.contains("R 0.0"),
+              "the expanded pinned second row shows stereo integrated dBFS and maximum crest");
+        const auto observedPeak = samplePeak(), observedClips = sampleClips();
+        check(observedPeak == "Sample peak  L -6.0  R -12.0 dBFS" &&
+                  observedClips == "Sample clips  L 0  R 0",
+              "expanded Spectrum reports both held sample peaks and clip counts");
+        const auto published = broker->stats();
+        check(published.consumers == plan.consumers && published.taps == plan.taps &&
+                  published.domains == plan.domains && published.spectralPlans == plan.spectralPlans &&
+                  published.stereoBalanceHistories == 1 && published.spectrumLevelHistories == 1,
+              "pinned readouts do not add a consumer or plan to the existing primary and pin spectra");
+        for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+        const auto statisticsIdle = broker->stats();
+        check(statisticsIdle.workerPasses == published.workerPasses && statisticsIdle.transforms == published.transforms &&
+                  statisticsIdle.publications == published.publications,
+              "unchanged pinned readouts do not do worker work");
+
+        const auto fullBounds = pages.getBounds();
+        const auto fullBottom = pages.detail.getBottom();
+        const auto shortHeight = 2 * look::border + look::fieldHeight + look::gap +
+                                 look::mixInfoHeight + 2 * look::mixChannelRowHeight;
+        pages.setBounds(fullBounds.withHeight(shortHeight));
+        root.frame();
+        const auto shortLayout = broker->stats();
+        check(balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && samplePeak().isEmpty() &&
+                  sampleClips().isEmpty() && shortLayout.stereoBalanceHistories == 1 &&
+                  shortLayout.spectrumLevelHistories == 0 && shortLayout.taps == statisticsIdle.taps &&
+                  shortLayout.consumers == statisticsIdle.consumers && shortLayout.transforms == statisticsIdle.transforms &&
+                  pages.detail.view.snapshot() == picture,
+              "a shorter Spectrum keeps balance and correlation and drops both level rows and their history");
+        pages.setBounds(fullBounds);
+        root.frame();
+        check(samplePeak().contains("--") && sampleClips().contains("--") &&
+                  pages.detail.view.snapshot() == picture && broker->stats().spectrumLevelHistories == 1,
+              "the taller layout starts a fresh shared level interval while retaining the Spectrum picture");
+        const auto firstRowWidth = 2 * look::mixChannelMinWidth + look::gap + 2 * look::border;
+        pages.setBounds(fullBounds.withWidth(firstRowWidth));
+        root.frame();
+        const auto oneRow = broker->stats();
+        check(balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && oneRow.stereoBalanceHistories == 1 &&
+                  oneRow.spectrumLevelHistories == 0 && oneRow.taps == statisticsIdle.taps &&
+                  oneRow.consumers == statisticsIdle.consumers && oneRow.transforms == statisticsIdle.transforms &&
+                  oneRow.spectralPlans == statisticsIdle.spectralPlans && pages.detail.view.snapshot() == picture &&
+                  pages.detail.getBottom() == fullBottom + 2 * look::mixChannelRowHeight &&
+                  samplePeak().isEmpty() && sampleClips().isEmpty(),
+              "the intermediate width keeps balance and correlation and releases the shared level readings");
+        pages.setBounds(fullBounds.withWidth(look::mixChannelMinWidth));
+        root.frame();
+        const auto compact = broker->stats();
+        check(balance().isEmpty() && correlation().isEmpty() && pages.detail.getBottom() > fullBottom &&
+                  pages.detail.view.snapshot() == picture && compact.domains == statisticsIdle.domains &&
+                  compact.transforms == statisticsIdle.transforms && compact.stereoBalanceHistories == 0 &&
+                  compact.spectrumLevelHistories == 0 && integratedRms().isEmpty() && maxCrest().isEmpty(),
+              "compact pinned Spectrum removes the readout row without losing the primary picture");
+        pages.setBounds(fullBounds);
+        root.frame();
+        check(!observedBalance.isEmpty() && balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().contains("--") && maxCrest().contains("--") &&
+                  samplePeak().contains("--") && sampleClips().contains("--") &&
+                  pages.detail.view.snapshot() == picture && broker->stats().spectrumLevelHistories == 1,
+              "expanding the panel preserves its picture while admitting a fresh level interval");
+        bool wroteReopened = true;
+        for (int block = 0; block < 4; ++block) wroteReopened = sendLevels(.5f, -.25f) && wroteReopened;
+        const auto reopenedPicture = pages.detail.view.snapshot();
+        check(wroteReopened && reopenedPicture && reopenedPicture != picture &&
+                  integratedRms() == observedRms && maxCrest() == observedCrest &&
+                  !observedPeak.isEmpty() && samplePeak() == observedPeak && sampleClips() == observedClips,
+              "new audio restores the level values after the row reopens");
+
+        const auto freeze = [&](bool value) {
+            auto &button = pages.detail.freezeButton;
+            button.setToggleState(value, juce::dontSendNotification);
+            if (button.onClick) button.onClick();
+            root.frame();
+        };
+        freeze(true);
+        check(!pages.detail.view.subscribed() && !attached(first) && !attached(wide) &&
+                  pages.detail.view.snapshot() == reopenedPicture && !observedBalance.isEmpty() &&
+                  balance() == observedBalance && correlation() == observedCorrelation &&
+                  !observedRms.isEmpty() && integratedRms() == observedRms && maxCrest() == observedCrest &&
+                  !observedPeak.isEmpty() && samplePeak() == observedPeak && sampleClips() == observedClips &&
+                  broker->stats().spectrumLevelHistories == 0,
+              "Freeze preserves the same statistics and releases their existing Spectrum demand");
+        freeze(false);
+        check(!balance().contains("L 6.0") && !correlation().contains("-1.00") &&
+                  !integratedRms().contains("-6.0") && !maxCrest().contains("0.0") &&
+                  samplePeak().contains("--") && sampleClips().contains("--"),
+              "resuming clears frozen numbers until a fresh Spectrum window arrives");
+        const bool wroteAligned = sendLevels(.25f, .5f);
+        check(wroteAligned && balance().contains("R 6.0") && correlation().contains("+1.00"),
+              "fresh primary samples update the stereo statistics after Freeze");
+        const bool wroteOneSide = sendLevels(.5f, 0.f, true);
+        check(wroteOneSide && balance().contains("L only") && correlation().contains("--"),
+              "a fresh one-sided epoch has a balance direction without stereo correlation");
+        const bool wroteQuiet = sendLevels(0.f, 0.f, true);
+        check(wroteQuiet && balance().contains("--") && correlation().contains("--"),
+              "a fresh silent epoch has neither a balance direction nor stereo correlation");
+
+        if (const auto tap = tapFor(main)) {
+            std::vector<float> left(static_cast<std::size_t>(overviewFft), .25f), right(left);
+            left[0] = right[0] = 1.f;
+            left[16] = right[16] = -1.f;
+            left[26] = 1.25f;
+            left[30] = -1.5f;
+            right[26] = -2.f;
+            tap->write(left.data(), right.data(), overviewFft, tap->written(), true, stereoRevision);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            const auto clippedPeak = samplePeak(), clippedCount = sampleClips();
+            check(clippedPeak == "Sample peak  L +3.5  R +6.0 dBFS" &&
+                      clippedCount == "Sample clips  L 2  R 1",
+                  "sample clipping counts each strict overshoot once, including negative samples, with unity excluded");
+            const bool wroteQuieter = sendLevels(.125f, .25f);
+            const auto quietPicture = pages.detail.view.snapshot();
+            check(wroteQuieter && quietPicture && quietPicture->peak[0] == .125f && quietPicture->peak[1] == .25f &&
+                      !clippedPeak.isEmpty() && samplePeak() == clippedPeak && sampleClips() == clippedCount,
+                  "sample peaks and clip counts remain held after louder samples leave the Spectrum window");
+            {
+                auto rawSibling = broker->acquire({main, pages.detail.point(), overviewFft, pages.detail.view.channel()});
+                auto ordinary = broker->acquire({main, pages.detail.point(), normalFft, pages.detail.view.channel()});
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto siblingBefore = rawSibling.read();
+                const auto ordinaryBefore = ordinary.read();
+                const auto beforeReset = broker->stats();
+                const auto resetAttachments = attachments;
+                const auto resetHead = History(doc->store()).head();
+
+                // These overs arrived before Reset, but the shared worker has not read them yet.
+                tap->write(left.data(), right.data(), overviewFft, tap->written(), true, stereoRevision);
+                auto &reset = pages.detail.resetButton;
+                check(rawSibling && ordinary && siblingBefore == quietPicture && ordinaryBefore && reset.onClick &&
+                          beforeReset.spectrumLevelHistories == 1,
+                      "the Reset oracle has the held levels and two active raw observers");
+                if (reset.onClick) reset.onClick();
+                root.frame();
+
+                const auto afterReset = broker->stats();
+                check(!pages.detail.view.snapshot() && integratedRms().contains("--") && maxCrest().contains("--") &&
+                          samplePeak().contains("--") && sampleClips().contains("--"),
+                      "Reset clears the visible Spectrum interval before the next worker publication");
+                check(tapFor(main) == tap && attachments == resetAttachments && History(doc->store()).head() == resetHead &&
+                          afterReset.consumers == beforeReset.consumers && afterReset.taps == beforeReset.taps &&
+                          afterReset.domains == beforeReset.domains && afterReset.spectralPlans == beforeReset.spectralPlans &&
+                          afterReset.transforms == beforeReset.transforms && afterReset.spectrumLevelHistories == 1 &&
+                          rawSibling.read() == siblingBefore && ordinary.read() == ordinaryBefore,
+                      "Reset leaves the authored project, physical tap, FFT demand and other raw pictures intact");
+
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto bufferedSibling = rawSibling.read();
+                check(bufferedSibling && bufferedSibling != siblingBefore &&
+                          bufferedSibling->peak[0] == 1.5f && bufferedSibling->peak[1] == 2.f &&
+                          ordinary.read() && ordinary.read() != ordinaryBefore &&
+                          samplePeak().contains("--") && sampleClips().contains("--"),
+                      "raw observers receive the queued overs while the reset level interval waits for new audio");
+
+                const bool wroteFresh = sendLevels(.125f, .25f);
+                const auto fresh = pages.detail.view.snapshot();
+                const auto afterFresh = broker->stats();
+                check(wroteFresh && fresh && fresh == rawSibling.read() && fresh != bufferedSibling &&
+                          samplePeak() == "Sample peak  L -18.1  R -12.0 dBFS" && sampleClips() == "Sample clips  L 0  R 0" &&
+                          History(doc->store()).head() == resetHead && tapFor(main) == tap && attachments == resetAttachments &&
+                          afterFresh.domains == beforeReset.domains && afterFresh.spectralPlans == beforeReset.spectralPlans,
+                      "fresh quiet samples reset held levels and retain the original shared Spectrum plan");
+            }
+            choose(false);
+            check(samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
+                  "turning off pinned Spectrum drops its held sample statistics");
+            choose(true);
+            check(samplePeak().contains("--") && sampleClips().contains("--"),
+                  "reopening pinned Spectrum waits for data from a fresh sample interval");
+            check(sendLevels(.125f, .25f) && samplePeak() == "Sample peak  L -18.1  R -12.0 dBFS" &&
+                      sampleClips() == "Sample clips  L 0  R 0",
+                  "the reopened level interval does not keep peaks or clips from the old one");
+        } else {
+            check(false, "the sample statistics oracle has its primary source");
+        }
+
+        const bool balanceSourceSelected = select(pages.sourceBox, "Pinned 12");
+        const bool infoWasVisible = commands.infoView();
+        const bool infoClosed = !infoWasVisible || commands.setInfoView(false, error);
+        root.frame();
+        for (int pass = 0; pass < 12; ++pass) broker->pump();
+        root.frame();
+        const auto balanceTap = tapFor(12);
+        check(balanceSourceSelected && infoClosed && balanceTap, "the two-second oracle has an isolated Spectrum source");
+        if (const auto &tap = balanceTap) {
+            constexpr int window = 4096, hop = 1024, hops = 90;
+            constexpr float bed = .0625f;
+            constexpr std::int64_t start = 200000;
+            const auto epoch = ++stereoRevision;
+            const auto beforeHistory = broker->stats();
+            std::array<float, window> left, right;
+            left.fill(bed); right.fill(bed);
+            std::fill_n(left.begin(), 256, 1.f);
+            std::fill_n(right.begin() + 256, 768, .75f);
+            tap->write(left.data(), right.data(), window, start, true, epoch);
+            broker->pump();
+
+            left.fill(bed);
+            for (int current = 0; current < hops; ++current) {
+                // The newest window is inverted while most of the two-second history is in phase.
+                right.fill(current >= hops - window / hop ? -bed : bed);
+                tap->write(left.data(), right.data(), hop, start + window + current * hop, true, epoch);
+                if (current % 3 == 2) broker->pump();
+            }
+            root.frame();
+            const auto trailing = pages.detail.view.snapshot();
+            const auto afterHistory = broker->stats();
+            // At 96,256 frames only the first 256 frames have aged out.
+            // The power sums are 375 and 804, giving R 3.3122478 dB.
+            check(trailing && trailing->transportRevision == epoch && trailing->firstStamp == start + hops * hop &&
+                      trailing->rms[0] == bed && trailing->rms[1] == bed && trailing->correlation == -1. &&
+                      balance().contains("R 3.3") && correlation().contains("-1.00"),
+                  "pinned balance retains the exact two-second tail while correlation uses only the current window");
+            check(afterHistory.taps == beforeHistory.taps && afterHistory.domains == beforeHistory.domains &&
+                      afterHistory.spectralPlans == beforeHistory.spectralPlans &&
+                      afterHistory.stereoBalanceHistories == 1 &&
+                      afterHistory.analysisWindows == beforeHistory.analysisWindows + hops + 1 &&
+                      afterHistory.transforms == beforeHistory.transforms + hops,
+                  "two-second balance adds no tap or transform including the Mid spectrum's inverted zero window");
+
+            right.fill(bed);
+            const auto heardEnd = start + window + hops * hop;
+            tap->write(left.data(), right.data(), hop, heardEnd, true, epoch);
+            broker->pump();
+            root.frame();
+            check(balance().contains("Centre") && correlation().contains("-0.50"),
+                  "the next hop ages out the remaining imbalance independently of the short correlation");
+
+            left.fill(.125f); right.fill(0.f);
+            const auto gapStart = heardEnd + hop + 17;
+            tap->write(left.data(), right.data(), window, gapStart, true, epoch);
+            broker->pump();
+            root.frame();
+            const auto resumed = pages.detail.view.snapshot();
+            check(trailing && resumed && resumed->transportRevision == epoch &&
+                      resumed->sourceEpoch > trailing->sourceEpoch && resumed->firstStamp == gapStart &&
+                      balance().contains("L only") && correlation().contains("--"),
+                  "a same-revision advancing gap starts a fresh balance history at the new heard position");
+        }
+        if (infoWasVisible) commands.setInfoView(true, error);
+        pages.followSelection(false);
+        root.frame();
+
+        const auto findTruePeak = [](const auto &walk, juce::Component &node) -> juce::ToggleButton * {
+            if (auto *button = dynamic_cast<juce::ToggleButton *>(&node);
+                button && button->getTitle() == "Spectrum True Peak") return button;
+            for (auto *child : node.getChildren())
+                if (auto *button = walk(walk, *child)) return button;
+            return nullptr;
+        };
+        auto *truePeakSwitch = findTruePeak(findTruePeak, pages);
+        check(truePeakSwitch && truePeakSwitch->isShowing() && truePeakSwitch->getButtonText() == "TP" &&
+                  !truePeakSwitch->getToggleState() && broker->stats().spectrumTruePeakHistories == 0,
+              "expanded Spectrum offers an accessible TP switch that starts off without analysis demand");
+        if (truePeakSwitch) {
+            const auto truePeak = [&] { return statistic("True Peak"); };
+            const auto changeTruePeak = [&](bool enabled) {
+                truePeakSwitch->setToggleState(enabled, juce::dontSendNotification);
+                if (truePeakSwitch->onClick) truePeakSwitch->onClick();
+                root.frame();
+            };
+            const auto *peakLabel = findLabel(findLabel, pages, "Sample Peak");
+            auto *statsPanel = truePeakSwitch->getParentComponent();
+            check(peakLabel && statsPanel &&
+                      statsPanel->getComponentAt(truePeakSwitch->getBounds().getCentre()) == truePeakSwitch &&
+                      !statsPanel->getComponentAt(peakLabel->getBounds().getCentre()),
+                  "the statistics switch receives clicks and the readout stays mouse-transparent");
+            const auto sendInterSample = [&] {
+                const auto tap = tapFor(main);
+                if (!tap) return false;
+                constexpr std::array quadrature{.8f, .8f, -.8f, -.8f};
+                std::vector<float> signal(static_cast<std::size_t>(overviewFft));
+                for (std::size_t i = 0; i < signal.size(); ++i) signal[i] = quadrature[i % quadrature.size()];
+                tap->write(signal.data(), signal.data(), overviewFft, tap->written(), true, stereoRevision);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                return true;
+            };
+            ++stereoRevision;
+            const bool wroteWarm = sendInterSample();
+            const auto peakBaseline = broker->stats();
+            const bool wroteOff = sendInterSample();
+            const auto off = broker->stats();
+            const auto samplePicture = pages.detail.view.snapshot();
+            const auto uncounted = sampleClips();
+            check(wroteWarm && wroteOff && samplePicture &&
+                      samplePeak() == "Sample peak  L -1.9  R -1.9 dBFS" && uncounted == "Sample clips  L 0  R 0",
+                  "the quarter-rate fixture stays below full scale at its sample points");
+            changeTruePeak(true);
+            const auto on = broker->stats();
+            check(truePeak().contains("--") && truePeak().endsWith("dBTP") && samplePeak().isEmpty() &&
+                      sampleClips() == uncounted && pages.detail.view.snapshot() == samplePicture &&
+                      on.spectrumTruePeakHistories == 1 && on.taps == off.taps && on.domains == off.domains &&
+                      on.consumers == off.consumers && on.spectralPlans == off.spectralPlans && on.transforms == off.transforms,
+                  "enabling True Peak preserves the Raw picture, sample clips and existing demand while waiting");
+            const bool wroteOn = sendInterSample();
+            const auto analysed = broker->stats();
+            check(wroteOn && truePeak().contains("L +") && truePeak().contains("R +") && truePeak().endsWith("dBTP") &&
+                      sampleClips() == uncounted && off.transforms > peakBaseline.transforms &&
+                      analysed.transforms - on.transforms == off.transforms - peakBaseline.transforms,
+                  "True Peak detects an intersample overshoot with the same FFT count and zero clipped samples");
+            changeTruePeak(false);
+            check(truePeak().isEmpty() && samplePeak() == "Sample peak  L -1.9  R -1.9 dBFS" &&
+                      sampleClips() == uncounted && broker->stats().spectrumTruePeakHistories == 0,
+                  "switching off releases True Peak and immediately restores the held Sample Peak");
+            changeTruePeak(true);
+            check(truePeak().contains("--") && sampleClips() == uncounted,
+                  "re-enabling cannot show a True Peak value from an earlier interval");
+            const bool wroteFresh = sendInterSample();
+            const auto heldText = truePeak();
+            const auto frozenPicture = pages.detail.view.snapshot();
+            freeze(true);
+            check(wroteFresh && heldText.contains("L +") && truePeak() == heldText && truePeakSwitch->getToggleState() &&
+                      !pages.detail.view.subscribed() && broker->stats().spectrumTruePeakHistories == 0 &&
+                      pages.detail.view.snapshot() == frozenPicture,
+                  "Freeze retains True Peak values and switch state while releasing its analysis");
+            freeze(false);
+            check(truePeakSwitch->getToggleState() && truePeak().contains("--") &&
+                      broker->stats().spectrumTruePeakHistories == 1,
+                  "resuming keeps True Peak enabled and waits for fresh audio");
+            const bool wroteResumed = sendInterSample();
+            const auto beforeCompact = pages.detail.view.snapshot();
+            pages.setBounds(fullBounds.withWidth(firstRowWidth));
+            root.frame();
+            check(wroteResumed && beforeCompact && !truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() &&
+                      truePeak().isEmpty() && pages.detail.view.snapshot() == beforeCompact &&
+                      broker->stats().spectrumTruePeakHistories == 0,
+                  "the compact layout releases True Peak without changing its choice or Raw picture");
+            pages.setBounds(fullBounds);
+            root.frame();
+            check(truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() && truePeak().contains("--") &&
+                      broker->stats().spectrumTruePeakHistories == 1,
+                  "reopening the full layout retains the True Peak choice and starts with no old measurement");
+        }
+        pages.setVisible(false);
+        const auto hidden = broker->stats();
+        for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+        const auto hiddenIdle = broker->stats();
+        check(balance().isEmpty() && correlation().isEmpty() && !pages.detail.view.subscribed() &&
+                  !attached(first) && !attached(wide) && hiddenIdle.workerPasses == hidden.workerPasses &&
+                  hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications &&
+                  hiddenIdle.stereoBalanceHistories == 0 && hiddenIdle.spectrumLevelHistories == 0 &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && samplePeak().isEmpty() &&
+                  sampleClips().isEmpty() && hiddenIdle.spectrumTruePeakHistories == 0 &&
+                  (!truePeakSwitch || (!truePeakSwitch->isShowing() && truePeakSwitch->getToggleState())),
+              "a hidden Spectrum exposes no readouts and adds no worker activity");
+        if (truePeakSwitch) {
+            pages.setVisible(true);
+            root.frame();
+            check(truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() &&
+                      statistic("True Peak").contains("--") && broker->stats().spectrumTruePeakHistories == 1,
+                  "reshowing the Spectrum restores the session's True Peak choice with fresh-only data");
+        }
+    }
+    detachPeer();
 }
 
 void focusWorkspace(AppCommands &commands, const std::filesystem::path &directory) {
@@ -1507,6 +3007,9 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     broker->pump();
     root.frame();
     check(MixFocusTestAccess::independent(focus), "loop passes with repeated stamps retain individual traces without a combined sum");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "unaligned individual layers do not invent a common time or level cursor");
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
     broker->pump();
@@ -1635,6 +3138,35 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
         check(adi::uitest::samePicturePixels(overlay, restored),
               "returning to Overlay restores the existing plot exactly");
         root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == 1., "Overlay measures the summed stereo pair");
+        layout->setSelectedItemIndex(1, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == -1., "Layers measures the first two members' Mid signals");
+        layout->setSelectedItemIndex(2, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == -1., "Stack keeps the two-member phase operands");
+        layout->setSelectedItemIndex(3, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == 1., "Sum uses the signed combination's left and right");
+        layout->setSelectedItemIndex(4, juce::sendNotificationSync);
+        root.frame();
+        check(!MixFocusTestAccess::scopePhase(focus), "Difference has no phase bar demand");
+        juce::ToggleButton *residual = nullptr;
+        for (auto *child : focus.getChildren())
+            if (child->getTitle() == "Difference spectrum") residual = dynamic_cast<juce::ToggleButton *>(child);
+        check(residual && residual->isShowing() && !MixFocusTestAccess::requestsResidualSpectrum(focus),
+              "Difference offers its spectrum without requesting it by default");
+        if (residual) {
+            focus.select(second);
+            residual->setToggleState(true, juce::dontSendNotification);
+            residual->onClick();
+            check(MixFocusTestAccess::requestsResidualSpectrum(focus), "Spectrum explicitly requests the aligned delta");
+            residual->setToggleState(false, juce::dontSendNotification);
+            residual->onClick();
+            check(!MixFocusTestAccess::requestsResidualSpectrum(focus), "returning to the waveform drops spectrum demand");
+        }
+        layout->setSelectedItemIndex(0, juce::sendNotificationSync);
+        root.frame();
         const auto after = broker->stats();
         check(after.consumers == before.consumers && after.taps == before.taps &&
                   after.publications == before.publications && after.cursorReads == before.cursorReads &&
@@ -1642,6 +3174,54 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
               "scope display choices do not acquire, release or reprocess audio sources");
     };
     checkScopeDisplays();
+    const auto checkLayerAdjustments = [&] {
+        writeSum(.25f, .25f, .25f, .25f);
+        focus.select(second);
+        const auto beforeLayer = root.current();
+        const auto beforeUndo = root.undoTitle(false);
+        const auto beforeMeasure = broker->stats();
+        const auto choose = [&](juce::String label) {
+            const auto menu = MixFocusTestAccess::layerMenu(focus);
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == label && item.isEnabled) {
+                    MixFocusTestAccess::chooseLayerItem(focus, item.itemID);
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto reading = MixFocusTestAccess::scopeReading(focus);
+        check(reading && reading->peak[0] == .5 && reading->peak[1] == .5,
+              "identical recorded layers sum to their combined level before the preview edit");
+        check(choose("Invert polarity"), "the selected layer offers a polarity preview");
+        const auto cancelled = MixFocusTestAccess::scopeReading(focus);
+        check(cancelled && cancelled->peak[0] == 0. && cancelled->peak[1] == 0.,
+              "inversion cancels equal raw layers in both channels before display binning");
+        check(choose("Later by 10 samples") && choose("Later by 1 sample") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{11, true},
+              "coarse and fine adjustments compose as eleven samples for this member");
+        const auto shifted = MixFocusTestAccess::scopeReading(focus);
+        check(shifted && shifted->peak[0] == .25 && shifted->rms[0] > 0. && shifted->rms[0] < .1,
+              "the delayed layer leaves only a short leading edge in the signed sum");
+        check(choose("Show milliseconds") && choose("Earlier by 0.021 ms") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{10, true},
+              "switching readout units retains the exact offset and one-sample step at 48 kHz");
+        focus.select(first);
+        check(MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{},
+              "other members retain independent preview settings");
+        focus.select(second);
+        check(choose("Reset layer") && choose("Show samples") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{},
+              "reset restores this layer without changing the other controls");
+        const auto reset = MixFocusTestAccess::scopeReading(focus);
+        const auto afterMeasure = broker->stats();
+        check(reset && reset->peak[0] == .5 && beforeLayer == root.current() && root.undoTitle(false) == beforeUndo &&
+                  afterMeasure.transforms == beforeMeasure.transforms && afterMeasure.taps == beforeMeasure.taps &&
+                  afterMeasure.consumers == beforeMeasure.consumers,
+              "layer actions restore the original sum and write no project, undo, tap or transform");
+    };
+    checkLayerAdjustments();
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
     const auto checkAlignMeasure = [&] {
@@ -1881,11 +3461,52 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     };
     frame();
     const SnapshotReader initial(root->current());
+    juce::ComboBox *musicalWindow = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Scope window")
+            musicalWindow = dynamic_cast<juce::ComboBox *>(component);
+    check(musicalWindow && musicalWindow->isVisible() && musicalWindow->getSelectedId() == 2 &&
+              musicalWindow->getText() == "One Bar" && musicalWindow->getItemId(0) == 3 &&
+              musicalWindow->getItemText(0) == "1/16 Note" && musicalWindow->getItemId(1) == 1,
+          "Focus Scope exposes a musical window selector without changing the default bar");
+    juce::ToggleButton *freeze = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Freeze Focus Scope")
+            freeze = dynamic_cast<juce::ToggleButton *>(component);
+    check(freeze && freeze->isVisible() && freeze->getButtonText() == "Freeze" && !freeze->isEnabled(),
+          "Focus Scope shows Freeze but cannot hold a picture before it has received aligned audio");
+    juce::Label *differenceRms = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Scope Difference RMS")
+            differenceRms = dynamic_cast<juce::Label *>(component);
+    check(differenceRms && !differenceRms->isVisible(),
+          "Scope exposes an accessible Difference RMS only for a valid Difference waveform");
+    const auto rmsText = [&]() -> juce::String {
+        return differenceRms && differenceRms->isVisible() ? differenceRms->getText() : juce::String{};
+    };
+    const auto hasRms = [&](const char *level) { return rmsText().contains(level) && rmsText().contains("dBFS"); };
+    juce::ToggleButton *truePeakSwitch = nullptr;
+    juce::Label *capturedTruePeak = nullptr;
+    for (auto *component : focus.getChildren()) {
+        if (component->getTitle() == "Focus Scope true peak")
+            truePeakSwitch = dynamic_cast<juce::ToggleButton *>(component);
+        if (component->getTitle() == "Scope captured true peak")
+            capturedTruePeak = dynamic_cast<juce::Label *>(component);
+    }
+    check(truePeakSwitch && capturedTruePeak && !truePeakSwitch->isVisible() && !capturedTruePeak->isVisible(),
+          "the Focus captured true-peak controls are accessible and hidden in the initial Overlay");
     const auto &meters = initial.meters();
     check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
               a->capacity() == 12000 && b->capacity() == 12000 && broker->stats().taps == 2,
           "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "Scope cannot supply a cursor before it has received source audio");
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.625f, .25f});
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "Scope cannot measure a region before it receives source audio");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
 
     const auto writeUntil = [&](std::int64_t target) {
         std::array<float, chunk> pcmA{}, pcmB{}, rightA{}, rightB{};
@@ -1926,6 +3547,146 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
     check(active.consumers == 1,
           "a complete bar replaces the two short previews with one grouped reader");
+    const auto head = History(doc->store()).head();
+    check(MixFocusTestAccess::scopeCursorText(focus).contains("48000"),
+          "the cursor acquires the completed bar when the pointer has stayed still");
+    const auto pointer = MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    const auto cursor = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    check(cursor.contains("1.3") && cursor.contains("48000") && cursor.contains("1000") &&
+              cursor.contains("ms") && cursor.contains("-6.0") && cursor.contains("dBFS"),
+          "the midpoint of the heard bar shows beat 3, absolute sample 48000, 1000 ms and the half-scale ordinate");
+    const auto windowBeforeZoom = MixFocusTestAccess::scopeWaveformRange(focus);
+    const auto statsBeforeZoom = broker->stats();
+    const auto readingBeforeZoom = MixFocusTestAccess::scopeReading(focus);
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, 0);
+    MixFocusTestAccess::wheelScope(focus, .5f, -.1f, 1.f);
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor,
+          "plain wheel and Alt-wheel outside the waveform do not change its vertical scale");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f);
+    const auto zoomed = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    const auto zoomedWindow = MixFocusTestAccess::scopeWaveformRange(focus);
+    const auto zoomedReading = MixFocusTestAccess::scopeReading(focus);
+    check(!cursor.isEmpty() && zoomed == cursor.replace("-6.0 dBFS", "-12.0 dBFS") &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, 1.f) &&
+              zoomedWindow && windowBeforeZoom && zoomedWindow->first == windowBeforeZoom->first &&
+              zoomedWindow->frames == windowBeforeZoom->frames && zoomedWindow->sampleRate == windowBeforeZoom->sampleRate &&
+              zoomedReading && readingBeforeZoom && zoomedReading->peak == readingBeforeZoom->peak &&
+              zoomedReading->rms == readingBeforeZoom->rms,
+          "Alt-wheel zooms in by 6 dB and refreshes a stationary cursor without changing samples, time or meters");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f);
+    const auto statsAfterZoom = broker->stats();
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              statsAfterZoom.taps == statsBeforeZoom.taps && statsAfterZoom.consumers == statsBeforeZoom.consumers &&
+              statsAfterZoom.transforms == statsBeforeZoom.transforms && statsAfterZoom.cursorReads == statsBeforeZoom.cursorReads &&
+              statsAfterZoom.frameRequests == statsBeforeZoom.frameRequests &&
+              statsAfterZoom.workerPasses == statsBeforeZoom.workerPasses && History(doc->store()).head() == head,
+          "reversing the wheel restores the original waveform and cursor with no analysis work or authored edit");
+    constexpr auto panModifiers = juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier;
+    const auto gridBeforePan = MixFocusTestAccess::scopeGrid(focus);
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, panModifiers);
+    const auto panned = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    check(panned == cursor.replace("-6.0 dBFS", "-2.5 dBFS") &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .50f) &&
+              MixFocusTestAccess::scopeGrid(focus) == gridBeforePan &&
+              MixFocusTestAccess::scopeWaveformRange(focus) == windowBeforeZoom,
+          "Alt+Shift-wheel pans the waveform and cursor vertically around the same heard sample and grid");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, panModifiers);
+    const auto statsAfterPan = broker->stats();
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              statsAfterPan.taps == statsAfterZoom.taps && statsAfterPan.transforms == statsAfterZoom.transforms &&
+              statsAfterPan.frameRequests == statsAfterZoom.frameRequests &&
+              statsAfterPan.workerPasses == statsAfterZoom.workerPasses && History(doc->store()).head() == head,
+          "reversing the pan restores the trace exactly without extra analysis or project edits");
+    const auto timeZoomModifier = juce::ModifierKeys::commandModifier;
+    const auto timePanModifier = juce::ModifierKeys::shiftModifier;
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timeZoomModifier);
+    MixFocusTestAccess::moveScopePointer(focus, .25f, .25f);
+    const auto visibleTime = MixFocusTestAccess::scopeVisibleRange(focus);
+    const auto timeGrid = MixFocusTestAccess::scopeGrid(focus);
+    const auto waveformPlot = MixFocusTestAccess::scopePlot(focus);
+    check(visibleTime == FocusScopeRange{24000, 48000, rate} && timeGrid.size() == 2 &&
+              timeGrid.front().first == waveformPlot.getX() &&
+              std::abs(MixFocusTestAccess::transformedScopeX(focus, .375f) - .25f) < .001f &&
+              MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",").contains("36000 samples"),
+          "time zoom shows the centred half-open sample range on the grid, waveform and cursor");
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.75f, .25f});
+    const auto zoomRegion = MixFocusTestAccess::scopeRegionText(focus).removeCharacters(",");
+    check(zoomRegion.contains("48000 to 60000 samples") && zoomRegion.contains("250.0 ms"),
+          "a region drawn in the smaller viewport still measures the heard samples and duration");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timePanModifier);
+    check(MixFocusTestAccess::scopeVisibleRange(focus) == FocusScopeRange{36000, 48000, rate} &&
+              MixFocusTestAccess::scopeRegionText(focus).removeCharacters(",") == zoomRegion,
+          "panning moves the sample viewport but preserves the stored region and its measurements");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timePanModifier);
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.5f, .25f});
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timeZoomModifier);
+    const auto statsAfterTime = broker->stats();
+    check(windowBeforeZoom && MixFocusTestAccess::scopeVisibleRange(focus) == *windowBeforeZoom &&
+              MixFocusTestAccess::scopeWaveformRange(focus) == windowBeforeZoom &&
+              MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              statsAfterTime.taps == statsAfterPan.taps && statsAfterTime.transforms == statsAfterPan.transforms &&
+              statsAfterTime.frameRequests == statsAfterPan.frameRequests &&
+              statsAfterTime.workerPasses == statsAfterPan.workerPasses && History(doc->store()).head() == head,
+          "reversing the time view restores the original range and cursor without requesting audio or editing the project");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .75f);
+    check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
+          "the positive and negative half-scale ordinates show the same dBFS magnitude");
+    static_cast<juce::Component &>(focus).mouseExit(pointer);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "leaving the Scope clears its pointer readout");
+
+    const juce::Point<float> regionStart{.5f, .25f}, regionEnd{.625f, .25f};
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+    const auto forward = MixFocusTestAccess::scopeRegionText(focus);
+    check(forward.contains("48000") && forward.contains("60000") && forward.contains("1000.0") &&
+              forward.contains("1250.0") && forward.contains("250.0 ms") && forward.contains("4.0 Hz"),
+          "dragging from 50 to 62.5 percent measures exactly 12000 samples of the heard 48 kHz bar");
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "releasing the pointer commits the heard region and ordinary hover leaves it in place");
+    MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward &&
+              MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "vertical zoom retains the committed heard region and its priority over hover");
+    MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f);
+    MixFocusTestAccess::dragScopeRegion(focus, regionEnd, regionStart);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "reversing the drag gives the same sorted endpoints, period and pitch");
+
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "the last coordinate of a fast press and release is included without an intervening drag event");
+
+    // 1/128 of a 96000-sample bar is exactly 750 samples. A 64 Hz
+    // reciprocal is nearest C1 under the DAW's middle-C convention.
+    MixFocusTestAccess::dragScopeRegion(focus, regionStart, {.5078125f, .25f});
+    const auto pitch = MixFocusTestAccess::scopeRegionText(focus);
+    check(pitch.contains("48000") && pitch.contains("48750") && pitch.contains("64.0 Hz") &&
+              pitch.contains("C1"), "the reciprocal period uses the same note convention as Spectrum");
+    MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionStart);
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "a zero-length click clears the previous region without inventing a frequency");
+    const auto hovered = broker->stats();
+    check(hovered.consumers == active.consumers && hovered.taps == active.taps &&
+              hovered.spectralPlans == active.spectralPlans && hovered.transforms == active.transforms &&
+              hovered.cursorReads == active.cursorReads && hovered.frameRequests == active.frameRequests &&
+              hovered.workerPasses == active.workerPasses && History(doc->store()).head() == head,
+          "Scope cursor and region movement perform no analysis and author no project edit");
+
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+    const auto previousBounds = focus.getBounds();
+    focus.setBounds(previousBounds.withWidth(previousBounds.getWidth() - 8));
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "a resize during the held drag cannot combine the old and new plot coordinates");
+    focus.setBounds(previousBounds);
+    frame();
+
     juce::ComboBox *channels = nullptr;
     for (auto *component : focus.getChildren())
         if (component->getTitle() == "Focus Scope channels") channels = dynamic_cast<juce::ComboBox *>(component);
@@ -1936,7 +3697,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             channels->setSelectedId(static_cast<int>(view), juce::sendNotificationSync);
             frame();
         };
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        const bool wasMeasurable = !MixFocusTestAccess::scopeRegionText(focus).isEmpty();
         select(FocusScopeChannels::Mid);
+        check(wasMeasurable && MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "changing channel projection clears the region tied to the previous projection");
         check(!MixFocusTestAccess::sumPulseAt(focus, .125f, .75f),
               "selecting Mid never presents the old stereo bins as Mid");
         writeUntil(2 * bar);
@@ -1944,6 +3709,10 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   !MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::sumPulseAt(focus, .875f, -.3125f),
               "Mid cancels opposed stereo and halves a single-sided pulse in the displayed bar");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto later = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+        check(later.contains("2.3") && later.contains("144000") && later.contains("3000") && later.contains("ms"),
+              "the same screen coordinate on the next captured bar uses that bar's heard origin");
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "changing Focus Scope projection keeps the existing grouped reader and taps");
@@ -1973,31 +3742,76 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         if (component->getTitle() == "Focus Scope display") display = dynamic_cast<juce::ComboBox *>(component);
     check(display != nullptr, "Focus Scope makes its display selector available");
     if (display && channels) {
+        if (truePeakSwitch && capturedTruePeak) {
+            display->setSelectedId(4, juce::sendNotificationSync);
+            frame();
+            check(truePeakSwitch->isVisible() && truePeakSwitch->isEnabled() && !truePeakSwitch->getToggleState() &&
+                      !capturedTruePeak->isVisible() && MixFocusTestAccess::hasScopeSummarySpace(focus),
+                  "Stereo Sum makes captured true peak optional and leaves the unrequested readout hidden");
+        }
+        display->setSelectedId(3, juce::sendNotificationSync);
+        check(!truePeakSwitch || !truePeakSwitch->isVisible(), "Stack leaves the Sum true-peak switch hidden");
+        frame();
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .625f);
+        const auto stacked = MixFocusTestAccess::scopeCursorText(focus);
+        check(stacked.contains("-6.0 dBFS"), "the second Stack lane uses its own signed full-scale axis");
+        MixFocusTestAccess::wheelScope(focus, .5f, .625f, 1.f);
+        check(!stacked.isEmpty() && MixFocusTestAccess::scopeCursorText(focus) ==
+              stacked.replace("-6.0 dBFS", "-12.0 dBFS"),
+              "the second Stack lane uses the same vertical zoom without shifting its heard sample");
+        MixFocusTestAccess::wheelScope(focus, .5f, .625f, -1.f);
+        const juce::Point<float> stackStart{.5f, .625f}, stackEnd{.625f, .625f};
+        MixFocusTestAccess::dragScopeRegion(focus, stackStart, stackEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).contains("240000") &&
+                  MixFocusTestAccess::scopeRegionText(focus).contains("252000"),
+              "a region in the second Stack lane uses that lane's heard interval");
+        MixFocusTestAccess::dragScopeRegion(focus, stackStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a drag crossing Stack lanes cannot commit a region from mixed ordinates");
         focus.select(second);
         display->setSelectedId(5, juce::sendNotificationSync);
         frame();
         check(display->getText() == "Difference" && !MixFocusTestAccess::hasDifference(focus),
               "choosing Difference never shows the previous combined projection");
+        check(rmsText().isEmpty(), "entering Difference waits for a matching waveform before showing RMS");
         writeUntil(4 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
               "Stereo Difference subtracts the selected channel from starred Main");
+        // Each pulse covers 600 of 96,000 samples. Left has amplitudes .75
+        // and .625, while Right has only the first .75 pulse.
+        check(hasRms("-22.2") && hasRms("-24.5"),
+              "a completed Stereo bar reports both independent RMS values from every source sample");
+        const auto stereoWork = broker->stats();
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Left), juce::sendNotificationSync);
+        frame();
+        check(hasRms("-22.2") && !rmsText().contains("-24.5"),
+              "Left Difference immediately uses the existing left-lane RMS alone");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Right), juce::sendNotificationSync);
         frame();
         check(MixFocusTestAccess::hasDifference(focus) &&
                   MixFocusTestAccess::differencePulseAt(focus, .125f, -.75f) &&
                   !MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
               "Right Difference reuses the existing Stereo pair projection immediately");
+        check(hasRms("-24.5") && !rmsText().contains("-22.2"),
+              "Right Difference immediately uses the existing right-lane RMS alone");
+        const auto laneWork = broker->stats();
+        check(opens == std::array{1, 1} && laneWork.taps == stereoWork.taps &&
+                  laneWork.consumers == stereoWork.consumers && laneWork.transforms == stereoWork.transforms &&
+                  laneWork.cursorReads == stereoWork.cursorReads && laneWork.publications == stereoWork.publications,
+              "changing the visible stereo lane creates no capture, publication or transform work");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Mid), juce::sendNotificationSync);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
               "switching to Mid clears the previous Stereo Difference");
+        check(rmsText().isEmpty(), "a new folded projection hides the former lane RMS until it is measured");
         writeUntil(5 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   !MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
               "Mid Difference cancels opposed stereo and halves a single-sided difference");
+        check(hasRms("-32.1"), "Mid combines the paired samples before squaring");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Side), juce::sendNotificationSync);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
@@ -2007,13 +3821,91 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
               "Side Difference projects the signed paired differences before extrema");
+        check(hasRms("-23.8"), "Side reflects the anti-phase pulse and the half-strength single-sided pulse");
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "Difference adds no tap, consumer or spectrum transform");
 
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto differenceCursor = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+        check(differenceCursor.contains("528000") && differenceCursor.contains("11000") &&
+                  differenceCursor.contains("-6.0"),
+              "the aligned Difference waveform labels the exact heard interval and its own amplitude axis");
+        juce::ToggleButton *differenceSpectrum = nullptr;
+        for (auto *component : focus.getChildren())
+            if (component->getTitle() == "Difference spectrum")
+                differenceSpectrum = dynamic_cast<juce::ToggleButton *>(component);
+        check(differenceSpectrum != nullptr, "Difference exposes a separately selectable spectrum");
+        if (differenceSpectrum) {
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            check(!MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "an aligned Difference waveform can be measured before switching to its spectrum");
+            differenceSpectrum->setToggleState(true, juce::dontSendNotification);
+            if (differenceSpectrum->onClick) differenceSpectrum->onClick();
+            check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+                  "choosing the Difference spectrum immediately hides the waveform cursor");
+            check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "choosing the Difference spectrum clears the waveform region");
+            check(rmsText().isEmpty(), "the Difference spectrum immediately removes the waveform RMS");
+            frame();
+            // The demand is picked up by a newly requested full bar.
+            writeUntil(8 * bar);
+            MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+            check(MixFocusTestAccess::requestsResidualSpectrum(focus) && MixFocusTestAccess::hasDifference(focus) &&
+                      MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+                  "a completed Difference spectrum never exposes a waveform time or dBFS ordinate cursor");
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "a completed Difference spectrum never starts a time-domain region");
+            differenceSpectrum->setToggleState(false, juce::dontSendNotification);
+            if (differenceSpectrum->onClick) differenceSpectrum->onClick();
+            frame();
+            writeUntil(10 * bar);
+        }
+
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(!MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "the Difference waveform cursor is visible before Locate");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+        check(!MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "the Difference region is visible during its drag before Locate");
+        const auto seekAt = driver.position();
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, seekAt),
+              "queue a same-position Difference Locate with a live scope cursor");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a pending same-position Locate invalidates the held region before the next frame");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+              "a pending same-position Locate suppresses the older cursor even before a frame");
+        frame();
+        doc->mailbox().drain(driver);
+        frame();
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+              "acknowledging the same-position Locate cannot re-label an old waveform");
+        writeUntil(seekAt + 2 * bar);
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto resumed = MixFocusTestAccess::scopeMidpoint(focus);
+        check(resumed && *resumed >= seekAt && MixFocusTestAccess::scopeCursorText(focus).contains(
+                  juce::String(static_cast<juce::int64>(*resumed)) + " samples"),
+              "a newly captured interval after the same-position seek restores the cursor");
+        const auto complete = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(complete && complete->first == seekAt + bar && complete->frames == static_cast<std::size_t>(bar) &&
+                  complete->sampleRate == rate && opens == std::array{1, 1} && broker->stats().taps == 2,
+              "a same-position seek resumes complete heard bars on the original two taps");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a release after the new bar cannot commit the pre-Locate region");
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        check(complete && MixFocusTestAccess::scopeRegionText(focus).contains(
+                  juce::String(static_cast<juce::int64>(complete->first + bar / 2))),
+              "a fresh drag measures the newly captured interval after the same-position seek");
+
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
         frame();
         check(!MixFocusTestAccess::hasDifference(focus), "a pending Locate immediately clears the old Difference");
+        check(rmsText().isEmpty(), "an unfrozen queued Locate removes the old RMS with its waveform");
         doc->mailbox().drain(driver);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
@@ -2023,6 +3915,413 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(!MixFocusTestAccess::hasDifference(focus),
               "selecting starred Main as the other channel leaves Difference without a pair");
     }
+    if (freeze && display && channels) {
+        display->setSelectedId(1, juce::sendNotificationSync);
+        focus.select(second);
+        frame();
+        writeUntil(2 * bar);
+        const auto shown = MixFocusTestAccess::scopeWaveformRange(focus);
+        const auto peak = MixFocusTestAccess::scopeReading(focus);
+        const auto phase = MixFocusTestAccess::scopePhase(focus);
+        check(shown && shown->frames == static_cast<std::size_t>(bar) && peak && freeze->isEnabled(),
+              "a complete aligned Focus Scope bar enables Freeze");
+        if (shown && shown->frames == static_cast<std::size_t>(bar) && peak && freeze->isEnabled()) {
+            const auto setFrozen = [&](bool value) {
+                freeze->setToggleState(value, juce::dontSendNotification);
+                if (freeze->onClick) freeze->onClick();
+            };
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            const auto selectedRegion = MixFocusTestAccess::scopeRegionText(focus);
+            const auto beforeFreeze = broker->stats();
+            setFrozen(true);
+            const auto held = broker->stats();
+            check(!selectedRegion.isEmpty() && freeze->getToggleState() && beforeFreeze.taps == 2 &&
+                      held.taps == 0 && held.domains == 0 && held.consumers == 0,
+                  "Freeze releases all of this Scope's tap and worker leases immediately");
+            const auto stillHeld = [&] {
+                const auto pictured = MixFocusTestAccess::scopeWaveformRange(focus);
+                const auto sum = MixFocusTestAccess::scopeReading(focus);
+                return freeze->getToggleState() && pictured && pictured->first == shown->first &&
+                       pictured->frames == shown->frames && pictured->sampleRate == shown->sampleRate &&
+                       sum && sum->peak == peak->peak && sum->rms == peak->rms &&
+                       MixFocusTestAccess::scopePhase(focus) == phase &&
+                       MixFocusTestAccess::scopeRegionText(focus) == selectedRegion;
+            };
+
+            driver.play(false);
+            frame();
+            MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
+            check(stillHeld(), "Stop and pointer motion keep the frozen heard interval and selected region");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f);
+            check(stillHeld(), "zooming a frozen waveform keeps the held interval, meter values and selected region");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f);
+            const auto heldGrid = MixFocusTestAccess::scopeGrid(focus);
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f, panModifiers);
+            check(stillHeld() && MixFocusTestAccess::scopeGrid(focus) == heldGrid,
+                  "panning a frozen waveform keeps the selected region, grid and measured signal");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f, panModifiers);
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timeZoomModifier);
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timePanModifier);
+            check(stillHeld() && MixFocusTestAccess::scopeVisibleRange(focus).frames == shown->frames / 2,
+                  "time zoom and pan work on the held interval while preserving the frozen region and measurements");
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timeZoomModifier);
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, bar / 2),
+                  "queue a Locate while the Scope holds a different heard interval");
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+            check(stillHeld(), "a pending and acknowledged Locate leave the explicit frozen interval intact");
+            driver.play(true);
+            frame();
+            writeUntil(bar / 2 + 4 * chunk);
+            const auto frozenBounds = focus.getBounds();
+            focus.setBounds(frozenBounds.withWidth(frozenBounds.getWidth() - 8));
+            check(stillHeld() && MixFocusTestAccess::hasScopeTrace(focus),
+                  "resizing a frozen Scope projects the retained waveform without replacing its measurement");
+            focus.setBounds(frozenBounds);
+            const auto still = broker->stats();
+            check(stillHeld() && still.taps == 0 && still.domains == 0 && still.consumers == 0 &&
+                      still.frameRequests == held.frameRequests && still.workerPasses == held.workerPasses &&
+                      still.transforms == held.transforms && still.cursorReads == held.cursorReads &&
+                      still.publications == held.publications && History(doc->store()).head() == head,
+                  "frozen Scope reads no new samples, schedules no work and authors no edit");
+
+            SharedAnalysis::Request request{first};
+            request.channel = SharedAnalysis::Channel::StereoPower;
+            request.outputs = SharedAnalysis::Scope;
+            auto sibling = broker->acquire(request);
+            writeUntil(driver.position() + 4 * chunk);
+            const auto siblingPicture = sibling.read();
+            check(siblingPicture && stillHeld() && broker->stats().taps == 1 && broker->stats().consumers == 1,
+                  "only the sibling Scope reads the first source while Focus holds its picture");
+            const auto thawedAt = driver.position();
+            setFrozen(false);
+            frame();
+            broker->pump();
+            frame();
+            const auto stale = MixFocusTestAccess::scopeWaveformRange(focus);
+            check(!freeze->getToggleState() && !stale && !MixFocusTestAccess::hasScopeTrace(focus) &&
+                      MixFocusTestAccess::scopeRegionText(focus).isEmpty() &&
+                      sibling.read() == siblingPicture && broker->stats().taps == 2,
+                  "thaw releases the held picture and rejects the sibling's pre-thaw window");
+            writeUntil(3 * bar);
+            const auto fresh = MixFocusTestAccess::scopeWaveformRange(focus);
+            check(fresh && fresh->first >= thawedAt && freeze->isEnabled(),
+                  "a fresh post-thaw capture restores the Scope's own picture");
+
+            if (fresh && freeze->isEnabled()) {
+                MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+                const bool hadRegion = !MixFocusTestAccess::scopeRegionText(focus).isEmpty();
+                const auto owner = std::move(root->sharedAnalysis);
+                setFrozen(true);
+                check(!freeze->getToggleState() && MixFocusTestAccess::hasScopeTrace(focus),
+                      "Freeze refuses the previous analysis owner before the next component frame");
+                root->sharedAnalysis = owner;
+                setFrozen(true);
+                channels->setSelectedId(static_cast<int>(FocusScopeChannels::Mid), juce::sendNotificationSync);
+                frame();
+                check(hadRegion && !freeze->getToggleState() && MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                      "changing the channel projection invalidates the held Scope and its region");
+            }
+            sibling.reset();
+        }
+    }
+    if (differenceRms && freeze && display && channels) {
+        focus.select(second);
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(5, juce::sendNotificationSync);
+        frame();
+        writeUntil(5 * bar);
+        const auto reading = rmsText();
+        check(hasRms("-22.2") && hasRms("-24.5") && freeze->isEnabled(),
+              "an aligned Difference waveform can hold its own RMS");
+        if (!reading.isEmpty() && freeze->isEnabled() && freeze->onClick) {
+            freeze->setToggleState(true, juce::dontSendNotification); freeze->onClick();
+            const auto held = broker->stats();
+            driver.play(false);
+            frame();
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, driver.position()),
+                  "queue a same-position Locate while Difference RMS is frozen");
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+            const auto bounds = focus.getBounds();
+            focus.setBounds(bounds.withWidth(bounds.getWidth() - 8));
+            const auto still = broker->stats();
+            check(rmsText() == reading && freeze->getToggleState() && held.taps == 0 && still.taps == 0 &&
+                      still.publications == held.publications && still.workerPasses == held.workerPasses &&
+                      still.transforms == held.transforms && still.cursorReads == held.cursorReads,
+                  "a frozen RMS survives Stop, Locate and resize without new analysis work");
+            focus.setBounds(bounds);
+            freeze->setToggleState(false, juce::dontSendNotification); freeze->onClick();
+            driver.play(true);
+            frame();
+            check(rmsText().isEmpty(), "thaw clears frozen RMS until fresh paired audio arrives");
+        }
+    }
+    if (truePeakSwitch && capturedTruePeak && display && channels) {
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(4, juce::sendNotificationSync);
+        frame();
+        truePeakSwitch->setToggleState(true, juce::dontSendNotification);
+        truePeakSwitch->onClick();
+        check(!capturedTruePeak->isVisible(), "an unmeasured Sum picture publishes no true peak");
+        const auto before = broker->stats();
+        writeUntil(driver.position() + 3 * bar);
+        check(capturedTruePeak->isVisible() && capturedTruePeak->getText().contains("dBFS") &&
+                  capturedTruePeak->getText().contains("dBTP") && broker->stats().taps == 2 &&
+                  broker->stats().transforms == before.transforms,
+              "Stereo Sum reports the sample and captured true peak without a new tap or spectrum transform");
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, driver.position()),
+              "queue a same-position Locate for the measured Sum");
+        frame();
+        check(!capturedTruePeak->isVisible(), "queued Locate hides the unheld true peak before audio acknowledgement");
+        doc->mailbox().drain(driver);
+        frame();
+        check(!capturedTruePeak->isVisible(), "settled Locate waits for a newly captured true peak");
+        display->setSelectedId(1, juce::sendNotificationSync);
+        check(!truePeakSwitch->isVisible() && !capturedTruePeak->isVisible(),
+              "leaving Sum immediately hides the captured true peak and its control");
+    }
+    if (musicalWindow && display && channels) {
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(1, juce::sendNotificationSync);
+        focus.select(second);
+        driver.play(true);
+        frame();
+        const auto atBar = (driver.position() / bar + 2) * bar;
+        writeUntil(atBar);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar - bar, static_cast<std::size_t>(bar), rate),
+              "the default selector still shows the entire completed bar");
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        const auto sourceOpens = opens;
+        const auto before = broker->stats();
+        const auto windowHistory = History(doc->store()).head();
+        constexpr auto beat = bar / 4;
+        musicalWindow->setSelectedId(1, juce::sendNotificationSync);
+        frame();
+        check(musicalWindow->getText() == "One Beat" && MixFocusTestAccess::scopeRegionText(focus).isEmpty() &&
+                  !MixFocusTestAccess::scopeInterval(focus, atBar - bar, static_cast<std::size_t>(bar), rate),
+              "changing to One Beat rejects the former bar and its selected region");
+        writeUntil(atBar + beat - 1);
+        check(!MixFocusTestAccess::scopeInterval(focus, atBar, static_cast<std::size_t>(beat), rate),
+              "the one-beat view cannot publish before its final heard sample");
+        writeUntil(atBar + beat);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar, static_cast<std::size_t>(beat), rate),
+              "at 120 BPM and 48 kHz exactly 24000 samples form a completed 4/4 beat");
+        writeUntil(atBar + bar);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar + 3 * beat, static_cast<std::size_t>(beat), rate),
+              "each successive beat keeps its own grid-aligned heard extent");
+        musicalWindow->setSelectedId(2, juce::sendNotificationSync);
+        frame();
+        writeUntil(atBar + 2 * bar);
+        const auto after = broker->stats();
+        check(musicalWindow->getText() == "One Bar" &&
+                  MixFocusTestAccess::scopeInterval(focus, atBar + bar, static_cast<std::size_t>(bar), rate) &&
+                  opens == sourceOpens && after.taps == before.taps && after.consumers == before.consumers &&
+                  after.transforms == before.transforms && History(doc->store()).head() == windowHistory,
+              "returning to bar captures the full next bar with the original taps and no project edit or FFT");
+        const auto samePosition = driver.position();
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, samePosition),
+              "queue a same-position Locate with a complete Overlay bar visible");
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus) &&
+                  MixFocusTestAccess::scopeGrid(focus).empty(),
+              "the pending Locate hides the old Overlay waveform and heard grid");
+        musicalWindow->setSelectedId(1, juce::sendNotificationSync);
+        broker->pump();
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "changing the window while Locate is pending cannot publish an old audio window");
+        doc->mailbox().drain(driver);
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "acknowledging Locate waits for audio in the new transport revision");
+        writeUntil(samePosition + beat - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "the new beat cannot appear before its final heard sample");
+        writeUntil(samePosition + beat);
+        check(MixFocusTestAccess::scopeInterval(focus, samePosition, static_cast<std::size_t>(beat), rate) &&
+                  opens == sourceOpens && broker->stats().transforms == after.transforms,
+              "the selected beat arrives from the acknowledged revision on the original two taps");
+        const auto noteStart = driver.position();
+        musicalWindow->setSelectedId(3, juce::sendNotificationSync);
+        frame();
+        constexpr auto sixteenth = beat / 4;
+        writeUntil(noteStart + sixteenth - 1);
+        check(musicalWindow->getText() == "1/16 Note" && !MixFocusTestAccess::hasScopeTrace(focus),
+              "the sixteenth selector clears the old beat and waits for the complete note");
+        writeUntil(noteStart + sixteenth);
+        check(MixFocusTestAccess::scopeInterval(focus, noteStart, static_cast<std::size_t>(sixteenth), rate) &&
+                  opens == sourceOpens && broker->stats().transforms == after.transforms,
+              "the sixteenth captures exactly 6000 heard samples at 120 BPM on the same two taps");
+        musicalWindow->setSelectedId(2, juce::sendNotificationSync);
+    }
+    if (musicalWindow && display && channels) {
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate for the fractional Scope grid");
+        doc->mailbox().drain(driver);
+        frame();
+        check(root->setTempoAtPlay("123"), "set the Scope project's tempo to 123 BPM");
+        frame();
+        constexpr std::int64_t fractionalBar = 93659;
+        writeUntil(fractionalBar);
+        const auto heard = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(heard && heard->first == 0 && heard->frames == fractionalBar,
+              "a bar at 123 BPM owns exactly 93659 heard samples");
+        if (heard && heard->first == 0 && heard->frames == fractionalBar) {
+            const auto readsBeat = [&](std::int64_t sample, const juce::String &beat) {
+                const auto x = static_cast<float>((static_cast<double>(sample) + .5) / fractionalBar);
+                MixFocusTestAccess::moveScopePointer(focus, x, .25f);
+                const auto reading = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+                return reading.startsWith(beat + "   " + juce::String(static_cast<juce::int64>(sample)) + " samples");
+            };
+            check(readsBeat(46828, "1.2"), "the sample before a rounded beat edge stays in the preceding beat");
+            check(readsBeat(46829, "1.3"), "the rounded-down heard edge and its beat label agree");
+            check(readsBeat(46830, "1.3") && readsBeat(46828, "1.2"),
+                  "the cursor follows the same heard edge in both directions");
+            const auto plot = MixFocusTestAccess::scopePlot(focus);
+            const auto xAt = [&](std::int64_t sample) {
+                return plot.getX() + juce::roundToInt(static_cast<double>(sample) / fractionalBar * plot.getWidth());
+            };
+            const std::vector<std::pair<int, bool>> expected{{xAt(0), true}, {xAt(23415), false},
+                                                            {xAt(46829), false}, {xAt(70244), false}};
+            check(MixFocusTestAccess::scopeGrid(focus) == expected,
+                  "the visible grid projects the captured 123 BPM sample positions exactly");
+            if (freeze && freeze->isEnabled()) {
+                freeze->setToggleState(true, juce::dontSendNotification);
+                freeze->onClick();
+                const auto statsBefore = broker->stats();
+                check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate while holding the grid");
+                doc->mailbox().drain(driver);
+                frame();
+                check(root->setTempoAtPlay("120"), "change project tempo while the 123 BPM grid is held");
+                frame();
+                const auto statsAfter = broker->stats();
+                check(MixFocusTestAccess::scopeGrid(focus) == expected && readsBeat(46829, "1.3") &&
+                          statsAfter.taps == 0 && statsAfter.transforms == statsBefore.transforms &&
+                          statsAfter.frameRequests == statsBefore.frameRequests,
+                      "the held grid keeps its captured timing across a project edit with no analyser work");
+                freeze->setToggleState(false, juce::dontSendNotification);
+                freeze->onClick();
+                frame();
+                check(MixFocusTestAccess::scopeGrid(focus).empty(), "thaw hides the grid until new audio arrives");
+            }
+        }
+    }
+    if (musicalWindow && display && channels) {
+        // Prime alignment after the preceding thaw before seeking to the start.
+        writeUntil(driver.position() + bar / 4);
+        const auto selectAtStart = [&](FocusScopeWindow window) {
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate to start a multi-bar window");
+            musicalWindow->setSelectedId(static_cast<int>(window), juce::sendNotificationSync);
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+        };
+        selectAtStart(FocusScopeWindow::TwoBars);
+        if (root->bpm() != 120.)
+            check(root->setTempoAtPlay("120"), "set 120 BPM for the multi-bar capture");
+        frame();
+        const auto sourcesBefore = opens;
+        const auto statsBefore = broker->stats();
+        writeUntil(2 * bar - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "Two Bars waits for every heard sample on the one grouped reader");
+        writeUntil(2 * bar);
+        check(musicalWindow->getText() == "Two Bars" &&
+                  MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(2 * bar), rate),
+              "Two Bars projects the whole 192000-sample capture");
+        selectAtStart(FocusScopeWindow::FourBars);
+        writeUntil(4 * bar - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "Four Bars waits for the last sample in its revision without running unseen short previews");
+        writeUntil(4 * bar);
+        const auto statsAfter = broker->stats();
+        check(musicalWindow->getText() == "Four Bars" &&
+                  MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(4 * bar), rate) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .125f / 4.f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, (3.f + .875f) / 4.f, -.625f) &&
+                  opens == sourcesBefore && statsAfter.taps == 2 && statsAfter.transforms == statsBefore.transforms,
+              "Four Bars keeps the first and last pulses through 384000 samples using the same two taps");
+    }
+    if (musicalWindow && display && channels) {
+        constexpr std::int64_t firstTimed = 12345, timedFrames = 4080;
+        const auto oldOpens = opens;
+        const auto oldTransforms = broker->stats().transforms;
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, firstTimed), "queue a non-grid start for Free Run");
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds85), juce::sendNotificationSync);
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "Free Run waits for the acknowledged non-grid start");
+        doc->mailbox().drain(driver);
+        frame();
+        writeUntil(firstTimed + timedFrames - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "the first fixed-time window waits for its final sample with one grouped reader");
+        writeUntil(firstTimed + timedFrames);
+        check(musicalWindow->getText() == "85 ms" &&
+                  MixFocusTestAccess::scopeInterval(focus, firstTimed, static_cast<std::size_t>(timedFrames), rate),
+              "the fixed-time window starts at sample 12345 and captures all 4080 frames");
+        check(root->setTempoAtPlay("123") && root->setMeterAtPlay("3/4"),
+              "edit the musical grid while the next fixed-time window is pending");
+        frame();
+        writeUntil(firstTimed + 2 * timedFrames);
+        check(MixFocusTestAccess::scopeInterval(focus, firstTimed + timedFrames, static_cast<std::size_t>(timedFrames), rate) &&
+                  opens == oldOpens && broker->stats().transforms == oldTransforms,
+              "free-running captures stay contiguous across tempo and meter edits on the same source taps");
+        const auto selectTimed = [&](FocusScopeWindow choice, const juce::String &label, std::int64_t frames) {
+            const auto first = driver.position();
+            musicalWindow->setSelectedId(static_cast<int>(choice), juce::sendNotificationSync);
+            frame();
+            writeUntil(first + frames);
+            check(musicalWindow->getText() == label &&
+                      MixFocusTestAccess::scopeInterval(focus, first, static_cast<std::size_t>(frames), rate) && opens == oldOpens,
+                  "changing the millisecond preset starts its full interval on the same taps");
+            return first;
+        };
+        selectTimed(FocusScopeWindow::Milliseconds170, "170 ms", 8160);
+        const auto wideStart = selectTimed(FocusScopeWindow::Milliseconds340, "340 ms", 16320);
+        const auto stoppedReading = MixFocusTestAccess::scopeReading(focus);
+        check(doc->mailbox().post(TransportMailbox::Command::Stop), "queue the normal Stop command for the held picture");
+        frame();
+        doc->mailbox().drain(driver);
+        frame();
+        const auto stoppedStats = broker->stats();
+        const auto heldReading = MixFocusTestAccess::scopeReading(focus);
+        check(MixFocusTestAccess::scopeInterval(focus, wideStart, 16320, rate) && stoppedReading && heldReading &&
+                  stoppedReading->peak == heldReading->peak && stoppedReading->rms == heldReading->rms &&
+                  stoppedStats.taps == 0 && stoppedStats.consumers == 0,
+              "Stop holds the completed waveform and readings with no source taps or consumers");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        frame();
+        check(!MixFocusTestAccess::scopeCursorText(focus).isEmpty() &&
+                  broker->stats().frameRequests == stoppedStats.frameRequests &&
+                  broker->stats().transforms == stoppedStats.transforms,
+              "a stopped waveform can be inspected without waking the analysis worker");
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, firstTimed), "queue Locate while Scope is stopped");
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "a queued Locate retracts the picture held by ordinary Stop");
+        doc->mailbox().drain(driver);
+        driver.play(true);
+        frame();
+        writeUntil(firstTimed + bar / 2);
+        const auto resumed = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(resumed && resumed->frames == 16320 && resumed->first >= firstTimed &&
+                  broker->stats().taps == 2,
+              "Play reacquires both taps and publishes a fresh window after the seek");
+        if (freeze && freeze->isEnabled()) {
+            freeze->setToggleState(true, juce::dontSendNotification);
+            freeze->onClick();
+            const auto held = broker->stats();
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a seek while Free Run is frozen");
+            doc->mailbox().drain(driver);
+            frame();
+            check(resumed && MixFocusTestAccess::scopeInterval(focus, resumed->first, 16320, rate) &&
+                      held.taps == 0 && broker->stats().frameRequests == held.frameRequests,
+                  "Freeze holds the completed time window across Locate without new broker work");
+            freeze->setToggleState(false, juce::dontSendNotification);
+            freeze->onClick();
+        }
+    }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,
@@ -2031,6 +4330,109 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     focus.frame(initial);
     check(broker->stats().taps == 2 && !MixFocusTestAccess::aligned(focus),
           "a restored plot waits for new source data instead of reusing the old bar");
+    if (musicalWindow && display) {
+        display->setSelectedId(5, juce::sendNotificationSync);
+        focus.setMembers({first});
+        frame();
+        check(musicalWindow->isEnabled() && display->getSelectedId() == 1 && !display->isItemEnabled(5),
+              "one remaining Focus channel can choose a window and falls back from Difference to Overlay");
+        display->setSelectedId(1, juce::sendNotificationSync);
+        writeUntil(driver.position() + 8 * chunk);
+        const auto soloStart = driver.position();
+        const auto transforms = broker->stats().transforms;
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds85), juce::sendNotificationSync);
+        frame();
+        writeUntil(soloStart + 4079);
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "a solo 85 ms window waits for its last sample");
+        writeUntil(soloStart + 4080);
+        check(MixFocusTestAccess::scopeInterval(focus, soloStart, 4080, rate) &&
+                  MixFocusTestAccess::scopePhase(focus) == 1. && broker->stats().taps == 1 &&
+                  broker->stats().consumers == 1 && broker->stats().transforms == transforms,
+              "one channel shows the full fixed window and its L/R phase with just one tap and no transforms");
+        driver.play(false);
+        frame();
+        check(MixFocusTestAccess::scopeInterval(focus, soloStart, 4080, rate) && broker->stats().taps == 0,
+              "stopping holds the one-source capture and detaches its tap");
+        focus.setMembers({first, second});
+        check(display->isItemEnabled(5), "Difference is offered again when the second Focus channel returns");
+    }
+    if (musicalWindow && display && channels) {
+        const auto layerChannelItem = [&](const juce::String &label) {
+            const auto layer = MixFocusTestAccess::layerMenu(focus);
+            for (juce::PopupMenu::MenuItemIterator item(layer); item.next();) {
+                const auto &parent = item.getItem();
+                if (parent.text != "Channels" || !parent.subMenu) continue;
+                for (juce::PopupMenu::MenuItemIterator child(*parent.subMenu); child.next();) {
+                    const auto &option = child.getItem();
+                    if (option.text == label && option.isEnabled) return std::pair{option.itemID, option.isTicked};
+                }
+            }
+            return std::pair{0, false};
+        };
+        const auto chooseChannel = [&](const juce::String &label) {
+            const auto option = layerChannelItem(label);
+            if (option.first != 0) MixFocusTestAccess::chooseLayerItem(focus, option.first);
+            return option.first != 0 && layerChannelItem(label).second;
+        };
+        const auto priorHead = History(doc->store()).head();
+        focus.select(first);
+        check(layerChannelItem("Follow window").second && chooseChannel("Mid") && !layerChannelItem("Side").second,
+              "the first layer can choose Mid from its checked Channels submenu");
+        focus.select(second);
+        check(layerChannelItem("Follow window").second && chooseChannel("Side") && !layerChannelItem("Mid").second,
+              "the second layer still follows the window until it independently chooses Side");
+        focus.select(first);
+        check(layerChannelItem("Mid").second && !layerChannelItem("Follow window").second,
+              "returning to the first layer shows its previous checked choice");
+
+        driver.play(true);
+        frame();
+        writeUntil(driver.position() + 8 * chunk);
+        const auto before = broker->stats();
+        const auto openBefore = opens;
+        const auto start = driver.position();
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds170), juce::sendNotificationSync);
+        frame();
+        constexpr auto frames = 8160;
+        std::array<float, chunk> leftA, leftB, right;
+        leftA.fill(.75f); leftB.fill(-.75f); right.fill(.25f);
+        while (driver.position() < start + frames) {
+            const auto from = driver.position();
+            const auto count = static_cast<std::int32_t>(std::min<std::int64_t>(chunk, start + frames - from));
+            a->write(leftA.data(), right.data(), count, from, true, driver.revision());
+            b->write(leftB.data(), right.data(), count, from, true, driver.revision());
+            driver.advance(count);
+            broker->pump();
+            frame();
+        }
+        const auto reading = MixFocusTestAccess::scopeReading(focus);
+        check(channels->getText() == "Stereo" && MixFocusTestAccess::scopeInterval(focus, start, frames, rate) &&
+                  MixFocusTestAccess::foldedLayerAt(focus, first, .999f, .5f) &&
+                  MixFocusTestAccess::foldedLayerAt(focus, second, .999f, -.5f) &&
+                  reading && reading->peak == std::array{0., .5},
+              "the grouped waveform draws independent Mid and Side traces and reads the raw stereo sum");
+        const auto after = broker->stats();
+        check(opens == openBefore && after.taps == 2 && after.consumers == 1 &&
+                  after.transforms == before.transforms && History(doc->store()).head() == priorHead,
+              "layer channel choices keep one grouped reader without replacing sources, transforming or editing");
+        check(freeze && freeze->isEnabled(), "both projected layers can be held in the same Freeze");
+        if (freeze && freeze->isEnabled()) {
+            freeze->setToggleState(true, juce::dontSendNotification);
+            freeze->onClick();
+            focus.select(second);
+            const auto menu = MixFocusTestAccess::layerMenu(focus);
+            int later = 0;
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Later by 1 sample" && item.getItem().isEnabled) later = item.getItem().itemID;
+            const bool wasFrozen = freeze->getToggleState();
+            if (later) MixFocusTestAccess::chooseLayerItem(focus, later);
+            constexpr FocusScopeLayerAdjustment expected{1, false};
+            check(wasFrozen && later && !freeze->getToggleState() &&
+                      MixFocusTestAccess::layerAdjustment(focus) == expected &&
+                      MixFocusTestAccess::cachedLayerAdjustment(focus, 1) == expected,
+                  "editing a frozen layer thaws once and carries the updated offset into the next capture");
+        }
+    }
     peer.setVisible(false);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,
           "hiding the one-bar Scope releases its sources immediately");
@@ -2287,6 +4689,9 @@ int main() {
     parameterPages(commands, temporary.path());
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
+    foldedChannelBrowserSearch(commands, temporary.path());
+    pinnedSpectrumOverlay(commands, temporary.path(), 48000, 4096);
+    pinnedSpectrumOverlay(commands, temporary.path(), 96000, 8192);
     focusWorkspace(commands, temporary.path());
     focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());

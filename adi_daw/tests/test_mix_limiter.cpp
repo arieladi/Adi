@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -258,10 +259,30 @@ void capabilitiesAndPolicy() {
     full->setParam("73",device::ParamValue::fromNormalized(1));
     full->setParam("20",device::ParamValue::fromNormalized(1));
     full->setParam("26",device::ParamValue::fromNormalized(6.0/7));
+
+    // DF-M65: pass step 162 of the 480-step range through the real adapter.
+    // The uncontracted float is -7.79999924 dB; the fused snap gives 0xc0f99999.
+    constexpr auto expectedClipInput = std::bit_cast<float>(std::uint32_t{0xc0f99998});
+    const volatile double runtimeStep162 = .3375; // Keep the host mapping live in an optimized build.
+    const double normalizedStep162 = runtimeStep162;
+    check(full->setParam("21", device::ParamValue::fromNormalized(normalizedStep162)) &&
+              full->getParam("21").hasReal && full->getParam("21").real == expectedClipInput,
+          "Clip Input step 162 stores the exact uncontracted float");
     full->prepare(48000,256);
+    check(recording->last.clip[mix::clip::input] == expectedClipInput,
+          "the prepared Clip receives the exact Input gain from the host mapping");
     check(recording->last.offline&&recording->last.limiter.oversampling==32,"explicit export request selects limiter 32x before prepare");
     check(recording->last.clipEnabled&&recording->last.limiterEnabled&&recording->last.clip[mix::clip::mode]==6,"provider receives both independent flags and exact Clip DTO");
     check(full->getParam("7").real==0,"export override never changes stored online oversampling");
+    check(full->setParam("21", device::ParamValue::fromNormalized(.5)) && full->getParam("21").real == 0.,
+          "clip automation starts from a different gain");
+    engine::Event clipInput;
+    clipInput.type = engine::EventType::ParamValue;
+    clipInput.paramId = 21;
+    clipInput.value = normalizedStep162;
+    process(*full, dry, 0, 256, 1, {&clipInput, 1});
+    check(full->getParam("21").real == expectedClipInput && recording->last.clip[mix::clip::input] == expectedClipInput,
+          "a Clip Input automation event decodes step 162 to the same exact float");
     constexpr std::array<const char*,9> configurationIds{"1","2","7","8","19","20","71","72","73"};
     std::array<engine::Event,configurationIds.size()> forbidden{};
     std::array<device::ParamValue,configurationIds.size()> configured{};

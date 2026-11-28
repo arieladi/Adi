@@ -162,6 +162,25 @@ namespace adi_eq_zlp {
             }
         }
 
+        [[nodiscard]] bool hasStationarySilence() const noexcept {
+            const auto silent = [](const auto& fifo) {
+                return std::ranges::all_of(fifo, [](const auto& channel) {
+                    return std::ranges::all_of(channel, [](const float sample) {
+                        return sample == 0.0f && !std::signbit(sample);
+                    });
+                });
+            };
+            return silent(input_fifo_) && silent(output_fifo_);
+        }
+
+        void skipSilentFrames(const size_t frames) noexcept {
+            if (hop_size_ == 0) {
+                return;
+            }
+            pos_ = (pos_ + frames % fft_size_) % fft_size_;
+            count_ = (count_ + frames % hop_size_) % hop_size_;
+        }
+
         [[nodiscard]] int getLatency() const { return latency_; }
 
         [[nodiscard]] size_t getNumBin() const { return num_bin_; }

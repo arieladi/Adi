@@ -12,6 +12,7 @@
 #include <span>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 
 #include "tdf_base.hpp"
@@ -259,6 +260,46 @@ namespace adi_eq_dsp::filter {
                 sample = output;
             }
             return sample;
+        }
+
+        [[nodiscard]] bool hasStationarySilence(const size_t channels) const noexcept {
+            if (this->current_filter_num_ == 0) {
+                return true;
+            }
+            if (this->c_freq_.isSmoothing() || this->c_gain_.isSmoothing() || this->c_q_.isSmoothing()) {
+                return false;
+            }
+            const auto order = (this->c_filter_type_ == kFlatTilt || this->c_filter_type_ == kFlatGain)
+                                   ? 0 : this->c_order_;
+            const auto sections = order == 1 || order == 2 ? size_t{1} : this->current_filter_num_;
+            const auto sameZero = [](const FloatType before, const FloatType after) {
+                return before == FloatType{} && after == FloatType{} && std::signbit(before) == std::signbit(after);
+            };
+            const auto sample = FloatType{};
+            for (size_t channel = 0; channel < channels; ++channel) {
+                for (size_t section = 0; section < sections; ++section) {
+                    const auto index = channel * kFilterSize + section;
+                    const auto& coeff = IIR<kFilterSize>::coeffs_[section];
+                    const auto s1 = s1s_[index];
+                    const auto output = sample * coeff[2] + s1;
+                    const auto nextOne = (sample * coeff[3]) - (output * coeff[0]);
+                    if (!sameZero(sample, output)) {
+                        return false;
+                    }
+                    if (order == 1) {
+                        if (!sameZero(s1, nextOne)) {
+                            return false;
+                        }
+                    } else {
+                        const auto s2 = s2s_[index];
+                        const auto nextTwo = (sample * coeff[4]) - (output * coeff[1]);
+                        if (!sameZero(s1, nextOne + s2) || !sameZero(s2, nextTwo)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
         }
 
         /**

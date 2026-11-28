@@ -4,7 +4,12 @@
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/dsp/true_peak.hpp"
+#include "adi/engine/session.hpp"
 #include "adi/engine/transport.hpp"
+#include "adi/store.hpp"
+#include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,6 +25,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -380,6 +386,296 @@ void filledSpectrumCurves() {
               played->filledSpectrum->magnitudes[index(Curve::HeldMaximum)][bin] < .001f,
           "starting playback opens a new held interval");
 }
+void stripCadenceAndEpochs() {
+    constexpr int period = 2400, window = 1024;
+    Fixture f;
+    auto strip = f.broker.acquireStrip(1), sibling = f.broker.acquireStrip(1);
+    check(strip.available() && sibling.available() && !strip.readStrip() && f.acquireCalls == 1 &&
+              f.broker.stats().taps == 1 && f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1,
+          "two visible strip readers share one post-fader tap and spectral domain");
+
+    std::array<float, period> left{}, right{};
+    left.fill(.5f); right.fill(.25f);
+    left[period - window] = -.75f; left[period - window + 1] = .8f;
+    right[period - window] = -.5f; right[period - window + 1] = .6f;
+    f.tap->write(left.data(), right.data(), period - 1, 0, true, 1);
+    check(f.broker.pump() == 0 && f.broker.stats().workerPasses == 0 && !strip.readStrip(),
+          "a strip-only lease stays idle until its first 50 milliseconds of audio");
+    f.tap->write(left.data() + period - 1, right.data() + period - 1, 1, period - 1, true, 1);
+    check(f.broker.pump() == 1, "the first due strip frame uses one transform for both readers");
+    const auto first = strip.readStrip();
+    check(first && first == sibling.readStrip() && first->spectrumDbfs.size() == 96 && first->scope.size() == 64 &&
+              first->firstStamp == period - window && first->endSequence == period && first->transportRevision == 1 &&
+              first->scope.front().minimum == std::array{-.75f, -.5f} &&
+              first->scope.front().maximum == std::array{.8f, .6f},
+          "the strip publishes shared stamped spectrum points and signed per-channel scope extrema");
+
+    const float *silence = nullptr;
+    f.tap->write(silence, silence, period, period, true, 1);
+    check(f.broker.pump() == 0, "playing silence needs no strip FFT");
+    const auto smooth = strip.readStrip();
+    check(first && smooth && smooth->endSequence == 2 * period &&
+              near(static_cast<double>(first->spectrumDbfs[0]) - smooth->spectrumDbfs[0],
+                   20. * std::log10(std::exp(.05 / .3))),
+          "the captured spectrum smooths linear magnitude with a 300-millisecond time constant");
+
+    f.tap->write(silence, silence, period, 5, true, 2);
+    f.broker.pump();
+    const auto sought = strip.readStrip();
+    check(first && sought && sought->sourceEpoch > first->sourceEpoch && sought->transportRevision == 2 &&
+              sought->firstStamp == 5 + period - window && sought->spectrumDbfs[0] == adi::dsp::toDbfs(0.f),
+          "a seek clears the prior smoothing and never publishes samples across the transport epoch");
+
+    f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds);
+    f.broker.refreshSources();
+    check(!strip.readStrip(), "a new tap binding clears the old strip picture before new audio");
+    constexpr int newPeriod = 2205;
+    f.tap->write(left.data(), right.data(), newPeriod - 1, 5, true, 2);
+    check(f.broker.pump() == 0 && !strip.readStrip(), "the strip waits for 2205 samples at 44.1 kHz");
+    f.tap->write(left.data() + newPeriod - 1, right.data() + newPeriod - 1, 1, 5 + newPeriod - 1, true, 2);
+    check(f.broker.pump() == 1, "the new rate publishes one transform at its exact sample boundary");
+    const auto replaced = strip.readStrip();
+    check(sought && replaced && replaced->generation == f.tap->generation() && replaced->sampleRate == 44100. &&
+              replaced->sourceEpoch > sought->sourceEpoch && replaced->endSequence == newPeriod,
+          "the refreshed strip publishes the current generation and sample-rate cadence");
+
+    f.tap->write(silence, silence, newPeriod, 0, false, 3);
+    f.broker.pump();
+    const auto parked = strip.readStrip();
+    const auto settled = f.broker.stats();
+    f.tap->write(silence, silence, newPeriod, 0, false, 3);
+    f.broker.pump();
+    check(parked && parked->spectrumDbfs[0] == adi::dsp::toDbfs(0.f) && strip.readStrip() == parked &&
+              f.broker.stats().workerPasses == settled.workerPasses,
+          "certified stopped silence clears once and then performs no continuous analysis");
+
+    strip.reset(); sibling.reset();
+    const auto hidden = f.broker.stats();
+    f.tap->write(left.data(), right.data(), newPeriod, 0, true, 4);
+    f.broker.pump();
+    check(hidden.taps == 0 && hidden.domains == 0 && f.releaseCalls == 1 &&
+              hidden.transforms == f.broker.stats().transforms && hidden.workerPasses == f.broker.stats().workerPasses,
+          "releasing the last visible strip detaches the tap and leaves no work for hidden audio");
+}
+
+void stripReusesRawSpectrum() {
+    Fixture f;
+    auto raw = f.broker.acquire({1});
+    auto strip = f.broker.acquireStrip(1);
+    std::array<float, 2560> audio;
+    audio.fill(.25f);
+    f.tap->write(audio.data(), audio.data(), static_cast<int>(audio.size()), 0, true, 1);
+    check(f.broker.pump() == 7 && f.broker.stats().transforms == 7 && f.broker.stats().spectralPlans == 1 &&
+              f.broker.stats().domains == 1 && f.acquireCalls == 1,
+          "a compatible raw analyzer plus strip uses only the raw domain's seven transforms");
+    const auto window = raw.read();
+    const auto summary = strip.readStrip();
+    check(window && summary && summary->endSequence == 2560 && summary->firstStamp == window->firstStamp &&
+              summary->spectrumDbfs[0] == *std::max_element(window->binsDbfs.begin(), window->binsDbfs.begin() + 5),
+          "the strip projects the first shared completed raw FFT at or after its 50-millisecond boundary");
+    const auto settled = f.broker.stats();
+    strip.reset();
+    check(f.broker.pump() == 0 && raw.read() == window,
+          "closing the last Strip retains the raw analyzer's completed publication");
+    const auto idle = f.broker.stats();
+    check(idle.taps == 1 && idle.consumers == 1 && idle.workerPasses == settled.workerPasses &&
+              idle.cursorReads == settled.cursorReads && idle.analysisWindows == settled.analysisWindows &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "closing a shared Strip in an idle hop needs no worker, cursor, FFT or publication");
+
+    SharedAnalysis::Request scopeRequest{1};
+    scopeRequest.outputs = SharedAnalysis::Scope;
+    auto waitingScope = f.broker.acquire(scopeRequest);
+    auto transientStrip = f.broker.acquireStrip(1);
+    transientStrip.reset();
+    const auto pending = f.broker.stats();
+    f.broker.pump();
+    const auto projected = waitingScope.read();
+    check(projected && window && projected->windowSerial == window->windowSerial &&
+              projected->scopeLeft.size() == 1024 && f.broker.stats().publications == pending.publications + 1 &&
+              f.broker.stats().transforms == pending.transforms,
+          "closing Strip preserves an already pending projection for another consumer");
+
+    auto reopened = f.broker.acquireStrip(1);
+    check(reopened && !reopened.readStrip(), "reopening Strip starts without the old publication");
+    f.tap->write(audio.data(), audio.data(), 256, 2560, true, 1);
+    check(f.broker.pump() == 1 && f.broker.stats().transforms == 8 && f.broker.stats().taps == 1,
+          "the compatible raw analyzer keeps its next hop and reuses one tap");
+    f.tap->write(audio.data(), audio.data(), 2048, 2816, true, 1);
+    f.broker.pump();
+    check(!reopened.readStrip(), "a reopened Strip waits through raw hops before its next 50 milliseconds");
+    f.tap->write(audio.data(), audio.data(), 256, 4864, true, 1);
+    f.broker.pump();
+    const auto next = reopened.readStrip();
+    check(next && next != summary && next->endSequence == 5120 &&
+              f.broker.stats().transforms == 17 && f.broker.stats().taps == 1 && f.acquireCalls == 1,
+          "Strip restarts at its next fresh boundary without a new tap or FFT plan");
+}
+
+void stripWorkerBudget() {
+    constexpr int rate = 768000, period = rate / 20, elapsed = 3 * period;
+    constexpr auto count = SharedAnalysis::kMaxWindowsPerFrame + 1;
+    std::array<std::shared_ptr<ScopeTap>, count> taps;
+    std::size_t acquired = 0, released = 0;
+    SharedAnalysis broker(
+        [&](adi::engine::ScopeSource source, double seconds) -> std::shared_ptr<const ScopeTap> {
+            ++acquired;
+            auto &tap = taps.at(static_cast<std::size_t>(source.track - 1));
+            if (!tap && source.point == ScopePoint::PostFader) tap = std::make_shared<ScopeTap>(rate, seconds);
+            return tap;
+        }, [&](adi::engine::ScopeSource) { ++released; }, SharedAnalysis::Mode::Manual);
+    std::array<SharedAnalysis::Lease, count> strips;
+    std::vector<float> audio(static_cast<std::size_t>(elapsed), .25f);
+    for (std::size_t i = 0; i < count; ++i) {
+        strips[i] = broker.acquireStrip(static_cast<std::int64_t>(i + 1));
+        taps[i]->write(audio.data(), audio.data(), elapsed, 0, true, 1);
+    }
+    check(acquired == count && broker.stats().taps == count && broker.stats().spectralPlans == count &&
+              broker.pump() == SharedAnalysis::kMaxWindowsPerFrame && broker.pump() == 1 && broker.pump() == 0 &&
+              broker.stats().transforms == count && broker.stats().cursorReads == count,
+          "high-rate late frames get one latest FFT and bounded cursor read per strip across fair worker passes");
+    check(std::ranges::all_of(strips, [&](const auto &strip) {
+              const auto frame = strip.readStrip(); return frame && frame->endSequence == elapsed;
+          }), "a late owner frame skips obsolete 50-millisecond pictures instead of building a backlog");
+    for (auto &strip : strips) strip.reset();
+    check(released == count && broker.stats().taps == 0 && broker.stats().spectralPlans == 0,
+          "closing all visible strips releases every physical tap and plan");
+}
+
+struct StripAudioSource final : adi::engine::Node {
+    explicit StripAudioSource(double value) : amplitude(value) {}
+    bool processesDouble() const noexcept override { return true; }
+    void process(const adi::engine::NodeIo &io) noexcept override {
+        for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+            const double sample = (io.transport->timelineSample + i) % 64 == 11 ? amplitude : 0.;
+            if (io.wide()) {
+                io.out64[0][i] = sample;
+                io.out64[1][i] = sample * -.5;
+            } else {
+                io.out[0][i] = static_cast<float>(sample);
+                io.out[1][i] = static_cast<float>(sample * -.5);
+            }
+        }
+    }
+    double amplitude;
+};
+
+template <class Sample> void stripLeasePreservesAudio(const adi::Store &store) {
+    using namespace adi::engine;
+    constexpr double rate = 48000., restartedRate = 96000.;
+    constexpr int frames = 512, delay = 37, window = 1024;
+    constexpr bool wide = std::is_same_v<Sample, double>;
+    auto setup = [&](Session &session, StripAudioSource &a, StripAudioSource &b) {
+        session.setSourcesFor([&a, &b](std::int64_t track) -> std::vector<Node *> {
+            if (track == 1) return {&a};
+            if (track == 2) return {&b};
+            return {};
+        });
+        session.graph().setFadeFrames(0);
+        if (!session.load(store, {}, {2, rate, frames, wide ? Precision::Float64 : Precision::Float32}))
+            throw std::runtime_error(session.error());
+        session.transport().play();
+    };
+    StripAudioSource plainA(.25), plainB(.125), watchedA(.25), watchedB(.125);
+    Session plain, watched;
+    setup(plain, plainA, plainB);
+    setup(watched, watchedA, watchedB);
+    ScopeLease demand;
+    SharedAnalysis broker(
+        [&](ScopeSource source, double seconds) -> std::shared_ptr<const ScopeTap> {
+            if (!demand) demand = watched.requestScope({source, seconds});
+            return demand.tap();
+        }, [&](ScopeSource) { demand.reset(); }, SharedAnalysis::Mode::Manual);
+
+    using Output = std::array<std::array<Sample, frames>, 2>;
+    using Bits = std::conditional_t<wide, std::uint64_t, std::uint32_t>;
+    const auto render = [](Session &session, int count, Output &samples) {
+        Sample *planes[]{samples[0].data(), samples[1].data()};
+        AudioIo io;
+        io.numOut = 2;
+        io.frames = count;
+        if constexpr (wide) io.out64 = planes;
+        else io.out = planes;
+        session.process(io);
+    };
+    const auto latency = [](Session &session) {
+        const auto *graph = session.graph().currentGraph();
+        return graph ? graph->latencySamples() : -1;
+    };
+    Output reference{}, observed{};
+    auto compare = [&](int callbacks, int expectedLatency) {
+        bool exact = true;
+        for (int block = 0; block < callbacks; ++block) {
+            const int count = block % 2 ? 257 : frames;
+            render(plain, count, reference);
+            render(watched, count, observed);
+            watched.collectScopeTaps();
+            broker.pump();
+            for (std::size_t ch = 0; ch < reference.size(); ++ch) {
+                exact = exact && std::equal(reference[ch].data(), reference[ch].data() + count, observed[ch].data(),
+                    [](Sample a, Sample b) { return std::bit_cast<Bits>(a) == std::bit_cast<Bits>(b); });
+            }
+            exact = exact && latency(plain) == expectedLatency && latency(watched) == expectedLatency;
+        }
+        return exact;
+    };
+    // The early strip's signed latency must move the other track's pulse from
+    // sample 11 to sample 48 in the compensated Main output.
+    check(compare(1, delay) && reference[0][11] == .25 && reference[0][11 + delay] == .125,
+          "the untouched graph has the expected physical PDC on two distinguishable pulses");
+
+    auto strip = broker.acquireStrip(1);
+    check(compare(8, delay), "attaching and reading a visible strip during playback preserves every audio and PDC bit");
+    const auto beforeSeek = strip.readStrip();
+    const auto tapBeforeRestart = demand.tap();
+    check(beforeSeek && tapBeforeRestart && watched.scopeStats().sources == 1 && tapBeforeRestart->latency() == delay &&
+              beforeSeek->firstStamp == watched.transport().position() - delay - window -
+                  (tapBeforeRestart->written() - beforeSeek->endSequence),
+          "the real post-fader strip tap uses the audible graph's existing compensated stamps");
+
+    plain.transport().locate(8192);
+    watched.transport().locate(8192);
+    check(compare(8, delay), "the active strip does not change audio or PDC after a playing seek");
+    const auto afterSeek = strip.readStrip();
+    check(beforeSeek && afterSeek && afterSeek->sourceEpoch > beforeSeek->sourceEpoch &&
+              afterSeek->transportRevision == watched.transport().revision() && afterSeek->firstStamp >= 8192 - delay,
+          "seek publishes only the new transport epoch on the existing strip lease");
+
+    for (auto *session : {&plain, &watched}) {
+        session->release();
+        session->prepare(restartedRate, frames);
+        session->transport().play();
+    }
+    broker.refreshSources();
+    check(!strip.readStrip() && demand.tap() && demand.tap() != tapBeforeRestart,
+          "driver restart at a new rate invalidates the previous strip generation");
+    check(compare(14, 2 * delay), "a retained strip preserves audio and the rescaled PDC after the driver restart");
+    const auto restarted = strip.readStrip();
+    const auto lastTap = demand.tap();
+    check(restarted && lastTap && restarted->sampleRate == restartedRate && restarted->generation == lastTap->generation() &&
+              lastTap->latency() == 2 * delay,
+          "the retained strip follows the restarted graph's physical tap and compensation");
+
+    strip.reset();
+    check(compare(2, 2 * delay), "closing the visible strip across callback boundaries preserves audio and PDC");
+    const auto retiredFrames = lastTap ? lastTap->written() : -1;
+    check(compare(4, 2 * delay) && lastTap && lastTap->written() == retiredFrames &&
+              watched.scopeStats().consumers == 0 && watched.scopeStats().sources == 0 && broker.stats().taps == 0,
+          "the detached strip stops copying frames while the running graph remains bit-identical");
+}
+
+void stripLeaseInSession() {
+    adi::test::TempDirectory directory{"shared_analysis", "strip_audio"};
+    adi::StoreError error{};
+    auto store = adi::Store::createEmpty(directory.path() / "strip-audio.adi", error);
+    if (!store) throw std::runtime_error("strip audio fixture store");
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                     "(1,'audio','Early',0),(2,'audio','Late',1),(9,'master','Main',2);"
+                     "INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,-37);");
+    stripLeasePreservesAudio<float>(*store);
+    stripLeasePreservesAudio<double>(*store);
+}
+
 void realtimeMaximumSpectrum() {
     constexpr int window = 480;
     constexpr int rate = 48000;
@@ -574,6 +870,126 @@ void realtimeMaximumDecayAndAdmission() {
               "settled parked maximum skips later certified quiet samples");
     }
 }
+void realtimeSigmaSpectrum() {
+    constexpr int window = 480;
+    constexpr std::uint64_t revision = 51;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.window = adi::dsp::Window::Rectangular;
+    request.hopSize = window;
+    auto raw = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::RealtimeSigma;
+    auto sigma = f.broker.acquire(request);
+    const auto plan = f.broker.stats();
+    check(raw.available() && sigma.available() && !sigma.readRealtimeSigma() && !raw.readRealtimeSigma() &&
+              plan.taps == 1 && plan.domains == 1 && plan.spectralPlans == 1 && f.acquireCalls == 1,
+          "realtime sigma is demand-gated and shares the Raw FFT plan and physical tap");
+
+    const auto write = [&](float value, std::int64_t stamp, std::uint64_t epoch) {
+        std::array<float, window> samples;
+        samples.fill(value);
+        const auto *source = value == 0.f ? nullptr : samples.data();
+        f.tap->write(source, source, window, stamp, true, epoch);
+        return f.broker.pump();
+    };
+    const auto floorWork = write(0.f, 0, revision);
+    const auto initial = sigma.readRealtimeSigma();
+    check(initial && initial->window == raw.read() && !initial->binsDbfs.empty() &&
+              initial->binsDbfs.front() == adi::dsp::kDbFloor && floorWork == 0,
+          "the first silent null-input window publishes sigma floor without running the FFT");
+
+    // Independent values for a2 = 1 - .1^(480/(48000 * .5)).
+    // Update the mean with a2, then use the new mean and the same a2
+    // for the central second moment. Report only its square root in dB.
+    constexpr std::array<float, 4> steps{.5f, .125f, 0.f, .5f};
+    constexpr std::array<double, 4> expectedDb{-19.887759312, -19.900744366, -20.087349149, -17.308109395};
+    bool exactSteps = true;
+    bool sharedWindows = true;
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        const auto transforms = write(steps[i], static_cast<std::int64_t>(i + 1) * window, revision);
+        const auto picture = sigma.readRealtimeSigma();
+        exactSteps = exactSteps && picture && !picture->binsDbfs.empty() &&
+                     near(picture->binsDbfs.front(), expectedDb[i], .001) &&
+                     transforms == (steps[i] == 0.f ? 0u : 1u);
+        sharedWindows = sharedWindows && picture && picture->window == raw.read();
+    }
+    const auto last = sigma.readRealtimeSigma();
+    check(exactSteps && sharedWindows && f.broker.stats().transforms == 3,
+          "both sigma moments advance per physical hop with the same faster coefficient and newly updated mean");
+    check(initial && !initial->binsDbfs.empty() && initial->binsDbfs.front() == adi::dsp::kDbFloor,
+          "subsequent sigma windows cannot mutate a previously held publication");
+
+    request.outputs = SharedAnalysis::Scope;
+    auto scope = f.broker.acquire(request);
+    const auto beforeRepublish = f.broker.stats();
+    f.broker.pump();
+    const auto metadata = sigma.readRealtimeSigma();
+    const auto republished = f.broker.stats();
+    check(metadata && last && metadata->window && last->window &&
+              metadata->window == raw.read() && metadata->window == scope.read() &&
+              metadata->window->windowSerial == last->window->windowSerial &&
+              exactBins(metadata->binsDbfs, last->binsDbfs) &&
+              republished.transforms == beforeRepublish.transforms &&
+              republished.analysisWindows == beforeRepublish.analysisWindows,
+          "metadata-only scope publication changes no sigma history or transform");
+    f.broker.pump();
+    const auto idle = f.broker.stats();
+    check(sigma.readRealtimeSigma() == metadata && idle.transforms == republished.transforms &&
+              idle.publications == republished.publications && idle.workerPasses == republished.workerPasses,
+          "unchanged workers keep the same immutable sigma publication without extra passes");
+    scope.reset();
+
+    const auto seekWork = write(0.f, 30000, revision + 1);
+    const auto afterSeek = sigma.readRealtimeSigma();
+    check(seekWork == 0 && metadata && afterSeek && afterSeek->window == raw.read() &&
+              afterSeek->window->transportRevision == revision + 1 &&
+              afterSeek->window->sourceEpoch > metadata->window->sourceEpoch &&
+              !afterSeek->binsDbfs.empty() && afterSeek->binsDbfs.front() == adi::dsp::kDbFloor,
+          "a silent seek clears both sigma moments before publishing the new epoch");
+    write(.5f, 30000 + window, revision + 1);
+    const auto restarted = sigma.readRealtimeSigma();
+    check(restarted && !restarted->binsDbfs.empty() &&
+              near(restarted->binsDbfs.front(), expectedDb.front(), .001),
+          "the first nonzero post-seek hop repeats sigma startup numerically");
+
+    sigma.reset();
+    write(.25f, 30000 + 2 * window, revision + 1);
+    check(raw.read() && !(raw.read()->outputs & SharedAnalysis::RealtimeSigma) &&
+              f.broker.stats().spectralPlans == 1 && f.releaseCalls == 0,
+          "closing the sigma lease leaves the independent Raw plan without sigma output");
+    raw.reset();
+    const auto hidden = f.broker.stats();
+    write(.25f, 30000 + 3 * window, revision + 1);
+    const auto still = f.broker.stats();
+    check(hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              still.transforms == hidden.transforms && still.cursorReads == hidden.cursorReads &&
+              still.workerPasses == hidden.workerPasses && still.publications == hidden.publications,
+          "closing the final lease leaves no work for subsequent input");
+
+    Fixture parked;
+    request.outputs = SharedAnalysis::RealtimeSigma;
+    auto quietSigma = parked.broker.acquire(request);
+    const float *silence = nullptr;
+    parked.tap->write(silence, silence, window, 0, false, revision);
+    parked.broker.pump();
+    const auto settled = parked.broker.stats();
+    const auto heldFloor = quietSigma.readRealtimeSigma();
+    parked.tap->write(silence, silence, 5 * window, 0, false, revision);
+    parked.broker.pump();
+    const auto quiet = parked.broker.stats();
+    check(heldFloor && quietSigma.readRealtimeSigma() == heldFloor && settled.transforms == 0 &&
+              quiet.cursorReads == settled.cursorReads && quiet.workerPasses == settled.workerPasses,
+          "a settled parked Sigma trace does not read or transform further certified silence");
+    std::array<float, window> resumedInput;
+    resumedInput.fill(.5f);
+    parked.tap->write(resumedInput.data(), resumedInput.data(), window, 0, false, revision);
+    parked.broker.pump();
+    const auto resumedSigma = quietSigma.readRealtimeSigma();
+    check(resumedSigma && !resumedSigma->binsDbfs.empty() &&
+              near(resumedSigma->binsDbfs.front(), expectedDb.front(), .001) && parked.broker.stats().transforms == 1,
+          "an audible input wakes parked Sigma with its correct first-hop value");
+}
+
 void focusScopeMidBeforeBinning() {
     using adi::ui::FocusScopeBarBlock;
     using adi::ui::FocusScopeChannels;
@@ -746,6 +1162,339 @@ void cumulativeMaximumSpectrum() {
           "hiding the final cumulative view frees analysis work");
 }
 
+void cumulativeAverageSpectrum() {
+    constexpr int window = 480;
+    constexpr std::uint64_t revision = 19;
+    constexpr auto output = SharedAnalysis::CumulativeAverage;
+    const auto dcIs = [](const auto &picture, std::uint64_t windows, double magnitude) {
+        const auto expected = magnitude == 0. ? adi::dsp::kDbFloor : 20. * std::log10(magnitude);
+        return picture && picture->window && !picture->binsDbfs.empty() &&
+               picture->processedWindows == windows && near(picture->binsDbfs.front(), expected, .001);
+    };
+    const auto write = [](Fixture &f, float level, std::int64_t stamp, bool advancing, std::uint64_t epoch) {
+        std::array<float, window> audio;
+        audio.fill(level);
+        const auto *source = level == 0.f ? nullptr : audio.data();
+        f.tap->write(source, source, window, stamp, advancing, epoch);
+        return f.broker.pump();
+    };
+
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.window = adi::dsp::Window::Rectangular;
+    request.hopSize = window;
+    auto raw = f.broker.acquire(request);
+    write(f, .875f, 0, true, revision);
+    request.outputs = output;
+    auto a = f.broker.acquire(request);
+    f.broker.pump();
+    const auto admitted = f.broker.stats();
+    check(a.available() && !a.readCumulativeAverage() && raw.read() &&
+              !raw.readCumulativeAverage() && !raw.restartCumulativeAverage() &&
+              admitted.taps == 1 && admitted.domains == 1 && admitted.spectralPlans == 1 && f.acquireCalls == 1,
+          "cumulative average joins the Raw plan and ignores completed pre-admission audio");
+
+    write(f, .125f, window, true, revision);
+    const auto initial = a.readCumulativeAverage();
+    check(dcIs(initial, 1, .125) && initial->window == raw.read(),
+          "the initial cumulative average uses the first fresh calibrated immutable window");
+    auto b = f.broker.acquire(request);
+    f.broker.pump();
+    check(b.available() && !b.readCumulativeAverage() && a.readCumulativeAverage() == initial,
+          "a second cumulative average starts a new interval without changing the first");
+
+    const auto loudWork = write(f, .5f, 2 * window, true, revision);
+    const auto mixed = a.readCumulativeAverage(), firstB = b.readCumulativeAverage();
+    check(dcIs(mixed, 2, (.125 + .5) / 2.) && dcIs(firstB, 1, .5) &&
+              mixed->window == raw.read() && firstB->window == mixed->window && loudWork == 1 &&
+              f.broker.stats().transforms == 3 && f.broker.stats().spectralPlans == 1,
+          "one shared FFT gives independently admitted arithmetic means of linear magnitudes");
+    const auto quietWork = write(f, 0.f, 3 * window, true, revision);
+    const auto diluted = a.readCumulativeAverage(), dilutedB = b.readCumulativeAverage();
+    check(dcIs(diluted, 3, (.125 + .5) / 3.) && dcIs(dilutedB, 2, .5 / 2.) &&
+              diluted->window == raw.read() && quietWork == 0 && dcIs(initial, 1, .125) && dcIs(mixed, 2, .3125),
+          "each silent physical hop counts without another FFT and old publications stay immutable");
+    const auto unchanged = f.broker.stats();
+    for (int idle = 0; idle < 3; ++idle) f.broker.pump();
+    check(a.readCumulativeAverage() == diluted && b.readCumulativeAverage() == dilutedB &&
+              f.broker.stats().analysisWindows == unchanged.analysisWindows &&
+              f.broker.stats().publications == unchanged.publications &&
+              f.broker.stats().workerPasses == unchanged.workerPasses,
+          "repeated pumps cannot count a hop or publish a new average without more audio");
+
+    const bool reset = a.restartCumulativeAverage();
+    f.broker.pump();
+    check(reset && !a.readCumulativeAverage() && b.readCumulativeAverage() == dilutedB &&
+              f.broker.stats().transforms == unchanged.transforms,
+          "Reset clears only its cumulative interval and leaves the sibling and FFT alone");
+    write(f, .375f, 4 * window, true, revision);
+    check(dcIs(a.readCumulativeAverage(), 1, .375) &&
+              dcIs(b.readCumulativeAverage(), 3, (.5 + .375) / 3.),
+          "the reset interval starts at its next complete window while the sibling continues");
+    const auto beforeSeek = a.readCumulativeAverage();
+    write(f, 0.f, 20000, true, revision + 1);
+    const auto afterSeek = a.readCumulativeAverage(), afterSeekB = b.readCumulativeAverage();
+    check(dcIs(afterSeek, 1, 0.) && dcIs(afterSeekB, 1, 0.) && beforeSeek &&
+              afterSeek->window->transportRevision == revision + 1 &&
+              afterSeek->window->sourceEpoch > beforeSeek->window->sourceEpoch,
+          "a seek starts a silent new source epoch in both intervals");
+
+    a.reset();
+    raw.reset();
+    check(b.readCumulativeAverage() == afterSeekB && f.broker.stats().consumers == 1 &&
+              f.broker.stats().spectralPlans == 1 && f.releaseCalls == 0,
+          "closing Raw and one average leaves the remaining cumulative observer live");
+    write(f, .5f, 20000 + window, true, revision + 1);
+    const auto alone = b.readCumulativeAverage();
+    check(dcIs(alone, 2, .25) && alone->window->binsDbfs.empty(),
+          "an average-only lease has no raw-bin publication and still counts the silent start");
+    b.reset();
+    const auto hidden = f.broker.stats();
+    write(f, .5f, 20000 + 2 * window, true, revision + 1);
+    const auto hiddenAfterWrite = f.broker.stats();
+    check(hidden.consumers == 0 && hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              hiddenAfterWrite.transforms == hidden.transforms && hiddenAfterWrite.cursorReads == hidden.cursorReads &&
+              hiddenAfterWrite.workerPasses == hidden.workerPasses && hiddenAfterWrite.publications == hidden.publications,
+          "closing the final cumulative view leaves no tap, outstanding plan or new worker work");
+
+    Fixture overlapping;
+    request.hopSize = window / 2;
+    request.outputs = SharedAnalysis::Spectrum;
+    auto rollingRaw = overlapping.broker.acquire(request);
+    write(overlapping, .875f, 0, true, revision);
+    request.outputs = output;
+    auto fresh = overlapping.broker.acquire(request);
+    const float *zero = nullptr;
+    overlapping.tap->write(zero, zero, window / 2, window, true, revision);
+    overlapping.broker.pump();
+    const auto partial = rollingRaw.read();
+    check(partial && partial->firstSequence == window / 2 && !fresh.readCumulativeAverage(),
+          "an overlapping window cannot carry pre-admission samples into a new cumulative observer");
+    overlapping.tap->write(zero, zero, window / 2, window + window / 2, true, revision);
+    overlapping.broker.pump();
+    const auto firstFresh = fresh.readCumulativeAverage();
+    check(dcIs(firstFresh, 1, 0.) && firstFresh->window->firstSequence == window,
+          "the first eligible whole silent window starts the new interval");
+
+    Fixture parked;
+    request.hopSize = window;
+    auto only = parked.broker.acquire(request);
+    constexpr std::int64_t parkedStamp = 800;
+    write(parked, .5f, parkedStamp, false, revision);
+    const auto parkedFirst = only.readCumulativeAverage();
+    const auto parkedQuiet = write(parked, 0.f, parkedStamp, false, revision);
+    const auto parkedSecond = only.readCumulativeAverage();
+    write(parked, 0.f, parkedStamp, false, revision);
+    const auto parkedThird = only.readCumulativeAverage();
+    check(dcIs(parkedFirst, 1, .5) && dcIs(parkedSecond, 2, .25) && dcIs(parkedThird, 3, .5 / 3.) &&
+              parkedQuiet == 0 && parked.broker.stats().transforms == 1,
+          "certified parked zeros lower a nonzero cumulative mean without waking an FFT");
+
+    Fixture belowFloor;
+    auto veryQuiet = belowFloor.broker.acquire(request);
+    write(belowFloor, 1e-12f, parkedStamp, false, revision);
+    write(belowFloor, 0.f, parkedStamp, false, revision);
+    const auto lowReading = veryQuiet.readCumulativeAverage();
+    check(lowReading && lowReading->processedWindows == 2 && lowReading->binsDbfs.front() == adi::dsp::kDbFloor &&
+              belowFloor.broker.stats().transforms == 1,
+          "a nonzero history keeps diluting even when it reads at the display floor");
+
+    Fixture initiallyQuiet;
+    auto quietOnly = initiallyQuiet.broker.acquire(request);
+    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
+    const auto quietStart = quietOnly.readCumulativeAverage();
+    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
+    check(dcIs(quietStart, 1, 0.) && quietOnly.readCumulativeAverage() == quietStart &&
+              initiallyQuiet.broker.stats().transforms == 0,
+          "an entirely silent stopped interval retains its first floor publication");
+    write(initiallyQuiet, .75f, parkedStamp, false, revision);
+    check(dcIs(quietOnly.readCumulativeAverage(), 3, .25) && initiallyQuiet.broker.stats().transforms == 1,
+          "the first nonzero parked hop retains earlier zeros from its same source epoch");
+}
+
+void parkedCumulativeAverage() {
+    enum class Boundary { None, Burst, BurstWithScope, Locate, Join, Reset };
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr int burstFrames = 71;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    const std::array<float, window> zeros{};
+    std::array<float, window> signal;
+    signal.fill(.5f);
+
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::CumulativeAverage;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    const auto floor = [](const auto &average) {
+        return average && !average->binsDbfs.empty() &&
+               std::ranges::all_of(average->binsDbfs, [](float db) { return db == adi::dsp::kDbFloor; });
+    };
+    const auto matches = [](const auto &measured, const auto &expected) {
+        return measured && expected && measured->window && expected->window &&
+               measured->processedWindows == expected->processedWindows &&
+               measured->window->windowSerial == expected->window->windowSerial &&
+               measured->window->firstSequence == expected->window->firstSequence &&
+               measured->window->firstStamp == expected->window->firstStamp &&
+               measured->window->sourceEpoch == expected->window->sourceEpoch &&
+               measured->window->overrunCount == expected->window->overrunCount &&
+               exactBins(measured->binsDbfs, expected->binsDbfs);
+    };
+
+    for (const auto boundary : {Boundary::None, Boundary::Burst, Boundary::BurstWithScope, Boundary::Locate,
+                                Boundary::Join, Boundary::Reset}) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        auto average = parked.broker.acquire(request);
+        auto uninterrupted = reference.broker.acquire(request);
+        SharedAnalysis::Lease staged, controlStaged;
+        SharedAnalysis::Lease scope, controlScope;
+        const bool withScope = boundary == Boundary::BurstWithScope;
+        const bool burstBetweenPumps = boundary == Boundary::Burst || withScope;
+        if (withScope) {
+            auto scopeRequest = request;
+            scopeRequest.outputs = SharedAnalysis::Scope;
+            scope = parked.broker.acquire(scopeRequest);
+            controlScope = reference.broker.acquire(scopeRequest);
+        }
+        if (boundary == Boundary::Reset) {
+            staged = parked.broker.acquire(request);
+            controlStaged = reference.broker.acquire(request);
+        }
+        const auto writePair = [&](const float *samples, int frames, bool pump = true) {
+            parked.tap->write(samples, samples, frames, stamp, false, revision);
+            // Non-null zero buffers give the control the same samples without a silence certificate.
+            const auto *input = samples ? samples : zeros.data();
+            reference.tap->write(input, input, frames, stamp, false, revision);
+            if (pump) {
+                parked.broker.pump();
+                reference.broker.pump();
+            }
+        };
+
+        writePair(nullptr, window);
+        const auto first = average.readCumulativeAverage();
+        const auto firstStaged = staged.readCumulativeAverage();
+        const auto settled = parked.broker.stats();
+        check(floor(first) && first->processedWindows == 1 && first->window && !first->window->advancing &&
+                  settled.transforms == 0,
+              "the first complete stopped Cumulative Average publishes an exact-zero result");
+        const auto firstScope = scope.read();
+        if (withScope) {
+            check(first && firstScope && firstScope == first->window && exactBins(firstScope->scopeLeft, zeros) &&
+                      exactBins(firstScope->scopeRight, zeros) && settled.taps == 1 && settled.domains == 1 &&
+                      settled.spectralPlans == 1 && settled.consumers == 2,
+                  "compatible Scope and Cumulative Average share one zero window, tap and domain");
+        }
+
+        for (int i = 0; i < blocks; ++i) writePair(nullptr, block);
+        const auto idle = parked.broker.stats();
+        const auto quietControl = uninterrupted.readCumulativeAverage();
+        check(parked.tap->oldest() > window && floor(quietControl) &&
+                  quietControl->processedWindows == 1 + quietFrames / hop &&
+                  average.readCumulativeAverage() == first &&
+                  idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+                  idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+                  idle.publications == settled.publications,
+              "periodic pumps do no work for an already-published zero cumulative interval through a ring wrap");
+        if (withScope) {
+            check(firstScope && scope.read() == firstScope,
+                  "a compatible Scope keeps its zero picture while the shared stopped interval wraps");
+        }
+
+        constexpr std::int64_t admission = window + quietFrames;
+        const bool stagedBoundary = boundary == Boundary::Join || boundary == Boundary::Reset;
+        if (boundary == Boundary::Locate) {
+            constexpr std::int64_t newStamp = stamp + 2400;
+            for (auto *tap : {parked.tap.get(), reference.tap.get()}) {
+                tap->write(signal.data(), signal.data(), hop, newStamp, false, revision + 1);
+                const auto *silence = tap == parked.tap.get() ? nullptr : zeros.data();
+                tap->write(silence, silence, window - hop, newStamp, false, revision + 1);
+            }
+            parked.broker.pump();
+            reference.broker.pump();
+            const auto resumed = average.readCumulativeAverage();
+            check(first && first->window && matches(resumed, uninterrupted.readCumulativeAverage()) &&
+                      resumed->processedWindows == 1 && resumed->window->firstSequence == admission &&
+                      resumed->window->firstStamp == newStamp && resumed->window->transportRevision == revision + 1 &&
+                      resumed->window->sourceEpoch == first->window->sourceEpoch + 1 &&
+                      resumed->window->overrunCount == first->window->overrunCount,
+                  "a stopped Locate between pumps starts a fresh interval at the real source fence");
+            continue;
+        }
+        if (boundary == Boundary::None) {
+            writePair(signal.data(), untilHop - 1);
+            check(average.readCumulativeAverage() == first && uninterrupted.readCumulativeAverage() == quietControl,
+                  "stopped monitoring waits for the original partial cumulative hop");
+        } else if (burstBetweenPumps) {
+            writePair(signal.data(), burstFrames, false);
+            writePair(nullptr, untilHop - burstFrames - 1, false);
+            const auto followingQuiet = parked.tap->lastParkedSilence();
+            check(followingQuiet.begin == admission + burstFrames && followingQuiet.end == admission + untilHop - 1 &&
+                      average.readCumulativeAverage() == first && parked.broker.stats().workerPasses == idle.workerPasses,
+                  "a short audible burst and a fresh silence certificate can both arrive between worker passes");
+        } else {
+            if (boundary == Boundary::Join) {
+                staged = parked.broker.acquire(request);
+                controlStaged = reference.broker.acquire(request);
+            } else {
+                check(staged.restartCumulativeAverage() && controlStaged.restartCumulativeAverage() &&
+                          floor(firstStaged) && firstStaged->processedWindows == 1,
+                      "resetting one zero interval preserves its previous immutable publication");
+            }
+            parked.broker.pump();
+            reference.broker.pump();
+            check(staged.available() && !staged.readCumulativeAverage() && !controlStaged.readCumulativeAverage() &&
+                      average.readCumulativeAverage() == first,
+                  "late admission or reset does not publish or replace a surviving cumulative interval");
+            writePair(nullptr, window);
+            writePair(nullptr, untilHop - 1);
+            check(!staged.readCumulativeAverage() && !controlStaged.readCumulativeAverage(),
+                  "a late or reset interval excludes every full window that starts before its writer fence");
+        }
+
+        writePair(burstBetweenPumps ? nullptr : signal.data(), 1);
+        const auto resumed = average.readCumulativeAverage();
+        const auto expected = uninterrupted.readCumulativeAverage();
+        const auto activeStats = parked.broker.stats();
+        constexpr auto resumedCount = std::uint64_t{2} + quietFrames / hop;
+        const auto additionalHops = stagedBoundary ? std::uint64_t{window / hop} : std::uint64_t{0};
+        check(first && first->window && matches(resumed, expected) &&
+                  resumed->processedWindows == resumedCount + additionalHops &&
+                  resumed->window->firstStamp == stamp && resumed->window->transportRevision == revision &&
+                  resumed->window->sourceEpoch == first->window->sourceEpoch &&
+                  resumed->window->overrunCount == first->window->overrunCount &&
+                  !resumed->binsDbfs.empty() && resumed->binsDbfs.front() > adi::dsp::kDbFloor &&
+                  first->processedWindows == 1 && activeStats.taps == 1 && activeStats.spectralPlans == 1 &&
+                  activeStats.transforms == 1,
+              burstBetweenPumps
+                  ? "a burst between pumps preserves the cumulative denominator, bins and clock without an overrun"
+                  : "the first resumed cumulative hop preserves the full denominator, immutable picture and source clock");
+        if (withScope) {
+            const auto visible = scope.read(), expectedScope = controlScope.read();
+            constexpr std::size_t firstBurst = window - untilHop;
+            check(resumed && visible && expectedScope && visible == resumed->window && visible != firstScope &&
+                      visible->firstSequence == expectedScope->firstSequence && visible->firstStamp == expectedScope->firstStamp &&
+                      visible->windowSerial == expectedScope->windowSerial && visible->transportRevision == revision &&
+                      !visible->advancing && exactBins(visible->scopeLeft, expectedScope->scopeLeft) &&
+                      exactBins(visible->scopeRight, expectedScope->scopeRight) && visible->scopeLeft.size() == window &&
+                      visible->scopeLeft[firstBurst - 1] == 0.f && visible->scopeLeft[firstBurst] == .5f &&
+                      visible->scopeLeft[firstBurst + burstFrames - 1] == .5f &&
+                      visible->scopeLeft[firstBurst + burstFrames] == 0.f && activeStats.domains == 1,
+                  "the shared Scope wakes on the original hop with the exact samples and source clock");
+        }
+        if (stagedBoundary) {
+            const auto next = staged.readCumulativeAverage();
+            check(resumed && matches(next, controlStaged.readCumulativeAverage()) && next->processedWindows == 1 &&
+                      next->window == resumed->window && next->window->firstSequence == admission + untilHop,
+                  "the first post-fence window shares the source transform without inheriting another interval's count");
+        }
+    }
+}
+
 void cumulativeMaximumParkedRollover() {
     constexpr int window = 1024;
     constexpr auto revision = std::uint64_t{19};
@@ -842,6 +1591,155 @@ void focusScopeBarTiming() {
               !focusScopeBarAtTick(std::numeric_limits<std::int64_t>::max(), 48000., constant, {}),
           "negative ticks, missing timing and overflowing bars produce no Focus interval");
 }
+void focusScopeBeatTiming() {
+    constexpr auto quarter = adi::textproj::kPPQ;
+    constexpr auto eighth = quarter / 2;
+    constexpr auto sixteenth = quarter / 4;
+    constexpr double rate = 48000.;
+    using adi::ui::FocusScopeWindow;
+    using adi::ui::focusScopeBarAtTick;
+    using adi::ui::focusScopeWindowAtTick;
+    const std::vector<adi::textproj::Meter> equalMeter;
+    const adi::engine::TempoMap constant{{{0, 120., 0}}};
+    constexpr auto beat = FocusScopeWindow::Beat;
+
+    const auto quarterWindow = focusScopeWindowAtTick(quarter + sixteenth, rate, constant, equalMeter, beat);
+    const auto bar = focusScopeBarAtTick(quarter + sixteenth, rate, constant, equalMeter);
+    check(quarterWindow && quarterWindow->firstTick == quarter && quarterWindow->nextTick == 2 * quarter &&
+              quarterWindow->range.first == 24000 && quarterWindow->range.frames == 24000 &&
+              quarterWindow->range.sampleRate == rate && bar && bar->range.first == 0 && bar->range.frames == 96000,
+          "a 4/4 beat follows its own sample edges without changing the ordinary bar wrapper");
+
+    constexpr auto cut = 2 * quarter + sixteenth;
+    const std::vector<adi::textproj::Meter> split{{0, 4, 4}, {cut, 6, 8}};
+    const auto lastQuarter = focusScopeWindowAtTick(cut - 1, rate, constant, split, beat);
+    const auto firstEighth = focusScopeWindowAtTick(cut, rate, constant, split, beat);
+    const auto secondEighth = focusScopeWindowAtTick(cut + eighth, rate, constant, split, beat);
+    check(lastQuarter && firstEighth && secondEighth && lastQuarter->firstTick == 2 * quarter &&
+              lastQuarter->nextTick == cut && lastQuarter->range.first == 48000 && lastQuarter->range.frames == 6000 &&
+              firstEighth->firstTick == cut && firstEighth->nextTick == cut + eighth &&
+              firstEighth->range.first == 54000 && firstEighth->range.frames == 12000 &&
+              secondEighth->firstTick == firstEighth->nextTick && secondEighth->range.first == 66000,
+          "a mid-beat signature cuts the 4/4 interval and anchors the next 6/8 denominator beat at its exact edge");
+
+    const adi::engine::TempoMap stepped{{{0, 120., 0}, {eighth, 60., 0}}};
+    const auto acrossTempo = focusScopeWindowAtTick(eighth + sixteenth, rate, stepped, equalMeter, beat);
+    const auto afterTempo = focusScopeWindowAtTick(quarter, rate, stepped, equalMeter, beat);
+    check(acrossTempo && afterTempo && acrossTempo->firstTick == 0 && acrossTempo->nextTick == quarter &&
+              acrossTempo->range.first == 0 && acrossTempo->range.frames == 36000 && afterTempo->range.first == 36000 &&
+              afterTempo->range.frames == 48000,
+          "the beat integrates both parts of a tempo step before rounding its absolute edge");
+
+    const adi::engine::TempoMap fractional{{{0, 123., 0}}};
+    const auto edge1 = focusScopeWindowAtTick(0, rate, fractional, equalMeter, beat);
+    const auto edge2 = focusScopeWindowAtTick(quarter, rate, fractional, equalMeter, beat);
+    const auto edge3 = focusScopeWindowAtTick(2 * quarter, rate, fractional, equalMeter, beat);
+    check(edge1 && edge2 && edge3 && edge1->range.frames == 23415 && edge2->range.first == 23415 &&
+              edge2->range.frames == 23414 && edge3->range.first == 46829 && edge3->range.frames == 23415,
+          "three fractional beats share rounded project sample edges without accumulating error");
+    const auto previousSample = focusScopeWindowAtSample(46828, rate, fractional, equalMeter, beat);
+    const auto boundarySample = focusScopeWindowAtSample(46829, rate, fractional, equalMeter, beat);
+    check(previousSample && boundarySample && previousSample->range.first == 23415 &&
+              boundarySample->range.first == 46829 && boundarySample->firstTick == 2 * quarter,
+          "a fresh request on a rounded-down edge starts the new beat rather than a finished one");
+    const auto beforeTie = focusScopeWindowAtSample(24000, 48001., constant, equalMeter, beat);
+    const auto afterTie = focusScopeWindowAtSample(24001, 48001., constant, equalMeter, beat);
+    check(beforeTie && afterTie && beforeTie->firstTick == 0 && afterTie->firstTick == quarter &&
+              afterTie->range.first == 24001,
+          "an exact half-sample edge belongs to the higher sample with no early beat label");
+
+    constexpr auto note = FocusScopeWindow::Sixteenth;
+    const auto note1 = focusScopeWindowAtSample(0, rate, fractional, equalMeter, note);
+    const auto note2 = focusScopeWindowAtSample(5854, rate, fractional, equalMeter, note);
+    const auto note3 = focusScopeWindowAtSample(11707, rate, fractional, equalMeter, note);
+    check(note1 && note2 && note3 && note1->range.first == 0 && note1->range.frames == 5854 &&
+              note2->range.first == 5854 && note2->range.frames == 5853 &&
+              note3->range.first == 11707 && note3->range.frames == 5854,
+          "three fractional sixteenths share absolute sample edges, including a rounded-down start");
+    const std::vector<adi::textproj::Meter> shortBar{{0, 3, 32}};
+    const auto lastHalf = focusScopeWindowAtSample(8779, rate, fractional, shortBar, note);
+    const auto nextBarNote = focusScopeWindowAtSample(8780, rate, fractional, shortBar, note);
+    check(lastHalf && nextBarNote && lastHalf->range.first == 5854 && lastHalf->range.frames == 2926 &&
+              nextBarNote->range.first == 8780 && nextBarNote->range.frames == 5854,
+          "a sixteenth clips to the end of a 3/32 bar and restarts at its rounded sample edge");
+    const auto splitTick = sixteenth + sixteenth / 2;
+    const std::vector<adi::textproj::Meter> splitNote{{0, 4, 4}, {splitTick, 6, 8}};
+    const auto beforeSplit = focusScopeWindowAtTick(splitTick - 1, rate, constant, splitNote, note);
+    const auto afterSplit = focusScopeWindowAtTick(splitTick, rate, constant, splitNote, note);
+    check(beforeSplit && afterSplit && beforeSplit->range.first == 6000 && beforeSplit->range.frames == 3000 &&
+              afterSplit->range.first == 9000 && afterSplit->range.frames == 6000 &&
+              !focusScopeWindowAtTick(std::numeric_limits<std::int64_t>::max(), rate, constant, equalMeter, note),
+          "a mid-note signature starts a fresh grid and a note cannot overflow the timeline");
+
+    constexpr auto twoBars = FocusScopeWindow::TwoBars;
+    constexpr auto fourBars = FocusScopeWindow::FourBars;
+    const auto steppedPair = focusScopeWindowAtTick(5 * quarter, rate, stepped, equalMeter, twoBars);
+    const auto nextFour = focusScopeWindowAtSample(384000, rate, constant, equalMeter, fourBars);
+    check(steppedPair && steppedPair->firstTick == 0 && steppedPair->nextTick == 8 * quarter &&
+              steppedPair->range.frames == 372000 && nextFour && nextFour->firstTick == 16 * quarter &&
+              nextFour->range.first == 384000 && nextFour->range.frames == 384000,
+          "multi-bar windows stay on the project grid and integrate tempo changes before rounding the sample ends");
+    const auto lastFourSample = focusScopeWindowAtSample(374633, rate, fractional, equalMeter, fourBars);
+    const auto roundedFourEdge = focusScopeWindowAtSample(374634, rate, fractional, equalMeter, fourBars);
+    check(lastFourSample && roundedFourEdge && lastFourSample->range.first == 0 &&
+              roundedFourEdge->range.first == 374634 && roundedFourEdge->firstTick == 16 * quarter,
+          "the rounded-down four-bar sample edge starts the new group exactly at the heard boundary");
+    const std::vector<adi::textproj::Meter> groupSplit{{0, 4, 4}, {5 * quarter, 6, 8}};
+    const auto truncated = focusScopeWindowAtTick(4 * quarter, rate, constant, groupSplit, twoBars);
+    const auto afterGroupSplit = focusScopeWindowAtSample(120000, rate, constant, groupSplit, fourBars);
+    check(truncated && truncated->firstTick == 0 && truncated->nextTick == 5 * quarter &&
+              truncated->range.frames == 120000 && afterGroupSplit && afterGroupSplit->firstTick == 5 * quarter &&
+              afterGroupSplit->nextTick == 17 * quarter && afterGroupSplit->range.first == 120000 &&
+              afterGroupSplit->range.frames == 288000 &&
+              !focusScopeWindowAtTick(std::numeric_limits<std::int64_t>::max(), rate, constant, equalMeter, fourBars),
+          "a signature change ends the old collection and anchors a fresh group, even within an unfinished bar");
+
+    const auto grid = [&](adi::ui::FocusScopeRange range, const auto &tempo, const auto &meters) {
+        std::vector<std::pair<std::int64_t, bool>> marks;
+        adi::ui::forEachFocusScopeGridLine(range, tempo, meters,
+            [&](std::int64_t sample, bool barLine) { marks.emplace_back(sample, barLine); });
+        return marks;
+    };
+    check(grid({0, 93659, rate}, fractional, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{0, true}, {23415, false}, {46829, false}, {70244, false}} &&
+              grid({46829, 23415, rate}, fractional, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{46829, false}},
+          "beat and bar marks use rounded heard samples and exclude the next window's first sample");
+    check(grid({30000, 37000, rate}, constant, split) ==
+              std::vector<std::pair<std::int64_t, bool>>{{48000, false}, {54000, true}, {66000, false}} &&
+              grid({30000, 55000, rate}, stepped, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{36000, false}, {84000, false}},
+          "the grid follows a truncated bar at a signature change and an interval crossing a tempo change");
+    constexpr std::int64_t samplesPerBeat = 750;
+    constexpr std::size_t beatsPerBar = 255, visibleBars = 4;
+    const std::vector<adi::textproj::Meter> dense{{0, beatsPerBar, 128}};
+    const auto denseBar = grid({0, beatsPerBar * samplesPerBeat, rate}, constant, dense);
+    const auto denseFourBars = grid({0, beatsPerBar * visibleBars * samplesPerBeat, rate}, constant, dense);
+    const auto matchesDense = [&](const auto &marks, std::size_t beats) {
+        if (marks.size() != beats) return false;
+        for (std::size_t i = 0; i < marks.size(); ++i)
+            if (marks[i].first != static_cast<std::int64_t>(i) * samplesPerBeat ||
+                marks[i].second != (i % beatsPerBar == 0)) return false;
+        return true;
+    };
+    check(matchesDense(denseBar, beatsPerBar), "the grid includes every beat of the largest project signature");
+    check(matchesDense(denseFourBars, beatsPerBar * visibleBars),
+          "a dense four-bar extent retains all of its bar and beat lines through its last sample");
+    using adi::ui::FocusScopeRange;
+    using adi::ui::focusScopeTimedWindow;
+    const auto firstTimed = focusScopeTimedWindow(12345, rate, 85);
+    const auto nextTimed = focusScopeTimedWindow(16425, rate, 85);
+    check(firstTimed == FocusScopeRange{12345, 4080, rate} && nextTimed == FocusScopeRange{16425, 4080, rate} &&
+              focusScopeTimedWindow(0, 44100., 85) == FocusScopeRange{0, 3749, 44100.} &&
+              focusScopeTimedWindow(0, 44100., 170) == FocusScopeRange{0, 7497, 44100.} &&
+              focusScopeTimedWindow(0, rate, 340) == FocusScopeRange{0, 16320, rate},
+          "fixed-time windows use absolute sample starts, whole-frame rounding and contiguous ends");
+    check(!focusScopeTimedWindow(-1, rate, 85) && !focusScopeTimedWindow(0, 0., 85) &&
+              !focusScopeTimedWindow(0, rate, 0) &&
+              !focusScopeTimedWindow(std::numeric_limits<std::int64_t>::max() - 10, rate, 85),
+          "fixed-time windows reject unusable rates, lengths and timeline overflow");
+}
+
 void focusScopeBarProjection() {
     using adi::ui::FocusScopeBarBlock;
     using adi::ui::FocusScopeBarProjection;
@@ -1130,6 +2028,62 @@ void focusBarScopeBroker() {
     companion.reset();
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
+void focusSingleSourceScope() {
+    using Channels = adi::ui::FocusScopeChannels;
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr int frames = 4080;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 53;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}};
+    auto tap = std::make_shared<ScopeTap>(rate, .25);
+    int detached = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        return source == sources[0] ? tap : nullptr;
+    }, [&](Source) { ++detached; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 64);
+    check(lease && broker.stats().taps == 1, "an individual Focus Scope can own one heard source");
+    if (!lease) return;
+    lease.setPhaseRequested(true);
+    const SharedAnalysis::ScopeDifference pair{sources[0], Source{2, ScopePoint::PostFader, 0},
+                                               adi::ui::FocusScopeChannels::Stereo, 1, true};
+    lease.setDifferenceRequested(pair);
+    check(lease.request({0, frames, rate}, revision), "one source accepts a complete 85 ms display request");
+    std::array<float, frames> left{}, right{};
+    left.front() = .25f; right.front() = -.125f;
+    left.back() = .75f; right.back() = -.375f;
+    tap->write(left.data(), right.data(), frames - 1, 0, true, revision);
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "the single source waits for its last sample");
+    tap->write(&left.back(), &right.back(), 1, frames - 1, true, revision);
+    broker.pump();
+    const auto picture = lease.read();
+    check(picture && picture->frames == frames && picture->firstStamp == 0 && picture->transportRevision == revision &&
+              picture->projection && picture->projection->memberColumns(0).front().high[0] == .25 &&
+              picture->projection->memberColumns(0).back().high[0] == .75 &&
+              picture->projection->sumReading()->peak == std::array{.75, .375} &&
+              picture->projection->phase(false) == -1. && !picture->projection->phase(true) &&
+              !picture->differenceSpectrum(pair) && broker.stats().transforms == 0,
+          "one source keeps endpoint extrema and L/R phase with no pair phase or spectrum transform");
+
+    constexpr std::array<std::optional<Channels>, 1> sideView{Channels::Side};
+    lease.setLayerChannelViews(sideView);
+    check(lease.request({frames, 2, rate}, revision), "one source accepts its own layer channel view");
+    constexpr std::array nextLeft{.5f, -.5f}, nextRight{-.25f, .25f};
+    tap->write(nextLeft.data(), nextRight.data(), 2, frames, true, revision);
+    broker.pump();
+    const auto solo = lease.read();
+    const auto side = solo && solo->projection ? solo->projection->memberMonoColumns(0, Channels::Side)
+                                               : std::span<const adi::ui::FocusScopeBarProjection::MonoColumn>{};
+    check(side.size() == 2 && side.front().high == .375 && side.back().low == -.375 &&
+              solo->projection->sumReading()->peak == std::array{.5, .25} &&
+              solo->projection->phase(false) == -1. && !solo->projection->phase(true) &&
+              broker.stats().taps == 1 && broker.stats().transforms == 0,
+          "a single Side layer preserves the stereo measurement and uses the original tap");
+    lease.reset();
+    check(detached == 1 && broker.stats().taps == 0 && picture && picture->projection->complete(),
+          "the released single tap leaves a complete held publication");
+}
 void focusBarScopeMidDemand() {
     using adi::ui::FocusScopeChannels;
     using Source = adi::engine::ScopeSource;
@@ -1186,6 +2140,149 @@ void focusBarScopeMidDemand() {
     check(releases == 2 && broker.stats().taps == 0, "hiding the last grouped reader releases both taps");
 }
 
+void focusCapturedTruePeak() {
+    using adi::dsp::TruePeakMeter;
+    using adi::ui::FocusCapturedTruePeak;
+    struct RateCase { double rate; int factor; };
+    constexpr std::array rates{RateCase{192000., 1}, RateCase{96000., 2}, RateCase{64000., 3},
+        RateCase{48000., 4}, RateCase{40000., 5}, RateCase{32000., 6}, RateCase{27000., 7}, RateCase{24000., 8}};
+    constexpr auto phaseDelay = TruePeakMeter::kDelay;
+    constexpr auto tapsPerPhase = TruePeakMeter::kTapsPerPhase;
+    const auto samplePeak = [](std::span<const double> left, std::span<const double> right) {
+        double peak = 0.;
+        for (const auto channel : {left, right})
+            for (const auto value : channel) peak = std::max(peak, std::abs(value));
+        return peak;
+    };
+    const auto phaseOracle = [&](std::span<const double> left, std::span<const double> right,
+                                 int factor, std::span<const double> coefficients) {
+        double peak = samplePeak(left, right);
+        if (factor == 1) return peak;
+        for (const auto channel : {left, right}) {
+            const auto frames = static_cast<std::ptrdiff_t>(channel.size());
+            for (std::ptrdiff_t sample = 0; sample < frames; ++sample) {
+                for (int phase = 0; phase < factor; ++phase) {
+                    double value = 0.;
+                    for (int tap = 0; tap < tapsPerPhase; ++tap) {
+                        const auto at = sample + phaseDelay - tap;
+                        if (at >= 0 && at < frames)
+                            value += coefficients[static_cast<std::size_t>(phase + factor * tap)] *
+                                     channel[static_cast<std::size_t>(at)];
+                    }
+                    peak = std::max(peak, std::abs(value));
+                }
+            }
+        }
+        return peak;
+    };
+    const auto measure = [&](double rate, std::span<const double> left, std::span<const double> right) {
+        FocusCapturedTruePeak capture(rate, left.size());
+        const auto original = samplePeak(left, right);
+        check(!capture.finish(original), "an incomplete captured interval cannot report a true peak");
+        constexpr std::array<std::size_t, 6> chunks{7, 2, 17, 256, 1, 96};
+        allocationSizeCount = 0;
+        observeAllocationSizes = true;
+        for (std::size_t cursor = 0, chunk = 0; cursor < left.size(); ++chunk) {
+            const auto next = std::min(left.size(), cursor + chunks[chunk % chunks.size()]);
+            for (; cursor < next; ++cursor) capture.append(left[cursor], right[cursor]);
+            capture.flushSamples();
+        }
+        const auto result = capture.finish(original);
+        const auto repeated = capture.finish(original);
+        observeAllocationSizes = false;
+        check(result && result == repeated && allocationSizeCount == 0,
+              "appending and finishing the interval allocate nothing, and the result remains idempotent");
+        return result;
+    };
+
+    std::array<double, 542> left{}, right{};
+    constexpr std::array tone{.8, .8, -.8, -.8};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = tone[i % tone.size()];
+        right[i] = tone[(i + 1) % tone.size()] * (i < 24 ? .375 : 1.125);
+    }
+    constexpr std::array<std::size_t, 14> lengths{1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 257, 542};
+    for (const auto [rate, factor] : rates) {
+        check(TruePeakMeter::factorFor(rate) == factor, "the capture fixture covers its intended oversampling factor");
+        std::vector<double> coefficients;
+        TruePeakMeter::design(factor, coefficients);
+        bool aligned = true;
+        for (const auto length : lengths) {
+            const auto l = std::span(left).first(length), r = std::span(right).first(length);
+            const auto expected = phaseOracle(l, r, factor, coefficients);
+            const auto measured = measure(rate, l, r);
+            aligned &= measured && (factor == 1 ? *measured == expected : near(*measured, expected, 2.e-12));
+        }
+        check(aligned, "captured stereo true peak matches the half-open phase oracle for short and long inputs");
+    }
+
+    constexpr std::array tail{.8, .8, -.8}, tailSilence{0., 0., 0.};
+    constexpr std::array leading{1., -1., .25, -.25, 1., -.25}, leadingSilence{0., 0., 0., 0., 0., 0.};
+    const auto silence = measure(48000., tailSilence, tailSilence);
+    const auto tailPeak = measure(48000., tailSilence, tail);
+    const auto leadingPeak = measure(48000., leading, leadingSilence);
+    check(silence == 0. && tailPeak && near(*tailPeak, 1.14323772182338, 2.e-12),
+          "a valid silent result is zero and a three-frame right-lane over requires the FIR tail");
+    check(leadingPeak && near(*leadingPeak, 1.0081671313273954, 2.e-12),
+          "the warmup's larger negative-time phase cannot leak into the reported interval peak");
+    check(measure(1.e-300, tail, tailSilence) == measure(24000., tail, tailSilence),
+          "a tiny positive synthetic rate saturates without an out-of-range integer conversion");
+}
+
+void focusBarCapturedTruePeak() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    constexpr double rate = 48000.;
+    constexpr std::int32_t frames = 8192;
+    constexpr std::uint64_t revision = 79;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .5), std::make_shared<ScopeTap>(rate, .5)};
+    unsigned opened = 0, closed = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opened;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++closed; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 64);
+    if (!lease) { check(false, "captured true peak uses the existing bar scope lease"); return; }
+    std::array<float, frames> tone{}, zeros{};
+    constexpr std::array waveform{.8f, .8f, -.8f, -.8f};
+    for (std::size_t i = 0; i < tone.size(); ++i) tone[i] = waveform[i % waveform.size()];
+    const auto feed = [&](std::int64_t start) {
+        taps[0]->write(tone.data(), zeros.data(), frames, start, true, revision);
+        taps[1]->write(zeros.data(), zeros.data(), frames, start, true, revision);
+    };
+    check(lease.request({0, frames, rate}, revision), "request a complete bar with true peak disabled");
+    feed(0);
+    broker.pump();
+    const auto dry = lease.read();
+    check(dry && dry->projection && !dry->projection->sumTruePeak(), "normal bars carry no captured true-peak work");
+
+    lease.setSumTruePeakRequested(true);
+    check(lease.request({frames, frames, rate}, revision), "request true peak on the same stamped sources");
+    feed(frames);
+    broker.pump();
+    check(!lease.read() && lease.status() == SharedAnalysis::BarScopeStatus::Pending,
+          "a full backed-up bar cannot exceed one worker pass's phase budget");
+    for (int i = 0; i < 5 && !lease.read(); ++i) broker.pump();
+    const auto measured = lease.read();
+    const auto peak = measured && measured->projection ? measured->projection->sumTruePeak() : std::nullopt;
+    check(peak && *peak > 1. && measured->projection->sumReading()->peak[0] == static_cast<double>(.8f) &&
+              opened == 2 && broker.stats().transforms == 0 && broker.stats().taps == 2,
+          "the captured stereo sum detects intersample overs using the original sources and no transform");
+
+    check(lease.request({2 * frames, frames, rate}, revision), "start another measured bar");
+    feed(2 * frames);
+    broker.pump();
+    lease.setSumTruePeakRequested(false);
+    broker.pump();
+    const auto cancelled = lease.read();
+    check(cancelled && cancelled->projection && !cancelled->projection->sumTruePeak() &&
+              peak && measured->projection->sumTruePeak() == peak,
+          "disabling true peak cancels unfinished work without mutating the held measurement");
+    lease.reset();
+    check(closed == 2 && broker.stats().taps == 0, "the measured view leaves no demand when released");
+}
+
 void focusScopeDifference() {
     using namespace adi::ui;
     using Source = adi::engine::ScopeSource;
@@ -1208,18 +2305,25 @@ void focusScopeDifference() {
     b.scopeLeft.assign(inverted.begin(), inverted.end());
     b.scopeRight.assign(silent.begin(), silent.end());
     FocusSumColumn stereo{}, mid{}, null{};
+    std::array<double, 2> stereoEnergy{}, foldedEnergy{}, nullEnergy{};
     const auto capture = [](FocusSumColumn &out) { return [&](std::size_t, const auto &column) { out = column; }; };
     allocationSizeCount = 0;
     observeAllocationSizes = true;
-    const auto overlap = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, capture(stereo));
+    const auto overlap = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, capture(stereo), {}, {}, &stereoEnergy);
     observeAllocationSizes = false;
     check(overlap && overlap->first == 2 && overlap->frames == 2 && allocationSizeCount == 0 &&
               stereo.low == std::array{-1.5, .25} && stereo.high == std::array{1.5, .25},
           "short Difference subtracts stamped samples before extrema, with no allocation");
-    check(focusProjectDifference(a, b, 1, FocusScopeChannels::Mid, capture(mid)) && mid.low[0] == -.625 && mid.high[0] == .875,
+    check(focusReadDifferenceRms(stereoEnergy, 2) == std::array{1.5, .25},
+          "the short Difference measures unclipped signed samples over the aligned intersection");
+    check(focusProjectDifference(a, b, 1, FocusScopeChannels::Mid, capture(mid), {}, {}, &foldedEnergy) &&
+              mid.low[0] == -.625 && mid.high[0] == .875,
           "Mid combines the paired L/R sample differences before binning");
-    check(focusProjectDifference(a, a, 1, FocusScopeChannels::Stereo, capture(null)) &&
-              null.low == std::array{0., 0.} && null.high == std::array{0., 0.},
+    check(std::abs(focusReadDifferenceRms(foldedEnergy, 2)[0] - std::sqrt(37.) / 8.) < 1.e-14,
+          "the short Difference folds continuously before measuring RMS");
+    check(focusProjectDifference(a, a, 1, FocusScopeChannels::Stereo, capture(null), {}, {}, &nullEnergy) &&
+              null.low == std::array{0., 0.} && null.high == std::array{0., 0.} &&
+              focusReadDifferenceRms(nullEnergy, 2) == std::array{0., 0.},
           "a waveform subtracts from itself to exact silence");
     ++b.transportRevision;
     bool wrongRevision = false;
@@ -1253,6 +2357,9 @@ void focusScopeDifference() {
     check(values.size() == 1 && values.front().low == stereo.low && values.front().high == stereo.high &&
               read->projection->differenceColumns(second).empty(),
           "the grouped result contains the same A minus B as the short projection and excludes C");
+    check(read && read->projection && read->projection->differenceRms(first) == std::array{1.5, .25} &&
+              !read->projection->differenceRms(second),
+          "the grouped immutable RMS matches the short path and belongs only to its measured pair");
 
     check(lease.request({2, 2, rate}, revision), "Difference keeps its grouped cursor across bars");
     write(2, 0);
@@ -1263,6 +2370,10 @@ void focusScopeDifference() {
               replaced->projection->differenceColumns(second).empty() && values.size() == 1 &&
               values.front().low == stereo.low,
           "changing B discards the incomplete comparison and does not mutate a published bar");
+    check(replaced && replaced->projection && !replaced->projection->differenceRms(first) &&
+              !replaced->projection->differenceRms(second) && read && read->projection &&
+              read->projection->differenceRms(first) == std::array{1.5, .25},
+          "discarding an unfinished pair clears only its RMS and leaves the previous publication intact");
     check(lease.request({4, 2, rate}, revision), "new selection begins on the next full bar");
     write(4, 0);
     write(5, 1);
@@ -1344,6 +2455,92 @@ void focusScopeSideDemand() {
           "short Side Difference subtracts A minus B before folding and needs no additional acquisition");
 }
 
+void focusScopeLayerChannels() {
+    using Channels = adi::ui::FocusScopeChannels;
+    using Projection = adi::ui::FocusScopeBarProjection;
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 67;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned opens = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opens;
+        return source == sources[0] ? taps[0] : taps[1];
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 1);
+    check(static_cast<bool>(lease), "independent channel views use the existing grouped Scope lease");
+    if (!lease) return;
+
+    const auto write = [&](std::int64_t stamp, std::int32_t count) {
+        constexpr std::array aLeft{.75f, -.75f}, aRight{.25f, -.25f};
+        constexpr std::array bLeft{.25f, -.25f}, bRight{-.75f, .75f};
+        taps[0]->write(aLeft.data(), aRight.data(), count, stamp, true, revision);
+        taps[1]->write(bLeft.data(), bRight.data(), count, stamp, true, revision);
+        broker.pump();
+    };
+    const auto layer = [](const auto &picture, std::size_t member, Channels view) {
+        return picture && picture->projection ? picture->projection->memberMonoColumns(member, view)
+                                               : std::span<const Projection::MonoColumn>{};
+    };
+    const auto symmetric = [](std::span<const Projection::MonoColumn> bins, double peak) {
+        return bins.size() == 1 && bins.front().low == -peak && bins.front().high == peak;
+    };
+    constexpr std::array<std::optional<Channels>, 2> mixed{Channels::Mid, Channels::Side};
+    lease.setLayerChannelViews(mixed);
+    lease.setPhaseRequested(true);
+    constexpr SharedAnalysis::ScopeDifference difference{sources[0], sources[1], Channels::Stereo, 1, false};
+    lease.setDifferenceRequested(difference);
+    check(lease.request({0, 2, rate}, revision), "two independently folded layers share one stamped capture");
+    write(0, 2);
+    const auto held = lease.read();
+    check(symmetric(layer(held, 0, Channels::Mid), .5) && symmetric(layer(held, 1, Channels::Side), .5) &&
+              layer(held, 0, Channels::Side).empty() && layer(held, 1, Channels::Mid).empty(),
+          "each layer stores only its requested fold of corresponding samples");
+    if (held && held->projection) {
+        const auto &projection = *held->projection;
+        const auto sum = projection.sumColumns();
+        const auto residual = projection.differenceColumns(difference);
+        check(sum.size() == 1 && sum.front().low == std::array{-1., -.5} &&
+                  sum.front().high == std::array{1., .5} && projection.sumMonoColumns(Channels::Mid).empty() &&
+                  projection.sumMonoColumns(Channels::Side).empty() && projection.phase(false) == -1. &&
+                  projection.phase(true) == -1. && residual.size() == 1 &&
+                  residual.front().low == std::array{-.5, -1.} && residual.front().high == std::array{.5, 1.},
+              "layer views leave stereo Sum, Difference and the original phase operands intact");
+    } else {
+        check(false, "the comparison capture is available with independent layer views");
+    }
+
+    check(lease.request({2, 2, rate}, revision), "the next mixed capture starts normally");
+    write(2, 1);
+    check(lease.status() == Status::Pending && !lease.read(), "a partial mixed capture stays unpublished");
+    constexpr std::array<std::optional<Channels>, 2> next{Channels::Side, std::nullopt};
+    lease.setLayerChannelViews(next);
+    check(lease.status() == Status::Missed && !lease.read(), "a changed layer view retires only the in-flight capture");
+    lease.setMonoRequested(Channels::Mid);
+    check(lease.request({3, 2, rate}, revision), "a new channel layout starts without reacquiring the sources");
+    write(3, 2);
+    const auto changed = lease.read();
+    check(changed && changed->firstStamp == 3 && symmetric(layer(changed, 0, Channels::Side), .25) &&
+              symmetric(layer(changed, 1, Channels::Mid), .25) && layer(changed, 0, Channels::Mid).empty() &&
+              symmetric(changed->projection->sumMonoColumns(Channels::Mid), .25) &&
+              symmetric(layer(held, 0, Channels::Mid), .5) && symmetric(layer(held, 1, Channels::Side), .5) &&
+              opens == 2 && broker.stats().taps == 2 && broker.stats().transforms == 0,
+          "a revised override and inherited channel use the same taps and leave the held picture intact");
+
+    check(lease.request({5, 2, rate}, revision), "the next capture starts with the explicit Side override");
+    write(5, 1);
+    lease.setMonoRequested(Channels::Stereo);
+    check(lease.status() == Status::Missed && !lease.read() && lease.request({6, 2, rate}, revision),
+          "changing the inherited fold fences an incomplete mixed capture");
+    write(6, 2);
+    const auto inheritedStereo = lease.read();
+    check(symmetric(layer(inheritedStereo, 0, Channels::Side), .25) &&
+              layer(inheritedStereo, 1, Channels::Mid).empty() && opens == 2 && broker.stats().transforms == 0,
+          "the new inherited view preserves the explicit Side layer without changing sources or FFT work");
+}
+
 void focusBarScopeBrokerBoundaries() {
     using Source = adi::engine::ScopeSource;
     using Status = SharedAnalysis::BarScopeStatus;
@@ -1406,6 +2603,75 @@ void focusBarScopeBrokerBoundaries() {
               broker.stats().cursorReads == idle.cursorReads && broker.stats().publications == idle.publications,
           "closing a partially staged group leaves no queued reads and retains the companion");
 }
+void focusBarScopeWaitsOnAllSources() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr auto rate = 48000.;
+    constexpr std::int32_t block = 256;
+    constexpr std::int64_t first = 64 * block;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        return source == sources.front() ? taps.front() : taps.back();
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 8);
+    check(first > taps.front()->capacity() && lease.request({first, 2 * block, rate}, 2),
+          "a new full Scope window may start beyond the retention of either current source");
+    const std::array<float, block> samples{};
+    bool pending = true;
+    for (std::int64_t stamp = 0; stamp < first + 2 * block; stamp += block) {
+        for (const auto &tap : taps) tap->write(samples.data(), nullptr, block, stamp, true, 2);
+        broker.pump();
+        if (stamp < first) pending = pending && lease.status() == Status::Pending;
+    }
+    const auto bar = lease.read();
+    check(pending && lease.status() == Status::Ready && bar && bar->firstStamp == first &&
+              bar->frames == 2 * block && bar->transportRevision == 2 &&
+              broker.stats().taps == 2 && broker.stats().transforms == 0,
+          "waiting for a future Scope window keeps every source cursor live and publishes the exact interval");
+}
+void focusBarScopeResumesAtRequestedRevision() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr double rate = 48000.;
+    constexpr std::int32_t block = 16;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        return source == sources.front() ? taps.front() : taps.back();
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 8);
+    std::array<float, block> samples;
+    const auto write = [&](std::int64_t first, std::uint64_t revision, float sample) {
+        samples.fill(sample);
+        for (const auto &tap : taps) tap->write(samples.data(), samples.data(), block, first, true, revision);
+    };
+    check(lease.request({0, block, rate}, 9), "request the grouped waveform before a seek");
+    write(0, 9, .75f);
+    broker.pump();
+    check(lease.status() == Status::Ready, "the preceding epoch has a complete waveform");
+    write(block, 9, .75f);
+    write(2 * block, 9, .75f);
+    check(lease.request({block, 2 * block, rate}, 10), "request the exact new revision at overlapping heard stamps");
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "older audio at the requested stamps is skipped without losing the request");
+    write(block, 10, -.25f);
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "a new revision may start at the request's first sample and still waits for its tail");
+    write(2 * block, 10, -.25f);
+    broker.pump();
+    const auto captured = lease.read();
+    const auto sum = captured && captured->projection ? captured->projection->sumReading() : std::nullopt;
+    check(captured && captured->transportRevision == 10 && captured->firstStamp == block &&
+              captured->frames == 2 * block && sum && sum->peak == std::array{.5, .5},
+          "the complete requested epoch includes its first sample without an old peak or additional tap");
+    check(lease.request({3 * block, block, rate}, 0, 11), "a seek floor leaves the newer aligned revision open");
+    write(3 * block, 12, .25f);
+    broker.pump();
+    const auto later = lease.read();
+    check(later && later->transportRevision == 12 && later->firstStamp == 3 * block && broker.stats().taps == 2,
+          "a transport action after the seek can advance the epoch without forcing new taps or missing the start");
+}
 void focusScopeSumProjection() {
     using namespace adi::ui;
     SharedAnalysis::Result a, b;
@@ -1442,6 +2708,268 @@ void focusScopeSumProjection() {
     const auto numeric = focusReadSum(sources, *range);
     check(reading.peak == std::array{hot, 1.} && reading.peak == numeric.peak && reading.rms == numeric.rms,
           "the plotted stereo extrema and numeric peak/RMS agree on the same unclipped sample sum");
+}
+void focusScopeLayerPreview() {
+    using namespace adi::ui;
+    SharedAnalysis::Result a, b;
+    for (auto *source : {&a, &b}) {
+        source->advancing = true;
+        source->transportRevision = 70;
+        source->sampleRate = 48000.;
+        source->outputs = SharedAnalysis::Scope;
+    }
+    a.firstStamp = 7;
+    a.scopeLeft = {99.f, 1.f, 2.f, 3.f, 4.f};
+    a.scopeRight = {99.f, .125f, .25f, .375f, .5f};
+    b.firstStamp = 8;
+    b.scopeLeft = {4.f, 3.f, 2.f, 1.f, 99.f};
+    b.scopeRight = {.5f, .375f, .25f, .125f, 99.f};
+    constexpr std::array adjustments{FocusScopeLayerAdjustment{1, true}, FocusScopeLayerAdjustment{-1, false}};
+    const std::array<const SharedAnalysis::Result*, 2> sources{&a, &b};
+    const auto range = focusScopeRange(sources);
+    check(range && range->first == 8 && range->frames == 4,
+          "preview keeps the common stamped interval");
+    if (!range) return;
+    check(focusScopeDisplayedSample(a.scopeLeft, 1, 4, 0, adjustments[0]) == 0.f &&
+              focusScopeDisplayedSample(a.scopeLeft, 1, 4, 1, adjustments[0]) == -1.f &&
+              focusScopeDisplayedSample(b.scopeLeft, 0, 4, 3, adjustments[1]) == 0.f,
+          "opposite shifts pad the displayed interval rather than using samples outside it");
+
+    std::array<FocusSumColumn, 2> sum{};
+    FocusSumColumn difference{};
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto reading = focusProjectSum(sources, *range, sum.size(),
+        [&](std::size_t column, const auto &extrema) { sum[column] = extrema; }, adjustments);
+    const auto differenceRange = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo,
+        [&](std::size_t, const auto &extrema) { difference = extrema; }, adjustments[0], adjustments[1]);
+    observeAllocationSizes = false;
+    check(differenceRange && differenceRange->first == range->first && differenceRange->frames == range->frames &&
+              sum[0].low == std::array{1., .125} && sum[0].high == std::array{3., .375} &&
+              sum[1].low == std::array{-3., -.375} && sum[1].high == std::array{-1., -.125} &&
+              reading.peak == std::array{3., .375} && reading.rms[0] == std::sqrt(5.) &&
+              difference.low == std::array{-3., -.375} && difference.high == difference.low && allocationSizeCount == 0,
+          "short Sum, Difference and readouts operate on shifted signed samples without allocation");
+}
+void focusScopePhaseOperands() {
+    using namespace adi::ui;
+    constexpr std::int64_t stamp = 64;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 7;
+    constexpr std::array<float, 4> a{.25f, -.5f, .125f, -.25f};
+    constexpr std::array<float, 4> b{-.125f, .25f, -.0625f, .125f};
+    const FocusScopeRange range{stamp, a.size(), rate};
+    const std::array<FocusScopeBarSource, 2> sources{{{{1, ScopePoint::PostFader, 0}, 1},
+                                                      {{2, ScopePoint::PostFader, 0}, 1}}};
+    const std::array<FocusScopeBarBlock, 2> original{{{sources[0], stamp, revision, rate, true, a, a},
+                                                    {sources[1], stamp, revision, rate, true, b, b}}};
+    FocusScopeBarProjection bar;
+    check(bar.prepare(range, sources, a.size(), revision) && bar.append(original) && !bar.phase(true),
+          "an unrequested bar phase reading stays empty");
+    check(bar.prepare(range, sources, a.size(), revision, FocusScopeChannels::Stereo, {}, true) &&
+              bar.append(original) && bar.phase(true) == -1. && bar.phase(false) == 1.,
+          "an opposite Mid pair and its same-polarity stereo sum use different operands");
+    auto inverted = original;
+    inverted[1].inverted = true;
+    check(bar.prepare(range, sources, a.size(), revision, FocusScopeChannels::Stereo, {}, true) &&
+              bar.append(inverted) && bar.phase(true) == 1.,
+          "the phase reading sees visual polarity applied before the Mid operands");
+    bar.retainPhase(false);
+    check(!bar.phase(false) && !bar.phase(true), "withdrawing phase demand drops the preview value");
+}
+
+void focusBarLayerPreview() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr std::size_t frames = 1024;
+    constexpr std::int64_t first = 10000;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 71;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned opened = 0, closed = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opened;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++closed; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 4);
+    if (!lease) { check(false, "adjusted preview uses the existing bar lease"); return; }
+    constexpr std::array adjustments{FocusScopeLayerAdjustment{257, true}, FocusScopeLayerAdjustment{-259, false}};
+    const SharedAnalysis::ScopeDifference pair{sources[0], sources[1], FocusScopeChannels::Stereo, 3};
+    lease.setLayerAdjustments(adjustments);
+    lease.setDifferenceRequested(pair);
+    check(lease.request({first, frames, rate}, revision), "a shifted bar captures the existing source pair");
+    std::array<std::array<float, frames>, 2> signals{};
+    signals[0][1] = .75f;
+    signals[0][766] = .25f;
+    signals[0][767] = .5f; // Positively shifted out of the bar.
+    signals[1][0] = 1.f;   // Negatively shifted out of the bar.
+    signals[1][517] = .75f;
+    signals[1][1023] = .125f;
+    for (std::size_t offset = 0; offset < frames; offset += 128) {
+        for (std::size_t i = 0; i < taps.size(); ++i)
+            taps[i]->write(signals[i].data() + offset, signals[i].data() + offset, 128,
+                           first + static_cast<std::int64_t>(offset), true, revision);
+        broker.pump();
+    }
+    const auto shown = lease.read();
+    check(shown && shown->projection && shown->projection->complete(),
+          "opposite bar offsets stream through multiple tap reads and finish with padding");
+    if (!shown || !shown->projection) return;
+    const auto sum = shown->projection->sumColumns();
+    const auto difference = shown->projection->differenceColumns(pair);
+    const auto moved = shown->projection->memberColumns(0);
+    check(sum.size() == 4 && difference.size() == 4 && moved.size() == 4 &&
+              moved[1].low == std::array{-.75, -.75} && moved[3].low == std::array{-.25, -.25} &&
+              sum[1].low == std::array{0., 0.} && sum[1].high == sum[1].low &&
+              sum[2].high == std::array{.125, .125} && sum[3].low == std::array{-.25, -.25} &&
+              difference[1].low == std::array{-1.5, -1.5},
+          "full-bar member, Sum and Difference keep the same shifted sample and sign at tap boundaries");
+    lease.setLayerAdjustments(adjustments);
+    check(lease.read() == shown, "unchanged preview keeps the published bar");
+    lease.setLayerAdjustments({});
+    check(lease.status() == Status::Missed && !lease.read() && shown->projection->complete(),
+          "changing preview invalidates the current bar while existing readers keep an immutable result");
+    check(lease.request({first + static_cast<std::int64_t>(frames), 4, rate}, revision),
+          "the same taps can capture the next bar after clearing preview");
+    constexpr std::array raw{.25f, .5f, .75f, 1.f};
+    for (const auto &tap : taps)
+        tap->write(raw.data(), raw.data(), 4, first + static_cast<std::int64_t>(frames), true, revision);
+    broker.pump();
+    const auto next = lease.read();
+    check(next && next->projection && next->projection->sumColumns().back().high == std::array{2., 2.} &&
+              opened == 2 && closed == 0 && broker.stats().transforms == 0,
+          "resetting preview restores the raw projection without another tap or transform");
+}
+void focusBarResidualSpectrum() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    using Channels = FocusScopeChannels;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr std::int32_t fftSize = 1024;
+    constexpr std::size_t fft = static_cast<std::size_t>(fftSize), frames = fft + 26, bin = 17;
+    constexpr double rate = 96000.;
+    constexpr std::uint64_t revision = 72;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned acquired = 0, released = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++acquired;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++released; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 8);
+    if (!lease) { check(false, "residual spectrum attaches to the existing bar lease"); return; }
+
+    using StereoBar = std::array<std::array<float, frames>, 2>;
+    const StereoBar silent{};
+    StereoBar tone{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto phase = static_cast<double>(i) * (2. * std::numbers::pi * bin / fft);
+        tone[0][i] = i < frames - fft ? 1.e9f : static_cast<float>(.5 * std::cos(phase));
+        tone[1][i] = i < frames - fft ? 1.e9f : static_cast<float>(-.25 * std::cos(phase));
+    }
+    std::int64_t stamp = 10000;
+    std::uint64_t selection = 0;
+    const auto select = [&](Channels fold, bool spectrum = true) {
+        const SharedAnalysis::ScopeDifference selected{sources[0], sources[1], fold, ++selection, spectrum};
+        lease.setDifferenceRequested(selected);
+        return selected;
+    };
+    const auto feed = [&](const StereoBar &a, const StereoBar &b, std::size_t start, std::size_t finish,
+                          std::uint64_t revisionB) {
+        constexpr std::size_t chunk = 129;
+        for (auto i = start; i < finish; i += chunk) {
+            const auto count = static_cast<std::int32_t>(std::min(chunk, finish - i));
+            const auto first = stamp + static_cast<std::int64_t>(i);
+            taps[0]->write(a[0].data() + i, a[1].data() + i, count, first, true, revision);
+            taps[1]->write(b[0].data() + i, b[1].data() + i, count, first, true, revisionB);
+            broker.pump();
+        }
+    };
+    const auto writeBar = [&](const StereoBar &a, const StereoBar &b) {
+        const auto accepted = lease.request({stamp, frames, rate}, revision);
+        feed(a, b, 0, frames, revision);
+        stamp += static_cast<std::int64_t>(frames);
+        return accepted ? lease.read() : std::shared_ptr<const SharedAnalysis::BarScopeResult>{};
+    };
+
+    const auto waveformOnly = select(Channels::Stereo, false);
+    const auto waveform = writeBar(tone, silent);
+    check(waveform && !waveform->differenceSpectrum(waveformOnly) && broker.stats().transforms == 0,
+          "difference waveform does no spectrum work until explicitly requested");
+    const auto identical = select(Channels::Stereo);
+    const auto equal = writeBar(tone, tone);
+    const auto *equalBins = equal ? equal->differenceSpectrum(identical) : nullptr;
+    check(equalBins && equalBins->fftSize == fftSize && equalBins->binsDbfs.empty() && broker.stats().transforms == 0,
+          "identical aligned sources publish an empty residual without a transform");
+
+    constexpr std::array views{Channels::Left, Channels::Right, Channels::Mid, Channels::Side, Channels::Stereo};
+    const std::array expected{.5, .25, .125, .375, std::sqrt((.5 * .5 + .25 * .25) * .5)};
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        const auto shown = select(views[i]);
+        const auto before = broker.stats().transforms;
+        const auto current = writeBar(tone, silent);
+        const auto *read = current ? current->differenceSpectrum(shown) : nullptr;
+        check(read && read->fftSize == fftSize && current->sampleRate == rate && read->binsDbfs.size() == fft / 2 + 1 &&
+                  near(read->binsDbfs[bin], 20. * std::log10(expected[i])) && read->binsDbfs.front() < -70.f &&
+                  !current->differenceSpectrum(identical) && broker.stats().transforms - before == (i + 1 == views.size() ? 2u : 1u),
+              "residual analyses the latest power-of-two tail with the selected calibrated stereo or mono reading");
+    }
+
+    // Equal magnitudes cancel if frequency-domain magnitudes are subtracted.
+    // These operands instead add to a full-scale sine when subtracted in time.
+    StereoBar inverted{};
+    for (std::size_t ch = 0; ch < inverted.size(); ++ch)
+        std::ranges::transform(tone[ch], inverted[ch].begin(), [](float value) { return -value; });
+    const auto opposite = select(Channels::Left);
+    const auto summed = writeBar(tone, inverted);
+    const auto *summedBins = summed ? summed->differenceSpectrum(opposite) : nullptr;
+    check(summedBins && summedBins->binsDbfs.size() == fft / 2 + 1 && near(summedBins->binsDbfs[bin], 0.),
+          "equal-magnitude opposite-phase sources produce a full-scale residual after raw subtraction");
+
+    StereoBar adjusted{};
+    for (std::size_t ch = 0; ch < adjusted.size(); ++ch)
+        for (std::size_t i = 1; i < frames; ++i) adjusted[ch][i] = -tone[ch][i - 1];
+    constexpr std::array moves{FocusScopeLayerAdjustment{1, true}, FocusScopeLayerAdjustment{}};
+    lease.setLayerAdjustments(moves);
+    check(lease.status() == Status::Missed && !lease.read(), "a layer edit cannot keep the old residual live");
+    const auto shifted = select(Channels::Stereo);
+    const auto transforms = broker.stats().transforms;
+    const auto aligned = writeBar(tone, adjusted);
+    const auto *alignedBins = aligned ? aligned->differenceSpectrum(shifted) : nullptr;
+    check(alignedBins && alignedBins->binsDbfs.empty() && broker.stats().transforms == transforms,
+          "the residual captures the same adjusted and padded sample pair as the displayed waveform");
+    lease.setLayerAdjustments({});
+
+    const auto oldPair = select(Channels::Left);
+    check(lease.request({stamp, frames, rate}, revision), "residual capture can begin on an existing source lease");
+    feed(tone, silent, 0, 512, revision);
+    const auto newPair = select(Channels::Right);
+    feed(tone, silent, 512, frames, revision);
+    stamp += static_cast<std::int64_t>(frames);
+    const auto abandoned = lease.read();
+    check(abandoned && !abandoned->differenceSpectrum(oldPair) && !abandoned->differenceSpectrum(newPair) &&
+              broker.stats().transforms == transforms,
+          "changing a fold mid-bar cannot publish the old or incomplete residual");
+
+    StereoBar hugeA{}, hugeB{};
+    for (std::size_t ch = 0; ch < hugeA.size(); ++ch) {
+        hugeA[ch].fill(std::numeric_limits<float>::max());
+        hugeB[ch].fill(-std::numeric_limits<float>::max());
+    }
+    const auto guarded = writeBar(hugeA, hugeB);
+    const auto *guardedBins = guarded ? guarded->differenceSpectrum(newPair) : nullptr;
+    check(guardedBins && guardedBins->binsDbfs.size() == fft / 2 + 1 &&
+              std::ranges::all_of(guardedBins->binsDbfs, [](float value) { return std::isfinite(value); }) &&
+              near(guardedBins->binsDbfs.front(), 240.),
+          "overflow-scale finite differences use the shared spectral input guard");
+
+    check(lease.request({stamp, frames, rate}, revision), "residual uses the existing stamped capture");
+    feed(tone, silent, 0, frames, revision + 1);
+    check(lease.status() == Status::Missed && !lease.read() && acquired == 2 && released == 0 &&
+              broker.stats().transforms == transforms + 1,
+          "transport mismatch refuses the residual and no extra tap or transform is needed");
 }
 void focusScopeFlatPath() {
     using adi::ui::FocusScopePathReducer;
@@ -1648,12 +3176,12 @@ void focusLagPreviewRequests() {
     invalid.sampleRate = 44100.;
     check(!plan(&main, &invalid), "different device rates are refused");
 
-    for (const auto &pair : {std::pair{44100., 882}, std::pair{96000., 1920}, std::pair{192000., 2016}}) {
+    for (const auto &pair : {std::pair{44100., 882}, std::pair{96000., 1920}}) {
         auto fastMain = main, fastTarget = target;
         fastMain.sampleRate = fastTarget.sampleRate = pair.first;
         const auto faster = plan(&fastMain, &fastTarget);
         check(faster && faster->maxLagSamples == pair.second,
-              "the 20 ms search is rounded in device samples and capped by the worker's fixed support");
+              "the low-rate 20 ms search is rounded in device samples");
     }
     for (const auto rate : {0., 1., std::numeric_limits<double>::infinity(),
                             std::numeric_limits<double>::quiet_NaN()}) {
@@ -1750,6 +3278,68 @@ void focusLagPreviewCases() {
     const auto early = focusFindLag(request, a, b);
     check(early && early->lagSamples == -137 && near(early->correlation, 1., 1e-12),
           "a negative lag correctly identifies an early target");
+
+    bool gainInvariant = true;
+    for (const auto db : {-20.f, -10.f, 0.f, 10.f}) {
+        delay(137, 1.f);
+        const auto gain = std::pow(10.f, db / 20.f);
+        for (auto &sample : b.scopeLeft) sample *= gain;
+        b.scopeRight = b.scopeLeft;
+        const auto shifted = focusFindLag(request, a, b);
+        gainInvariant = gainInvariant && shifted && shifted->lagSamples == 137 &&
+            near(shifted->correlation, 1., 1e-10);
+    }
+    check(gainInvariant, "a -20 to +10 dB change does not move or weaken a clean lag");
+
+    const auto addEqualPowerNoise = [&](std::uint32_t seed) {
+        constexpr std::size_t lag = 137;
+        const auto radius = static_cast<std::size_t>(request.maxLagSamples);
+        const auto first = radius + lag, count = size - 2 * radius;
+        std::array<float, size> interference;
+        broadband(interference, seed);
+        // Normalize AC energy over the same matched interior where SNR is measured.
+        const auto power = [first, count](std::span<const float> samples) {
+            double sum = 0., squared = 0.;
+            for (const double sample : samples.subspan(first, count)) {
+                sum += sample;
+                squared += sample * sample;
+            }
+            return squared - sum * sum / static_cast<double>(count);
+        };
+        const auto scale = std::sqrt(power(b.scopeLeft) / power(interference));
+        for (std::size_t i = 0; i < size; ++i)
+            b.scopeLeft[i] += static_cast<float>(scale * interference[i]);
+        b.scopeRight = b.scopeLeft;
+    };
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e7bu);
+    const auto cleanPeak = focusFindLag(request, a, b);
+    check(cleanPeak && cleanPeak->lagSamples == 137 && cleanPeak->correlation >= .70,
+          "the first independent 0 dB SNR window retains its distinct timing peak");
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e86u);
+    const auto quieterPeak = focusFindLag(request, a, b);
+    check(quieterPeak && quieterPeak->lagSamples == 137 && near(quieterPeak->correlation, .68817616, 2e-6),
+          "a long 0 dB SNR window with a distinct peak may read just below .70");
+
+    request.maxLagSamples = 2016;
+    a.sampleRate = b.sampleRate = 192000.;
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e7bu);
+    check(!focusFindLag(request, a, b), "a 64-sample interior keeps the conservative correlation floor");
+    request.maxLagSamples = 960;
+    a.sampleRate = b.sampleRate = 48000.;
+
+    delay(137, 1.f);
+    std::array<float, size> interference;
+    broadband(interference, 0x31a59e7bu);
+    for (std::size_t i = 0; i < size; ++i) {
+        if (i + 271 < size) b.scopeLeft[i] += .32f * noise[i + 271];
+        b.scopeLeft[i] += .25f * interference[i];
+    }
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b),
+          "a near-floor peak with a substantial competing echo still declines to suggest a lag");
 
     delay(960, 1.f);
     check(!focusFindLag(request, a, b), "a true peak at the positive search boundary remains ineligible");
@@ -1963,6 +3553,129 @@ void focusLagTapReads() {
     request.heardEnd = end + 64;
     focusLagWorkerJob(request, a, b);
 }
+void focusLagHighRateTaps() {
+    using namespace adi::ui;
+    using Status = SharedAnalysis::FocusLagStatus;
+    constexpr std::int64_t first = 1100000;
+    constexpr std::uint64_t revision = 43;
+    for (const auto rate : {192000., 768000.}) {
+        const auto radius = static_cast<std::int32_t>(std::lround(.020 * rate));
+        const auto frameCount = static_cast<std::int32_t>(rate / 8.);
+        std::vector<float> main(static_cast<std::size_t>(frameCount)), target(main.size());
+        std::uint32_t noise = 0x7c612889u;
+        for (auto &sample : main) {
+            noise = noise * 1664525u + 1013904223u;
+            sample = static_cast<float>(noise >> 16) / 65536.f - .5f;
+        }
+        const auto a = std::make_shared<ScopeTap>(rate, .25);
+        const auto b = std::make_shared<ScopeTap>(rate, .25);
+        const auto write = [&](std::int64_t stamp, std::uint64_t epoch, std::int32_t lag, float polarity,
+                               float leadingOutlier = 0.f) {
+            for (std::int32_t i = 0; i < frameCount; ++i) {
+                const auto from = i - lag;
+                target[static_cast<std::size_t>(i)] = from >= 0 && from < frameCount
+                    ? polarity * main[static_cast<std::size_t>(from)] : 0.f;
+            }
+            if (leadingOutlier != 0.f) target[static_cast<std::size_t>(frameCount - 4 * radius)] = leadingOutlier;
+            a->write(main.data(), nullptr, frameCount, stamp, true, epoch);
+            const auto split = frameCount / 3;
+            b->write(target.data(), nullptr, split, stamp, true, epoch);
+            b->write(target.data() + split, nullptr, frameCount - split, stamp + split, true, epoch);
+        };
+        const auto plan = [&](std::int64_t stamp, std::uint64_t epoch) {
+            // The ordinary spectrum windows only witness the common heard end.
+            // The worker must obtain the longer interval from both stamped taps.
+            std::array<SharedAnalysis::Result, 2> windows;
+            const std::array taps{a, b};
+            std::array<SharedAnalysis::Lease::SourcePosition, 2> heads;
+            for (std::size_t side = 0; side < taps.size(); ++side) {
+                auto &window = windows[side];
+                window.request.track = side == 0 ? 1 : 2;
+                window.request.fftSize = 1024;
+                window.windowSerial = 1;
+                window.firstStamp = stamp + frameCount - window.request.fftSize;
+                window.firstSequence = taps[side]->written() - window.request.fftSize;
+                window.generation = taps[side]->generation();
+                window.sampleRate = rate;
+                window.advancing = true;
+                window.transportRevision = epoch;
+                heads[side] = {window.generation, taps[side]->written()};
+            }
+            return focusLagPreviewRequest({&windows[0], &windows[1]}, heads, epoch, stamp + frameCount);
+        };
+
+        const bool maximumRate = rate == 768000.;
+        const auto lag = maximumRate ? 137 - radius : radius - 137;
+        write(first, revision, lag, maximumRate ? -1.f : 1.f);
+        const auto request = plan(first, revision);
+        check(request && request->maxLagSamples == radius &&
+                  request->firstStamp == first + frameCount - 4 * radius,
+              "high-rate Align plans the whole 20 ms search with 40 ms of common support");
+        if (!request) continue;
+        if (maximumRate) {
+            a->write(static_cast<const float *>(nullptr), nullptr, 32, first + frameCount, true, revision);
+            const auto preview = focusFindLagOnTaps(*request, {a, b});
+            check(preview && preview->lagSamples == lag && preview->correlation < -.99999 &&
+                      a->written() == frameCount + 32 && b->written() == frameCount,
+                  "768 kHz recovers the exact negative lag and inverted polarity from unequal continuous heads");
+
+            auto wrongRate = std::make_shared<ScopeTap>(384000., .25);
+            wrongRate->write(target.data(), nullptr, frameCount, first, true, revision);
+            auto mixed = *request;
+            mixed.sources[1].generation = wrongRate->generation();
+            check(!focusFindLagOnTaps(mixed, {a, wrongRate}), "the high-rate path refuses a mixed-rate tap pair");
+
+            const auto later = first + 3 * frameCount;
+            write(later, revision + 1, radius, 1.f);
+            const auto edge = plan(later, revision + 1);
+            check(edge && !focusFindLagOnTaps(*edge, {a, b}),
+                  "a strongest peak on the high-rate search boundary is refused");
+
+            for (std::size_t i = 0; i < main.size(); ++i)
+                main[i] = static_cast<float>(i % 127) / 127.f - .5f;
+            write(later + frameCount, revision + 2, lag, 1.f);
+            const auto periodic = plan(later + frameCount, revision + 2);
+            check(periodic && !focusFindLagOnTaps(*periodic, {a, b}),
+                  "multiple equal high-rate alignment peaks do not produce an offset");
+            continue;
+        }
+
+        SharedAnalysis broker(
+            [&](adi::engine::ScopeSource source, double) -> std::shared_ptr<const ScopeTap> {
+                return source.track == 1 ? a : b;
+            }, [](adi::engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+        auto mainLease = broker.acquire({1});
+        auto targetLease = broker.acquire({2});
+        check(mainLease.available() && targetLease.available(), "both high-rate worker sources are already leased");
+        auto measured = broker.requestFocusLag(*request);
+        broker.pump();
+        const auto ready = measured.read();
+        check(measured && measured.status() == Status::Ready && ready && ready->lagSamples == lag &&
+                  ready->correlation > .99999,
+              "the 192 kHz worker publishes the exact positive lag outside the old range");
+
+        auto stale = broker.requestFocusLag(*request);
+        const auto afterSeek = first + 3 * frameCount;
+        write(afterSeek, revision + 1, -lag, 1.f);
+        broker.pump();
+        check(stale && stale.status() == Status::Refused && !stale.read(),
+              "a high-rate seek refuses a pending request from the previous transport revision");
+        const auto fresh = plan(afterSeek, revision + 1);
+        auto recovered = fresh ? broker.requestFocusLag(*fresh) : SharedAnalysis::FocusLagLease{};
+        broker.pump();
+        const auto next = recovered.read();
+        check(recovered && recovered.status() == Status::Ready && next && next->lagSamples == -lag &&
+                  next->correlation > .99999,
+              "the same high-rate taps can measure a new heard interval after the seek refusal");
+
+        for (auto &sample : main) sample *= 5.e-6f;
+        write(afterSeek + frameCount, revision + 2, lag, 1.f, 10000.f);
+        const auto quiet = plan(afterSeek + frameCount, revision + 2);
+        const auto quietPreview = quiet ? focusFindLagOnTaps(*quiet, {a, b}) : std::nullopt;
+        check(quietPreview && quietPreview->lagSamples == lag && quietPreview->correlation > .99999,
+              "an outlier outside the winning window does not erase its quiet target variance");
+    }
+}
 void parkedSilence() {
     Fixture f;
     auto request = SharedAnalysis::Request{1};
@@ -2006,6 +3719,457 @@ void parkedSilence() {
     check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
           "playback resumes with the first complete window");
 }
+void parkedSpectrogramWake() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 62;
+    const std::array<float, window> zeros{};
+    std::array<float, window> left, right;
+    left.fill(.5f);
+    right.fill(-.25f);
+
+    for (const bool joinScope : {false, true}) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        request.outputs = SharedAnalysis::Spectrogram;
+        auto view = parked.broker.acquire(request);
+        auto control = reference.broker.acquire(request);
+        const auto write = [=](Fixture &fixture, const float *l, const float *r, int frames) {
+            fixture.tap->write(l, r, frames, stamp, false, revision);
+            fixture.broker.pump();
+        };
+        write(parked, nullptr, nullptr, window);
+        write(reference, zeros.data(), zeros.data(), window);
+        const auto first = view.read();
+        const auto settled = parked.broker.stats();
+        check(first && first->columns.size() == 1 && first->columns.back().firstSequence == 0 &&
+                  settled.analysisWindows == 1 && settled.transforms == 0 && settled.spectralPlans == 1,
+              "the stopped Spectrogram seeds one retained quiet column without an FFT");
+
+        for (int i = 0; i < blocks; ++i) {
+            write(parked, nullptr, nullptr, block);
+            write(reference, zeros.data(), zeros.data(), block);
+        }
+        const auto idle = parked.broker.stats();
+        const auto controlQuiet = control.read();
+        check(first && view.read() == first && controlQuiet &&
+                  controlQuiet->firstSequence == quietFrames - quietFrames % hop &&
+                  parked.tap->oldest() > window && idle.workerPasses == settled.workerPasses &&
+                  idle.cursorReads == settled.cursorReads && idle.transforms == settled.transforms &&
+                  idle.analysisWindows == settled.analysisWindows && idle.publications == settled.publications,
+              "the Spectrogram stays still with no worker work across a certified silent tap wrap");
+
+        SharedAnalysis::Lease scope;
+        if (joinScope) {
+            request.outputs = SharedAnalysis::Scope;
+            scope = parked.broker.acquire(request);
+            parked.broker.pump();
+            const auto joined = view.read(), scopeWindow = scope.read();
+            const auto stats = parked.broker.stats();
+            check(first && scopeWindow && joined == scopeWindow && scopeWindow->scopeLeft.size() == window &&
+                      joined->historySerial == first->historySerial && joined->columns.size() == 1 &&
+                      joined->columns.back().serial == first->columns.back().serial &&
+                      joined->columns.back().binsDbfs == first->columns.back().binsDbfs &&
+                      stats.taps == 1 && stats.domains == 1 && stats.consumers == 2 &&
+                      stats.spectralPlans == idle.spectralPlans && stats.cursorReads == idle.cursorReads &&
+                      stats.analysisWindows == idle.analysisWindows && stats.transforms == idle.transforms,
+                  "a compatible Scope joins the retained quiet window without appending a Spectrogram column");
+        }
+        const auto held = view.read();
+        const auto beforeWake = parked.broker.stats();
+        write(parked, left.data(), right.data(), untilHop - 1);
+        write(reference, left.data(), right.data(), untilHop - 1);
+        const auto partial = parked.broker.stats();
+        check(held && view.read() == held && control.read() == controlQuiet &&
+                  partial.transforms == beforeWake.transforms && partial.publications == beforeWake.publications,
+              "a partial resumed Spectrogram hop does not advance the held raster");
+
+        write(parked, left.data(), right.data(), 1);
+        write(reference, left.data(), right.data(), 1);
+        const auto audible = view.read(), expected = control.read();
+        const auto wake = parked.broker.stats();
+        check(first && held && audible && expected && audible != held && expected != controlQuiet &&
+                  audible->firstSequence == quietFrames + untilHop && audible->firstSequence == expected->firstSequence &&
+                  audible->firstStamp == stamp && audible->windowSerial == expected->windowSerial &&
+                  audible->transportRevision == revision && !audible->advancing && !audible->discontinuity &&
+                  audible->sourceEpoch == first->sourceEpoch && audible->overrunCount == first->overrunCount &&
+                  audible->peak == std::array{.5f, .25f} && exactBins(audible->binsDbfs, expected->binsDbfs) &&
+                  wake.analysisWindows == beforeWake.analysisWindows + 1 && wake.transforms == beforeWake.transforms + 1 &&
+                  wake.publications == beforeWake.publications + 1,
+              "the first audible Spectrogram window completes at the original hop with exact bins and stamps");
+        check(first && audible && expected && audible->historySerial == first->historySerial + 1 &&
+                  audible->columns.size() == first->columns.size() + 1 && !expected->columns.empty() &&
+                  audible->columns.back().firstSequence == expected->columns.back().firstSequence &&
+                  audible->columns.back().firstStamp == stamp && audible->columns.back().binsDbfs &&
+                  expected->columns.back().binsDbfs &&
+                  exactBins(*audible->columns.back().binsDbfs, *expected->columns.back().binsDbfs) &&
+                  audible->droppedHistoryColumns == first->droppedHistoryColumns,
+              "the sweep advances just one real column after the pause with no synthetic gap");
+    }
+}
+void spectrogramHeardGrid() {
+    using Source = adi::engine::ScopeSource;
+    constexpr int window = 1024, hop = 256;
+    constexpr std::int64_t preStart = 17, postStart = 154, aligned = hop, end = aligned + window;
+    constexpr std::uint64_t revision = 37;
+    auto preTap = std::make_shared<ScopeTap>(48000., .25);
+    auto postTap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        if (source == Source{1, ScopePoint::ChainInput, 0}) return preTap;
+        if (source == Source{1, ScopePoint::PreFader, 0}) return postTap;
+        return {};
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    SharedAnalysis::Request request{1, ScopePoint::ChainInput, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = SharedAnalysis::Spectrogram;
+    auto ordinary = broker.acquire(request);
+    request.heardSpectrogramGrid = true;
+    request.outputs |= SharedAnalysis::Spectrum;
+    auto pre = broker.acquire(request);
+    request.point = ScopePoint::PreFader;
+    auto post = broker.acquire(request);
+    check(ordinary && pre && post && broker.stats().taps == 2 && broker.stats().domains == 3,
+          "aligned pre and post use two taps while ordinary history shares the existing pre tap");
+    if (!ordinary || !pre || !post) return;
+    request.outputs = SharedAnalysis::Spectrum;
+    check(!broker.acquire(request), "heard-grid requests require Spectrogram output");
+    request.outputs = SharedAnalysis::Spectrogram | SharedAnalysis::Scope;
+    check(!broker.acquire(request), "heard-grid requests cannot change an ordinary Scope window");
+
+    const auto write = [&](ScopeTap &tap, std::int64_t first, std::int64_t finish, float amplitude,
+                           std::uint64_t epoch, bool advancing = true) {
+        const auto frames = static_cast<std::int32_t>(finish - first);
+        std::array<float, window + hop> samples;
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const auto phase = static_cast<double>((first + i) % window);
+            samples[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(
+                std::sin(2. * std::numbers::pi * 16. * phase / window));
+        }
+        tap.write(samples.data(), samples.data(), frames, first, advancing, epoch);
+    };
+    const auto hasColumn = [](const auto &result, std::int64_t stamp, std::uint64_t epoch) {
+        return result && result->advancing && result->transportRevision == epoch && result->firstStamp == stamp &&
+               result->columns.size() == 1 && result->columns.front().firstStamp == stamp &&
+               result->columns.front().binsDbfs && result->columns.front().binsDbfs->size() > 16;
+    };
+    const auto difference = [](const auto &before, const auto &after) {
+        return static_cast<double>((*after->columns.front().binsDbfs)[16]) -
+               (*before->columns.front().binsDbfs)[16];
+    };
+    write(*preTap, 83, 83 + window, .875f, revision - 1, false);
+    write(*postTap, 83, 83 + window, .875f, revision - 1, false);
+    broker.pump();
+    check(!pre.read() && !post.read(), "comparison history discards parked samples even when they contain a signal");
+
+    write(*preTap, preStart, end - 1, .25f, revision);
+    write(*postTap, postStart, end - 1, .5f, revision);
+    broker.pump();
+    check(hasColumn(ordinary.read(), preStart, revision) && !pre.read() && !post.read(),
+          "ordinary history starts at sample 17 while the aligned windows wait for their last sample");
+    write(*preTap, end - 1, end, .25f, revision);
+    write(*postTap, end - 1, end, .5f, revision);
+    broker.pump();
+    const auto firstPre = pre.read(), firstPost = post.read();
+    const auto gain = 20. * std::log10(2.);
+    check(hasColumn(firstPre, aligned, revision) && hasColumn(firstPost, aligned, revision) &&
+              firstPre->firstSequence - firstPost->firstSequence == postStart - preStart &&
+              near(difference(firstPre, firstPost), gain),
+          "staggered taps share sample 256 and the expected +6.02 dB transfer");
+
+    write(*preTap, preStart, end, .5f, revision + 1);
+    broker.pump();
+    const auto soughtPre = pre.read();
+    check(hasColumn(soughtPre, aligned, revision + 1) && hasColumn(post.read(), aligned, revision) &&
+              post.read() == firstPost,
+          "overlapping heard stamps after a seek still expose distinct transport revisions until the other tap arrives");
+    write(*postTap, postStart, end, .25f, revision + 1);
+    broker.pump();
+    const auto soughtPost = post.read();
+    check(hasColumn(soughtPre, aligned, revision + 1) && hasColumn(soughtPost, aligned, revision + 1) &&
+              near(difference(soughtPre, soughtPost), -gain),
+          "both new tap epochs recover the same grid and the expected -6.02 dB transfer");
+
+    postTap = std::make_shared<ScopeTap>(48000., .25);
+    broker.refreshSources();
+    check(!post.read() && pre.read() == soughtPre, "replacing the post tap clears only its previous columns");
+    write(*postTap, postStart, end, .25f, revision + 1);
+    broker.pump();
+    const auto rebound = post.read();
+    check(soughtPost && hasColumn(rebound, aligned, revision + 1) && rebound->generation != soughtPost->generation,
+          "the replacement tap establishes its own phase at the same exact heard sample");
+
+    ordinary.reset(); pre.reset(); post.reset();
+    const auto hidden = broker.stats();
+    write(*preTap, end, end + window, .5f, revision + 1);
+    write(*postTap, end, end + window, .25f, revision + 1);
+    broker.pump();
+    const auto after = broker.stats();
+    check(hidden.taps == 0 && hidden.consumers == 0 && after.transforms == hidden.transforms &&
+              after.publications == hidden.publications && after.cursorReads == hidden.cursorReads &&
+              after.workerPasses == hidden.workerPasses,
+          "releasing the aligned and ordinary readers leaves no tap, FFT or worker work");
+}
+
+void parkedWindowHopPhase() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 61;
+    constexpr auto realtime = SharedAnalysis::RealtimeMaximum | SharedAnalysis::RealtimeSigma;
+    constexpr auto ordinary = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Phase;
+    constexpr auto bandedPhase = SharedAnalysis::Phase | SharedAnalysis::PhaseBands;
+    constexpr std::array<std::uint32_t, 8> outputs{
+        SharedAnalysis::Scope, SharedAnalysis::Phase, SharedAnalysis::Spectrum, ordinary,
+        SharedAnalysis::RealtimeMaximum, SharedAnalysis::RealtimeSigma, ordinary | realtime, bandedPhase};
+    const std::array<float, window> zeros{};
+    std::array<float, window> left, right;
+    left.fill(.5f);
+    right.fill(-.25f);
+    for (const auto output : outputs) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        request.outputs = output;
+        if (output & SharedAnalysis::PhaseBands) request.channel = SharedAnalysis::Channel::StereoPower;
+        auto view = parked.broker.acquire(request);
+        auto uninterrupted = reference.broker.acquire(request);
+        const float *silence = nullptr;
+        const auto write = [=](Fixture &fixture, const float *l, const float *r, int count) {
+            fixture.tap->write(l, r, count, stamp, false, revision);
+            fixture.broker.pump();
+        };
+        write(parked, silence, silence, window);
+        write(reference, zeros.data(), zeros.data(), window);
+        const auto first = view.read();
+        const auto firstMaximum = view.readMaximum(), firstControlMaximum = uninterrupted.readMaximum();
+        const auto firstSigma = view.readRealtimeSigma(), firstControlSigma = uninterrupted.readRealtimeSigma();
+        const auto settled = parked.broker.stats();
+        for (int i = 0; i < blocks; ++i) {
+            write(parked, silence, silence, block);
+            // A written zero buffer is the same audio, minus the parked-silence certificate.
+            write(reference, zeros.data(), zeros.data(), block);
+        }
+        const auto idle = parked.broker.stats();
+        const auto controlQuiet = uninterrupted.read();
+        check(first && view.read() == first && controlQuiet && controlQuiet->firstSequence == quietFrames - quietFrames % hop &&
+                  parked.tap->oldest() > window && settled.workerPasses == idle.workerPasses &&
+                  settled.cursorReads == idle.cursorReads && settled.transforms == idle.transforms &&
+                  settled.analysisWindows == idle.analysisWindows && settled.publications == idle.publications &&
+                  view.readMaximum() == firstMaximum && view.readRealtimeSigma() == firstSigma,
+              "windowed monitors hold one quiet frame with no extra work across a certified ring wrap");
+
+        write(parked, left.data(), right.data(), untilHop - 1);
+        write(reference, left.data(), right.data(), untilHop - 1);
+        check(view.read() == first && uninterrupted.read() == controlQuiet,
+              "an incomplete same-stamp monitor hop still holds the previous picture");
+        write(parked, left.data(), right.data(), 1);
+        write(reference, left.data(), right.data(), 1);
+        const auto audible = view.read(), expected = uninterrupted.read();
+        const auto transforms = (output & SharedAnalysis::PhaseBands) != 0 ? 2u
+            : (output & (SharedAnalysis::Spectrum | realtime)) != 0 ? 1u : 0u;
+        check(first && audible && expected && audible != first && expected != controlQuiet &&
+                  audible->windowSerial == expected->windowSerial &&
+                  audible->firstSequence == quietFrames + untilHop && audible->firstSequence == expected->firstSequence &&
+                  audible->firstStamp == stamp && audible->transportRevision == revision && !audible->advancing &&
+                  audible->sourceEpoch == first->sourceEpoch && audible->overrunCount == first->overrunCount &&
+                  audible->peak == std::array{.5f, .25f} && exactBins(audible->rms, expected->rms) &&
+                  audible->correlation == expected->correlation && exactBins(audible->binsDbfs, expected->binsDbfs) &&
+                  exactBins(audible->scopeLeft, expected->scopeLeft) && exactBins(audible->scopeRight, expected->scopeRight) &&
+                  parked.broker.stats().transforms == transforms,
+              "windowed monitors wake at the uninterrupted hop with matching samples, stamps and levels");
+        if (output & SharedAnalysis::PhaseBands)
+            check(first && first->phaseBands && settled.transforms == 0 && audible && expected &&
+                      audible->phaseBands && expected->phaseBands && *audible->phaseBands == *expected->phaseBands &&
+                      std::ranges::none_of(*first->phaseBands, [](const auto &band) { return band.has_value(); }) &&
+                      std::ranges::any_of(*audible->phaseBands, [](const auto &band) { return band && *band < -.999f; }),
+                  "the displayed Phase bands retain an empty floor, then match the original hop with one stereo FFT pair");
+        const auto exactTrace = [&](const auto &resumed, const auto &control, const auto &initial, const auto &controlInitial) {
+            return resumed && initial && control && controlInitial && resumed != initial &&
+                   resumed->window == audible && control->window == expected &&
+                   exactBins(initial->binsDbfs, controlInitial->binsDbfs) &&
+                   exactBins(resumed->binsDbfs, control->binsDbfs);
+        };
+        if (output & SharedAnalysis::RealtimeMaximum)
+            check(exactTrace(view.readMaximum(), uninterrupted.readMaximum(), firstMaximum, firstControlMaximum),
+                  "parked maximum keeps exact floor and first audible bins without an additional transform");
+        if (output & SharedAnalysis::RealtimeSigma)
+            check(exactTrace(view.readRealtimeSigma(), uninterrupted.readRealtimeSigma(), firstSigma, firstControlSigma),
+                  "parked Sigma keeps exact floor and first audible bins without an additional transform");
+    }
+}
+
+template <SharedAnalysis::Output Initial>
+void parkedRealtimeModeJoins() {
+    constexpr auto opposite = Initial == SharedAnalysis::RealtimeMaximum ? SharedAnalysis::RealtimeSigma
+                                                                         : SharedAnalysis::RealtimeMaximum;
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, monitor = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800, admission = window + quietFrames;
+    constexpr std::uint64_t revision = 21;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = Initial;
+    auto existing = parked.broker.acquire(request), control = reference.broker.acquire(request);
+    const auto readExisting = [](const auto &lease) {
+        if constexpr (Initial == SharedAnalysis::RealtimeMaximum) return lease.readMaximum();
+        else return lease.readRealtimeSigma();
+    };
+    const auto readOpposite = [](const auto &lease) {
+        if constexpr (opposite == SharedAnalysis::RealtimeMaximum) return lease.readMaximum();
+        else return lease.readRealtimeSigma();
+    };
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto writePair = [&](const float *z, const float *referenceSamples, int frames) {
+        parked.tap->write(z, z, frames, stamp, false, revision);
+        reference.tap->write(referenceSamples, referenceSamples, frames, stamp, false, revision);
+        parked.broker.pump();
+        reference.broker.pump();
+    };
+    writePair(silence, zeros.data(), window);
+    const auto first = readExisting(existing);
+    for (int i = 0; i < blocks; ++i) writePair(silence, zeros.data(), block);
+    auto sameOutput = parked.broker.acquire(request);
+    check(first && readExisting(existing) == first && readExisting(sameOutput) == first &&
+              parked.tap->oldest() > window,
+          "a duplicate realtime observer shares the realized floor without waking a wrapped tap");
+
+    request.outputs = SharedAnalysis::Scope | opposite;
+    auto joined = parked.broker.acquire(request), joinedControl = reference.broker.acquire(request);
+    parked.broker.pump();
+    reference.broker.pump();
+    const auto rebased = readExisting(existing), expected = readExisting(control);
+    const auto before = parked.broker.stats();
+    check(first && rebased && expected && rebased->window == joined.read() && rebased->window == existing.read() &&
+              readExisting(sameOutput) == rebased && rebased->window->windowSerial == expected->window->windowSerial &&
+              rebased->window->firstSequence == quietFrames - quietFrames % hop &&
+              rebased->window->firstSequence == expected->window->firstSequence &&
+              rebased->window->firstStamp == stamp && rebased->window->transportRevision == revision &&
+              rebased->window->sourceEpoch == first->window->sourceEpoch &&
+              rebased->window->overrunCount == first->window->overrunCount &&
+              exactBins(rebased->binsDbfs, first->binsDbfs) && exactBins(rebased->window->scopeLeft, zeros) &&
+              !readOpposite(joined) && !readOpposite(joinedControl) &&
+              before.taps == 1 && before.domains == 1 && before.spectralPlans == 1 && before.transforms == 0,
+          "a new scope and opposite trace catch up the realized holder without admitting stale samples");
+
+    std::array<float, window> signal;
+    signal.fill(.5f);
+    writePair(signal.data(), signal.data(), monitor - 1);
+    check(readExisting(existing) == rebased && !readOpposite(joined),
+          "a partial resumed hop retains the published realtime metadata and keeps the fresh mode gated");
+    writePair(signal.data(), signal.data(), 1);
+    const auto audible = readExisting(existing), expectedAudible = readExisting(control);
+    check(audible && expectedAudible && audible != rebased && audible->window == joined.read() &&
+              audible->window->firstSequence == quietFrames + monitor &&
+              audible->window->windowSerial == expectedAudible->window->windowSerial &&
+              exactBins(audible->binsDbfs, expectedAudible->binsDbfs) && !readOpposite(joined) &&
+              parked.broker.stats().transforms == before.transforms + 1,
+          "the surviving realtime mode wakes on the original hop while the new mode rejects overlapping history");
+    writePair(signal.data(), signal.data(), window);
+    const auto fresh = readOpposite(joined), freshControl = readOpposite(joinedControl);
+    check(fresh && freshControl && fresh->window == joined.read() && fresh->window->firstSequence >= admission &&
+              fresh->window->firstSequence == freshControl->window->firstSequence &&
+              fresh->window->windowSerial == freshControl->window->windowSerial &&
+              exactBins(fresh->binsDbfs, freshControl->binsDbfs),
+          "the new mode first reads a wholly post-admission window on the existing tap and hop grid");
+}
+
+void parkedStereoBalance() {
+    constexpr int window = 480, historyFrames = 96000, historyBlocks = historyFrames / window;
+    constexpr std::int64_t stoppedStamp = 800;
+    constexpr std::uint64_t revision = 59;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = window;
+    auto spectrum = f.broker.acquire(request);
+    spectrum.setStereoBalanceEnabled(true);
+    std::array<float, window> left, right;
+    left.fill(.5f); right.fill(.25f);
+    f.tap->write(left.data(), right.data(), window, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto monitored = spectrum.read();
+    check(monitored && !monitored->advancing && monitored->balanceRms2s &&
+              (*monitored->balanceRms2s)[0] == .5f && (*monitored->balanceRms2s)[1] == .25f &&
+              f.broker.stats().taps == 1 && f.broker.stats().spectralPlans == 1,
+          "a visible pinned-spectrum balance starts on the same parked stereo trigger and Spectrum plan");
+
+    const auto writeQuiet = [&] {
+        const float *zero = nullptr;
+        f.tap->write(zero, zero, window, stoppedStamp, false, revision);
+    };
+    for (int block = 0; block < historyBlocks - 1; ++block) {
+        writeQuiet();
+        if (block % 4 == 3) f.broker.pump();
+    }
+    f.broker.pump();
+    const auto tail = spectrum.read();
+    const auto leftTailRms = .5 * std::sqrt(static_cast<double>(window) / historyFrames);
+    check(tail && tail->balanceRms2s && near((*tail->balanceRms2s)[0], leftTailRms, 1e-7) &&
+              near((*tail->balanceRms2s)[1], leftTailRms * .5, 1e-7),
+          "the last audible block remains in the balance history one block before two seconds of silence");
+    writeQuiet();
+    f.broker.pump();
+    const auto atZero = spectrum.read();
+    const auto settled = f.broker.stats();
+    check(atZero && atZero->balanceRms2s && *atZero->balanceRms2s == std::array{0.f, 0.f} &&
+              atZero->firstSequence == historyFrames && settled.transforms == 1,
+          "the visible balance first reaches exact zero at the complete two-second quiet boundary");
+
+    const auto beyondRing = f.tap->capacity() / window + 8;
+    for (std::int64_t block = 0; block < beyondRing; ++block) {
+        writeQuiet();
+        if (block % 4 == 3) f.broker.pump();
+    }
+    const float *zero = nullptr;
+    f.tap->write(zero, zero, window / 3, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto idle = f.broker.stats();
+    check(atZero && f.tap->oldest() > atZero->firstSequence && spectrum.read() == atZero &&
+              idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+              idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+              idle.publications == settled.publications,
+          "a visible zero balance stops work while certified parked silence rolls past the physical ring");
+
+    const auto monitorStart = f.tap->written();
+    f.tap->write(left.data(), right.data(), window, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto woke = spectrum.read();
+    // The first complete hop starts with the 160 quiet samples that preceded
+    // monitoring. Only its remaining samples belong in the resumed reading.
+    constexpr auto quietTail = window / 3;
+    const auto firstMonitorRms = .5 * std::sqrt(static_cast<double>(window - quietTail) / historyFrames);
+    check(atZero && woke && !woke->advancing && woke->transportRevision == revision &&
+              woke->firstSequence == monitorStart - quietTail && woke->sourceEpoch == atZero->sourceEpoch &&
+              woke->overrunCount == atZero->overrunCount && woke->balanceRms2s &&
+              near((*woke->balanceRms2s)[0], firstMonitorRms, 1e-7) &&
+              near((*woke->balanceRms2s)[1], firstMonitorRms * .5, 1e-7) &&
+              f.broker.stats().transforms == settled.transforms + 1,
+          "same-stamp stopped monitoring wakes immediately with the full trailing denominator and no false overrun");
+
+    constexpr std::int64_t resumedStamp = 12000;
+    f.tap->write(left.data(), right.data(), window, resumedStamp, true, revision + 1);
+    f.broker.pump();
+    const auto resumed = spectrum.read();
+    check(woke && resumed && resumed->advancing && resumed->firstStamp == resumedStamp &&
+              resumed->transportRevision == revision + 1 && resumed->sourceEpoch > woke->sourceEpoch &&
+              resumed->balanceRms2s && (*resumed->balanceRms2s)[0] == .5f && (*resumed->balanceRms2s)[1] == .25f,
+          "advancing playback starts cleanly with its first complete stereo balance window");
+}
+
 void sharing() {
     Fixture f;
     f.broker.requestFrame();
@@ -2257,6 +4421,227 @@ void sharedModesAndCursors() {
     tone(*f.tap, 1024, .5f, -1.f, 51024); f.broker.pump();
     check(power.read() && near(power.read()->binsDbfs[16], -6.020599913), "stereo power spectrum does not cancel antiphase audio");
 }
+void phaseBandCorrelation() {
+    constexpr int samples = 4096;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, samples};
+    request.hopSize = samples / 2;
+    request.outputs = SharedAnalysis::Phase;
+    auto broad = f.broker.acquire(request);
+    std::array<float, samples> left{}, right{}, silent{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / samples;
+        const auto low = static_cast<float>(.25 * std::sin(32. * phase));
+        const auto high = static_cast<float>(.25 * std::sin(384. * phase));
+        left[i] = low + high;
+        right[i] = low - high;
+    }
+    f.tap->write(left.data(), right.data(), samples, 0, true, 1);
+    check(f.broker.pump() == 0 && broad.read() && !broad.read()->phaseBands && !f.broker.stats().spectralPlans,
+          "broadband phase draws its raw scope and correlation without a spectral plan");
+
+    const auto acquireCalls = f.acquireCalls;
+    request.outputs |= SharedAnalysis::PhaseBands;
+    auto bands = f.broker.acquire(request), sibling = f.broker.acquire(request);
+    check(bands.available() && sibling.available() && f.acquireCalls == acquireCalls && f.broker.stats().taps == 1 &&
+              f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1 && !bands.read(),
+          "visible detailed phase readers share one lazy plan on the existing source");
+    check(f.broker.pump() == 2, "a completed detailed phase picture needs one pair of real transforms");
+    const auto picture = bands.read();
+    const auto correlation = [&](const auto &result, std::size_t band, double expected) {
+        return result && result->phaseBands && (*result->phaseBands)[band] &&
+               near(*(*result->phaseBands)[band], expected, 1.e-5);
+    };
+    check(picture && picture == sibling.read() && picture == broad.read() && picture->firstStamp == 0 &&
+              picture->scopeLeft.size() == samples && correlation(picture, 4, 1.) && correlation(picture, 16, -1.) &&
+              !(*picture->phaseBands)[10] && near(picture->correlation, 0.),
+          "375 Hz and 4500 Hz expose opposite band signs without changing the broadband measurement");
+
+    f.tap->write(left.data(), right.data(), samples, samples, true, 1);
+    check(f.broker.pump() == 2 && bands.read() && bands.read()->firstStamp == samples,
+          "multiple completed hops measure only the final visible phase window");
+    f.tap->write(left.data(), silent.data(), samples / 2, 0, true, 2);
+    check(f.broker.pump() == 0 && !bands.read(),
+          "a partial seek window cannot retain the previous band's phase data");
+    f.tap->write(left.data() + samples / 2, silent.data(), samples / 2, samples / 2, true, 2);
+    const auto beforeQuiet = f.broker.stats().transforms;
+    f.broker.pump();
+    const auto oneSided = bands.read();
+    const auto allAbsent = [](const auto &result) {
+        return result && result->phaseBands &&
+               std::ranges::none_of(*result->phaseBands, [](const auto &value) { return value.has_value(); });
+    };
+    check(allAbsent(oneSided) && oneSided->transportRevision == 2 &&
+              f.broker.stats().transforms == beforeQuiet,
+          "a one-sided source marks every band unavailable without executing either transform");
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, samples, samples, false, 2);
+    f.broker.pump();
+    const auto parked = bands.read();
+    const auto parkedStats = f.broker.stats();
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, samples, samples, false, 2);
+    f.broker.pump();
+    check(allAbsent(parked) && bands.read() == parked &&
+              f.broker.stats().workerPasses == parkedStats.workerPasses,
+          "parked silence retains one empty band picture without repeat work");
+
+    f.tap = std::make_shared<ScopeTap>(96000, SharedAnalysis::kTapSeconds);
+    f.broker.refreshSources();
+    check(!bands.read(), "a replacement sample rate invalidates prior band data");
+    f.tap->write(left.data(), right.data(), samples, 0, true, 3);
+    check(f.broker.pump() == 2 && correlation(bands.read(), 7, 1.) && correlation(bands.read(), 19, -1.),
+          "the band mapping follows the new source rate");
+    bands.reset();
+    check(f.broker.stats().spectralPlans == 1 && sibling.read(), "closing one view keeps its sibling's band plan");
+    sibling.reset();
+    f.tap->write(left.data(), right.data(), samples, samples, true, 3);
+    check(f.broker.pump() == 0 && !f.broker.stats().spectralPlans && broad.read() && !broad.read()->phaseBands &&
+              f.broker.stats().taps == 1,
+          "the last detailed view releases the plan while the broadband view remains FFT-free");
+
+    Fixture beyondBins;
+    beyondBins.tap = std::make_shared<ScopeTap>(768000, .25);
+    request.fftSize = 32;
+    request.hopSize = 32;
+    auto tiny = beyondBins.broker.acquire(request);
+    beyondBins.tap->write(left.data(), right.data(), 32, 0, true, 1);
+    check(beyondBins.broker.pump() == 0 && allAbsent(tiny.read()),
+          "a resolution with no in-band FFT bins skips the stereo transforms");
+
+    Fixture nyquist;
+    nyquist.tap = std::make_shared<ScopeTap>(32000, .6);
+    request.fftSize = samples;
+    request.hopSize = samples;
+    request.window = adi::dsp::Window::Rectangular;
+    auto highBand = nyquist.broker.acquire(request);
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto angle = 2. * std::numbers::pi * 2016. * static_cast<double>(i) / samples;
+        const auto tone = static_cast<float>(.25 * std::sin(angle));
+        const float edge = i % 2 ? -.25f : .25f;
+        left[i] = tone + edge;
+        right[i] = tone - edge;
+    }
+    const auto lastBand = SharedAnalysis::kPhaseBandCount - 1;
+    nyquist.tap->write(left.data(), left.data(), samples, 0, true, 4);
+    check(nyquist.broker.pump() == 2 && correlation(highBand.read(), lastBand, 1.),
+          "the penultimate-frequency and Nyquist tones settle together in one coherent band");
+    nyquist.tap->write(left.data(), right.data(), samples, samples, true, 4);
+    // The same-amplitude Nyquist tone has twice the power of the ordinary sine.
+    // Its reversed polarity contributes -2 for the ordinary tone's +1.
+    check(nyquist.broker.pump() == 2 && correlation(highBand.read(), lastBand, -1. / 3.) &&
+              highBand.read()->firstStamp == samples,
+          "the mixed high band counts the real-only Nyquist bin once and other bins twice");
+}
+void phaseBandSpatialMeasurements() {
+    constexpr int window = 4096;
+    constexpr std::size_t lowBand = 4, highBand = 16;
+    constexpr auto ordinary = SharedAnalysis::Phase | SharedAnalysis::PhaseBands;
+    constexpr auto detailed = ordinary | SharedAnalysis::PhaseBandDetail;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::StereoPower};
+    request.hopSize = window / 2;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = ordinary;
+    auto phase = f.broker.acquire(request);
+    std::array<float, window> left{}, right{}, tone{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto angle = 2. * std::numbers::pi * static_cast<double>(i) / window;
+        tone[i] = static_cast<float>(.25 * std::sin(32. * angle));
+        const auto high = static_cast<float>(.25 * std::sin(384. * angle));
+        left[i] = tone[i] + high;
+        right[i] = tone[i] - high;
+    }
+    const auto bandIs = [](const auto &values, std::size_t band, double expected) {
+        return values[band] && near(*values[band], expected, 1.e-5);
+    };
+    const auto spatialIs = [&](const auto &result, std::size_t band, double width, double pan) {
+        return result && result->phaseBandSpatial &&
+               bandIs(result->phaseBandSpatial->width, band, width) &&
+               bandIs(result->phaseBandSpatial->pan, band, pan);
+    };
+    const auto empty = [](const auto &values) {
+        return std::ranges::none_of(values, [](const auto &value) { return value.has_value(); });
+    };
+    f.tap->write(left.data(), right.data(), window, 0, true, 1);
+    check(f.broker.pump() == 2, "ordinary Phase first computes one stereo pair");
+    const auto original = phase.read();
+    const auto baseline = f.broker.stats();
+    // Rate discovery can call the owner twice while retaining one physical tap.
+    const auto acquireCalls = f.acquireCalls;
+    check(original && original->phaseBands && !original->phaseBandSpatial &&
+              bandIs(*original->phaseBands, lowBand, 1.) && bandIs(*original->phaseBands, highBand, -1.),
+          "the existing Phase picture measures correlation without publishing spatial detail");
+
+    request.outputs = detailed;
+    auto detail = f.broker.acquire(request);
+    check(f.broker.pump() == 0, "adding spatial detail to a retained stereo frame reuses its L/R transforms");
+    const auto stereo = detail.read();
+    const auto stereoStats = f.broker.stats();
+    check(original && stereo && stereo == phase.read() && stereo->windowSerial == original->windowSerial &&
+              stereo->firstSequence == original->firstSequence && stereo->sourceEpoch == original->sourceEpoch &&
+              original->phaseBands && stereo->phaseBands && *stereo->phaseBands == *original->phaseBands &&
+              spatialIs(stereo, lowBand, 0., 0.) && spatialIs(stereo, highBand, 1., 0.) &&
+              !stereo->phaseBandSpatial->width[10] && !stereo->phaseBandSpatial->pan[10],
+          "spatial detail distinguishes in-phase and antiphase width at the same centred pan and leaves empty ERBs blank");
+    check(stereoStats.taps == baseline.taps && stereoStats.domains == baseline.domains &&
+              stereoStats.spectralPlans == baseline.spectralPlans && stereoStats.spectralPlans == 1 &&
+              f.acquireCalls == acquireCalls,
+          "ordinary Phase and spatial detail share one tap, domain and lazy plan");
+
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = tone[i];
+        right[i] = .5f * tone[i];
+    }
+    f.tap->write(left.data(), right.data(), window, 10000, true, 2);
+    check(f.broker.pump() == 2, "new stereo width and pan still use one pair of transforms");
+    const auto unequal = detail.read();
+    check(spatialIs(unequal, lowBand, .1, -.6) && unequal->phaseBands &&
+              bandIs(*unequal->phaseBands, lowBand, 1.),
+          "a two-to-one amplitude ratio gives ten percent side energy and signed pan without changing correlation");
+
+    detail.reset();
+    left.fill(0.f);
+    f.tap->write(left.data(), tone.data(), window, 20000, true, 3);
+    check(f.broker.pump() == 0, "correlation alone still needs no FFT for a one-sided source");
+    const auto mono = phase.read();
+    check(mono && mono->phaseBands && empty(*mono->phaseBands) && !mono->phaseBandSpatial,
+          "the current one-sided Phase frame has neither valid correlation nor undemanded spatial fields");
+
+    detail = f.broker.acquire(request);
+    check(f.broker.pump() == 1, "same-window spatial upgrade transforms only the live lane");
+    const auto rightOnly = detail.read();
+    check(mono && spatialIs(rightOnly, lowBand, .5, 1.) && rightOnly == phase.read() &&
+              rightOnly->windowSerial == mono->windowSerial && rightOnly->firstSequence == mono->firstSequence &&
+              rightOnly->phaseBands && empty(*rightOnly->phaseBands),
+          "right-only energy has full right pan and equal Mid and Side energy, with correlation unavailable");
+    auto sibling = f.broker.acquire(request);
+    check(f.broker.pump() == 0 && sibling.read() == rightOnly && f.broker.stats().spectralPlans == 1 &&
+              f.acquireCalls == acquireCalls,
+          "a compatible second view shares the immutable one-sided measurements without transforming again");
+
+    const float *silence = nullptr;
+    f.tap->write(silence, silence, window, 30000, false, 4);
+    check(f.broker.pump() == 0, "full silence invokes no band transforms in spatial detail");
+    const auto silent = detail.read();
+    const auto parked = f.broker.stats();
+    check(silent && silent->phaseBands && empty(*silent->phaseBands) &&
+              (!silent->phaseBandSpatial ||
+               (empty(silent->phaseBandSpatial->width) && empty(silent->phaseBandSpatial->pan))),
+          "a fully silent Phase result contains no width, pan or correlation values");
+    f.tap->write(silence, silence, window, 30000, false, 4);
+    check(f.broker.pump() == 0 && detail.read() == silent && f.broker.stats().cursorReads == parked.cursorReads &&
+              f.broker.stats().workerPasses == parked.workerPasses,
+          "a visible, settled spatial detail stops work in certified parked silence");
+
+    detail.reset();
+    sibling.reset();
+    phase.reset();
+    const auto hidden = f.broker.stats();
+    f.tap->write(tone.data(), right.data(), window, 40000, true, 5);
+    check(f.broker.pump() == 0 && hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              f.broker.stats().cursorReads == hidden.cursorReads,
+          "removing the last Phase consumer retires the shared plan and tap before more samples arrive");
+}
+
 void clippedSampleWindows() {
     Fixture f;
     SharedAnalysis::Request request{1};
@@ -2368,6 +4753,498 @@ void exactSilentStereoLanes() {
                   "compatible full/compact silence pictures share the same publication without redundant transforms");
         }
 }
+void spectrumLevels() {
+    constexpr int rate = 48000, window = 480, hop = 240, crestFrames = rate / 20;
+    constexpr int warmup = rate / 8, earlyImpulse = warmup - crestFrames;
+    constexpr std::uint64_t revision = 19;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    const auto before = f.broker.stats();
+    std::vector<float> left, right;
+    std::int64_t nextStamp = 0;
+    auto write = [&](int count, float l, float r, std::uint64_t rev) {
+        left.assign(static_cast<std::size_t>(count), l);
+        right.assign(static_cast<std::size_t>(count), r);
+        f.tap->write(left.data(), right.data(), count, nextStamp, true, rev);
+        nextStamp += count;
+    };
+    auto feed = [&](int count, float l, float r, int block) {
+        while (count > 0) {
+            const auto frames = std::min(count, block);
+            write(frames, l, r, revision);
+            f.broker.pump();
+            count -= frames;
+        }
+    };
+    const auto reading = [](const auto &picture, double rmsL, double rmsR, double crestL, double crestR) {
+        return picture && picture->spectrumLevels &&
+            near(picture->spectrumLevels->integratedRms[0], rmsL, 1.e-8) &&
+            near(picture->spectrumLevels->integratedRms[1], rmsR, 1.e-8) &&
+            near(picture->spectrumLevels->maxCrestDb[0], crestL, 1.e-7) &&
+            near(picture->spectrumLevels->maxCrestDb[1], crestR, 1.e-7);
+    };
+
+    // The existing tap already holds nonzero pre-admission audio, and its
+    // last 240 frames will overlap the first new FFT picture.
+    write(window + hop, .875f, .75f, revision);
+    levels.setSpectrumLevelsEnabled(true);
+    f.broker.pump();
+    const auto preAdmission = raw.read();
+    check(preAdmission && !preAdmission->spectrumLevels && f.broker.stats().spectrumLevelHistories == 1,
+          "Spectrum level demand fences at the current writer, excluding unread earlier audio");
+    const auto partialBefore = f.broker.stats();
+    feed(hop - 1, .25f, .125f, hop);
+    check(raw.read() == preAdmission && f.broker.stats().publications == partialBefore.publications,
+          "new level samples alone do not publish a partial Spectrum picture");
+    feed(1, .25f, .125f, hop);
+    const auto first = levels.read();
+    check(reading(first, .25, .125, 0., 0.) && first == raw.read() &&
+              first->firstSequence == window && f.broker.stats().transforms == partialBefore.transforms + 1,
+          "the first shared level picture counts only its newly admitted samples");
+    feed(rate - hop, .25f, .125f, 377);
+    const auto baseline = raw.read();
+    check(reading(baseline, .25, .125, 0., 0.),
+          "integrated levels count each sample once across arbitrary writes and overlapped FFT hops");
+
+    feed(crestFrames, .5f, .125f, 613);
+    const auto loud = levels.read();
+    const auto peakCrest = 10. * std::log10(3.5);
+    check(reading(loud, std::sqrt(1. / 14.), .125, peakCrest, 0.),
+          "the 50 millisecond running RMS and integrated denominator give the calibrated held crest");
+    feed(crestFrames, .25f, .125f, 421);
+    const auto tail = levels.read();
+    check(reading(tail, std::sqrt((rate + 5. * crestFrames) / (16. * (rate + 2 * crestFrames))),
+                  .125, peakCrest, 0.) && tail == raw.read() && tail != loud,
+          "the maximum ratio holds as the integrated RMS changes; a held short RMS alone would drift");
+
+    // A new transport epoch clears the held ratio and the RMS interval. An
+    // impulse among otherwise fairly quiet samples would exceed 0 dB if the
+    // startup guard erroneously accepted it before the rolling RMS cleared.
+    const auto previousEpoch = tail ? tail->sourceEpoch : 0;
+    nextStamp = 200000;
+    write(window, 0.f, 0.f, revision + 1);
+    f.broker.pump();
+    const auto reset = raw.read();
+    check(reading(reset, 0., 0., 0., 0.) &&
+              reset->sourceEpoch > previousEpoch && reset->firstStamp == 200000,
+          "a timeline break clears both integrated RMS and held crest at the first full window");
+    for (int elapsed = window; elapsed < warmup; elapsed += hop) {
+        left.assign(hop, 0.f); right.assign(hop, 0.f);
+        if (elapsed == earlyImpulse) left.front() = .5f;
+        f.tap->write(left.data(), right.data(), hop, nextStamp, true, revision + 1);
+        nextStamp += hop;
+        f.broker.pump();
+    }
+    const auto warmed = raw.read();
+    check(reading(warmed, .5 / std::sqrt(static_cast<double>(warmup)), 0., 0., 0.),
+          "a startup impulse cannot set a crest after its 50 millisecond energy has cleared");
+    left.assign(hop, .5f); right.assign(hop, .25f);
+    left[0] = std::numeric_limits<float>::quiet_NaN();
+    left[1] = std::numeric_limits<float>::infinity();
+    right[2] = -std::numeric_limits<float>::infinity();
+    f.tap->write(left.data(), right.data(), hop, nextStamp, true, revision + 1);
+    nextStamp += hop;
+    f.broker.pump();
+    const auto finite = raw.read();
+    const auto integratedL = std::sqrt(.25 * (hop - 1) / (warmup + hop));
+    const auto integratedR = .25 * std::sqrt(static_cast<double>(hop - 1) / (warmup + hop));
+    const auto crestAfterWarmup = 10. * std::log10(static_cast<double>(warmup + hop) / crestFrames);
+    const auto expectedCrestL = crestAfterWarmup + 10. * std::log10(static_cast<double>(hop - 2) / (hop - 1));
+    check(reset && reading(finite, integratedL, integratedR, expectedCrestL, crestAfterWarmup) &&
+              finite->nonFiniteSamples == 3 && finite->sourceEpoch == reset->sourceEpoch,
+          "nonfinite lane samples contribute zero power and still occupy their time positions");
+
+    const auto measured = f.broker.stats();
+    check(measured.taps == before.taps && measured.domains == before.domains &&
+              measured.spectralPlans == before.spectralPlans && f.acquireCalls == 1,
+          "visible level measurement shares the tap and Spectrum transform plan");
+    levels.reset();
+    write(hop, .25f, .125f, revision + 1);
+    f.broker.pump();
+    const auto undemanded = raw.read();
+    const auto dropped = f.broker.stats();
+    check(undemanded && !undemanded->spectrumLevels && dropped.spectrumLevelHistories == 0 &&
+              dropped.taps == 1 && dropped.spectralPlans == 1 && dropped.transforms == measured.transforms + 1,
+          "dropping the last levels reader frees its bounded history while ordinary Spectrum stays live");
+    raw.reset();
+    check(f.broker.stats().taps == 0 && f.broker.stats().spectrumLevelHistories == 0 && f.releaseCalls == 1,
+          "hiding the final Spectrum releases the shared tap and level history");
+}
+
+void spectrumSamplePeaksAndClips() {
+    constexpr int window = 480, hop = window / 2;
+    constexpr auto extreme = std::numeric_limits<float>::max();
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::Left};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::Meters;
+    auto meters = f.broker.acquire(request);
+    std::array<float, window> left{}, right{};
+    const auto write = [&](int count, std::int64_t stamp, std::uint64_t revision = 1) {
+        f.tap->write(left.data(), right.data(), count, stamp, true, revision);
+    };
+    const auto agrees = [](const auto &picture, std::array<float, 2> peak, std::array<std::uint64_t, 2> clips) {
+        return picture && picture->spectrumLevels && picture->spectrumLevels->samplePeak == peak &&
+               picture->spectrumLevels->sampleClips == clips;
+    };
+
+    left.fill(1.5f);
+    right.fill(-4.f);
+    write(window, 0);
+    levels.setSpectrumLevelsEnabled(true);
+    f.broker.pump();
+    const auto excluded = raw.read();
+    const auto before = f.broker.stats();
+    check(excluded && !excluded->spectrumLevels && excluded->clippedSamples == 2 * window,
+          "held sample levels exclude unread audio already at the writer when admitted");
+
+    left.fill(.25f);
+    right.fill(.5f);
+    left[0] = 1.f;
+    left[1] = -1.f;
+    left[3] = 1.125f;
+    left[4] = -extreme;
+    left[5] = std::numeric_limits<float>::quiet_NaN();
+    left[6] = std::numeric_limits<float>::infinity();
+    right[0] = -1.f;
+    right[1] = -1.25f;
+    right[7] = std::nextafter(1.f, 0.f);
+    right[8] = -std::numeric_limits<float>::infinity();
+    write(hop, window);
+    f.broker.pump();
+    const auto peak = levels.read();
+    check(agrees(peak, {extreme, 1.25f}, {2, 1}) && peak == raw.read(),
+          "held sample levels preserve the finite peak per lane and count each strict over once");
+    check(peak && peak == meters.read() && peak->clippedSamples == 2 * hop + 6 && peak->nonFiniteSamples == 3,
+          "current-window Meters still count both full-scale polarities and exclude invalid samples");
+
+    left.fill(.25f);
+    right.fill(.5f);
+    write(window, window + hop);
+    f.broker.pump();
+    const auto held = levels.read();
+    const auto after = f.broker.stats();
+    check(agrees(held, {extreme, 1.25f}, {2, 1}) && held->clippedSamples == 0,
+          "the level interval holds its peak and count after hot samples leave the overlapping FFT window");
+    check(after.taps == before.taps && after.domains == before.domains &&
+              after.spectralPlans == before.spectralPlans && after.transforms == before.transforms + 3,
+          "sample level statistics reuse the active tap, domain and one transform per audible hop");
+
+    right.fill(-1.f);
+    write(window, 10000, 2);
+    f.broker.pump();
+    const auto sought = levels.read();
+    check(agrees(sought, {.25f, 1.f}, {0, 0}) && held && sought->sourceEpoch > held->sourceEpoch &&
+              sought->clippedSamples == window,
+          "the new transport interval clears held peaks and strict overs while Meters still counts equality");
+
+    levels.setSpectrumLevelsEnabled(false);
+    left.fill(1.5f);
+    right.fill(-4.f);
+    write(hop, 10000 + window, 2);
+    f.broker.pump();
+    const auto disabled = raw.read();
+    check(disabled && !disabled->spectrumLevels && f.broker.stats().spectrumLevelHistories == 0,
+          "turning off the last sample-level reader drops the held statistics while Spectrum stays live");
+    levels.setSpectrumLevelsEnabled(true);
+    left.fill(.125f);
+    right.fill(.25f);
+    write(hop, 10000 + window + hop, 2);
+    f.broker.pump();
+    check(agrees(levels.read(), {.125f, .25f}, {0, 0}),
+          "a new statistics request after disable starts at its own writer fence");
+}
+
+void restartSpectrumLevels() {
+    constexpr int window = 480, hop = 240;
+    constexpr std::uint64_t revision = 55;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true);
+    std::array<float, window> left{}, right{};
+    std::int64_t stamp = 0;
+    const auto write = [&](int frames, float l, float r) {
+        left.fill(l); right.fill(r);
+        f.tap->write(left.data(), right.data(), frames, stamp, true, revision);
+        stamp += frames;
+    };
+    for (int block = 0; block < 25; ++block) {
+        write(window, .25f, .125f);
+        f.broker.pump();
+    }
+    write(window, 1.25f, -1.5f);
+    f.broker.pump();
+    const auto held = levels.read();
+    check(held && held == raw.read() && held->spectrumLevels &&
+              held->spectrumLevels->samplePeak == std::array{1.25f, 1.5f} &&
+              held->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{window, window} &&
+              held->spectrumLevels->maxCrestDb[0] > 0.,
+          "the clear fixture seeds held stereo statistics and a shared Raw publication");
+
+    auto sibling = f.broker.acquire(request);
+    sibling.setSpectrumLevelsEnabled(true);
+    check(!raw.restartSpectrumLevels() && !levels.restartSpectrumLevels() && !sibling.restartSpectrumLevels() &&
+              f.broker.stats().spectrumLevelHistories == 1 && levels.read() == held && sibling.read() == held,
+          "a non-owner or either of two opt-in owners cannot clear another view's statistics");
+    sibling.reset();
+
+    write(hop, .75f, -.625f); // buffered before Reset, but the worker has not read it
+    const auto fence = f.tap->written();
+    const auto before = f.broker.stats();
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const bool restarted = levels.restartSpectrumLevels();
+    observeAllocationSizes = false;
+    const auto immediate = f.broker.stats();
+    check(restarted && allocationSizeCount == 0 && held == raw.read() &&
+              immediate.workerPasses == before.workerPasses && immediate.cursorReads == before.cursorReads &&
+              immediate.publications == before.publications && immediate.transforms == before.transforms &&
+              immediate.taps == before.taps && immediate.spectralPlans == before.spectralPlans &&
+              immediate.spectrumLevelHistories == 1,
+          "a sole owner's Reset changes no immutable Raw picture and schedules no work or allocation itself");
+
+    f.broker.pump();
+    const auto buffered = raw.read();
+    check(held && buffered && buffered != held && !buffered->spectrumLevels &&
+              buffered->generation == held->generation && buffered->sourceEpoch == held->sourceEpoch &&
+              buffered->windowSerial == held->windowSerial + 1 && buffered->firstSequence == fence - window &&
+              buffered->firstStamp == fence - window && buffered->peak == std::array{1.25f, 1.5f},
+          "Raw still publishes the pre-reset buffered audio without counting it in the restarted statistics");
+
+    write(hop, .125f, .25f);
+    f.broker.pump();
+    const auto fresh = levels.read();
+    const auto after = f.broker.stats();
+    check(held && held->spectrumLevels && fresh && fresh->spectrumLevels && fresh == raw.read() &&
+              fresh->peak == std::array{.75f, .625f} && fresh->spectrumLevels->samplePeak == std::array{.125f, .25f} &&
+              fresh->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{0, 0} &&
+              fresh->spectrumLevels->integratedRms == std::array{.125, .25} &&
+              fresh->spectrumLevels->maxCrestDb == std::array{0., 0.} &&
+              held->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{window, window} &&
+              fresh->windowSerial == held->windowSerial + 2 && fresh->sourceEpoch == held->sourceEpoch &&
+              fresh->overrunCount == held->overrunCount && after.transforms == before.transforms + 2 &&
+              after.taps == 1 && after.spectralPlans == 1 && f.acquireCalls == 1 && f.releaseCalls == 0,
+          "the first post-reset interval excludes earlier audio without resetting Raw, its FFT plan or continuity");
+}
+
+void restartParkedSpectrumLevels() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 58;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true);
+    const float *silence = nullptr;
+    const auto write = [&](int frames, const float *l, const float *r) {
+        f.tap->write(l, r, frames, stamp, false, revision);
+        f.broker.pump();
+    };
+    write(window, silence, silence);
+    const auto held = raw.read();
+    const auto settled = f.broker.stats();
+    for (int i = 0; i < blocks; ++i)
+        write(block, silence, silence);
+    check(held && held->spectrumLevels && raw.read() == held && f.tap->oldest() > window &&
+              f.broker.stats().workerPasses == settled.workerPasses,
+          "Reset can be reached after a long certified parked interval has wrapped the tap");
+
+    const bool restarted = levels.restartSpectrumLevels();
+    f.broker.pump();
+    const auto immediate = f.broker.stats();
+    check(restarted && raw.read() == held && immediate.workerPasses == settled.workerPasses &&
+              immediate.cursorReads == settled.cursorReads && immediate.publications == settled.publications &&
+              immediate.transforms == settled.transforms,
+          "Reset reconciles the parked cursor without demanding a read, FFT or publication");
+
+    std::array<float, hop> left{}, right{};
+    left.fill(.5f); right.fill(.25f);
+    write(untilHop - 1, left.data(), right.data());
+    check(raw.read() == held, "an incomplete monitoring hop cannot publish after a parked Reset");
+    write(1, left.data(), right.data());
+    const auto audible = raw.read();
+    check(held && audible && audible->spectrumLevels && audible != held &&
+              audible->spectrumLevels->integratedRms == std::array{.5, .25} &&
+              audible->spectrumLevels->samplePeak == std::array{.5f, .25f} &&
+              audible->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{0, 0} &&
+              audible->windowSerial == held->windowSerial + quietFrames / hop + 1 &&
+              audible->firstSequence == quietFrames + untilHop && audible->firstStamp == stamp &&
+              audible->sourceEpoch == held->sourceEpoch && audible->overrunCount == held->overrunCount &&
+              f.broker.stats().transforms == 1,
+          "first same-stamp monitoring after a parked Reset retains the original hop and a fresh statistics denominator");
+}
+
+void spectrumTruePeak() {
+    constexpr int window = 480, hop = 240, toneFrames = 4 * hop;
+    constexpr std::uint64_t revision = 63;
+    constexpr std::array chunks{61, 317, 7, 179, 396};
+    const float toneLeft = 1.2f * std::sqrt(.5f), toneRight = .65f * std::sqrt(.5f);
+    for (const int rate : {44100, 48000, 96000, 192000}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(static_cast<double>(rate), .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::Left};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+        raw.setSpectrumTruePeakEnabled(true);
+        levels.setSpectrumLevelsEnabled(true);
+        std::array<float, toneFrames> left{}, right{};
+        std::int64_t stamp = 0;
+        const auto write = [&](const float *l, const float *r, int count) {
+            f.tap->write(l, r, count, stamp, true, revision);
+            stamp += count;
+        };
+        const auto constant = [&](int frames, float l, float r) {
+            left.fill(l); right.fill(r);
+            write(left.data(), right.data(), frames);
+        };
+        constant(window, .25f, .125f);
+        f.broker.pump();
+        const auto initial = raw.read();
+        check(initial && initial->spectrumLevels && !initial->spectrumLevels->truePeak &&
+                  f.broker.stats().spectrumTruePeakHistories == 0,
+              "True Peak is off by default and a Raw lease cannot enable a levels observer's true peak");
+
+        constant(hop, 1.5f, -1.75f); // old programme remains unread when True Peak is enabled
+        levels.setSpectrumTruePeakEnabled(true);
+        f.broker.pump();
+        const auto baseline = raw.read();
+        const auto measured = f.broker.stats();
+        check(baseline && baseline->spectrumLevels &&
+                  (!baseline->spectrumLevels->truePeak || *baseline->spectrumLevels->truePeak == std::array{0., 0.}) &&
+                  baseline->spectrumLevels->samplePeak == std::array{1.5f, 1.75f} &&
+                  baseline->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{hop, hop} &&
+                  measured.spectrumTruePeakHistories == 1 && measured.taps == 1 && measured.spectralPlans == 1,
+              "opting into True Peak fences off buffered old programme without restarting sample statistics");
+
+        adi::dsp::TruePeakMeter leftOracle, rightOracle;
+        leftOracle.prepare(rate, 1); rightOracle.prepare(rate, 1);
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const auto sign = (i % 4 < 2) ? 1.f : -1.f;
+            left[i] = sign * toneLeft; right[i] = sign * toneRight;
+        }
+        const float *leftLane = left.data(), *rightLane = right.data();
+        leftOracle.process(&leftLane, 1, toneFrames);
+        rightOracle.process(&rightLane, 1, toneFrames);
+        int cursor = 0;
+        for (const int count : chunks) {
+            write(left.data() + cursor, right.data() + cursor, count);
+            cursor += count;
+            f.broker.pump();
+        }
+        const auto peaked = levels.read();
+        const auto afterTone = f.broker.stats();
+        const auto programmes = window + hop + toneFrames;
+        const auto integratedL = std::sqrt((window * .0625 + hop * 2.25 +
+            toneFrames * static_cast<double>(toneLeft) * toneLeft) / programmes);
+        const auto integratedR = std::sqrt((window * .015625 + hop * 3.0625 +
+            toneFrames * static_cast<double>(toneRight) * toneRight) / programmes);
+        check(peaked && peaked == raw.read() && peaked->spectrumLevels && peaked->spectrumLevels->truePeak &&
+                  *peaked->spectrumLevels->truePeak == std::array{leftOracle.peak(), rightOracle.peak()} &&
+                  peaked->spectrumLevels->samplePeak == std::array{1.5f, 1.75f} &&
+                  peaked->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{hop, hop} &&
+                  near(peaked->spectrumLevels->integratedRms[0], integratedL, 1.e-9) &&
+                  near(peaked->spectrumLevels->integratedRms[1], integratedR, 1.e-9) &&
+                  afterTone.taps == measured.taps && afterTone.spectralPlans == measured.spectralPlans &&
+                  afterTone.transforms == measured.transforms + toneFrames / hop,
+              "irregular writes produce canonical per-channel True Peak without an extra FFT or altered sample history");
+        check(toneLeft < 1.f && (rate >= 176400 ?
+                  leftOracle.peak() == toneLeft && rightOracle.peak() == toneRight :
+                  leftOracle.peak() > 1.05 && leftOracle.peak() < 1.3 && rightOracle.peak() > toneRight),
+              "Fs/4 creates an intersample over on L below 176.4 kHz and follows the canonical high-rate sample path");
+
+        const bool reset = levels.restartSpectrumLevels();
+        check(reset && raw.read() == peaked && f.broker.stats().spectrumTruePeakHistories == 1,
+              "local statistics Reset preserves the running Raw result and the opted-in observer");
+        constant(hop, 0.f, 0.f);
+        f.broker.pump();
+        const auto quiet = raw.read();
+        check(peaked && quiet && quiet->spectrumLevels && quiet->spectrumLevels->truePeak &&
+                  *quiet->spectrumLevels->truePeak == std::array{0., 0.} &&
+                  quiet->spectrumLevels->samplePeak == std::array{0.f, 0.f} &&
+                  quiet->peak[0] == toneLeft && quiet->sourceEpoch == peaked->sourceEpoch,
+              "Reset clears FIR and held state, even while the overlapping Raw window still contains the old tone");
+
+        constant(hop, .125f, .25f);
+        f.broker.pump();
+        levels.setSpectrumTruePeakEnabled(false);
+        constant(hop, .0625f, .125f);
+        f.broker.pump();
+        const auto disabled = raw.read();
+        check(disabled && disabled->spectrumLevels && !disabled->spectrumLevels->truePeak &&
+                  disabled->spectrumLevels->samplePeak == std::array{.125f, .25f} &&
+                  f.broker.stats().spectrumTruePeakHistories == 0 && f.broker.stats().spectrumLevelHistories == 1,
+              "disabling True Peak frees only that observer's meter and keeps held sample history");
+
+        levels.setSpectrumTruePeakEnabled(true);
+        const auto shown = f.broker.stats();
+        levels.reset();
+        const auto hidden = f.broker.stats();
+        check(shown.spectrumTruePeakHistories == 1 && hidden.spectrumTruePeakHistories == 0 &&
+                  hidden.spectrumLevelHistories == 0 && hidden.taps == 1 && hidden.spectralPlans == 1 &&
+                  f.acquireCalls == 1 && f.releaseCalls == 0,
+              "hiding the levels view drops both optional histories while an ordinary Raw reader shares the tap");
+    }
+}
+
+void parkedSpectrumLevels(bool withTruePeak) {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.fftSize = window; request.hopSize = hop;
+    auto levels = parked.broker.acquire(request), continuous = reference.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true); continuous.setSpectrumLevelsEnabled(true);
+    levels.setSpectrumTruePeakEnabled(withTruePeak); continuous.setSpectrumTruePeakEnabled(withTruePeak);
+    const std::array<float, window> zeros{};
+    std::array<float, window> live;
+    live.fill(.5f);
+    const auto append = [](Fixture &fixture, const float *samples, int count) {
+        fixture.tap->write(samples, samples, count, 0, false, 2);
+        fixture.broker.pump();
+    };
+    append(parked, nullptr, window); append(reference, zeros.data(), window);
+    const auto start = levels.read();
+    const auto settled = parked.broker.stats();
+    for (int i = 0; i < blocks; ++i) {
+        append(parked, nullptr, block); append(reference, zeros.data(), block);
+    }
+    const auto idle = parked.broker.stats();
+    check(parked.tap->oldest() > window && start && start->spectrumLevels && levels.read() == start &&
+              start->spectrumLevels->truePeak.has_value() == withTruePeak &&
+              idle.cursorReads == settled.cursorReads && idle.analysisWindows == settled.analysisWindows &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "an exact-zero level interval stays parked without further reads or publications at a ring wrap");
+    append(parked, live.data(), untilHop - 1); append(reference, live.data(), untilHop - 1);
+    check(levels.read() == start, "stopped monitoring preserves the level display until the original hop completes");
+    append(parked, live.data(), 1); append(reference, live.data(), 1);
+    const auto resumed = levels.read(), oracle = continuous.read();
+    check(start && resumed && oracle && resumed->spectrumLevels && oracle->spectrumLevels &&
+              resumed->firstSequence == oracle->firstSequence &&
+              resumed->sourceEpoch == start->sourceEpoch && resumed->overrunCount == start->overrunCount &&
+              resumed->spectrumLevels->integratedRms == oracle->spectrumLevels->integratedRms &&
+              resumed->spectrumLevels->maxCrestDb == oracle->spectrumLevels->maxCrestDb &&
+              resumed->spectrumLevels->samplePeak == std::array{.5f, .5f} &&
+              resumed->spectrumLevels->samplePeak == oracle->spectrumLevels->samplePeak &&
+              resumed->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{} &&
+              resumed->spectrumLevels->sampleClips == oracle->spectrumLevels->sampleClips &&
+              resumed->spectrumLevels->truePeak.has_value() == withTruePeak &&
+              resumed->spectrumLevels->truePeak == oracle->spectrumLevels->truePeak &&
+              resumed->spectrumLevels->maxCrestDb.front() > 0.,
+          "parked levels count the omitted zeros for the exact uninterrupted RMS and crest on wake");
+}
+
 void sharedAverage() {
     Fixture f;
     SharedAnalysis::Request request{1}; request.hopSize = 1024;
@@ -2430,6 +5307,176 @@ void sharedAverage() {
     check(resumed.readAverage() && resumed.readAverage()->processedWindows==1 && raw.read()->columns.size()==4,
           "renewed average and still-live Raw history have independent lifetimes");
 }
+void parkedRealtimeAverage(bool burstBetweenPumps) {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Average1s;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto average = parked.broker.acquire(request);
+    auto uninterrupted = reference.broker.acquire(request);
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto write = [](Fixture &fixture, const float *samples, int count, std::int64_t position,
+                          std::uint64_t transportRevision) {
+        fixture.tap->write(samples, samples, count, position, false, transportRevision);
+        fixture.broker.pump();
+    };
+    const auto atFloor = [](const auto &result) {
+        return result && result->binsDbfs && !result->binsDbfs->empty() &&
+            std::ranges::all_of(*result->binsDbfs, [](float db) { return db == adi::dsp::kDbFloor; });
+    };
+
+    write(parked, silence, window, stamp, revision);
+    write(reference, zeros.data(), window, stamp, revision);
+    const auto first = average.readAverage();
+    const auto settled = parked.broker.stats();
+    check(atFloor(first) && first->status == SharedAnalysis::AverageStatus::Ready &&
+              first->processedWindows == 1 && first->window && !first->window->advancing &&
+              settled.transforms == 0,
+          "a first certified quiet window publishes a ready realtime average at the floor");
+
+    for (int i = 0; i < blocks; ++i) {
+        write(parked, silence, block, stamp, revision);
+        // Actual zero-filled buffers cannot earn the producer's null-channel certificate.
+        write(reference, zeros.data(), block, stamp, revision);
+    }
+    const auto idle = parked.broker.stats();
+    const auto controlQuiet = uninterrupted.readAverage();
+    check(parked.tap->oldest() > window && atFloor(controlQuiet) &&
+              controlQuiet->processedWindows == 1 + quietFrames / hop && average.readAverage() == first &&
+              idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+              idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+              idle.publications == settled.publications,
+          "an exactly zero realtime average holds one ready publication through a certified parked ring wrap");
+
+    std::array<float, window> signal;
+    signal.fill(.5f);
+    if (burstBetweenPumps) {
+        constexpr int burstFrames = 71;
+        for (auto *fixture : {&parked, &reference}) {
+            const float *quietInput = fixture == &parked ? silence : zeros.data();
+            fixture->tap->write(signal.data(), signal.data(), burstFrames, stamp, false, revision);
+            fixture->tap->write(quietInput, quietInput, untilHop - burstFrames, stamp, false, revision);
+        }
+        const auto quiet = parked.tap->lastParkedSilence();
+        check(quiet.begin == window + quietFrames + burstFrames && quiet.end == window + quietFrames + untilHop &&
+                  average.readAverage() == first && parked.broker.stats().workerPasses == idle.workerPasses,
+              "an audible burst and new quiet span both arrive before the realtime average resumes");
+        parked.broker.pump();
+        reference.broker.pump();
+    } else {
+        write(parked, signal.data(), untilHop - 1, stamp, revision);
+        write(reference, signal.data(), untilHop - 1, stamp, revision);
+        check(average.readAverage() == first && uninterrupted.readAverage() == controlQuiet,
+              "same-stamp monitoring does not publish before the original partial hop completes");
+        write(parked, signal.data(), 1, stamp, revision);
+        write(reference, signal.data(), 1, stamp, revision);
+    }
+    const auto resumed = average.readAverage();
+    const auto control = uninterrupted.readAverage();
+    check(first && first->window && resumed && control && resumed->window && control->window &&
+              resumed->status == SharedAnalysis::AverageStatus::Ready && resumed->epoch == first->epoch &&
+              resumed->processedWindows == 2 + quietFrames / hop &&
+              resumed->processedWindows == control->processedWindows && resumed->windowSerial == control->windowSerial &&
+              resumed->window->firstSequence == quietFrames + untilHop &&
+              resumed->window->firstSequence == control->window->firstSequence && resumed->window->firstStamp == stamp &&
+              !resumed->window->advancing && resumed->window->sourceEpoch == first->window->sourceEpoch &&
+              resumed->window->overrunCount == first->window->overrunCount && resumed->binsDbfs && control->binsDbfs &&
+              !resumed->binsDbfs->empty() && exactBins(*resumed->binsDbfs, *control->binsDbfs) && resumed->binsDbfs->front() > adi::dsp::kDbFloor &&
+              parked.broker.stats().transforms == 1 && reference.broker.stats().transforms == 1,
+          burstBetweenPumps
+              ? "a burst between pumps preserves the realtime average hop count, clock and bins without an overrun"
+              : "parked monitoring matches the uninterrupted hop count, clock and bins without a false overrun");
+
+    // A new transport revision clears the old state. This small but genuinely
+    // nonzero window produces a smoother state below the visible dB floor.
+    signal.fill(1.e-12f);
+    write(parked, signal.data(), window, stamp, revision + 1);
+    const auto tiny = average.readAverage();
+    write(parked, silence, window, stamp, revision + 1);
+    const auto fullyQuiet = average.readAverage();
+    const auto beforeDecay = parked.broker.stats();
+    write(parked, silence, hop, stamp, revision + 1);
+    const auto decay = average.readAverage();
+    const auto afterDecay = parked.broker.stats();
+    check(resumed && atFloor(tiny) && tiny->epoch > resumed->epoch && tiny->processedWindows == 1 &&
+              atFloor(fullyQuiet) && fullyQuiet->processedWindows == 3 && atFloor(decay) &&
+              decay != fullyQuiet && decay->epoch == tiny->epoch && decay->processedWindows == 4 &&
+              afterDecay.workerPasses == beforeDecay.workerPasses + 1 &&
+              afterDecay.analysisWindows == beforeDecay.analysisWindows + 1 &&
+              afterDecay.transforms == beforeDecay.transforms,
+          "a visible floor does not park a mathematically nonzero exponential average");
+}
+
+void parkedRealtimeAverageJoinsScope() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, monitor = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Average1s;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto average = parked.broker.acquire(request);
+    auto uninterrupted = reference.broker.acquire(request);
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto writePair = [&](const float *parkedInput, const float *referenceInput, int frames) {
+        parked.tap->write(parkedInput, parkedInput, frames, stamp, false, revision);
+        reference.tap->write(referenceInput, referenceInput, frames, stamp, false, revision);
+        parked.broker.pump();
+        reference.broker.pump();
+    };
+
+    writePair(silence, zeros.data(), window);
+    const auto first = average.readAverage();
+    for (int i = 0; i < blocks; ++i)
+        writePair(silence, zeros.data(), block);
+    check(first && average.readAverage() == first && parked.tap->oldest() > window,
+          "the realtime average is still parked when a second output joins its wrapped tap");
+
+    request.outputs = SharedAnalysis::Scope;
+    const auto scope = parked.broker.acquire(request), controlScope = reference.broker.acquire(request);
+    parked.broker.pump();
+    reference.broker.pump();
+    const auto joined = average.readAverage(), control = uninterrupted.readAverage();
+    const auto stable = parked.broker.stats();
+    check(first && first->window && joined && joined->window && control && control->window &&
+              joined->status == SharedAnalysis::AverageStatus::Ready && joined->epoch == first->epoch &&
+              joined->processedWindows == 1 + quietFrames / hop && joined->processedWindows == control->processedWindows &&
+              joined->windowSerial == control->windowSerial && joined->window == scope.read() &&
+              control->window == controlScope.read() && joined->window->overrunCount == first->window->overrunCount &&
+              joined->window->sourceEpoch == first->window->sourceEpoch &&
+              joined->window->firstSequence == control->window->firstSequence &&
+              exactBins(joined->window->scopeLeft, zeros) && exactBins(joined->window->scopeRight, zeros) &&
+              stable.taps == 1 && stable.domains == 1 && stable.spectralPlans == 1 && stable.transforms == 0,
+          "a same-domain Scope admission catches up certified hops while retaining the Average epoch and zero window");
+
+    std::array<float, monitor> signal;
+    signal.fill(.5f);
+    writePair(signal.data(), signal.data(), monitor);
+    const auto resumed = average.readAverage(), expected = uninterrupted.readAverage();
+    check(first && first->window && resumed && expected && resumed->window && expected->window &&
+              resumed->epoch == first->epoch && resumed->processedWindows == 2 + quietFrames / hop &&
+              resumed->windowSerial == expected->windowSerial && resumed->window->firstSequence == quietFrames + monitor &&
+              resumed->window->overrunCount == first->window->overrunCount && resumed->window == scope.read() &&
+              resumed->binsDbfs && expected->binsDbfs && exactBins(*resumed->binsDbfs, *expected->binsDbfs) &&
+              resumed->window->scopeLeft.size() == window && exactBins(resumed->window->scopeLeft, expected->window->scopeLeft),
+          "monitoring after a parked Scope join keeps exact average and scope alignment with uninterrupted processing");
+}
+
 void averageActivationAndOverflow() {
     Fixture f;
     SharedAnalysis::Request request{1};
@@ -2701,6 +5748,126 @@ void averagePublicationFailure() {
                   f.broker.stats().transforms==stopped.transforms && f.broker.stats().analysisWindows==stopped.analysisWindows,
               "a genuine metadata event retries optional publication without replaying FFT or numerical average hops");
     }
+}
+void deviceSpectrumLease() {
+    using Request = SharedAnalysis::DeviceSpectrumRequest;
+    using adi::engine::ScopeSource;
+    const ScopeSource endpoint{4, ScopePoint::DeviceOutput, 77};
+    auto tap = std::make_shared<ScopeTap>(48000, .25);
+    std::vector<ScopeSource> attached, detached;
+    SharedAnalysis broker([&](ScopeSource source, double) {
+        attached.push_back(source);
+        return source == endpoint ? tap : nullptr;
+    }, [&](ScopeSource source) { detached.push_back(source); }, SharedAnalysis::Mode::Manual);
+    const Request settings{4, 77, 1024, Request::Channel::Left, 3, true};
+    auto invalid = settings;
+    invalid.fftSize = 1536;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum refuses an unsupported block size");
+    invalid = settings; invalid.averageBlocks = 0;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum rejects zero averaging blocks");
+    invalid.averageBlocks = Request::kMaximumAverageBlocks + 1;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum bounds the number of averaged blocks");
+    invalid = settings; invalid.device = 0;
+    check(!broker.acquireDeviceSpectrum(invalid) && attached.empty(), "invalid spectrum requests do not establish taps");
+
+    auto device = broker.acquireDeviceSpectrum(settings);
+    auto sibling = broker.acquireDeviceSpectrum(settings);
+    SharedAnalysis::Request shared{4, ScopePoint::DeviceOutput, 1024, SharedAnalysis::Channel::Left};
+    shared.device = 77;
+    auto raw = broker.acquire(shared);
+    check(device.available() && sibling.available() && raw.available() && attached == std::vector{endpoint} &&
+              broker.stats().spectralPlans == 1 && broker.stats().domains == 1,
+          "two device views and a compatible spectrum request use one device tap and FFT plan");
+    check(!device.readBlockAverage() && !device.readMaximum(), "a new lease never reads an earlier average or peak");
+
+    tone(*tap, 1024, .5f, 0.f);
+    check(broker.pump() == 1 && raw.read() && device.read() == raw.read() && !device.readBlockAverage(),
+          "one completed block is shared but does not complete a three-block average");
+    if (!raw.read() || raw.read()->binsDbfs.size() != 513) {
+        check(false, "natural one-sided order includes DC and Nyquist");
+        return;
+    }
+    const auto first = raw.read();
+    const auto &bins = first->binsDbfs;
+    check(std::distance(bins.begin(), std::max_element(bins.begin(), bins.end())) == 16 &&
+              near(bins[16], -6.020599913) && near(16 * first->sampleRate / first->request.fftSize, 750.),
+          "natural DC-to-Nyquist bin order and full-scale sine calibration");
+    tone(*tap, 256, .25f, 0.f, 1024);
+    const auto nextTransforms = broker.pump();
+    const auto second = raw.read();
+    tone(*tap, 256, .125f, 0.f, 1280);
+    const auto finalTransforms = broker.pump();
+    const auto third = raw.read();
+    const auto average = device.readBlockAverage();
+    check(nextTransforms == 1 && finalTransforms == 1 && second && third && average &&
+              average == sibling.readBlockAverage() && average->window == third && average->binsDbfs.size() == 513,
+          "duplicate averaging demand emits one complete group with the exact window and no additional FFT");
+    if (!second || !third || !average) return;
+    const auto magnitude = [](double db) { return std::pow(10., db / 20.); };
+    const double expected = 20 * std::log10((magnitude(bins[16]) + magnitude(second->binsDbfs[16]) +
+                                           magnitude(third->binsDbfs[16])) / 3.);
+    check(near(average->binsDbfs[16], expected) && device.readMaximum() &&
+              near(device.readMaximum()->binsDbfs[16], bins[16]),
+          "average uses linear block magnitudes and maximum retains the largest raw block");
+    check(device.restartCumulativeMaximum() && !device.readMaximum() && sibling.readMaximum() &&
+              device.readBlockAverage() == average, "restart clears only this lease's peak hold");
+
+    std::array<float, 1024> left{}, right{};
+    right.fill(.25f);
+    tap->write(left.data(), right.data(), 1024, 2700, true, 9);
+    broker.pump();
+    check(!device.readBlockAverage() && average->window == third,
+          "an epoch change drops the partial group and preserves any frozen result");
+    auto rightSettings = settings;
+    rightSettings.channel = Request::Channel::Right;
+    rightSettings.averageBlocks = 1;
+    rightSettings.maximum = false;
+    auto rightLease = broker.acquireDeviceSpectrum(rightSettings);
+    tap->write(left.data(), right.data(), 1024, 3724, true, 9);
+    broker.pump();
+    check(rightLease.read() && near(rightLease.read()->binsDbfs[0], -12.041199826) &&
+              !rightLease.readBlockAverage() && attached == std::vector{endpoint} && broker.stats().spectralPlans == 2,
+          "right and left have independent transforms on the same tap and one block reads directly");
+    device.reset(); sibling.reset(); raw.reset(); rightLease.reset();
+    const auto closed = broker.stats();
+    tap->write(left.data(), right.data(), 1024, 4748, true, 9);
+    broker.pump();
+    const auto idle = broker.stats();
+    check(detached == std::vector{endpoint} && !closed.taps && !closed.domains && !closed.spectralPlans &&
+              closed.cursorReads == idle.cursorReads && closed.workerPasses == idle.workerPasses &&
+              closed.transforms == idle.transforms,
+          "closing the last panel releases the tap and schedules no analysis work for new audio");
+}
+void parkedDeviceSpectrum() {
+    using Request = SharedAnalysis::DeviceSpectrumRequest;
+    auto tap = std::make_shared<ScopeTap>(48000, .25);
+    SharedAnalysis broker([&](adi::engine::ScopeSource, double) { return tap; },
+                          [](adi::engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireDeviceSpectrum({1, 7, 1024, Request::Channel::Left, 3, true});
+    const float *silent = nullptr;
+    tap->write(silent, silent, 1536, 0, false, 1);
+    check(broker.pump() == 0 && lease.readBlockAverage() && lease.readMaximum() &&
+              lease.readBlockAverage()->binsDbfs[16] == adi::dsp::kDbFloor,
+          "a parked device spectrum completes a silent average without executing FFTs");
+    const auto parked = broker.stats();
+    const auto quiet = lease.readBlockAverage();
+    for (int block = 0; block < 64; ++block) {
+        tap->write(silent, silent, 256, 0, false, 1);
+        broker.pump();
+    }
+    const auto idle = broker.stats();
+    check(quiet && lease.readBlockAverage() == quiet && parked.cursorReads == idle.cursorReads &&
+              parked.workerPasses == idle.workerPasses && parked.transforms == idle.transforms,
+          "a visible settled device spectrum does no work over certified parked silence");
+    std::array<float, 1536> waveform{};
+    for (std::size_t i = 0; i < waveform.size(); ++i)
+        waveform[i] = .25f * static_cast<float>(std::sin(2. * std::numbers::pi * 16. * static_cast<double>(i) / 1024.));
+    tap->write(waveform.data(), waveform.data(), 1536, 0, true, 2);
+    broker.pump();
+    const auto running = lease.readBlockAverage();
+    check(running && running != quiet && running->window->transportRevision == 2 &&
+              near(running->binsDbfs[16], -12.041199826) && broker.stats().transforms == idle.transforms + 3,
+          "resuming starts a complete new group without analysing the skipped parked blocks");
 }
 void boundsAndDeviceSources() {
     auto tap = std::make_shared<ScopeTap>(48000, .1);
@@ -3441,8 +6608,11 @@ ADI_TEST_NOINLINE void operator delete(void *p,std::size_t) noexcept {::operator
 ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 #undef ADI_TEST_NOINLINE
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); periodScopeReference(); contiguousPeriodScopeDemand(); colourWaveformReference(); continuousColourWaveformDemand(); filledSpectrumCurves(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
+          focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels(); spectrogramHeardGrid();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
+          parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); periodScopeReference(); contiguousPeriodScopeDemand(); colourWaveformReference(); continuousColourWaveformDemand(); filledSpectrumCurves(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); parkedCumulativeAverage(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(false); parkedRealtimeAverage(true); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterReferenceProfiles(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

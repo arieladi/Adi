@@ -32,6 +32,9 @@ public:
     void prepare(const PrepareSpec&,const Settings&);
     // Retain the applied plan and withdraw any offer the stopped graph didn't admit.
     void reset(const Settings&) noexcept;
+    void trackSilenceForSuspension(bool enabled) noexcept;
+    [[nodiscard]] bool canSkipSilence() const noexcept;
+    void skipSilence(std::uint32_t frames) noexcept;
     void setBackgroundActive(bool) noexcept;
     [[nodiscard]] bool supportsClip() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept;

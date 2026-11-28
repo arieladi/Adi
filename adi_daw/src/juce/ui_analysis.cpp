@@ -2,10 +2,15 @@
 #include "ui_analysis.hpp"
 #include "ui_colour_waveform.hpp"
 #include "ui_filled_spectrum.hpp"
+#include "ui_spectrogram_presentation.hpp"
 #include "ui_look.hpp"
 #include "ui_third_octave.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
+#include "adi/ui/note_geometry.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 
 namespace adi::ui {
@@ -31,6 +36,10 @@ const SpectrumAxis &spectrumAxis(SpectrumScale scale) {
     return wide;
 }
 
+bool spectrumScaleHasFill(SpectrumScale scale) noexcept {
+    return scale == SpectrumScale::Detail || scale == SpectrumScale::Extended;
+}
+
 void populateSpectrumScaleMenu(juce::ComboBox &box) {
     box.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended", "Scale: Device"}, 1);
     box.setSelectedId(1, juce::dontSendNotification);
@@ -48,6 +57,8 @@ SpectrumScale selectedSpectrumScale(const juce::ComboBox &box) noexcept {
 
 namespace {
 constexpr float floorDb = -96.f;
+constexpr float spectrogramTopDb = 24.f;
+constexpr std::array spectrogramGammaValues{.5f, .75f, 1.f, 1.5f, 2.f};
 float db(float value) {
     return std::isfinite(value) && value > 0 ? std::max(floorDb, 20.f * std::log10(value)) : floorDb;
 }
@@ -59,6 +70,24 @@ float heightFor(float value, juce::Rectangle<float> area) {
 }
 juce::String meterNumber(float value) {
     return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
+}
+bool sameSpectrumTimeline(const SharedAnalysis::Result &a, const SharedAnalysis::Result &b) noexcept {
+    return a.sampleRate == b.sampleRate && a.request.fftSize == b.request.fftSize &&
+           a.transportRevision == b.transportRevision && a.advancing == b.advancing;
+}
+bool spectrumFitsPrimary(const SharedAnalysis::Result *primary, const SharedAnalysis::Result &pin) noexcept {
+    return primary && sameSpectrumTimeline(*primary, pin) && (!pin.advancing || pin.firstStamp <= primary->firstStamp);
+}
+std::int32_t overviewFftForRate(double rate) noexcept {
+    // Stay near the 4,096 sample / 48 kHz window. Real FFT sizes are multiples
+    // of 32 whose remaining factors are drawn from 2, 3 and 5.
+    const auto target = 4096. * rate / 48000.;
+    std::int32_t nearest = 32;
+    for (std::int32_t twos = 32; twos <= SharedAnalysis::kMaxFftSize; twos *= 2)
+        for (auto threes = twos; threes <= SharedAnalysis::kMaxFftSize; threes *= 3)
+            for (auto size = threes; size <= SharedAnalysis::kMaxFftSize; size *= 5)
+                if (std::abs(size - target) < std::abs(nearest - target)) nearest = size;
+    return nearest;
 }
 std::size_t currentThemeIndex() noexcept {
     const auto theme = std::ranges::find(kThemes, look::themeId());
@@ -107,21 +136,58 @@ juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, boo
     return original[currentThemeIndex()][reverse ? 255u - sample : sample];
 }
 struct SharedSpectrumView::ScaledSpectrum {
+    static constexpr std::size_t extendedCellCount = 1024;
+    struct LogCell {
+        float x = 0.f;
+        std::size_t first = 0, end = 0;
+        float fraction = 0.f;
+    };
+
     // Store unit coordinates so resizing and repainting never rewalk the bins.
     double rate = 0.;
     int size = 0;
     SpectrumScale scale = SpectrumScale::Wide;
     std::size_t count = 0, firstBin = 0;
     std::vector<float> x;
+    std::vector<LogCell> cells;
     juce::Path line, fill;
+
+    void prepareLogCells(const SpectrumAxis &axis, double hzPerBin) {
+        const auto cellFor = [](float unit) {
+            const auto cell = static_cast<std::size_t>(std::clamp(unit, 0.f, 1.f) * extendedCellCount);
+            return std::min(cell, extendedCellCount - 1);
+        };
+        const auto firstCell = cellFor(x.front()), lastCell = cellFor(x.back());
+        const auto lastBin = firstBin + x.size() - 1;
+        cells.reserve(lastCell - firstCell + 1);
+        std::size_t bin = 0;
+        for (auto cell = firstCell; cell <= lastCell; ++cell) {
+            const auto centre = (static_cast<double>(cell) + .5) / static_cast<double>(extendedCellCount);
+            const auto position = cell == firstCell ? x.front() :
+                                  cell == lastCell ? x.back() : static_cast<float>(centre);
+            const auto begin = bin;
+            while (bin < x.size() && cellFor(x[bin]) == cell) ++bin;
+            if (bin != begin) {
+                cells.push_back({position, firstBin + begin, firstBin + bin, 0.f});
+            } else {
+                const auto hz = axis.lowHz * std::exp(centre * axis.logWidth);
+                const auto fractional = std::clamp(hz / hzPerBin, static_cast<double>(firstBin), static_cast<double>(lastBin));
+                const auto lower = std::min(static_cast<std::size_t>(fractional), lastBin - 1);
+                cells.push_back({position, lower, lower, static_cast<float>(fractional - static_cast<double>(lower))});
+            }
+        }
+    }
 
     void setFormat(SpectrumScale nextScale, double nextRate, int nextSize, std::size_t nextCount) {
         if (nextScale == scale && nextRate == rate && nextSize == size && nextCount == count) return;
         x.clear();
+        cells.clear();
         if (std::isfinite(nextRate) && nextRate > 0 && nextSize > 0) {
-            const auto &axis = spectrumAxis(nextScale);
+            auto axis = spectrumAxis(nextScale);
             const auto hzPerBin = nextRate / nextSize;
             const auto lastHz = std::min(axis.highHz, nextRate * .5);
+            if (nextScale == SpectrumScale::Wide && lastHz > axis.lowHz)
+                axis.logWidth = std::log(lastHz / axis.lowHz);
             for (std::size_t i = 1; i < nextCount; ++i) {
                 const auto hz = hzPerBin * static_cast<double>(i);
                 if (hz > lastHz) break;
@@ -129,46 +195,92 @@ struct SharedSpectrumView::ScaledSpectrum {
                 if (x.empty()) firstBin = i;
                 x.push_back(axis.x(hz));
             }
+            if (nextScale == SpectrumScale::Extended && x.size() > extendedCellCount)
+                prepareLogCells(axis, hzPerBin);
         }
         scale = nextScale; rate = nextRate; size = nextSize; count = nextCount;
     }
 
-    void update(std::span<const float> bins, std::span<const float> offsets) {
+    void buildPaths(const SpectrumAxis &axis, bool fillTrace, float left, float right, auto &&enumerate) {
         line.clear();
         fill.clear();
-        if (x.size() < 2) return;
-        const auto &axis = spectrumAxis(scale);
-        const bool filled = scale != SpectrumScale::Device;
-        for (std::size_t i = 0; i < x.size(); ++i) {
-            const auto bin = firstBin + i;
-            const auto y = axis.y(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
-            if (i == 0) {
-                line.startNewSubPath(x[i], y);
-                if (filled) fill.startNewSubPath(x[i], y);
+        const bool filled = fillTrace && spectrumScaleHasFill(scale);
+        bool first = true;
+        const auto append = [&](float position, float value) {
+            const auto y = axis.y(value);
+            if (first) {
+                first = false;
+                line.startNewSubPath(position, y);
+                if (filled) fill.startNewSubPath(position, y);
             } else {
-                line.lineTo(x[i], y);
-                if (filled) fill.lineTo(x[i], y);
+                line.lineTo(position, y);
+                if (filled) fill.lineTo(position, y);
             }
-        }
+        };
+        enumerate(append);
         if (filled) {
-            fill.lineTo(x.back(), 1.f);
-            fill.lineTo(x.front(), 1.f);
+            fill.lineTo(right, 1.f);
+            fill.lineTo(left, 1.f);
             fill.closeSubPath();
         }
     }
 
-    void paint(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    void update(std::span<const float> bins, std::span<const float> offsets, bool fillTrace) {
+        if (x.size() < 2) {
+            line.clear();
+            fill.clear();
+            return;
+        }
+        const auto &axis = spectrumAxis(scale);
+        const auto valueAt = [&](std::size_t bin) { return bins[bin] + (offsets.empty() ? 0.f : offsets[bin]); };
+        buildPaths(axis, fillTrace, x.front(), x.back(), [&](const auto &append) {
+            if (cells.empty()) {
+                for (std::size_t i = 0; i < x.size(); ++i) append(x[i], valueAt(firstBin + i));
+                return;
+            }
+            const auto availableValue = [&](std::size_t bin) {
+                const auto value = valueAt(bin);
+                return std::isfinite(value) ? value : static_cast<float>(axis.bottomDb);
+            };
+            for (const auto &cell : cells) {
+                auto value = availableValue(cell.first);
+                if (cell.first == cell.end) {
+                    value = std::lerp(value, availableValue(cell.first + 1), cell.fraction);
+                } else {
+                    for (auto bin = cell.first + 1; bin < cell.end; ++bin)
+                        value = std::max(value, availableValue(bin));
+                }
+                append(cell.x, value);
+            }
+        });
+    }
+
+    void updateSmoothed(SpectrumScale nextScale, const SpectrumAxis &axis,
+                        std::span<const SpectrumSmoothing::Point> points, SpectrumSlope slope, bool fillTrace) {
+        if (scale != nextScale) count = 0; // cached raw-bin geometry belongs to the previous scale
+        scale = nextScale;
+        buildPaths(axis, fillTrace, axis.x(points.front().frequencyHz), axis.x(points.back().frequencyHz),
+                   [&](const auto &append) {
+            for (const auto &point : points)
+                append(axis.x(point.frequencyHz), point.db + static_cast<float>(spectrumDisplayOffset(slope, point.frequencyHz)));
+        });
+    }
+
+    void paint(juce::Graphics &g, juce::Rectangle<float> plot, juce::Colour colour = look::value,
+               bool primary = false) const {
         if (line.isEmpty() || plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return;
-        const auto transform = juce::AffineTransform::scale(plot.getWidth() - 1.f, plot.getHeight() - 1.f)
+        const float inset = scale == SpectrumScale::Wide ? 0.f : 1.f;
+        const auto transform = juce::AffineTransform::scale(plot.getWidth() - inset, plot.getHeight() - inset)
             .translated(plot.getX(), plot.getY());
         juce::Graphics::ScopedSaveState state(g);
-        g.reduceClipRegion(plot.toNearestInt());
+        const bool widePrimary = primary && scale == SpectrumScale::Wide;
+        if (!widePrimary) g.reduceClipRegion(plot.toNearestInt());
         if (!fill.isEmpty()) {
-            g.setColour(look::value.withAlpha(.28f));
+            g.setColour(colour.withAlpha(spectrumFillOpacity));
             g.fillPath(fill, transform);
         }
-        g.setColour(look::value);
-        g.strokePath(line, juce::PathStrokeType(look::line), transform);
+        g.setColour(colour);
+        g.strokePath(line, juce::PathStrokeType(widePrimary ? 1.4f : look::line), transform);
     }
 };
 
@@ -271,20 +383,139 @@ struct SharedSpectrumView::BandDisplay {
     }
 };
 
+struct SharedSpectrumView::SpectrumOverlay {
+    struct Frame {
+        std::shared_ptr<const SharedAnalysis::Result> window;
+        std::shared_ptr<const std::vector<float>> projectedBins;
+        bool operator==(const Frame &) const = default;
+    };
+    SpectrumOverlayTrack source;
+    SharedAnalysis::Lease lease;
+    SharedAnalysis::Lease::SourcePosition admission;
+    Frame picture, waiting;
+    std::unique_ptr<ScaledSpectrum> plot;
+
+    void clearPicture() noexcept { picture = {}; waiting = {}; plot.reset(); }
+};
+
+namespace {
+using SpectrogramScale = SharedSpectrumView::SpectrogramScale;
+
+double spectrogramPosition(SpectrogramScale scale, double hz) noexcept {
+    switch (scale) {
+    case SpectrogramScale::Linear: return hz;
+    case SpectrogramScale::Log: return std::log(hz);
+    case SpectrogramScale::Mel: return std::log1p(hz / 700.);
+    case SpectrogramScale::Bark: return 26.81 * hz / (1960. + hz) - .53;
+    case SpectrogramScale::Erb: return std::log1p(.00437 * hz);
+    }
+    return hz;
+}
+
+double spectrogramFrequency(SpectrogramScale scale, double position) noexcept {
+    switch (scale) {
+    case SpectrogramScale::Linear: return position;
+    case SpectrogramScale::Log: return std::exp(position);
+    case SpectrogramScale::Mel: return 700. * std::expm1(position);
+    case SpectrogramScale::Bark:
+        return 1960. * (position + .53) / (26.81 - (position + .53));
+    case SpectrogramScale::Erb: return std::expm1(position) / .00437;
+    }
+    return position;
+}
+} // namespace
+
+void spectrogram::configureScaleBox(juce::ComboBox &box) {
+    box.addItemList({"Linear", "Log", "Mel", "Bark", "ERB"}, 1);
+    box.setSelectedId(static_cast<int>(SpectrogramScale::Log) + 1, juce::dontSendNotification);
+}
+
+double spectrogram::frequencyAt(SpectrogramScale scale, double lowHz, double topHz, double fraction) noexcept {
+    if (scale == SpectrogramScale::Log) return lowHz * std::pow(topHz / lowHz, fraction);
+    return spectrogramFrequency(scale, std::lerp(spectrogramPosition(scale, lowHz),
+                                                 spectrogramPosition(scale, topHz), fraction));
+}
+
+void spectrogram::paintSweep(juce::Graphics &g, const juce::Image &image, juce::Rectangle<float> plot,
+                            int rotation, bool drawGuide) {
+    const auto clip = plot.toNearestInt();
+    if (clip.isEmpty()) return;
+    const auto columnWidth = plot.getWidth() / static_cast<float>(image.getWidth());
+    if (rotation == 0) {
+        g.drawImage(image, plot);
+    } else {
+        // Rotate the scrolling raster at paint time and keep its sampling phase on both sides.
+        const auto offset = static_cast<float>(rotation) * columnWidth;
+        const int split = std::clamp(juce::roundToInt(plot.getX() + offset), clip.getX(), clip.getRight());
+        auto right = clip;
+        const auto left = right.removeFromLeft(split - clip.getX());
+        const auto draw = [&](juce::Rectangle<int> region, float x) {
+            juce::Graphics::ScopedSaveState state(g);
+            if (g.reduceClipRegion(region)) g.drawImage(image, plot.translated(x, 0.f));
+        };
+        draw(left, offset - plot.getWidth());
+        draw(right, offset);
+    }
+    if (!drawGuide) return;
+    const auto boundary = rotation == 0 ? plot.getRight() : plot.getX() + static_cast<float>(rotation) * columnWidth;
+    const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
+    g.setColour(look::textOnBand.withAlpha(.55f));
+    g.drawVerticalLine(x, plot.getY(), plot.getBottom());
+}
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
+    static constexpr double lowestHz = 20.;
     std::array<std::uint16_t, static_cast<std::size_t>(width * height)> intensity{};
     std::array<juce::Colour, 256> colors{};
+    std::array<std::size_t, height> firstBin{}, lastBin{};
+    SpectrogramScale scale = SpectrogramScale::Log;
+    SpectrogramLevels levels;
+    double sampleRate = 0., topHz = 0., lowPosition = 0., highPosition = 0.;
+    std::int32_t fftSize = 0;
     juce::Image image;
     std::uint64_t revision = 0, epoch = 0, column = 0, sweepOrigin = 0;
     ThemeId theme = ThemeId::Dark;
+    float gamma = 1.f;
     bool paletteDirty = true;
     Raster() { intensity.fill(gap); }
-    void setPalette(std::size_t index, bool reverse) noexcept {
+    bool matchesFrequencyMap(SpectrogramScale next, double rate, std::int32_t size) const noexcept {
+        return scale == next && sampleRate == rate && fftSize == size;
+    }
+    double frequencyAt(double fraction) const noexcept {
+        // Keep the endpoint computation of the default grid.
+        return scale == SpectrogramScale::Log ? lowestHz * std::pow(topHz / lowestHz, fraction) :
+            spectrogramFrequency(scale, std::lerp(lowPosition, highPosition, fraction));
+    }
+    void prepareFrequencyMap(SpectrogramScale next, double rate, std::int32_t size, double upperHz) noexcept {
+        scale = next;
+        sampleRate = rate;
+        fftSize = size;
+        topHz = upperHz;
+        lowPosition = spectrogramPosition(scale, lowestHz);
+        highPosition = spectrogramPosition(scale, topHz);
+        const auto edgeBin = [&](int row) {
+            return static_cast<std::size_t>(frequencyAt(static_cast<double>(row) / height) * size / rate);
+        };
+        auto low = edgeBin(0);
+        for (int row = 0; row < height; ++row) {
+            const auto y = static_cast<std::size_t>(row);
+            const auto high = edgeBin(row + 1);
+            firstBin[y] = std::max<std::size_t>(1, low);
+            lastBin[y] = std::max(firstBin[y] + 1, high + 1);
+            low = high;
+        }
+    }
+    void setPalette(std::size_t index, bool reverse, float exponent) noexcept {
         theme = look::themeId();
-        for (std::size_t i = 0; i < colors.size(); ++i)
-            colors[i] = analysisPaletteColour(index, static_cast<std::uint8_t>(i), reverse);
+        gamma = exponent;
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            const double strength = static_cast<double>(i) / 255.;
+            const auto value = exponent == 1.f ? static_cast<std::uint8_t>(i) :
+                static_cast<std::uint8_t>(255. * std::pow(strength, static_cast<double>(exponent)));
+            colors[i] = analysisPaletteColour(index, value, reverse);
+        }
         paletteDirty = true;
     }
     void clearColumns(int first, int count) {
@@ -302,34 +533,21 @@ struct SharedSpectrumView::Raster {
         image.moveImageSection(0, 0, added, 0, width - added, height);
         clearColumns(width - added, added);
     }
-    void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    int sweepRotation() const noexcept {
+        return sweepOrigin && column >= sweepOrigin ? static_cast<int>((column - sweepOrigin + 1) % width) : 0;
+    }
+    float rowPeak(std::span<const float> bins, std::size_t row) const noexcept {
+        float peak = dsp::kDbFloor;
+        for (auto i = firstBin[row]; i < std::min(bins.size(), lastBin[row]); ++i)
+            peak = std::max(peak, bins[i]);
+        return peak;
+    }
+    void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot, bool drawGuide = true) const {
         if (!sweepOrigin || column < sweepOrigin) {
             g.drawImage(image, plot);
             return;
         }
-        const auto head = (column - sweepOrigin) % width;
-        const auto rotation = static_cast<float>((head + 1) % width) * (plot.getWidth() / width);
-        const auto clip = plot.toNearestInt();
-        if (clip.isEmpty()) return;
-        if (rotation == 0.f) {
-            g.drawImage(image, plot);
-        } else {
-            // Rotate the scrolling raster at draw time. Both fragments use the
-            // same scale and the same published pixels as Scroll.
-            const int split = std::clamp(juce::roundToInt(plot.getX() + rotation), clip.getX(), clip.getRight());
-            auto right = clip;
-            const auto left = right.removeFromLeft(split - clip.getX());
-            const auto draw = [&](juce::Rectangle<int> limit, float offset) {
-                juce::Graphics::ScopedSaveState state(g);
-                if (g.reduceClipRegion(limit)) g.drawImage(image, plot.translated(offset, 0.f));
-            };
-            draw(left, rotation - plot.getWidth());
-            draw(right, rotation);
-        }
-        const auto boundary = plot.getX() + static_cast<float>(head + 1) * (plot.getWidth() / width);
-        const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
-        g.setColour(look::textOnBand.withAlpha(.55f));
-        g.drawVerticalLine(x, plot.getY(), plot.getBottom());
+        spectrogram::paintSweep(g, image, plot, sweepRotation(), drawGuide);
     }
     void recolor() {
         if (image.isNull()) return;
@@ -368,7 +586,16 @@ juce::Rectangle<int> filledSpectrumPlot(juce::Rectangle<int> bounds) {
     if (plot.getHeight() >= 44) plot = plot.withTrimmedBottom(14);
     return plot;
 }
+bool usesProjectedSpectrumBins(SharedSpectrumView::Mode mode) noexcept {
+    return mode == SharedSpectrumView::Mode::SpectrumAverage || mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage ||
+           mode == SharedSpectrumView::Mode::SpectrumRealtimeSigma;
+}
 void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mode) {
+    if (mode == SharedSpectrumView::Mode::Phase) {
+        view.setTitle("Phase");
+        view.setTooltip("Shows stereo phase and left/right correlation.");
+        return;
+    }
     if (mode == SharedSpectrumView::Mode::ClassicScope) {
         view.setTitle("Classic Scope");
         view.setTooltip("Classic Scope shows the waveform using the selected channel and trigger.");
@@ -405,6 +632,16 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
         view.setTooltip("Two seconds of audio scroll towards the left. Blue, amber and pale show low, middle and high bands.");
         return;
     }
+    if (mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage) {
+        view.setTitle("Cumulative Average");
+        view.setTooltip("Shows the average magnitude of each frequency since the interval began or was cleared.");
+        return;
+    }
+    if (mode == SharedSpectrumView::Mode::SpectrumRealtimeSigma) {
+        view.setTitle("Realtime Sigma");
+        view.setTooltip("Shows the recent variation in each frequency's magnitude as a standard deviation.");
+        return;
+    }
     view.setTitle("Channel spectrum");
     view.setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
@@ -425,13 +662,18 @@ void SharedSpectrumView::setMode(Mode mode) {
     else if (mode_ == Mode::Phase) phaseTrail_.reset();
     if (mode == Mode::ThirdOctaveBands) bandDisplay_ = std::make_unique<BandDisplay>();
     else if (mode_ == Mode::ThirdOctaveBands) bandDisplay_.reset();
-    if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
-        isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
+    std::optional<SpectrumLeases> retired;
+    if (usesOverviewSpectrum() && supportsSpectrumOverlays(mode) && lease_)
+        takeSpectrumLeases(retired.emplace());
+    else if (supportsSpectrumOverlays(mode_))
+        releaseSpectrumOverlays();
+    if (usesProjectedSpectrumBins(mode) || usesProjectedSpectrumBins(mode_) || isMaximumSpectrum(mode) || isMaximumSpectrum(mode_) ||
         mode == Mode::FilledSpectrum || mode_ == Mode::FilledSpectrum ||
         mode == Mode::ThirdOctaveBands || mode_ == Mode::ThirdOctaveBands ||
-        mode == Mode::ColourWaveform || mode_ == Mode::ColourWaveform) frozen_ = false;
+        mode == Mode::ColourWaveform || mode_ == Mode::ColourWaveform)
+        frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
+    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = retired.has_value();
     if (mode == Mode::ClassicScope && !classicPanel_) {
         classicPanel_ = std::make_unique<ClassicScopePanel>();
         classicPanel_->setBounds(getLocalBounds());
@@ -442,39 +684,307 @@ void SharedSpectrumView::setMode(Mode mode) {
         };
         addChildComponent(*classicPanel_);
     }
-    if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
+    if (mode_ == Mode::Phase || mode == Mode::Phase || mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
-        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum || mode_ == Mode::Phase || mode == Mode::Phase ||
+        mode_ == Mode::SpectrumCumulativeAverage || mode == Mode::SpectrumCumulativeAverage ||
+        mode_ == Mode::SpectrumRealtimeSigma || mode == Mode::SpectrumRealtimeSigma ||
+        mode_ == Mode::FilledSpectrum || mode == Mode::FilledSpectrum ||
         mode_ == Mode::ThirdOctaveBands || mode == Mode::ThirdOctaveBands ||
         mode_ == Mode::ColourWaveform || mode == Mode::ColourWaveform)
         describeAnalysisView(*this, mode);
     mode_ = mode;
+    if (!spectrumMode()) {
+        activeSpectrumFftSize_ = 1024;
+        activeSpectrumOverlap_ = 75;
+    }
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
-        setInterceptsMouseClicks(false, mode_ == Mode::ClassicScope && !compact_);
     }
+    updateSpectrumCursorInput();
+    updateDemand();
+    if (retired && lease_) acquireSpectrumOverlays();
+    repaint();
+}
+void SharedSpectrumView::enablePhaseBands() {
+    if (phaseBandsEnabled_) return;
+    phaseBandsEnabled_ = true;
+    if (mode_ != Mode::Phase) return;
+    lease_.reset();
+    sourcePosition_ = {};
+    freshRequired_ = true;
+    resetPicture();
     updateDemand();
     repaint();
 }
+void SharedSpectrumView::setPhaseBandDisplay(PhaseBandDisplay display) {
+    if (phaseBandDisplay_ == display) return;
+    const bool wasSpatial = phaseBandDisplay_ != PhaseBandDisplay::Correlation;
+    const bool wantsSpatial = display != PhaseBandDisplay::Correlation;
+    phaseBandDisplay_ = display;
+    if (mode_ != Mode::Phase || !phaseBandsEnabled_) return;
+    if (wasSpatial != wantsSpatial && lease_ && eligible()) {
+        try {
+            // Admit the new output on the same prepared domain before releasing
+            // the former output. Width and Pan themselves share one projection.
+            auto next = broker_->acquire(phaseRequest());
+            if (next) {
+                phaseProjectionPending_ = wantsSpatial && static_cast<bool>(shown_);
+                lease_ = std::move(next);
+            }
+        } catch (...) { /* Keep the usable vectorscope if spatial admission fails. */ }
+    }
+    repaint();
+}
+void SharedSpectrumView::setStereoBalanceEnabled(bool value) noexcept {
+    if (stereoBalanceEnabled_ == value) return;
+    stereoBalanceEnabled_ = value;
+    lease_.setStereoBalanceEnabled(value && supportsSpectrumOverlays(mode_));
+}
+void SharedSpectrumView::setSpectrumLevelsEnabled(bool value) noexcept {
+    if (spectrumLevelsEnabled_ == value) return;
+    spectrumLevelsEnabled_ = value;
+    lease_.setSpectrumLevelsEnabled(value && supportsSpectrumOverlays(mode_));
+}
+void SharedSpectrumView::setSpectrumTruePeakEnabled(bool value) noexcept {
+    if (spectrumTruePeakEnabled_ == value) return;
+    spectrumTruePeakEnabled_ = value;
+    lease_.setSpectrumTruePeakEnabled(value && spectrumLevelsEnabled_ && supportsSpectrumOverlays(mode_));
+}
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
+    releaseSpectrumOverlays();
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     point_ = point; device_ = device; resetClassic(false); updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
+    channel_ = channel;
+    if (mode_ == Mode::Phase && phaseBandsEnabled_) return;
+    releaseSpectrumOverlays();
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
-    channel_ = channel; updateDemand(); repaint();
+    updateDemand(); repaint();
+}
+void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack> tracks,
+                                                   SpectrumOverlayProfile profile) {
+    overlayProfile_ = profile;
+    if (std::ranges::equal(spectrumOverlays_, tracks, std::ranges::equal_to{}, &SpectrumOverlay::source)) return;
+
+    std::vector<SpectrumOverlay> next;
+    next.reserve(std::min(tracks.size(), kSpectrumOverlayTracks));
+    for (const auto &source : tracks) {
+        if (source.track <= 0 || std::ranges::any_of(next, [&](const auto &overlay) {
+                return overlay.source.track == source.track;
+            })) continue;
+        const auto existing = std::ranges::find_if(spectrumOverlays_, [&](const auto &overlay) {
+            return overlay.source.track == source.track;
+        });
+        if (existing == spectrumOverlays_.end()) next.emplace_back();
+        else next.push_back(std::move(*existing));
+        next.back().source = source;
+        if (next.size() == kSpectrumOverlayTracks) break;
+    }
+    spectrumOverlays_.swap(next);
+    if (supportsSpectrumOverlays(mode_) && eligible()) repaint();
+}
+bool SharedSpectrumView::usesOverviewSpectrum() const noexcept {
+    return supportsSpectrumOverlays(mode_) && device_ == 0 && !spectrumOverlays_.empty() &&
+           overlayProfile_ == SpectrumOverlayProfile::Overview;
+}
+SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
+    const auto size = spectrumMode() ? activeSpectrumFftSize_ : 1024;
+    SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
+    if (spectrumMode() && activeSpectrumOverlap_ != 75)
+        request.hopSize = (size * (100 - activeSpectrumOverlap_) + 50) / 100;
+    request.device = device_;
+    if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
+    else if (mode_ == Mode::SpectrumCumulativeAverage) request.outputs = SharedAnalysis::CumulativeAverage;
+    else if (mode_ == Mode::SpectrumRealtimeSigma) request.outputs = SharedAnalysis::RealtimeSigma;
+    return request;
+}
+SharedAnalysis::Request SharedSpectrumView::phaseRequest() const noexcept {
+    auto request = spectrumRequest(track_);
+    request.outputs = SharedAnalysis::Phase;
+    if (phaseBandsEnabled_) {
+        request.outputs |= SharedAnalysis::PhaseBands;
+        if (phaseBandDisplay_ != PhaseBandDisplay::Correlation) request.outputs |= SharedAnalysis::PhaseBandDetail;
+        request.fftSize = 4096;
+        request.hopSize = request.fftSize / 2;
+        request.channel = SharedAnalysis::Channel::StereoPower;
+    }
+    return request;
+}
+void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
+    if (!supportsSpectrumOverlays(mode_) || device_ != 0) return;
+    for (auto &overlay : spectrumOverlays_) {
+        if (overlay.source.track == track_) {
+            overlay.lease.reset();
+            overlay.admission = {};
+            overlay.clearPicture();
+        } else if (!overlay.lease) {
+            try {
+                overlay.lease = broker_->acquire(spectrumRequest(overlay.source.track));
+                overlay.admission = overlay.lease.sourcePosition();
+            } catch (...) {
+                overlay.lease.reset();
+            }
+        }
+    }
+}
+void SharedSpectrumView::takeSpectrumLeases(SpectrumLeases &leases) noexcept {
+    leases.front() = std::move(lease_);
+    for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
+        auto &overlay = spectrumOverlays_[i];
+        leases[i + 1] = std::move(overlay.lease);
+        overlay.admission = {};
+        overlay.clearPicture();
+    }
+}
+void SharedSpectrumView::releaseSpectrumOverlays(bool keepPictures) noexcept {
+    for (auto &overlay : spectrumOverlays_) {
+        overlay.lease.reset();
+        overlay.admission = {};
+        overlay.waiting = {};
+        if (!keepPictures) overlay.clearPicture();
+    }
+}
+bool SharedSpectrumView::spectrumOverlayMatchesPrimary(const SpectrumOverlay &overlay) const noexcept {
+    return overlay.picture.window && spectrumFitsPrimary(shown_.get(), *overlay.picture.window);
+}
+void SharedSpectrumView::updateSpectrumOverlayPlot(SpectrumOverlay &overlay) noexcept {
+    if (!spectrumOverlayMatchesPrimary(overlay)) {
+        overlay.plot.reset();
+        return;
+    }
+    const auto &picture = *overlay.picture.window;
+    const auto &bins = overlay.picture.projectedBins ? *overlay.picture.projectedBins : picture.binsDbfs;
+    const auto offsets = spectrumSlope_ == SpectrumSlope::Tilt45 ? spectrumProjection_.offsets() :
+        std::span<const float>{};
+    if (spectrumSlope_ == SpectrumSlope::Tilt45 && offsets.size() != bins.size()) {
+        overlay.plot.reset();
+        return;
+    }
+    try {
+        if (!overlay.plot) overlay.plot = std::make_unique<ScaledSpectrum>();
+        updateSpectrumPlot(*overlay.plot, picture, bins, offsets, false);
+    } catch (...) {
+        overlay.plot.reset();
+    }
+}
+void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
+    if (!supportsSpectrumOverlays(mode_) || spectrumOverlays_.empty()) return;
+    bool redraw = false;
+    for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
+        auto &overlay = spectrumOverlays_[i];
+        SpectrumOverlay::Frame next;
+        if (mode_ == Mode::SpectrumAverage) {
+            const auto average = overlay.lease.readAverage();
+            if (average && average->status == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
+                next = {average->window, average->binsDbfs};
+        } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+            const auto average = overlay.lease.readCumulativeAverage();
+            if (average)
+                next = {average->window, std::shared_ptr<const std::vector<float>>(average, &average->binsDbfs)};
+        } else if (mode_ == Mode::SpectrumRealtimeSigma) {
+            const auto sigma = overlay.lease.readRealtimeSigma();
+            if (sigma) next = {sigma->window, std::shared_ptr<const std::vector<float>>(sigma, &sigma->binsDbfs)};
+        } else {
+            next.window = overlay.lease.read();
+        }
+        const auto &window = next.window;
+        if (!window || window->generation != overlay.admission.generation || !overlay.admission.generation) {
+            if (window || overlay.picture.window || !overlay.admission.generation)
+                overlay.admission = overlay.lease.sourcePosition();
+            redraw = redraw || static_cast<bool>(overlay.plot);
+            overlay.clearPicture();
+            continue;
+        }
+        const auto size = static_cast<std::int64_t>(window->request.fftSize);
+        if (size <= 0 || window->firstSequence < 0 ||
+            window->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
+            window->firstSequence + size <= overlay.admission.written) continue;
+        // Keep one waiting picture even when the worker replaces its latest
+        // publication. A persistently leading pin still advances as heard.
+        auto &waiting = overlay.waiting;
+        if (waiting.window && (waiting.window->sourceEpoch != window->sourceEpoch ||
+                               !sameSpectrumTimeline(*waiting.window, *window)))
+            waiting = {};
+        if (spectrumFitsPrimary(shown_.get(), *window)) {
+            waiting = {};
+        } else if (waiting.window && spectrumFitsPrimary(shown_.get(), *waiting.window)) {
+            std::swap(next, waiting);
+        } else {
+            if (!waiting.window && window->advancing) waiting = std::move(next);
+            next = {};
+        }
+
+        // The primary and first seven additional curves follow the normal clock.
+        // Extra paths adopt new data at 15 Hz while the worker retains its hop rate.
+        const auto &prior = overlay.picture.window;
+        bool due = window && next != overlay.picture;
+        if (due && i >= 7 && prior && prior->generation == window->generation &&
+            prior->sourceEpoch == window->sourceEpoch && prior->transportRevision == window->transportRevision &&
+            prior->advancing == window->advancing && prior->sampleRate == window->sampleRate) {
+            const auto before = window->advancing ? prior->firstStamp : prior->firstSequence;
+            const auto after = window->advancing ? window->firstStamp : window->firstSequence;
+            if (after >= before)
+                due = static_cast<double>(static_cast<std::uint64_t>(after) - static_cast<std::uint64_t>(before))
+                    >= window->sampleRate / 15.;
+        }
+        if (due) overlay.picture = std::move(next);
+        if (due || (primaryChanged && spectrumOverlayMatchesPrimary(overlay) != static_cast<bool>(overlay.plot))) {
+            updateSpectrumOverlayPlot(overlay);
+            redraw = true;
+        }
+    }
+    if (redraw && !primaryChanged) repaint();
+}
+void SharedSpectrumView::paintSpectrumOverlays(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    if (spectrumOverlays_.empty() || plot.isEmpty()) return;
+    for (const auto &overlay : spectrumOverlays_)
+        if (overlay.plot) overlay.plot->paint(g, plot, overlay.source.colour);
+
+    // Keep the labels within two short rows on smaller windows.
+    const auto rowHeight = static_cast<float>(look::fieldHeight);
+    auto legend = plot.reduced(static_cast<float>(look::gap), 0.f)
+                      .withHeight(std::min(2.f * rowHeight, plot.getHeight() * .25f));
+    const auto columns = std::max(1, static_cast<int>(legend.getWidth() / static_cast<float>(look::mixPageWidth)));
+    const auto rows = static_cast<int>(legend.getHeight() / rowHeight);
+    if (!rows) return;
+    const auto capacity = static_cast<std::size_t>(columns * rows);
+    const bool overflow = spectrumOverlays_.size() > capacity;
+    const auto count = std::min(capacity, spectrumOverlays_.size());
+    const auto width = legend.getWidth() / static_cast<float>(columns);
+    g.setFont(look::font(look::fontCaption));
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto index = static_cast<int>(i);
+        auto cell = juce::Rectangle<float>(legend.getX() + width * static_cast<float>(index % columns),
+            legend.getY() + rowHeight * static_cast<float>(index / columns), width, rowHeight)
+            .reduced(static_cast<float>(look::border), 0.f);
+        g.setColour(look::display.withAlpha(.85f));
+        g.fillRect(cell);
+        g.setColour(look::textOnBand);
+        if (overflow && i + 1 == count) {
+            const auto remaining = static_cast<int>(spectrumOverlays_.size() - i);
+            g.drawText("+" + juce::String(remaining), cell, juce::Justification::centredLeft, true);
+            break;
+        }
+        const auto &overlay = spectrumOverlays_[i];
+        auto key = cell.removeFromLeft(rowHeight).reduced(rowHeight * .25f);
+        g.setColour(overlay.source.colour);
+        g.fillRect(key.withSizeKeepingCentre(key.getWidth(), look::line));
+        g.setColour(look::textOnBand);
+        g.drawText(overlay.source.name, cell, juce::Justification::centredLeft, true);
+    }
 }
 void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
     if (palette() == id && paletteReversed_ == reverse) return;
     const auto index = palettes::find(id);
     if (paletteIndex_ == index && paletteReversed_ == reverse) return;
     paletteIndex_ = index; paletteReversed_ = reverse;
-    if (raster_) raster_->setPalette(index, reverse);
+    if (raster_) raster_->setPalette(index, reverse, spectrogramGamma_);
     if (eligible()) {
         try { updateRaster(); } catch (...) { raster_.reset(); }
     }
@@ -485,13 +995,36 @@ void SharedSpectrumView::setHistoryMotion(HistoryMotion motion) {
     historyMotion_ = motion;
     if (mode_ == Mode::Spectrogram && eligible()) repaint();
 }
+void SharedSpectrumView::setSpectrumBlockSize(std::int32_t size) {
+    if (requestedSpectrumFftSize_ == size || std::ranges::find(spectrumBlockSizes, size) == spectrumBlockSizes.end()) return;
+    requestedSpectrumFftSize_ = size;
+    if (spectrumMode() && !frozen_) updateDemand();
+}
+
+void SharedSpectrumView::setSpectrumOverlap(int percent) {
+    if (requestedSpectrumOverlap_ == percent || std::ranges::find(spectrumOverlaps, percent) == spectrumOverlaps.end()) return;
+    requestedSpectrumOverlap_ = percent;
+    if (spectrumMode() && !frozen_) updateDemand();
+}
+
+void SharedSpectrumView::setSpectrumSmoothing(std::size_t choice) {
+    if (choice == spectrumSmoothingChoice_ || choice >= kSpectrumSmoothingChoices.size()) return;
+    spectrumSmoothingChoice_ = choice;
+    if (choice == 0) spectrumSmoothing_.reset();
+    if (!spectrumMode() || !eligible()) return;
+    updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
+    repaint();
+}
+
 void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     slope = spectrumSlopeFromId(spectrumSlopeId(slope));
     if (slope == SpectrumSlope::Flat) spectrumProjection_.reset();
     if (spectrumSlope_ == slope) return;
     spectrumSlope_ = slope;
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
-    if (spectrumScale_ != SpectrumScale::Wide) updateScaledSpectrum();
+    updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
 void SharedSpectrumView::setFilledSpectrumCurve(SharedAnalysis::FilledCurve curve) {
@@ -503,12 +1036,37 @@ void SharedSpectrumView::setFilledSpectrumCurve(SharedAnalysis::FilledCurve curv
 void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     if (spectrumScale_ == scale) return;
     spectrumScale_ = scale;
+    updateSpectrumCursorInput();
     if (!spectrumMode() || !eligible()) return;
     updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
+void SharedSpectrumView::updateSpectrumPlot(ScaledSpectrum &plot, const SharedAnalysis::Result &picture,
+                                            std::span<const float> bins, std::span<const float> offsets,
+                                            bool fillTrace) {
+    if (spectrumSmoothingChoice_ != 0 && bins.size() >= 2 && picture.request.fftSize > 0) {
+        auto axis = spectrumAxis(spectrumScale_);
+        const auto nyquist = picture.sampleRate * .5;
+        const auto lastHz = std::min(axis.highHz, nyquist);
+        if (spectrumScale_ == SpectrumScale::Wide && lastHz > axis.lowHz)
+            axis.logWidth = std::log(lastHz / axis.lowHz);
+        if (!spectrumSmoothing_) spectrumSmoothing_ = std::make_unique<SpectrumSmoothing>();
+        if (spectrumSmoothing_->prepare(spectrumSmoothingChoice_, axis.lowHz, lastHz,
+                                        picture.sampleRate, picture.request.fftSize, bins.size())) {
+            const auto points = spectrumSmoothing_->project(bins);
+            if (points.size() >= 2) {
+                plot.updateSmoothed(spectrumScale_, axis, points, spectrumSlope_, fillTrace);
+                return;
+            }
+        }
+    }
+    plot.setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, bins.size());
+    plot.update(bins, offsets, fillTrace);
+}
+
 void SharedSpectrumView::updateScaledSpectrum() noexcept {
-    if (spectrumScale_ == SpectrumScale::Wide || !shown_) {
+    if (!spectrumMode() || !shown_) {
         scaledSpectrum_.reset();
         return;
     }
@@ -521,8 +1079,7 @@ void SharedSpectrumView::updateScaledSpectrum() noexcept {
     }
     try {
         if (!scaledSpectrum_) scaledSpectrum_ = std::make_unique<ScaledSpectrum>();
-        scaledSpectrum_->setFormat(spectrumScale_, shown_->sampleRate, shown_->request.fftSize, bins.size());
-        scaledSpectrum_->update(bins, offsets);
+        updateSpectrumPlot(*scaledSpectrum_, *shown_, bins, offsets, true);
     } catch (...) {
         scaledSpectrum_.reset();
     }
@@ -532,22 +1089,25 @@ void SharedSpectrumView::updateSpectrumProjection() {
     spectrumProjection_.prepare(spectrumSlope_, shown_->sampleRate, shown_->request.fftSize, spectrumBins().size());
 }
 std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
-    if (mode_ == Mode::SpectrumAverage)
-        return averageBins_ ? std::span<const float>(*averageBins_) : std::span<const float>{};
+    if (usesProjectedSpectrumBins(mode_))
+        return projectedBins_ ? std::span<const float>(*projectedBins_) : std::span<const float>{};
     if (isMaximumSpectrum(mode_))
         return maximumShown_ ? std::span<const float>(maximumShown_->binsDbfs) : std::span<const float>{};
     return mode_ == Mode::Spectrum && shown_ ? std::span<const float>(shown_->binsDbfs) : std::span<const float>{};
 }
 void SharedSpectrumView::resetPicture() noexcept {
+    phaseProjectionPending_ = false;
     shown_.reset();
-    averageBins_.reset();
+    projectedBins_.reset();
     maximumShown_.reset();
     scaledSpectrum_.reset();
+    spectrumSmoothing_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     filledPointer_ = {-1, -1};
     filledDisplaySlot_ = -1.;
     if (phaseTrail_) phaseTrail_->clear();
     if (bandDisplay_) bandDisplay_->clear();
+    spectrumCursorPosition_.reset();
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
     if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
@@ -562,9 +1122,13 @@ void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMete
 }
 juce::String SharedSpectrumView::mainMeterText() const {
     if (!mainMeter_) return {};
+    const auto peak = mainMeter_->truePeakDb;
+    const auto integrated = mainMeter_->integratedLufs;
+    const auto plr = std::isfinite(peak) && std::isfinite(integrated)
+                         ? meterNumber(peak - integrated) : juce::String("--");
     return "Main aggregate programme / pre-cue\nM " + meterNumber(mainMeter_->momentaryLufs) +
-           "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(mainMeter_->integratedLufs) +
-           " LUFS\nTP (held) " + meterNumber(mainMeter_->truePeakDb) + " dBTP";
+           "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(integrated) +
+           " LUFS\nTP (held) " + meterNumber(peak) + " dBTP  PLR " + plr + " dB";
 }
 void SharedSpectrumView::setClassicControls(const ClassicScopeControls &controls) {
     if (controls == classicControls_) return;
@@ -592,6 +1156,7 @@ void SharedSpectrumView::freeze(bool value) {
         presentClassic();
         return;
     }
+    releaseSpectrumOverlays(value);
     if (value) lease_.reset();
     else {
         freshRequired_ = true; sourcePosition_ = {};
@@ -620,10 +1185,18 @@ void SharedSpectrumView::clear() {
         lease_.restartCumulativeMaximum();
     } else if (mode_ == Mode::FilledSpectrum) {
         lease_.restartFilledSpectrum();
+    } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+        lease_.restartCumulativeAverage();
     } else {
         armFreshBoundary();
     }
+    if (spectrumLevelsEnabled_) lease_.restartSpectrumLevels();
     if (mode_ == Mode::Spectrogram || mode_ == Mode::ColourWaveform) historyClearPosition_ = sourcePosition_;
+    for (auto &overlay : spectrumOverlays_) {
+        if (mode_ == Mode::SpectrumCumulativeAverage) overlay.lease.restartCumulativeAverage();
+        overlay.admission = overlay.lease.sourcePosition();
+        overlay.clearPicture();
+    }
     resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
@@ -633,6 +1206,13 @@ SharedSpectrumView::~SharedSpectrumView() {
 }
 void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::int64_t track) {
     if (broker_ != broker || track_ != track) {
+        if (broker_ != broker) releaseSpectrumOverlays();
+        else for (auto &overlay : spectrumOverlays_)
+            if (overlay.source.track == track) {
+                overlay.lease.reset();
+                overlay.admission = {};
+                overlay.clearPicture();
+            }
         lease_.reset();
         resetPicture();
         mainMeter_.reset();
@@ -665,6 +1245,7 @@ void SharedSpectrumView::updateDemand() noexcept {
     const auto previous = status_;
     const bool hadMainMeter = mainMeter_.has_value();
     if (!eligible()) {
+        releaseSpectrumOverlays();
         if (shown_ || lease_) freshRequired_ = true;
         lease_.reset();
         sourcePosition_ = {};
@@ -673,6 +1254,7 @@ void SharedSpectrumView::updateDemand() noexcept {
         mainMeter_.reset();
         status_ = Status::Detached;
     } else if (!broker_->active()) {
+        releaseSpectrumOverlays();
         lease_.reset(); resetPicture(); raster_.reset(); mainMeter_.reset();
         sourcePosition_ = {}; freshRequired_ = true;
         status_ = Status::Unavailable;
@@ -680,17 +1262,36 @@ void SharedSpectrumView::updateDemand() noexcept {
         lease_.reset();
         if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
+        const bool overview = requestedSpectrumFftSize_ == 0 && usesOverviewSpectrum();
+        const auto rate = overview ? lease_.preparedSampleRate() : 0.;
+        if (rate > 0. && overviewRate_ != rate) {
+            overviewFftSize_ = overviewFftForRate(rate);
+            overviewRate_ = rate;
+        }
+        auto size = overview ? (overviewRate_ > 0. ? overviewFftSize_ : activeSpectrumFftSize_) : 1024;
+        const auto spectral = spectrumMode();
+        if (spectral && requestedSpectrumFftSize_ > 0) size = requestedSpectrumFftSize_;
+        const auto overlap = spectral ? requestedSpectrumOverlap_ : 75;
+        std::optional<SpectrumLeases> retired;
+        if (activeSpectrumFftSize_ != size || activeSpectrumOverlap_ != overlap) {
+            takeSpectrumLeases(retired.emplace());
+            activeSpectrumFftSize_ = size;
+            activeSpectrumOverlap_ = overlap;
+            resetPicture();
+            freshRequired_ = true;
+        }
         if (!lease_) {
-            SharedAnalysis::Request request{track_, point_, 1024, channel_, dsp::Window::Hann};
-            request.device = device_;
+            auto request = spectrumRequest(track_);
             switch (mode_) {
-            case Mode::Spectrum: request.outputs = SharedAnalysis::Spectrum; break;
+            case Mode::Spectrum:
+            case Mode::SpectrumAverage:
+            case Mode::SpectrumCumulativeAverage:
+            case Mode::SpectrumRealtimeSigma: break;
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
             case Mode::Meters:
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
-            case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
+            case Mode::Phase: request = phaseRequest(); break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
-            case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
             case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
             case Mode::SpectrumCumulativeMaximum: request.outputs = SharedAnalysis::CumulativeMaximum; break;
             case Mode::FilledSpectrum:
@@ -710,6 +1311,13 @@ void SharedSpectrumView::updateDemand() noexcept {
             }
             try {
                 lease_ = broker_->acquire(request);
+                if (supportsSpectrumOverlays(mode_)) {
+                    if (spectrumLevelsEnabled_) {
+                        lease_.setSpectrumLevelsEnabled(true);
+                        if (spectrumTruePeakEnabled_) lease_.setSpectrumTruePeakEnabled(true);
+                    }
+                    if (stereoBalanceEnabled_) lease_.setStereoBalanceEnabled(true);
+                }
                 sourcePosition_ = lease_.sourcePosition();
                 clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
                 historyClearPosition_ = mode_ == Mode::ColourWaveform && freshRequired_
@@ -717,6 +1325,9 @@ void SharedSpectrumView::updateDemand() noexcept {
             }
             catch (...) { lease_.reset(); }
         }
+        // The replacement requests attach before the former requests release
+        // their sources. Keep existing physical taps when their capacity fits.
+        if (retired && lease_) acquireSpectrumOverlays();
         if (!lease_ || !lease_.available()) {
             if (shown_ || sourcePosition_.generation) freshRequired_ = true;
             sourcePosition_ = {};
@@ -821,29 +1432,41 @@ void SharedSpectrumView::frame() noexcept {
         return;
     }
     const bool updateFilled = mode_ != Mode::FilledSpectrum || updateFilledDisplay();
-    if (raster_ && raster_->theme != look::themeId()) {
-        raster_->setPalette(paletteIndex_, paletteReversed_);
+    if (raster_ && (raster_->theme != look::themeId() || (raster_->gamma != spectrogramGamma_ && eligible()))) {
+        raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
         try { raster_->recolor(); } catch (...) { raster_.reset(); }
         repaint();
     }
     if (!lease_) return;
+    acquireSpectrumOverlays();
     broker_->requestFrame();
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
     const bool averaging = mode_ == Mode::SpectrumAverage;
     const bool maximumMode = isMaximumSpectrum(mode_);
     const auto average = averaging ? lease_.readAverage() : nullptr;
+    const auto cumulative = mode_ == Mode::SpectrumCumulativeAverage ? lease_.readCumulativeAverage() : nullptr;
+    const auto sigma = mode_ == Mode::SpectrumRealtimeSigma ? lease_.readRealtimeSigma() : nullptr;
     const auto maximum = maximumMode ? lease_.readMaximum() : nullptr;
     const auto averageStatus = average ? average->status : SharedAnalysis::AverageStatus::Waiting;
     std::shared_ptr<const SharedAnalysis::Result> next;
     if (averaging) {
         if (averageStatus == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
             next = average->window;
+    } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+        if (cumulative) next = cumulative->window;
+    } else if (mode_ == Mode::SpectrumRealtimeSigma) {
+        if (sigma) next = sigma->window;
     } else if (maximumMode) {
         if (maximum) next = maximum->window;
     } else {
         next = lease_.read();
     }
+    // A new rail projection can be pending while the same source's vector is
+    // still usable. A replacement tap must take the normal freshness path.
+    if (!next && phaseProjectionPending_ && shown_ && lease_.sourcePosition().generation == shown_->generation)
+        return;
+    phaseProjectionPending_ = false;
     // Invalidation can replace a live source before its next publication. Fence
     // at that activation, rather than accepting buffered replacement-source data.
     if (!next && shown_) armFreshBoundary();
@@ -853,7 +1476,8 @@ void SharedSpectrumView::frame() noexcept {
     }
     // The cumulative lease owns its admission fence. A held picture can
     // remain unchanged across later hops after the fence has been satisfied.
-    if (next && (mode_ == Mode::SpectrumCumulativeMaximum || mode_ == Mode::FilledSpectrum))
+    if (next && (mode_ == Mode::SpectrumCumulativeMaximum || mode_ == Mode::SpectrumCumulativeAverage ||
+                 mode_ == Mode::FilledSpectrum))
         freshRequired_ = false;
     if (next && freshRequired_) {
         const auto size = static_cast<std::int64_t>(next->request.fftSize);
@@ -868,9 +1492,13 @@ void SharedSpectrumView::frame() noexcept {
     // cannot leave a raster that later aliases the new domain's first result.
     if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
-    const auto nextBins = next && average ? average->binsDbfs : nullptr;
+    auto nextBins = next && average ? average->binsDbfs : nullptr;
+    if (next && cumulative)
+        nextBins = std::shared_ptr<const std::vector<float>>(cumulative, &cumulative->binsDbfs);
+    if (next && sigma)
+        nextBins = std::shared_ptr<const std::vector<float>>(sigma, &sigma->binsDbfs);
     const auto nextMaximum = next ? maximum : nullptr;
-    const bool pictureChanged = next != shown_ || nextBins != averageBins_ || nextMaximum != maximumShown_ ||
+    const bool pictureChanged = next != shown_ || nextBins != projectedBins_ || nextMaximum != maximumShown_ ||
                                 averageStatus != averageStatus_;
     if (pictureChanged) {
         if (phaseTrail_ || bandDisplay_) {
@@ -888,7 +1516,7 @@ void SharedSpectrumView::frame() noexcept {
             }
         }
         shown_ = std::move(next);
-        averageBins_ = nextBins;
+        projectedBins_ = nextBins;
         maximumShown_ = nextMaximum;
         averageStatus_ = averageStatus;
         mainMeter_.reset();
@@ -898,7 +1526,24 @@ void SharedSpectrumView::frame() noexcept {
     updateMainMeter();
     try { updateRaster(); } catch (...) { raster_.reset(); }
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
-    if (spectrumScale_ != SpectrumScale::Wide && pictureChanged) updateScaledSpectrum();
+    if (pictureChanged && spectrumMode()) updateScaledSpectrum();
+    updateSpectrumOverlays(pictureChanged);
+}
+void SharedSpectrumView::setSpectrogramScale(SpectrogramScale scale) {
+    if (spectrogramScale_ == scale) return;
+    spectrogramScale_ = scale;
+    if (mode_ != Mode::Spectrogram || !shown_) return;
+    try { updateRaster(); } catch (...) { raster_.reset(); }
+    repaint();
+}
+
+void SharedSpectrumView::setSpectrogramLevels(SpectrogramLevels levels) {
+    if (levels == spectrogramLevels_ || !std::isfinite(levels.floor) || !std::isfinite(levels.ceiling) ||
+        levels.floor < dsp::kDbFloor || levels.ceiling > spectrogramTopDb || levels.ceiling - levels.floor < 1.f) return;
+    spectrogramLevels_ = levels;
+    if (mode_ != Mode::Spectrogram || !shown_) return;
+    try { updateRaster(); } catch (...) { raster_.reset(); }
+    repaint();
 }
 bool SharedSpectrumView::updateFilledDisplay() noexcept {
     const auto slot = std::floor(juce::Time::getMillisecondCounterHiRes() * (filled_spectrum::framesPerSecond / 1000.));
@@ -915,9 +1560,43 @@ bool SharedSpectrumView::updateFilledDisplay() noexcept {
     }
     return true;
 }
+
+void SharedSpectrumView::setSpectrogramGamma(float gamma) {
+    if (gamma == spectrogramGamma_ || !std::isfinite(gamma) ||
+        gamma < spectrogramGammaValues.front() || gamma > spectrogramGammaValues.back()) return;
+    spectrogramGamma_ = gamma;
+    if (!raster_ || !eligible()) return;
+    raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
+    try { raster_->recolor(); } catch (...) { raster_.reset(); }
+    repaint();
+}
+
+void SharedSpectrumView::setSpectrogramRuler(bool visible) {
+    if (spectrogramRuler_ == visible) return;
+    spectrogramRuler_ = visible;
+    if (mode_ == Mode::Spectrogram) repaint();
+}
+
+bool SharedSpectrumView::hasSpectrogramImage() const noexcept {
+    return mode_ == Mode::Spectrogram && raster_ && raster_->image.isValid();
+}
+
+juce::Image SharedSpectrumView::spectrogramImage() const {
+    if (!hasSpectrogramImage()) return {};
+    if (historyMotion_ == HistoryMotion::Scroll) return raster_->image.createCopy();
+    juce::Image image(juce::Image::RGB, Raster::width, Raster::height, true, juce::SoftwareImageType{});
+    juce::Graphics graphics(image);
+    raster_->paintSweep(graphics, image.getBounds().toFloat(), false);
+    return image;
+}
+
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
-    const bool needsColumns = !raster_ || raster_->image.isNull() ||
+    const auto rate = shown_->sampleRate;
+    const auto fftSize = shown_->request.fftSize;
+    const bool frequencyChanged = !raster_ || !raster_->matchesFrequencyMap(spectrogramScale_, rate, fftSize);
+    const bool levelsChanged = raster_ && raster_->levels != spectrogramLevels_;
+    const bool needsColumns = frequencyChanged || levelsChanged || raster_->image.isNull() ||
         raster_->revision != shown_->revision || raster_->epoch != shown_->sourceEpoch;
     if (needsColumns) {
         const auto &columns = shown_->columns;
@@ -939,13 +1618,15 @@ void SharedSpectrumView::updateRaster() {
         }
         const auto skipped = static_cast<std::size_t>(firstVisible - columns.begin());
         const auto count = columns.size() - skipped;
-        const auto topHz = std::min(20000., shown_->sampleRate * .5);
-        if ((!count && !shown_->historySerial) || topHz <= 20) return;
+        const auto topHz = std::min(20000., rate * .5);
+        if ((!count && !shown_->historySerial) || !std::isfinite(rate) || topHz <= 20 || fftSize <= 0) return;
         if (!raster_) {
             raster_ = std::make_unique<Raster>();
-            raster_->setPalette(paletteIndex_, paletteReversed_);
+            raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
         }
         auto &raster = *raster_;
+        if (frequencyChanged) raster.prepareFrequencyMap(spectrogramScale_, rate, fftSize, topHz);
+        raster.levels = spectrogramLevels_;
         auto firstColumn = skipped;
         const bool newSweep = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
             shown_->historySerial < raster.column;
@@ -957,7 +1638,7 @@ void SharedSpectrumView::updateRaster() {
             else
                 raster.sweepOrigin = count ? columns[skipped].serial : shown_->historySerial;
         }
-        if (newSweep || shown_->historySerial - raster.column >= Raster::width) {
+        if (newSweep || frequencyChanged || levelsChanged || shown_->historySerial - raster.column >= Raster::width) {
             // History scrolls and changes individual pixels on the message thread.
             // Keep those edits in memory so shifts and clears never read back a GPU surface.
             if (raster.image.isNull())
@@ -975,32 +1656,26 @@ void SharedSpectrumView::updateRaster() {
             for (auto column = skipped; column < columns.size(); ++column) {
                 const auto serial = columns[column].serial;
                 if (serial <= shown_->historySerial && shown_->historySerial - serial < Raster::width)
-                    retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
+                    retained[Raster::width - 1 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
             }
             for (std::size_t x = 0; x < retained.size(); ++x)
                 if (!retained[x]) raster.clearColumns(static_cast<int>(x), 1);
         }
-        std::array<std::size_t, Raster::height> firstBin{}, lastBin{};
-        for (int row = 0; row < Raster::height; ++row) {
-            const auto low = 20. * std::pow(topHz / 20., static_cast<double>(row) / Raster::height);
-            const auto high = 20. * std::pow(topHz / 20., static_cast<double>(row + 1) / Raster::height);
-            firstBin[static_cast<std::size_t>(row)] = std::max<std::size_t>(1, static_cast<std::size_t>(low * shown_->request.fftSize / shown_->sampleRate));
-            lastBin[static_cast<std::size_t>(row)] = std::max(firstBin[static_cast<std::size_t>(row)] + 1,
-                static_cast<std::size_t>(high * shown_->request.fftSize / shown_->sampleRate) + 1);
-        }
         juce::Image::BitmapData pixels(raster.image, juce::Image::BitmapData::writeOnly);
-        for (auto column = firstColumn; column < columns.size(); ++column) for (int row = 0; row < Raster::height; ++row) {
+        const auto levelSpan = raster.levels.ceiling - raster.levels.floor;
+        for (auto column = firstColumn; column < columns.size(); ++column) {
             const auto &entry = columns[column];
             if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= Raster::width) continue;
             const auto &bins = *entry.binsDbfs;
-            float peak = floorDb;
-            for (auto i = firstBin[static_cast<std::size_t>(row)]; i < std::min(bins.size(), lastBin[static_cast<std::size_t>(row)]); ++i)
-                peak = std::max(peak, bins[i]);
-            const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
-            const auto value = static_cast<std::uint16_t>(strength * 255.f);
-            const int x = 127 - static_cast<int>(shown_->historySerial - entry.serial), y = Raster::height - row - 1;
-            raster.intensity[static_cast<std::size_t>(y * Raster::width + x)] = value;
-            pixels.setPixelColour(x, y, raster.colors[value]);
+            const int x = Raster::width - 1 - static_cast<int>(shown_->historySerial - entry.serial);
+            for (int row = 0; row < Raster::height; ++row) {
+                const auto peak = raster.rowPeak(bins, static_cast<std::size_t>(row));
+                const auto strength = std::clamp((peak - raster.levels.floor) / levelSpan, 0.f, 1.f);
+                const auto value = static_cast<std::uint16_t>(strength * 255.f);
+                const int y = Raster::height - row - 1;
+                raster.intensity[static_cast<std::size_t>(y * Raster::width + x)] = value;
+                pixels.setPixelColour(x, y, raster.colors[value]);
+            }
         }
         raster.revision = shown_->revision; raster.epoch = shown_->sourceEpoch; raster.column = shown_->historySerial;
     }
@@ -1030,6 +1705,7 @@ void SharedSpectrumView::suspend(bool value) noexcept {
 void SharedSpectrumView::visibilityChanged() { updateDemand(); }
 void SharedSpectrumView::parentHierarchyChanged() { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::resized() {
+    spectrumCursorPosition_.reset();
     if (classicPanel_) classicPanel_->setBounds(getLocalBounds());
     updateDemand();
 }
@@ -1051,6 +1727,7 @@ void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { wa
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
     resetClassic(true);
+    releaseSpectrumOverlays();
     if (shown_ || lease_) freshRequired_ = true;
     sourcePosition_ = {};
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
@@ -1083,15 +1760,36 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
         g.drawText(values[i], row.withX(x).withWidth(end - x).reduced(look::border, 0), juce::Justification::centredLeft, true);
     }
 }
-juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area, SpectrumScale scale) {
+namespace {
+juce::Rectangle<float> analysisArea(juce::Rectangle<int> bounds) noexcept {
+    return bounds.toFloat().reduced(5.f);
+}
+juce::Rectangle<float> analysisPlot(juce::Rectangle<float> area, float meterHeight = 0.f) noexcept {
+    return area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
+}
+} // namespace
+
+juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float> area, SpectrumScale scale) noexcept {
     const auto &axis = spectrumAxis(scale);
     const auto scaleWidth = look::fontCaption * 3.f;
     const auto stepHeight = area.getHeight() / static_cast<float>((axis.topDb - axis.bottomDb) / axis.divisionDb);
-    const bool labels = area.getWidth() >= scaleWidth * 4.f && stepHeight > look::fontCaption;
+    if (area.getWidth() < scaleWidth * 4.f || stepHeight <= look::fontCaption) return area;
+    if (scale == SpectrumScale::Device) return area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption);
+    return area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption);
+}
+namespace {
+juce::Rectangle<float> spectrumCursorPlot(juce::Rectangle<int> bounds, SpectrumScale scale) noexcept {
+    const auto plot = analysisPlot(analysisArea(bounds));
+    return scale == SpectrumScale::Wide ? plot : spectrumGridPlot(plot, scale);
+}
+} // namespace
+
+juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area, SpectrumScale scale) {
+    const auto &axis = spectrumAxis(scale);
+    const auto plot = spectrumGridPlot(area, scale);
+    const auto scaleWidth = look::fontCaption * 3.f;
+    const bool labels = plot != area;
     const bool topRuler = scale == SpectrumScale::Device;
-    const auto plot = labels ? (topRuler ? area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption)
-                                         : area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption))
-                             : area;
     if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return {};
     const auto xAt = [&](double hz) { return plot.getX() + (plot.getWidth() - 1.f) * axis.x(hz); };
     g.setFont(look::font(look::fontCaption));
@@ -1412,6 +2110,191 @@ void SharedSpectrumView::paintColourWaveform(juce::Graphics &g) const {
     }
 }
 
+void SharedSpectrumView::enableSpectrumCursor() {
+    spectrumCursorEnabled_ = true;
+    updateSpectrumCursorInput();
+}
+bool SharedSpectrumView::spectrumCursorActive() const noexcept {
+    return spectrumCursorEnabled_ && (spectrumMode() || mode_ == Mode::Spectrogram);
+}
+juce::Rectangle<float> spectrogram::rulerPlot(juce::Rectangle<float> base, bool visible) noexcept {
+    const auto gutter = 4.f * look::fontCaption + static_cast<float>(look::gap);
+    return visible && base.getWidth() >= 2.f * gutter ? base.withTrimmedLeft(gutter) : base;
+}
+juce::Rectangle<float> SharedSpectrumView::spectrogramPlot(juce::Rectangle<float> base) const noexcept {
+    return spectrogram::rulerPlot(base, spectrogramRuler_);
+}
+juce::Rectangle<float> SharedSpectrumView::spectrumCursorBounds() const noexcept {
+    if (mode_ == Mode::Spectrogram) return spectrogramPlot(analysisPlot(analysisArea(getLocalBounds())));
+    return spectrumCursorPlot(getLocalBounds(), spectrumScale_);
+}
+void SharedSpectrumView::updateSpectrumCursorInput() {
+    const bool active = spectrumCursorActive();
+    if (!active) spectrumCursorPosition_.reset();
+    setInterceptsMouseClicks(active, mode_ == Mode::ClassicScope && !compact_);
+    if (active) setTooltip({});
+    else if (getTooltip().isEmpty()) describeAnalysisView(*this, mode_);
+}
+juce::String SharedSpectrumView::SpectrumCursorReading::text() const {
+    // Follow the DAW's middle-C spelling while also naming pitches above the MIDI keyboard.
+    const auto note = juce::roundToInt(69. + 12. * std::log2(frequency / 440.));
+    auto reading = juce::String(frequency, 1) + " Hz   " + pitchClassName(note) + juce::String(note / 12 - 2) +
+        "   " + juce::String(level, 1) + " dBFS";
+    if (time) {
+        const auto milliseconds = 1000. * (static_cast<double>(time->sample) / time->sampleRate);
+        reading << (time->heard ? "   Heard " : "   Capture ") << static_cast<juce::int64>(time->sample)
+                << " samples   " << juce::String(milliseconds, 1) << " ms";
+    }
+    return reading;
+}
+std::optional<SharedSpectrumView::SpectrumCursorReading>
+SharedSpectrumView::spectrumCursorReading(juce::Point<float> point) const noexcept {
+    if (!spectrumCursorActive() || !shown_ || !std::isfinite(shown_->sampleRate)) return std::nullopt;
+    const auto plot = spectrumCursorBounds();
+    if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f || !plot.contains(point)) return std::nullopt;
+    if (mode_ == Mode::Spectrogram) return spectrogramCursorReading(point, plot);
+    if (!scaledSpectrum_) return std::nullopt;
+    const auto &axis = spectrumAxis(spectrumScale_);
+    const bool wide = spectrumScale_ == SpectrumScale::Wide;
+    const auto nyquist = shown_->sampleRate * .5;
+    const auto highHz = wide ? std::min(axis.highHz, nyquist) : axis.highHz;
+    if (highHz <= axis.lowHz) return std::nullopt;
+    const auto logWidth = wide ? std::log(highHz / axis.lowHz) : axis.logWidth;
+    // Use the same pixel inset and frequency span as the plotted trace.
+    const float inset = wide ? 0.f : 1.f;
+    const auto x = std::min(1.f, (point.x - plot.getX()) / (plot.getWidth() - inset));
+    const auto y = std::min(1.f, (point.y - plot.getY()) / (plot.getHeight() - inset));
+    const auto frequency = std::min(highHz, axis.lowHz * std::exp(static_cast<double>(x) * logWidth));
+    if (frequency > nyquist) return std::nullopt;
+    const auto db = static_cast<float>(axis.topDb) - y * static_cast<float>(axis.topDb - axis.bottomDb);
+    return SpectrumCursorReading{frequency, db, std::nullopt};
+}
+std::optional<SharedSpectrumView::SpectrumCursorReading>
+SharedSpectrumView::spectrogramCursorReading(juce::Point<float> point, juce::Rectangle<float> plot) const noexcept {
+    if (!raster_ || raster_->image.isNull() || raster_->epoch != shown_->sourceEpoch ||
+        raster_->revision != shown_->revision || raster_->sampleRate <= 0.) return std::nullopt;
+    const auto visibleX = std::min(static_cast<int>((point.x - plot.getX()) / plot.getWidth() * Raster::width),
+                                   Raster::width - 1);
+    const auto rotation = historyMotion_ == HistoryMotion::Sweep ? raster_->sweepRotation() : 0;
+    const auto x = (visibleX + Raster::width - rotation) % Raster::width;
+    const auto downward = (static_cast<double>(point.y) - plot.getY()) / plot.getHeight();
+    const auto y = std::min(static_cast<int>(downward * Raster::height), Raster::height - 1);
+    if (raster_->intensity[static_cast<std::size_t>(y * Raster::width + x)] == Raster::gap) return std::nullopt;
+    const auto behind = static_cast<std::uint64_t>(Raster::width - 1 - x);
+    if (behind >= raster_->column) return std::nullopt;
+    const auto serial = raster_->column - behind;
+    const auto &columns = shown_->columns;
+    const auto found = std::lower_bound(columns.begin(), columns.end(), serial,
+                                         [](const auto &column, auto at) { return column.serial < at; });
+    if (found == columns.end() || found->serial != serial || !found->binsDbfs) return std::nullopt;
+    const auto frequency = raster_->frequencyAt(1. - downward);
+    const auto peak = raster_->rowPeak(*found->binsDbfs, static_cast<std::size_t>(Raster::height - 1 - y));
+    // Monitoring can fill several columns at one stopped transport position.
+    // The capture sequence still records where those samples entered the tap.
+    const auto sample = shown_->advancing ? found->firstStamp : found->firstSequence;
+    return SpectrumCursorReading{frequency, peak, SpectrumCursorReading::Time{sample, raster_->sampleRate, shown_->advancing}};
+}
+void SharedSpectrumView::mouseEnter(const juce::MouseEvent &event) { mouseMove(event); }
+void SharedSpectrumView::mouseMove(const juce::MouseEvent &event) {
+    if (spectrumCursorPosition_ && *spectrumCursorPosition_ == event.position) return;
+    const bool inside = spectrumCursorActive() && spectrumCursorBounds().contains(event.position);
+    const auto next = inside ? std::optional{event.position} : std::nullopt;
+    if (spectrumCursorPosition_ == next) return;
+    spectrumCursorPosition_ = next;
+    if (shown_) repaint();
+}
+void SharedSpectrumView::mouseExit(const juce::MouseEvent &) {
+    if (!spectrumCursorPosition_) return;
+    spectrumCursorPosition_.reset();
+    repaint();
+}
+
+void SharedSpectrumView::paintPhaseBands(juce::Graphics &g, juce::Rectangle<float> bands) const {
+    const juce::Graphics::ScopedSaveState bandStyle(g);
+    const auto rowHeight = static_cast<float>(look::fieldHeight);
+    const auto caption = bands.removeFromTop(std::min(rowHeight, bands.getHeight() * .5f));
+    const auto mode = phaseBandDisplay_;
+    const auto *spatial = shown_->phaseBandSpatial.get();
+    const SharedAnalysis::PhaseBandCorrelations *values = shown_->phaseBands.get();
+    const char *title = "By band";
+    if (mode == PhaseBandDisplay::Width) {
+        title = "Band width (side energy)";
+        values = spatial ? &spatial->width : nullptr;
+    } else if (mode == PhaseBandDisplay::Pan) {
+        title = "Band pan (L - / R +)";
+        values = spatial ? &spatial->pan : nullptr;
+    }
+    g.setFont(look::font(look::fontCaption));
+    g.setColour(look::textOnBand);
+    g.drawText(title, caption, juce::Justification::centredLeft);
+
+    const bool widthDisplay = mode == PhaseBandDisplay::Width;
+    const auto width = bands.getWidth() / static_cast<float>(SharedAnalysis::kPhaseBandCount);
+    const auto baseline = widthDisplay ? bands.getBottom() : bands.getCentreY();
+    const auto gap = std::min(width * .25f, look::line);
+    const auto height = bands.getHeight();
+    const auto neutralHeight = std::min(height, look::line);
+    const auto neutralY = baseline - neutralHeight * (widthDisplay ? 1.f : .5f);
+    for (std::size_t band = 0; band < SharedAnalysis::kPhaseBandCount; ++band) {
+        const auto bar = bands.removeFromLeft(width).withTrimmedRight(gap);
+        g.setColour(look::outline);
+        g.fillRect(bar);
+        g.setColour(look::display);
+        g.fillRect(bar.withY(neutralY).withHeight(neutralHeight));
+        if (!values || !(*values)[band]) continue;
+        const auto value = std::clamp(*(*values)[band], widthDisplay ? 0.f : -1.f, 1.f);
+        const auto length = std::abs(value) * height * (widthDisplay ? 1.f : .5f);
+        if (length < neutralHeight) {
+            g.setColour(look::textOnBand);
+            g.fillRect(bar.withY(neutralY).withHeight(neutralHeight));
+        } else {
+            if (widthDisplay) g.setColour(look::accent);
+            else if (value > 0.f) g.setColour(look::meterLevel);
+            else g.setColour(mode == PhaseBandDisplay::Pan ? look::value : look::record);
+            g.fillRect(bar.withY(value > 0.f ? baseline - length : baseline).withHeight(length));
+        }
+    }
+}
+
+void spectrogram::paintRuler(juce::Graphics &g, juce::Rectangle<float> base, juce::Rectangle<float> plot,
+                            SpectrogramScale scale, double lowHz, double topHz) {
+    const auto labelHeight = look::fontCaption;
+    const auto left = plot.getX();
+    if (left <= base.getX() || plot.getHeight() < labelHeight || topHz <= lowHz) return;
+    const auto lowPosition = spectrogramPosition(scale, lowHz);
+    const auto span = spectrogramPosition(scale, topHz) - lowPosition;
+    if (!(span > 0.)) return;
+    const auto clip = plot.toNearestInt();
+    const auto tickWidth = labelHeight * .65f;
+    g.setColour(look::outline);
+    g.drawVerticalLine(juce::roundToInt(left), plot.getY(), plot.getBottom());
+    g.setFont(look::font(labelHeight));
+    float labelEnd = plot.getY();
+    double lastHz = std::numeric_limits<double>::infinity();
+    for (const double hz : {topHz, 10000., 1000., 100., lowHz}) {
+        if (hz >= lastHz || hz < lowHz) continue;
+        lastHz = hz;
+        const auto fraction = (spectrogramPosition(scale, hz) - lowPosition) / span;
+        const auto y = plot.getBottom() - static_cast<float>(fraction) * plot.getHeight();
+        const auto pixel = std::clamp(juce::roundToInt(y), clip.getY(), clip.getBottom() - 1);
+        g.setColour(look::textOnBand);
+        g.drawHorizontalLine(pixel, left - tickWidth, left);
+        const auto labelTop = std::clamp(y - labelHeight * .5f, plot.getY(), plot.getBottom() - labelHeight);
+        if (labelTop < labelEnd) continue;
+        const auto label = hz >= 1000. ? juce::String(hz / 1000., std::fmod(hz, 1000.) == 0. ? 0 : 1) + "k"
+                                       : juce::String(juce::roundToInt(hz));
+        const auto labelWidth = left - base.getX() - tickWidth - static_cast<float>(look::border);
+        g.drawText(label, juce::Rectangle<float>(base.getX(), labelTop, labelWidth, labelHeight),
+                   juce::Justification::centredRight, true);
+        labelEnd = labelTop + labelHeight;
+    }
+}
+
+void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangle<float> base,
+                                              juce::Rectangle<float> plot) const {
+    if (raster_) spectrogram::paintRuler(g, base, plot, raster_->scale, Raster::lowestHz, raster_->topHz);
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     if (mode_ == Mode::FilledSpectrum) { paintFilledSpectrum(g); return; }
@@ -1419,7 +2302,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ColourWaveform) { paintColourWaveform(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
-    const auto area = getLocalBounds().toFloat().reduced(5.f);
+    const auto area = analysisArea(getLocalBounds());
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
@@ -1438,14 +2321,18 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         }
         return;
     }
-    const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
-                        "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum", "Cumulative Maximum"};
+    static constexpr std::array names{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
+                                      "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum",
+                                      "Cumulative Maximum"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};
-    g.drawText(juce::String(names[static_cast<int>(mode_)]) + " / " + points[static_cast<int>(point_)] +
+    const auto modeIndex = static_cast<std::size_t>(mode_);
+    const auto title = modeIndex < names.size() ? juce::String(names[modeIndex]) : getTitle();
+    g.drawText(title + " / " + points[static_cast<int>(point_)] +
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
     const bool mainMeter = mode_ == Mode::Meters && mainMeter_.has_value();
     const auto meterHeight = mainMeter ? 38.f : 0.f;
-    auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
+    const auto basePlot = analysisPlot(area, meterHeight);
+    const auto plot = mode_ == Mode::Spectrogram ? spectrogramPlot(basePlot) : basePlot;
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
     const bool scaled = spectrumMode() && spectrumScale_ != SpectrumScale::Wide;
@@ -1495,12 +2382,35 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
             g.setColour(look::accent);
             g.fillRect(band.withY(heightFor(db(shown_->peak[static_cast<std::size_t>(channel)]), band)).withHeight(2.f));
         }
-    } else if (mode_ == Mode::Phase && phaseTrail_) {
-        phaseTrail_->paint(g, plot);
+    } else if (mode_ == Mode::Phase) {
+        auto vectorArea = plot;
+        if (phaseBandsEnabled_) {
+            const auto rowHeight = static_cast<float>(look::fieldHeight);
+            paintPhaseBands(g, vectorArea.removeFromBottom(std::min(2.f * rowHeight, plot.getHeight() * .4f)));
+        }
+        // The stereo picture of the analysers queue; the point cloud below remains for a view without its trail.
+        if (phaseTrail_) phaseTrail_->paint(g, vectorArea);
+        else {
+        const auto radius = std::min(vectorArea.getWidth(), vectorArea.getHeight()) * .46f;
+        const auto centre = vectorArea.getCentre();
+        g.setColour(look::outline); g.drawEllipse(centre.x - radius, centre.y - radius, radius * 2, radius * 2, 1.f);
+        g.drawVerticalLine(juce::roundToInt(centre.x), centre.y - radius, centre.y + radius);
+        g.drawHorizontalLine(juce::roundToInt(centre.y), centre.x - radius, centre.x + radius);
+        g.setColour(look::value.withAlpha(.55f));
+        const auto size = std::min(shown_->scopeLeft.size(), shown_->scopeRight.size());
+        // Keep the same paint budget without sampling only one waveform phase.
+        const auto first = size - std::min<std::size_t>(size, 1024);
+        for (auto i = first; i < size; ++i) {
+            const float l = shown_->scopeLeft[i], r = shown_->scopeRight[i];
+            g.fillRect(centre.x + std::clamp((l - r) * .5f, -1.f, 1.f) * radius,
+                       centre.y - std::clamp((l + r) * .5f, -1.f, 1.f) * radius, 1.4f, 1.4f);
+        }
+        }
     } else if (mode_ == Mode::Spectrogram && raster_ && !raster_->image.isNull()) {
         g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
         if (historyMotion_ == HistoryMotion::Sweep) raster_->paintSweep(g, plot);
         else g.drawImage(raster_->image, plot);
+        paintSpectrogramRuler(g, basePlot, plot);
     }
     const double topHz = std::min(20000.0, shown_->sampleRate * .5);
     if (topHz <= 20) return;
@@ -1513,26 +2423,25 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         g.setColour(look::outline);
         g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
     }
-    juce::Path curve;
-    bool started = false;
     const auto offsets = spectrumProjection_.offsets();
     const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
     const auto bins = spectrumBins();
     const bool projectionReady = !tilted || offsets.size() == bins.size();
-    if (spectrumMode() && !scaled && projectionReady) for (std::size_t i = 1; i < bins.size(); ++i) {
-        const double hz = static_cast<double>(i) * shown_->sampleRate / shown_->request.fftSize;
-        if (hz < 20 || hz > topHz) continue;
-        auto value = std::isfinite(bins[i]) ? bins[i] : floorDb;
-        if (tilted) value += offsets[i];
-        const auto x = xFor(hz), y = heightFor(value, plot);
-        if (!started) { curve.startNewSubPath(x, y); started = true; }
-        else curve.lineTo(x, y);
-    }
-    if (scaled) {
-        if (scaledSpectrum_) scaledSpectrum_->paint(g, scaledPlot);
-    } else {
-        g.setColour(look::value);
-        g.strokePath(curve, juce::PathStrokeType(1.4f));
+    const auto spectrumPlot = scaled ? scaledPlot : plot;
+    if (scaledSpectrum_) scaledSpectrum_->paint(g, spectrumPlot, look::value, true);
+    if (supportsSpectrumOverlays(mode_)) paintSpectrumOverlays(g, spectrumPlot);
+    if (spectrumCursorPosition_) {
+        const auto pointer = *spectrumCursorPosition_;
+        if (const auto reading = spectrumCursorReading(pointer)) {
+            g.setColour(look::gridLine);
+            g.drawVerticalLine(juce::roundToInt(pointer.x), spectrumPlot.getY(), spectrumPlot.getBottom());
+            g.drawHorizontalLine(juce::roundToInt(pointer.y), spectrumPlot.getX(), spectrumPlot.getRight());
+            g.setColour(look::textOnBand);
+            g.setFont(look::font(look::fontCaption));
+            const auto textRow = spectrumPlot.withTrimmedTop(spectrumPlot.getHeight() - look::fontCaption)
+                                           .reduced(static_cast<float>(look::border), 0.f);
+            g.drawText(reading->text(), textRow, juce::Justification::centredRight, true);
+        }
     }
     if (spectrumMode() && tilted) {
         g.setFont(look::font(9.f));
@@ -1580,6 +2489,8 @@ AnalysisPane::AnalysisPane() {
     modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
     modeBox.addItem("Realtime Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumMaximum) + 1);
     modeBox.addItem("Cumulative Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeMaximum) + 1);
+    modeBox.addItem("Cumulative Average", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeAverage) + 1);
+    modeBox.addItem("Realtime Sigma", static_cast<int>(SharedSpectrumView::Mode::SpectrumRealtimeSigma) + 1);
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     modeBox.addItem("Filled Spectrum", static_cast<int>(SharedSpectrumView::Mode::FilledSpectrum) + 1);
     modeBox.addItem("Third-Octave Bands", static_cast<int>(SharedSpectrumView::Mode::ThirdOctaveBands) + 1);
@@ -1602,6 +2513,108 @@ AnalysisPane::AnalysisPane() {
     };
     setHistoryMotion(SharedSpectrumView::HistoryMotion::Scroll);
     addAndMakeVisible(historyBox);
+    spectrumBlockBox_.setTitle("Spectrum block size");
+    spectrumBlockBox_.setTooltip("Set the analysis block in samples for this Spectrum and its pinned channels.");
+    for (std::size_t i = 0; i < SharedSpectrumView::spectrumBlockSizes.size(); ++i) {
+        const auto size = SharedSpectrumView::spectrumBlockSizes[i];
+        spectrumBlockBox_.addItem(size == 0 ? juce::String("Block: Auto") : "Block: " + juce::String(size),
+                                  static_cast<int>(i) + 1);
+    }
+    spectrumBlockBox_.setSelectedId(1, juce::dontSendNotification);
+    spectrumBlockBox_.onChange = [this] {
+        const auto index = spectrumBlockBox_.getSelectedItemIndex();
+        if (index >= 0 && index < static_cast<int>(SharedSpectrumView::spectrumBlockSizes.size()))
+            view.setSpectrumBlockSize(SharedSpectrumView::spectrumBlockSizes[static_cast<std::size_t>(index)]);
+    };
+    addChildComponent(spectrumBlockBox_);
+    spectrumOverlapBox_.setTitle("Spectrum overlap");
+    spectrumOverlapBox_.setTooltip("Set how much consecutive analysis blocks overlap.");
+    for (std::size_t i = 0; i < SharedSpectrumView::spectrumOverlaps.size(); ++i)
+        spectrumOverlapBox_.addItem("Overlap: " + juce::String(SharedSpectrumView::spectrumOverlaps[i]) + "%",
+                                    static_cast<int>(i) + 1);
+    spectrumOverlapBox_.setSelectedId(3, juce::dontSendNotification);
+    spectrumOverlapBox_.onChange = [this] {
+        const auto index = spectrumOverlapBox_.getSelectedItemIndex();
+        if (index >= 0 && index < static_cast<int>(SharedSpectrumView::spectrumOverlaps.size()))
+            view.setSpectrumOverlap(SharedSpectrumView::spectrumOverlaps[static_cast<std::size_t>(index)]);
+    };
+    addChildComponent(spectrumOverlapBox_);
+    spectrumSmoothingBox_.setTitle("Spectrum smoothing");
+    spectrumSmoothingBox_.setTooltip("Smooth the displayed traces over a fraction of an octave or more.");
+    for (std::size_t i = 0; i < kSpectrumSmoothingChoices.size(); ++i)
+        spectrumSmoothingBox_.addItem("Smooth: " + juce::String(kSpectrumSmoothingChoices[i].label.data()),
+                                      static_cast<int>(i) + 1);
+    spectrumSmoothingBox_.setSelectedId(1, juce::dontSendNotification);
+    spectrumSmoothingBox_.onChange = [this] {
+        const auto index = spectrumSmoothingBox_.getSelectedItemIndex();
+        if (index >= 0) view.setSpectrumSmoothing(static_cast<std::size_t>(index));
+    };
+    addChildComponent(spectrumSmoothingBox_);
+    spectrogramScaleBox.setTitle("Spectrogram frequency scale");
+    spectrogram::configureScaleBox(spectrogramScaleBox);
+    spectrogramScaleBox.onChange = [this] {
+        const auto id = spectrogramScaleBox.getSelectedId();
+        if (id > 0) view.setSpectrogramScale(static_cast<SharedSpectrumView::SpectrogramScale>(id - 1));
+    };
+    addAndMakeVisible(spectrogramScaleBox);
+    const auto configureLevel = [this](juce::Slider &control, const juce::String &label, double low, double high,
+                                       double initial) {
+        control.setTitle("Spectrogram " + label.toLowerCase());
+        control.setSliderStyle(juce::Slider::LinearBar);
+        control.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
+        control.setSliderSnapsToMousePosition(false);
+        control.setRange(low, high, 1.);
+        control.setDoubleClickReturnValue(true, initial);
+        control.textFromValueFunction = [label](double value) {
+            return label + " " + juce::String(juce::roundToInt(value)) + " dB";
+        };
+        control.valueFromTextFunction = [&control, label](const juce::String &text) {
+            const auto valueText = text.trim();
+            const auto bare = valueText.startsWithIgnoreCase(label) ? valueText.substring(label.length()).trim() : valueText;
+            const auto numeric = bare.trimCharactersAtStart("+");
+            const auto bytes = numeric.endsWithIgnoreCase("dB") ? numeric.dropLastCharacters(2).trim().toStdString()
+                                                                 : numeric.toStdString();
+            const auto *last = bytes.data() + bytes.size();
+            int value = 0;
+            const auto [end, error] = std::from_chars(bytes.data(), last, value);
+            return error == std::errc{} && end == last ? static_cast<double>(value) : control.getValue();
+        };
+        control.setValue(initial, juce::dontSendNotification);
+        control.updateText();
+        addAndMakeVisible(control);
+    };
+    const auto levels = view.spectrogramLevels();
+    configureLevel(spectrogramFloor_, "Floor", dsp::kDbFloor, spectrogramTopDb - 1.f, levels.floor);
+    configureLevel(spectrogramCeiling_, "Ceiling", dsp::kDbFloor + 1.f, spectrogramTopDb, levels.ceiling);
+    spectrogramFloor_.onValueChange = [this] {
+        auto next = view.spectrogramLevels();
+        next.floor = std::min(static_cast<float>(spectrogramFloor_.getValue()), next.ceiling - 1.f);
+        spectrogramFloor_.setValue(next.floor, juce::dontSendNotification);
+        view.setSpectrogramLevels(next);
+    };
+    spectrogramCeiling_.onValueChange = [this] {
+        auto next = view.spectrogramLevels();
+        next.ceiling = std::max(static_cast<float>(spectrogramCeiling_.getValue()), next.floor + 1.f);
+        spectrogramCeiling_.setValue(next.ceiling, juce::dontSendNotification);
+        view.setSpectrogramLevels(next);
+    };
+    spectrogramGammaBox_.setTitle("Spectrogram gamma");
+    spectrogramGammaBox_.setTooltip("Reveal quiet detail below 1.00 or darken the middle of the colour scale above 1.00.");
+    for (std::size_t i = 0; i < spectrogramGammaValues.size(); ++i) {
+        const int id = static_cast<int>(i) + 1;
+        const auto gamma = spectrogramGammaValues[i];
+        spectrogramGammaBox_.addItem("Gamma " + juce::String(gamma, 2), id);
+        if (gamma == view.spectrogramGamma()) spectrogramGammaBox_.setSelectedId(id, juce::dontSendNotification);
+    }
+    spectrogramGammaBox_.onChange = [this] {
+        const int id = spectrogramGammaBox_.getSelectedId();
+        if (id > 0) view.setSpectrogramGamma(spectrogramGammaValues[static_cast<std::size_t>(id - 1)]);
+    };
+    addAndMakeVisible(spectrogramGammaBox_);
+    spectrogramRulerButton_.setTitle("Spectrogram frequency ruler");
+    spectrogramRulerButton_.setTooltip("Label the vertical frequency scale beside the history.");
+    spectrogramRulerButton_.onClick = [this] { view.setSpectrogramRuler(spectrogramRulerButton_.getToggleState()); };
+    addAndMakeVisible(spectrogramRulerButton_);
     slopeBox.addItemList({"Slope: Flat", "+4.5 dB/oct @ 1k"}, 1);
     slopeBox.setTitle("Spectrum display slope");
     slopeBox.setTooltip("Display tilt around 1 kHz only. Raw sine-calibrated dBFS, peak/RMS and comparison bins are unchanged.");
@@ -1637,9 +2650,17 @@ AnalysisPane::AnalysisPane() {
     freezeButton.onClick = [this] { view.freeze(freezeButton.getToggleState()); };
     view.onClassicFreeze = [this](bool held) { freezeButton.setToggleState(held, juce::dontSendNotification); };
     freezeButton.setTooltip("Freeze this picture and release its live analysis demand. Resume waits for fresh audio.");
-    resetButton.onClick = [this] { view.clear(); };
+    resetButton.onClick = [this] {
+        view.clear();
+        spectrogramPngButton_.setEnabled(false);
+    };
+    spectrogramPngButton_.setTitle("Export Spectrogram PNG");
+    spectrogramPngButton_.setTooltip("Save the displayed spectrogram history as a PNG image.");
+    spectrogramPngButton_.onClick = [this] { exportSpectrogramPng(); };
+    addAndMakeVisible(spectrogramPngButton_);
     expandButton.onClick = [this] { if (onExpand) onExpand(view.track()); };
     addAndMakeVisible(freezeButton); addAndMakeVisible(resetButton); addAndMakeVisible(expandButton); addAndMakeVisible(view);
+    view.enableSpectrumCursor();
     setMode(view.mode());
 }
 bool AnalysisPane::anyControlsFocused() noexcept {
@@ -1650,19 +2671,31 @@ bool AnalysisPane::anyControlsFocused() noexcept {
 void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     view.setMode(mode); modeBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
     freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
-    const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage ||
-                          isMaximumSpectrum(mode);
+    const bool spectral = SharedSpectrumView::supportsSpectrumOverlays(mode) || isMaximumSpectrum(mode);
     const bool filled = mode == SharedSpectrumView::Mode::FilledSpectrum;
     resetButton.setTooltip(mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum || filled
         ? "Clear this view and restart its held maximum."
+        : mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage
+        ? "Clear this view and restart its cumulative average."
         : "Clear this view's display interval; other analyzer views and audio are unchanged.");
     channelBox.setEnabled(spectral || filled || mode == SharedSpectrumView::Mode::Spectrogram);
+    const bool usesSpectrumSettings = spectral && !modeBox.isVisible();
+    spectrumBlockBox_.setVisible(usesSpectrumSettings);
+    spectrumOverlapBox_.setVisible(usesSpectrumSettings);
+    spectrumSmoothingBox_.setVisible(usesSpectrumSettings);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
+    spectrogramScaleBox.setVisible(spectrogram);
+    spectrogramFloor_.setVisible(spectrogram);
+    spectrogramCeiling_.setVisible(spectrogram);
+    spectrogramGammaBox_.setVisible(spectrogram);
+    spectrogramRulerButton_.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);
     paletteBox.setEnabled(spectrogram);
     reverseButton.setVisible(spectrogram);
     reverseButton.setEnabled(spectrogram);
+    spectrogramPngButton_.setVisible(spectrogram);
+    spectrogramPngButton_.setEnabled(view.hasSpectrogramImage());
     slopeBox.setVisible(spectral);
     slopeBox.setEnabled(spectral);
     scaleBox.setVisible(spectral);
@@ -1706,6 +2739,72 @@ void AnalysisPane::setHistoryMotion(SharedSpectrumView::HistoryMotion motion) {
     view.setHistoryMotion(motion);
     historyBox.setSelectedId(motion == SharedSpectrumView::HistoryMotion::Sweep ? 2 : 1, juce::dontSendNotification);
 }
+
+namespace {
+juce::Result writeSpectrogramPng(const juce::Image &image, const juce::File &target,
+                                 const std::filesystem::path &path, const media::ReplaceHooks &replace) {
+    const juce::TemporaryFile staging(target);
+    {
+        auto output = staging.getFile().createOutputStream();
+        if (!output || !juce::PNGImageFormat{}.writeImageToStream(image, *output))
+            return juce::Result::fail("Could not write the PNG image.");
+        output->flush();
+        if (output->getStatus().failed()) return output->getStatus();
+    }
+    const auto source = media::pathFromUtf8(staging.getFile().getFullPathName().toStdString());
+    const auto result = replace.expectedTarget ? media::replaceFile(source, path, replace)
+        : media::publishFile(source, path, {}, media::PublishPolicy::AtomicOnly);
+    if (result.status == media::PublishStatus::published)
+        return result.warning.empty() ? juce::Result::ok() : juce::Result::fail(juce::String(result.warning));
+    return juce::Result::fail(result.error.empty() ? "Could not save the PNG image." : juce::String(result.error));
+}
+}
+
+void AnalysisPane::exportSpectrogramPng() {
+    if (!spectrogramChooser_) exportSpectrogramImage(view.spectrogramImage(), *this, "Spectrogram.png");
+}
+
+void AnalysisPane::exportSpectrogramImage(juce::Image snapshot, juce::Component &anchor, const juce::String &fileName) {
+    if (spectrogramChooser_ || !snapshot.isValid()) return;
+    const auto initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(fileName);
+    spectrogramChooser_ = std::make_unique<juce::FileChooser>("Export Spectrogram PNG", initial, "*.png", true, false, &anchor);
+    const auto owner = juce::Component::SafePointer<AnalysisPane>(this);
+    const auto show = [parent = juce::Component::SafePointer<juce::Component>(&anchor)](const juce::String &message) {
+        if (auto *component = parent.getComponent())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Export Spectrogram PNG",
+                                                   message, {}, component);
+    };
+    const int chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
+                             juce::FileBrowserComponent::warnAboutOverwriting;
+    spectrogramChooser_->launchAsync(chooserFlags, [owner, image = std::move(snapshot), show](const juce::FileChooser &chosen) {
+        juce::MessageManager::callAsync([owner] {
+            if (auto *pane = owner.getComponent()) pane->spectrogramChooser_.reset();
+        });
+        const auto selected = chosen.getResult();
+        if (selected == juce::File{}) return;
+        const auto target = selected.hasFileExtension("png") ? selected
+            : selected.getParentDirectory().getChildFile(selected.getFileName() + ".png");
+        const auto path = media::pathFromUtf8(target.getFullPathName().toStdString());
+        media::ReplaceHooks replace;
+        if (target.exists()) {
+            if (target != selected) {
+                show(target.getFileName() + " already exists. Select that file to replace it.");
+                return;
+            }
+            std::error_code error;
+            replace.expectedTarget = media::readFileIdentity(path, error);
+            if (!replace.expectedTarget) {
+                show("Could not open the selected destination for replacement.");
+                return;
+            }
+        }
+        if (!juce::Thread::launch(juce::Thread::Priority::low, [image, target, path, replace = std::move(replace), show] {
+            const auto result = writeSpectrogramPng(image, target, path, replace);
+            if (result.failed()) juce::MessageManager::callAsync([show, result] { show(result.getErrorMessage()); });
+        })) show("Could not start the PNG export.");
+    });
+}
+
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     if (const auto theme = look::themeId(); theme != palettePreviewTheme_) {
         palettePreviewTheme_ = theme;
@@ -1717,20 +2816,25 @@ void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t ma
         }
     }
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
+    if (spectrogramPngButton_.isVisible()) spectrogramPngButton_.setEnabled(view.hasSpectrogramImage());
 }
 void AnalysisPane::usePageControls() {
     modeBox.setVisible(false);
     sourceBox.setVisible(false);
-    resized();
+    setMode(view.mode());
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 12> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const std::array<juce::Component *, 21> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrumBlockBox_, &spectrumOverlapBox_, &spectrumSmoothingBox_, &spectrogramScaleBox,
+        &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
+        &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
-    const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
+    const int maxColumns = spectrumOverlapBox_.isVisible() ? 5 : 4;
+    const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, maxColumns);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));
     const int rows = std::max(1, (count + columns - 1) / columns);
-    const int height = std::min(pageControls ? look::fieldHeight : 25, std::max(0, getHeight() / rows));
+    const bool compactFields = pageControls || view.mode() == SharedSpectrumView::Mode::Spectrogram;
+    const int height = std::min(compactFields ? look::fieldHeight : 25, std::max(0, getHeight() / rows));
     int i = 0;
     for (auto *control : controls) {
         if (!control->isVisible()) continue;

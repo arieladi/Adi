@@ -14,6 +14,7 @@ namespace
 {
 static_assert(std::atomic<float>::is_always_lock_free);
 using adi_eq_ext::spectral_internal::BiquadMagnitude;
+constexpr auto automaticThresholdDb = -72.0f;
 
 template <typename Value>
 using AlignedVector = std::vector<Value, hwy::AlignedAllocator<Value>>;
@@ -114,6 +115,7 @@ struct ADISharedEqSpectralDynamics::Implementation
     bool anyMask = false;
 
     Plan& plan() noexcept { return plans[static_cast<std::size_t>(resolution)]; }
+    const Plan& plan() const noexcept { return plans[static_cast<std::size_t>(resolution)]; }
 
     void reset() noexcept
     {
@@ -340,7 +342,7 @@ struct ADISharedEqSpectralDynamics::Implementation
             const auto sign = band.rangeDb < 0.0f ? -1.0f : 1.0f;
             const auto densityMargin = -12.0f + 11.0f * band.density * band.density * band.density;
             const auto spreadMargin = -12.0f + 11.0f * band.density;
-            const auto levelThreshold = band.automaticThreshold ? -72.0f : band.thresholdDb;
+            const auto levelThreshold = band.automaticThreshold ? automaticThresholdDb : band.thresholdDb;
             const auto canReuseSpread = spreadBand != nullptr && spreadBand->routing == band.routing
                 && spreadBand->externalSidechain == band.externalSidechain && spreadBand->density == band.density
                 && spreadBand->tiltDbPerOctave == band.tiltDbPerOctave && spreadThreshold == levelThreshold;
@@ -634,6 +636,60 @@ void ADISharedEqSpectralDynamics::process(double* const main[2], const double* c
             engine.frame();
         }
     }
+}
+
+bool ADISharedEqSpectralDynamics::hasStationarySilence() const noexcept
+{
+    const auto& engine = *implementation;
+    if (!engine.enabled || engine.size == 0)
+        return true;
+    if (engine.displayEnabled.load(std::memory_order_relaxed))
+        return false;
+
+    const auto positiveZero = [](const auto sample) { return sample == 0 && !std::signbit(sample); };
+    const auto silent = [&](const auto& bank) {
+        return std::ranges::all_of(bank, [&](const auto& channel) {
+            return std::all_of(channel.data(), channel.data() + engine.size, positiveZero);
+        });
+    };
+    if (!silent(engine.input) || !silent(engine.output) || !silent(engine.dry)
+        || (engine.needsKey && !silent(engine.keyInput)))
+        return false;
+    if (!engine.anyMask)
+        return true;
+
+    const auto& octave = engine.plan().octave;
+    // The detector's 1e-20 power floor yields -200 dB on zeros. Leave room
+    // for rounding when checking that silence cannot create new activity.
+    constexpr auto silentPeakUpperBoundDb = -199.0f;
+    for (std::size_t index = 0; index < engine.bands.size(); ++index)
+    {
+        const auto& band = engine.bands[index];
+        if (!band.enabled || band.bypassed)
+            continue;
+        const auto& state = engine.states[index];
+        if (state.curveDirty)
+            return false;
+        if (band.rangeDb == 0.0f || state.firstBin >= state.lastBin)
+            continue;
+        const auto threshold = band.automaticThreshold ? automaticThresholdDb : band.thresholdDb;
+        const auto maxTilt = std::max(band.tiltDbPerOctave * octave.front(), band.tiltDbPerOctave * octave.back());
+        if (silentPeakUpperBoundDb + maxTilt >= threshold
+            || !std::all_of(state.envelope.data() + state.firstBin, state.envelope.data() + state.lastBin, positiveZero))
+            return false;
+    }
+    return true;
+}
+
+void ADISharedEqSpectralDynamics::skipSilentFrames(const std::size_t frames) noexcept
+{
+    auto& engine = *implementation;
+    if (!engine.enabled || engine.size == 0)
+        return;
+    const auto size = static_cast<std::size_t>(engine.size);
+    const auto hopSize = size / 4;
+    engine.position = (engine.position + static_cast<int>(frames % size)) % engine.size;
+    engine.hopPosition = (engine.hopPosition + static_cast<int>(frames % hopSize)) % static_cast<int>(hopSize);
 }
 
 int ADISharedEqSpectralDynamics::latencySamples() const noexcept

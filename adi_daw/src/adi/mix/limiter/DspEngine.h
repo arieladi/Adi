@@ -88,6 +88,10 @@ public:
     // structures on the shared owner while a containing stage is disabled;
     // does not process, warm, reset, fade or advance any audio/meter state.
     void requestConfiguration(const EngineSettings& settings) noexcept;
+    /// Opt-in for native hosts whose scheduler can omit a certified quiet span.
+    void trackSilenceForSuspension(bool enabled) noexcept;
+    [[nodiscard]] bool canSkipSilence() const noexcept;
+    void skipSilence(std::uint32_t frames) noexcept;
     BlockContext beginBlock() const noexcept;
     void process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& settings) noexcept;
     void process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& settings,

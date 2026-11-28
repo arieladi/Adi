@@ -30,6 +30,16 @@ public:
     void reset() noexcept { convolver.reset(); }
     float process(float input) noexcept { return convolver.process(input); }
 
+    bool canSkipSilence() const noexcept
+    {
+        // Requests originate on the audio thread. An equal version means a
+        // service call has published its pending kernel or has no work to do.
+        return generation.load() == served.load() && convolver.canSkipSilence();
+    }
+
+    void skipSilence(std::size_t frames) noexcept { convolver.skipSilence(frames); }
+    bool hasSilentHistory() const noexcept { return convolver.hasSilentHistory(); }
+
     void request(std::size_t count, int shape, const std::array<float, 3>& properties) noexcept
     {
         if (lastCount == count && lastShape == shape && lastProperties == properties)

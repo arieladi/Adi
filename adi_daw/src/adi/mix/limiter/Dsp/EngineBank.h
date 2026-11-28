@@ -216,6 +216,84 @@ public:
                 if (state.convolver) state.convolver->request(state.count, state.shape, state.properties);
     }
 
+    std::size_t silenceWarmupFrames() const noexcept
+    {
+        // The linear Smart detector can emit one zero turning point during
+        // startup. Process until it has left the queue before advancing clocks.
+        for (const auto& bank : smartEnvelopes)
+            if (!bank.empty()) return smartDelay + 2;
+        return 1;
+    }
+
+    bool canSkipSilence(bool modern) const noexcept
+    {
+        for (std::size_t slot = 0; slot < peaks.size(); ++slot)
+        {
+            // Modern omits these peaks while its primary envelopes are neutral.
+            if (modern && (slot == 1 || slot == 2)) continue;
+            for (const auto& state : peaks[slot])
+                if (!state.canSkipSilence()) return false;
+        }
+        for (const auto& bank : envelopes)
+            for (const auto& state : bank)
+                if (!state.isNeutral()) return false;
+        for (const auto& bank : filters)
+            for (const auto& state : bank)
+                if (!state.highpass.isNeutral() || !state.lowpass.isNeutral()) return false;
+        for (const auto& bank : averages)
+            for (const auto& state : bank)
+                if (!state.average.isNeutral()) return false;
+        for (const auto& bank : smartEnvelopes)
+            for (const auto& state : bank)
+                if (!state.canSkipSilence()) return false;
+        for (const auto& bank : convolvers)
+            for (const auto& state : bank)
+                if (state.convolver && !state.convolver->canSkipSilence()) return false;
+        return true;
+    }
+
+    void skipSilence(std::size_t frames, bool shadowAliased, bool modern) noexcept
+    {
+        for (std::size_t slot = 0; slot < peaks.size(); ++slot)
+        {
+            if (modern && (slot == 1 || slot == 2)) continue;
+            for (auto& state : peaks[slot]) state.skipSilence(frames);
+        }
+        for (auto& bank : delays)
+            for (auto& state : bank) state.advanceHomogeneous(frames);
+        for (auto& bank : averages)
+            for (auto& state : bank) state.average.skipSilence(frames);
+        for (auto& bank : smartEnvelopes)
+            for (auto& state : bank) state.skipSilence(frames);
+        for (auto& bank : gains)
+            for (auto& state : bank)
+            {
+                state.audio.advanceHomogeneous(frames);
+                if (!shadowAliased) state.shadow.advanceHomogeneous(frames);
+                state.reduction.advanceHomogeneous(frames);
+                state.meter.advanceHomogeneous(frames);
+            }
+        for (auto& bank : convolvers)
+            for (auto& state : bank)
+                if (state.convolver) state.convolver->skipSilence(frames);
+    }
+
+    // Transparent has no variable average or turning-point delay banks.
+    bool hasSilentTransparentHistory() const noexcept
+    {
+        for (const auto& bank : delays)
+            for (const auto& state : bank)
+                if (!state.isSilent()) return false;
+        for (const auto& bank : gains)
+            for (const auto& state : bank)
+                if (!state.audio.isSilent() || !state.shadow.isSilent() ||
+                    !state.reduction.isSilent() || !state.meter.isSilent()) return false;
+        for (const auto& bank : convolvers)
+            for (const auto& state : bank)
+                if (state.convolver && !state.convolver->hasSilentHistory()) return false;
+        return true;
+    }
+
     void serviceKernelUpdates() noexcept
     {
         for (auto& bank : convolvers)

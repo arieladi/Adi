@@ -49,10 +49,21 @@ class SharedSpectrumView final : public juce::Component,
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
         Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope,
-        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands, ColourWaveform
+        SpectrumMaximum, SpectrumCumulativeMaximum, FilledSpectrum, ThirdOctaveBands, ColourWaveform,
+        SpectrumCumulativeAverage, SpectrumRealtimeSigma
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
+    static constexpr bool supportsSpectrumOverlays(Mode mode) noexcept {
+        return mode == Mode::Spectrum || mode == Mode::SpectrumAverage || mode == Mode::SpectrumCumulativeAverage ||
+               mode == Mode::SpectrumRealtimeSigma;
+    }
+    enum class PhaseBandDisplay { Correlation, Width, Pan };
+    void enablePhaseBands();
+    void setPhaseBandDisplay(PhaseBandDisplay);
+    void setStereoBalanceEnabled(bool) noexcept;
+    void setSpectrumLevelsEnabled(bool) noexcept;
+    void setSpectrumTruePeakEnabled(bool) noexcept;
     void setSource(engine::ScopePoint, std::int64_t device = 0);
     engine::ScopePoint point() const noexcept { return point_; }
     void setChannel(SharedAnalysis::Channel);
@@ -60,6 +71,21 @@ class SharedSpectrumView final : public juce::Component,
     void setPalette(std::string_view id, bool reverse = false);
     std::string_view palette() const noexcept { return palettes::id(paletteIndex_); }
     bool paletteReversed() const noexcept { return paletteReversed_; }
+    struct SpectrumOverlayTrack {
+        std::int64_t track = 0;
+        juce::String name;
+        juce::Colour colour;
+        bool operator==(const SpectrumOverlayTrack &) const = default;
+    };
+    static constexpr std::size_t kSpectrumOverlayTracks = 15;
+    enum class SpectrumOverlayProfile { Standard, Overview };
+    void setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack>,
+                                  SpectrumOverlayProfile = SpectrumOverlayProfile::Standard);
+    static constexpr std::array<std::int32_t, 6> spectrumBlockSizes{0, 1024, 2048, 4096, 8192, 16384};
+    static constexpr std::array<int, 4> spectrumOverlaps{0, 50, 75, 90};
+    void setSpectrumBlockSize(std::int32_t);
+    void setSpectrumOverlap(int percent);
+    void setSpectrumSmoothing(std::size_t choice);
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     void setFilledSpectrumCurve(SharedAnalysis::FilledCurve);
@@ -67,9 +93,25 @@ class SharedSpectrumView final : public juce::Component,
     enum class SpectrumScale { Wide, Detail, Extended, Device };
     void setSpectrumScale(SpectrumScale);
     SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
+    void enableSpectrumCursor();
     enum class HistoryMotion { Scroll, Sweep };
     void setHistoryMotion(HistoryMotion);
     HistoryMotion historyMotion() const noexcept { return historyMotion_; }
+    enum class SpectrogramScale { Linear, Log, Mel, Bark, Erb };
+    void setSpectrogramScale(SpectrogramScale);
+    SpectrogramScale spectrogramScale() const noexcept { return spectrogramScale_; }
+    struct SpectrogramLevels {
+        float floor = -96.f, ceiling = 0.f;
+        bool operator==(const SpectrogramLevels &) const = default;
+    };
+    void setSpectrogramLevels(SpectrogramLevels);
+    SpectrogramLevels spectrogramLevels() const noexcept { return spectrogramLevels_; }
+    void setSpectrogramGamma(float);
+    float spectrogramGamma() const noexcept { return spectrogramGamma_; }
+    void setSpectrogramRuler(bool);
+    bool hasSpectrogramImage() const noexcept;
+    // Owns the displayed data pixels independently of future history and view lifetime.
+    juce::Image spectrogramImage() const;
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -86,6 +128,9 @@ class SharedSpectrumView final : public juce::Component,
     // window calls this in its minimisation callback, then clears it on restore.
     void suspend(bool) noexcept;
     void paint(juce::Graphics &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     void resized() override;
@@ -113,6 +158,7 @@ class SharedSpectrumView final : public juce::Component,
     void componentMovedOrResized(juce::Component &, bool, bool) override;
     void componentBeingDeleted(juce::Component &) override;
     struct Raster;
+    struct ScaledSpectrum;
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
@@ -120,12 +166,46 @@ class SharedSpectrumView final : public juce::Component,
     void paintFilledSpectrum(juce::Graphics &) const;
     void paintThirdOctaveBands(juce::Graphics &) const;
     void paintColourWaveform(juce::Graphics &) const;
+    void updateSpectrumPlot(ScaledSpectrum &, const SharedAnalysis::Result &, std::span<const float> bins,
+                            std::span<const float> offsets, bool fillTrace);
+    struct SpectrumOverlay;
+    using SpectrumLeases = std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>;
+    SharedAnalysis::Request spectrumRequest(std::int64_t track) const noexcept;
+    SharedAnalysis::Request phaseRequest() const noexcept;
+    void paintPhaseBands(juce::Graphics &, juce::Rectangle<float>) const;
+    void acquireSpectrumOverlays() noexcept;
+    void takeSpectrumLeases(SpectrumLeases &) noexcept;
+    void releaseSpectrumOverlays(bool keepPictures = false) noexcept;
+    void updateSpectrumOverlays(bool primaryChanged) noexcept;
+    bool spectrumOverlayMatchesPrimary(const SpectrumOverlay &) const noexcept;
+    bool usesOverviewSpectrum() const noexcept;
+    void updateSpectrumOverlayPlot(SpectrumOverlay &) noexcept;
+    void paintSpectrumOverlays(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept {
-        return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
+        return supportsSpectrumOverlays(mode_) ||
                mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;
     }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
+    [[nodiscard]] bool spectrumCursorActive() const noexcept;
+    [[nodiscard]] juce::Rectangle<float> spectrumCursorBounds() const noexcept;
+    [[nodiscard]] juce::Rectangle<float> spectrogramPlot(juce::Rectangle<float> base) const noexcept;
+    void paintSpectrogramRuler(juce::Graphics &, juce::Rectangle<float> base, juce::Rectangle<float> plot) const;
+    void updateSpectrumCursorInput();
+    struct SpectrumCursorReading {
+        struct Time {
+            std::int64_t sample;
+            double sampleRate;
+            bool heard;
+        };
+        double frequency;
+        float level;
+        std::optional<Time> time;
+        juce::String text() const;
+    };
+    std::optional<SpectrumCursorReading> spectrumCursorReading(juce::Point<float>) const noexcept;
+    std::optional<SpectrumCursorReading> spectrogramCursorReading(juce::Point<float>,
+                                                                  juce::Rectangle<float>) const noexcept;
     void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
@@ -137,7 +217,7 @@ class SharedSpectrumView final : public juce::Component,
     SharedAnalysis::Lease::SourcePosition capturePosition_;
     bool captureFresh_ = false;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
-    std::shared_ptr<const std::vector<float>> averageBins_;
+    std::shared_ptr<const std::vector<float>> projectedBins_;
     std::shared_ptr<const SharedAnalysis::MaximumResult> maximumShown_;
     SharedAnalysis::AverageStatus averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     std::weak_ptr<const MainMeterSource> mainMeterSource_;
@@ -147,6 +227,15 @@ class SharedSpectrumView final : public juce::Component,
     bool suspended_ = false;
     bool frozen_ = false;
     const bool compact_;
+    bool phaseBandsEnabled_ = false, phaseProjectionPending_ = false;
+    PhaseBandDisplay phaseBandDisplay_ = PhaseBandDisplay::Correlation;
+    bool stereoBalanceEnabled_ = false;
+    bool spectrumLevelsEnabled_ = false;
+    bool spectrumTruePeakEnabled_ = false;
+    SpectrumOverlayProfile overlayProfile_ = SpectrumOverlayProfile::Standard;
+    double overviewRate_ = 0.;
+    std::int32_t overviewFftSize_ = 1024, activeSpectrumFftSize_ = 1024, requestedSpectrumFftSize_ = 0;
+    int activeSpectrumOverlap_ = 75, requestedSpectrumOverlap_ = 75;
     Mode mode_ = Mode::Spectrum;
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;
@@ -155,6 +244,10 @@ class SharedSpectrumView final : public juce::Component,
     std::size_t paletteIndex_ = palettes::defaultIndex;
     bool paletteReversed_ = false;
     HistoryMotion historyMotion_ = HistoryMotion::Scroll;
+    SpectrogramScale spectrogramScale_ = SpectrogramScale::Log;
+    SpectrogramLevels spectrogramLevels_;
+    float spectrogramGamma_ = 1.f;
+    bool spectrogramRuler_ = false;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
@@ -163,8 +256,10 @@ class SharedSpectrumView final : public juce::Component,
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
-    struct ScaledSpectrum;
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
+    std::unique_ptr<SpectrumSmoothing> spectrumSmoothing_;
+    std::size_t spectrumSmoothingChoice_ = 0;
+    std::vector<SpectrumOverlay> spectrumOverlays_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
     SharedAnalysis::FilledCurve filledCurve_ = SharedAnalysis::FilledCurve::RealtimeMaximum;
     juce::Point<int> filledPointer_{-1, -1};
@@ -173,6 +268,8 @@ class SharedSpectrumView final : public juce::Component,
     std::unique_ptr<PhaseTrail> phaseTrail_;
     struct BandDisplay;
     std::unique_ptr<BandDisplay> bandDisplay_;
+    bool spectrumCursorEnabled_ = false;
+    std::optional<juce::Point<float>> spectrumCursorPosition_;
 };
 
 // Fixed display coordinates used by the spectrum and the A/B overlay. The
@@ -186,6 +283,9 @@ struct SpectrumAxis {
     float y(float db) const noexcept;
 };
 const SpectrumAxis &spectrumAxis(SharedSpectrumView::SpectrumScale);
+bool spectrumScaleHasFill(SharedSpectrumView::SpectrumScale) noexcept;
+inline constexpr float spectrumFillOpacity = .28f;
+juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float>, SharedSpectrumView::SpectrumScale) noexcept;
 juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>, SharedSpectrumView::SpectrumScale);
 void populateSpectrumScaleMenu(juce::ComboBox &);
 SharedSpectrumView::SpectrumScale selectedSpectrumScale(const juce::ComboBox &) noexcept;
@@ -203,6 +303,7 @@ class AnalysisPane final : public juce::Component {
     void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
     void resized() override;
     void usePageControls();
+    void exportSpectrogramImage(juce::Image snapshot, juce::Component &anchor, const juce::String &fileName);
     void setMode(SharedSpectrumView::Mode);
     SharedSpectrumView::Mode mode() const noexcept { return view.mode(); }
     void setSource(Source);
@@ -222,10 +323,17 @@ class AnalysisPane final : public juce::Component {
     std::function<void()> onSpectrumSlopeChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox, historyBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox, historyBox,
+        spectrogramScaleBox;
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
+    void exportSpectrogramPng();
+    juce::Slider spectrogramFloor_, spectrogramCeiling_;
+    juce::ComboBox spectrogramGammaBox_, spectrumBlockBox_, spectrumOverlapBox_, spectrumSmoothingBox_;
+    juce::ToggleButton spectrogramRulerButton_{"Hz ruler"};
+    juce::TextButton spectrogramPngButton_{"Export PNG"};
+    std::unique_ptr<juce::FileChooser> spectrogramChooser_;
     Source source_ = Source::Main;
     ThemeId palettePreviewTheme_ = ThemeId::Dark;
 };

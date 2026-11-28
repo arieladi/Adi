@@ -48,6 +48,15 @@ public:
         zeroHistory = true;
     }
 
+    // Keep the last window metadata from the preceding settled silent block.
+    bool canSkipSilence() const noexcept { return zeroHistory && hasWindow; }
+
+    void skipSilence(std::size_t frames) noexcept
+    {
+        time += frames;
+        cursor = (cursor + frames) & historyMask;
+    }
+
     float process(float input, std::size_t periods) noexcept
     {
         const auto magnitude = std::abs(finiteSample(input));

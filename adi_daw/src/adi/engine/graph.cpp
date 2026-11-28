@@ -1877,6 +1877,9 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             for (DelayLine& d : s.sideDelays) d.forgetAllButSilence();
             if (s.hasBypass) s.dryDelay.forgetAllButSilence();
         }
+        // Dry bypass excludes the processor even on an audible slice. Its
+        // clock stays parked until the graph runs the wet path again.
+        if (!bypass) s.node->didSkip(silence.frames);
         return;
     }
     s.zeroed = false;   // the node is about to write; what it leaves is its own

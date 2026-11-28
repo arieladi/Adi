@@ -6,6 +6,24 @@
 #include <utility>
 
 namespace adi::ui {
+namespace {
+bool sameCalibration(const SharedAnalysis::Request &a, const SharedAnalysis::Request &b) noexcept {
+    return a.fftSize == b.fftSize && a.hopSize == b.hopSize && a.window == b.window && a.channel == b.channel;
+}
+
+AnalysisComparison::Difference differenceBetweenLevels(float a, float b) noexcept {
+    AnalysisComparison::Difference result;
+    if (!std::isfinite(a) || !std::isfinite(b)) return result;
+    result.aCensored = a <= dsp::kDbFloor;
+    result.bCensored = b <= dsp::kDbFloor;
+    if (!result.aCensored && !result.bCensored) {
+        const auto delta = a - b;
+        if (std::isfinite(delta)) result.db = delta;
+    }
+    return result;
+}
+} // namespace
+
 AnalysisComparison::AnalysisComparison(std::shared_ptr<SharedAnalysis> broker) noexcept
     : broker_(std::move(broker)) {}
 
@@ -14,7 +32,8 @@ bool AnalysisComparison::normalize(Endpoint &endpoint) noexcept {
     // Match SharedAnalysis's admitted source/FFT capability, including its positive
     // track identity. There is no special numeric Main fallback in this component.
     if (!endpoint.ownerToken || r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize ||
-        r.fftSize % 32 || r.hopSize < 0 || r.hopSize > r.fftSize || r.outputs != SharedAnalysis::Spectrum)
+        r.fftSize % 32 || r.hopSize < 0 || r.hopSize > r.fftSize ||
+        r.outputs != SharedAnalysis::Spectrum || r.heardSpectrogramGrid)
         return false;
     auto factors = r.fftSize;
     for (const auto factor : {2, 3, 5})
@@ -30,11 +49,6 @@ bool AnalysisComparison::normalize(Endpoint &endpoint) noexcept {
     if (!r.hopSize)
         r.hopSize = r.fftSize / 4;
     return true;
-}
-
-bool AnalysisComparison::sameCalibration(const SharedAnalysis::Request &a,
-                                         const SharedAnalysis::Request &b) noexcept {
-    return a.fftSize == b.fftSize && a.hopSize == b.hopSize && a.window == b.window && a.channel == b.channel;
 }
 
 bool AnalysisComparison::validPicture(Picture picture) noexcept {
@@ -332,20 +346,161 @@ std::size_t AnalysisComparison::capturedBinCount() const noexcept {
 }
 
 AnalysisComparison::Difference AnalysisComparison::difference(const View &view, std::size_t bin) noexcept {
-    Difference result;
     if ((view.status != Status::Independent && view.status != Status::Held) ||
         bin >= view.a.binsDbfs.size() || bin >= view.b.binsDbfs.size())
-        return result;
-    const float a = view.a.binsDbfs[bin], b = view.b.binsDbfs[bin];
-    if (!std::isfinite(a) || !std::isfinite(b))
-        return result;
-    result.aCensored = a <= dsp::kDbFloor;
-    result.bCensored = b <= dsp::kDbFloor;
-    if (!result.aCensored && !result.bCensored) {
-        const auto delta = a - b;
-        if (std::isfinite(delta))
-            result.db = delta;
+        return {};
+    return differenceBetweenLevels(view.a.binsDbfs[bin], view.b.binsDbfs[bin]);
+}
+
+std::optional<float> SpectrogramColumnPair::changeDb(std::size_t bin) const noexcept {
+    if (!pre || !post || !pre->binsDbfs || !post->binsDbfs ||
+        bin >= pre->binsDbfs->size() || bin >= post->binsDbfs->size()) return {};
+    return differenceBetweenLevels((*post->binsDbfs)[bin], (*pre->binsDbfs)[bin]).db;
+}
+
+std::span<const SpectrogramColumnPair> matchSpectrogramColumns(
+    const SharedAnalysis::Result &pre, const SharedAnalysis::Result &post, std::int64_t heardEnd,
+    std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage,
+    std::array<std::int64_t, 2> after) noexcept {
+    const auto &a = pre.request, &b = post.request;
+    if (storage.empty() || !pre.advancing || !post.advancing ||
+        !pre.transportRevision || pre.transportRevision < minimumRevision ||
+        pre.transportRevision != post.transportRevision ||
+        a.track <= 0 || a.track != b.track || a.device || b.device ||
+        a.point != engine::ScopePoint::ChainInput || b.point != engine::ScopePoint::PreFader ||
+        !a.heardSpectrogramGrid || !b.heardSpectrogramGrid ||
+        !(pre.outputs & post.outputs & SharedAnalysis::Spectrogram) ||
+        !sameCalibration(a, b) || a.fftSize < 32 || a.fftSize > SharedAnalysis::kMaxFftSize ||
+        a.hopSize <= 0 || a.hopSize > a.fftSize || pre.hopSize != a.hopSize || post.hopSize != a.hopSize ||
+        !std::isfinite(pre.sampleRate) || pre.sampleRate <= 0. || pre.sampleRate != post.sampleRate ||
+        !std::isfinite(pre.coherentGain) || pre.coherentGain <= 0. || pre.coherentGain != post.coherentGain ||
+        heardEnd < std::numeric_limits<std::int64_t>::min() + a.fftSize)
+        return {};
+
+    const auto latestStart = heardEnd - a.fftSize;
+    const auto bins = static_cast<std::size_t>(a.fftSize / 2 + 1);
+    std::size_t ai = pre.columns.size(), bi = post.columns.size(), out = storage.size();
+    // Each history is time-ordered within its own transport revision. The
+    // source epochs, serials and input sequence numbers describe different taps.
+    while (ai > 0 && bi > 0 && out > 0) {
+        const auto &left = pre.columns[ai - 1], &right = post.columns[bi - 1];
+        if (left.firstStamp > right.firstStamp) { --ai; continue; }
+        if (right.firstStamp > left.firstStamp) { --bi; continue; }
+        --ai;
+        --bi;
+        if (left.firstStamp > latestStart || left.firstStamp % a.hopSize != 0 ||
+            (after[0] > 0 && left.firstSequence <= after[0] - a.fftSize) ||
+            (after[1] > 0 && right.firstSequence <= after[1] - a.fftSize) ||
+            !left.binsDbfs || !right.binsDbfs || left.binsDbfs->size() != bins || right.binsDbfs->size() != bins)
+            continue;
+        storage[--out] = {&left, &right};
     }
-    return result;
+    return storage.subspan(out);
+}
+
+SpectrogramComparison::SpectrogramComparison(std::shared_ptr<SharedAnalysis> broker) noexcept
+    : broker_(std::move(broker)) {}
+
+bool SpectrogramComparison::activate(SharedAnalysis::Request profile) noexcept {
+    if (!broker_ || !broker_->active()) return false;
+    try {
+        Source nextPre, nextPost;
+        nextPre.lease = broker_->acquire(profile);
+        if (!nextPre.lease) return false;
+        auto postProfile = profile;
+        postProfile.point = engine::ScopePoint::PreFader;
+        nextPost.lease = broker_->acquire(postProfile);
+        if (!nextPost.lease) return false;
+        nextPre.start = nextPre.lease.sourcePosition();
+        nextPost.start = nextPost.lease.sourcePosition();
+
+        auto oldPre = std::move(pre_);
+        auto oldPost = std::move(post_);
+        pre_ = std::move(nextPre);
+        post_ = std::move(nextPost);
+        profile_ = profile;
+        visible_ = true;
+        held_.reset();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool SpectrogramComparison::show(SharedAnalysis::Request profile) noexcept {
+    if (profile.track <= 0 || profile.device || profile.stereoMeter || !broker_ || !broker_->active()) return false;
+    profile.point = engine::ScopePoint::ChainInput;
+    profile.outputs = SharedAnalysis::Spectrogram;
+    profile.heardSpectrogramGrid = true;
+    if (profile.hopSize == 0) profile.hopSize = profile.fftSize / 4;
+    if (profile == profile_ && (visible_ || held_)) {
+        visible_ = true;
+        return true;
+    }
+    return activate(profile);
+}
+
+void SpectrogramComparison::release() noexcept {
+    auto pre = std::move(pre_.lease);
+    auto post = std::move(post_.lease);
+    if (!held_) {
+        pre_.picture.reset();
+        post_.picture.reset();
+    }
+}
+
+void SpectrogramComparison::hide() noexcept {
+    visible_ = false;
+    release();
+}
+
+void SpectrogramComparison::update(Source &source) noexcept {
+    auto picture = source.lease.read();
+    if (picture && picture->generation != source.start.generation) {
+        source.start = source.lease.sourcePosition();
+        picture.reset();
+    }
+    source.picture = std::move(picture);
+}
+
+void SpectrogramComparison::frame() noexcept {
+    if (!visible_ || held_ || !broker_ || !broker_->active()) return;
+    broker_->requestFrame();
+    update(pre_);
+    update(post_);
+}
+
+bool SpectrogramComparison::freeze(std::int64_t heardEnd, std::uint64_t minimumRevision) noexcept {
+    if (held_) return true;
+    std::array<SpectrogramColumnPair, 1> candidate;
+    if (columns(heardEnd, minimumRevision, candidate).empty()) return false;
+    held_ = HeldPosition{heardEnd, minimumRevision};
+    release();
+    return true;
+}
+
+bool SpectrogramComparison::thaw() noexcept {
+    if (!held_) return true;
+    if (visible_) return activate(profile_);
+    held_.reset();
+    release();
+    return true;
+}
+
+std::optional<SpectrogramComparison::Format> SpectrogramComparison::format() const noexcept {
+    if (!visible_ || !pre_.picture || !post_.picture) return {};
+    const auto &pre = *pre_.picture, &post = *post_.picture;
+    return Format{pre.sampleRate, pre.hopSize, pre.generation, post.generation, pre.sourceEpoch, post.sourceEpoch};
+}
+
+std::span<const SpectrogramColumnPair> SpectrogramComparison::columns(
+    std::int64_t heardEnd, std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) const noexcept {
+    if (!visible_ || !broker_ || !broker_->active() || !pre_.picture || !post_.picture) return {};
+    if (held_) {
+        heardEnd = held_->heardEnd;
+        minimumRevision = held_->minimumRevision;
+    }
+    return matchSpectrogramColumns(*pre_.picture, *post_.picture, heardEnd, minimumRevision, storage,
+                                   {pre_.start.written, post_.start.written});
 }
 } // namespace adi::ui

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mix_analysers.hpp"
 #include "ui_look.hpp"
+#include "ui_spectrogram_presentation.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/window_state.hpp"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 
 namespace adi::ui {
@@ -119,7 +122,7 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         owner_.compareB.setTextWhenNothingSelected("Choose channel B");
         populateSpectrumScaleMenu(owner_.compareScale);
         owner_.compareScale.setTitle("Comparison display scale");
-        owner_.compareScale.onChange = [this] { if (eligible()) repaint(); };
+        owner_.compareScale.onChange = [this] { if (eligible()) refresh(); };
         owner_.holdB.onClick = [this] {
             const auto current = view();
             if (!current.visible || !comparison_) return;
@@ -141,12 +144,14 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         if (broker_ == broker && a_ == a && b_ == b) return;
         if (broker_ != broker) {
             comparison_.reset();
+            traces_ = {};
             broker_ = std::move(broker);
         }
         a_ = a; b_ = b;
         syncDemand();
         repaint();
     }
+    std::array<std::uint64_t, 2> projectionBuilds() const noexcept { return projectionBuilds_; }
     AnalysisComparison::View view() const noexcept {
         auto current = comparison_ ? comparison_->view() : AnalysisComparison::View{};
         if (current.status == AnalysisComparison::Status::Independent &&
@@ -222,24 +227,15 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         }
         juce::Graphics::ScopedSaveState state(g);
         if (!wide && !g.reduceClipRegion(plot.toNearestInt())) return;
-        const auto stroke = [&](AnalysisComparison::Picture picture, juce::Colour colour) {
-            juce::Path curve;
-            bool started = false;
-            const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
-            for (std::size_t i = 1; i < picture.binsDbfs.size(); ++i) {
-                const auto hz = hzPerBin * static_cast<double>(i);
-                if (hz < axis.lowHz) continue;
-                if (hz > topHz) break;
-                if (!started) {
-                    curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[i]));
-                    started = true;
-                } else curve.lineTo(xAt(hz), yAt(picture.binsDbfs[i]));
-            }
-            g.setColour(colour);
-            g.strokePath(curve, juce::PathStrokeType(look::line));
-        };
-        stroke(current.b, look::accent);
-        stroke(current.a, look::value);
+        g.setColour(look::accent.withAlpha(spectrumFillOpacity));
+        g.fillPath(traces_[1].fill);
+        g.setColour(look::value.withAlpha(spectrumFillOpacity));
+        g.fillPath(traces_[0].fill);
+        const juce::PathStrokeType stroke(look::line);
+        g.setColour(look::accent);
+        g.strokePath(traces_[1].curve, stroke);
+        g.setColour(look::value);
+        g.strokePath(traces_[0].curve, stroke);
     }
     void visibilityChanged() override { syncDemand(); }
     void parentHierarchyChanged() override {
@@ -256,6 +252,76 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         std::uint64_t generation{}, epoch{}, revision{};
         bool operator==(const Stamp &) const = default;
     };
+    using Scale = SharedSpectrumView::SpectrumScale;
+    struct TraceKey {
+        AnalysisComparison::Endpoint endpoint;
+        Stamp stamp;
+        juce::Rectangle<float> plot;
+        double topHz{};
+        Scale scale = Scale::Wide;
+        bool operator==(const TraceKey &) const = default;
+    };
+    struct Trace {
+        std::optional<TraceKey> key;
+        juce::Path curve, fill;
+    };
+
+    bool updateTraces(AnalysisComparison::View current, const std::array<Stamp, 2> &observed) {
+        const auto clear = [&] {
+            if (!traces_[0].key && !traces_[1].key) return false;
+            traces_ = {};
+            return true;
+        };
+        if (current.status != AnalysisComparison::Status::Independent &&
+            current.status != AnalysisComparison::Status::Held) return clear();
+        const auto scale = selectedSpectrumScale(owner_.compareScale);
+        const auto &axis = spectrumAxis(scale);
+        const auto topHz = std::min(axis.highHz, current.a.metadata->sampleRate * .5);
+        const auto body = plot_.withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
+        const bool wide = scale == Scale::Wide;
+        const auto plot = wide ? body : spectrumGridPlot(body, scale);
+        if (topHz <= axis.lowHz || plot.isEmpty() || (!wide && (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f)))
+            return clear();
+        const auto logWidth = wide ? std::log(topHz / axis.lowHz) : axis.logWidth;
+        const float inset = wide ? 0.f : 1.f;
+        const auto widthPerLogHz = (plot.getWidth() - inset) / logWidth;
+        const auto xAt = [&](double hz) {
+            return plot.getX() + static_cast<float>(widthPerLogHz * std::log(hz / axis.lowHz));
+        };
+        const auto yAt = [&](float db) { return plot.getY() + (plot.getHeight() - inset) * axis.y(db); };
+        const std::array pictures{current.a, current.b};
+        bool changed = false;
+        for (std::size_t i = 0; i < pictures.size(); ++i) {
+            const auto &picture = pictures[i];
+            auto &trace = traces_[i];
+            const TraceKey key{picture.metadata->endpoint, observed[i], plot, topHz, scale};
+            if (trace.key == key) continue;
+            ++projectionBuilds_[i];
+            trace.curve.clear();
+            trace.fill.clear();
+            const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
+            bool started = false;
+            for (std::size_t bin = 1; bin < picture.binsDbfs.size(); ++bin) {
+                const auto hz = hzPerBin * static_cast<double>(bin);
+                if (hz < axis.lowHz) continue;
+                if (hz > topHz) break;
+                if (!started) {
+                    trace.curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[bin]));
+                    started = true;
+                } else trace.curve.lineTo(xAt(hz), yAt(picture.binsDbfs[bin]));
+            }
+            if (started && spectrumScaleHasFill(scale)) {
+                trace.fill = trace.curve;
+                trace.fill.lineTo(trace.fill.getCurrentPosition().x, plot.getBottom());
+                trace.fill.lineTo(trace.fill.getBounds().getX(), plot.getBottom());
+                trace.fill.closeSubPath();
+            }
+            trace.key = key;
+            changed = true;
+        }
+        return changed;
+    }
+
     std::array<juce::Component *, 5> controls() {
         return {&owner_.compareA, &owner_.compareB, &owner_.compareScale, &owner_.holdB, &owner_.clearCompare};
     }
@@ -300,10 +366,11 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         const auto current = view();
         const auto stamp = [](const auto *m) { return m ? Stamp{m->generation, m->sourceEpoch, m->revision} : Stamp{}; };
         const std::array observed{stamp(current.a.metadata), stamp(current.b.metadata)};
+        const bool pathsChanged = updateTraces(current, observed);
         if (current.referenceHeld != held_) owner_.holdB.setButtonText(current.referenceHeld ? "Resume B" : "Hold B");
         owner_.holdB.setEnabled(current.visible && (current.referenceHeld || current.b.metadata != nullptr));
         owner_.clearCompare.setEnabled(current.visible);
-        if (observed != shown_ || current.status != status_ || current.referenceHeld != held_) {
+        if (pathsChanged || observed != shown_ || current.status != status_ || current.referenceHeld != held_) {
             shown_ = observed; status_ = current.status; held_ = current.referenceHeld;
             repaint();
         }
@@ -325,19 +392,564 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
     AnalysisComparison::Endpoint a_, b_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
     std::array<Stamp, 2> shown_{};
+    std::array<std::uint64_t, 2> projectionBuilds_{};
+    std::array<Trace, 2> traces_{};
     AnalysisComparison::Status status_ = AnalysisComparison::Status::Unavailable;
     juce::Rectangle<int> plot_;
     bool suspended_ = false, held_ = false;
 };
 
+class MixAnalysers::SpectrumStatistics final : public juce::Component {
+    using Picture = std::shared_ptr<const SharedAnalysis::Result>;
+
+  public:
+    SpectrumStatistics() {
+        setInterceptsMouseClicks(false, true);
+        for (auto *label : {&balance_, &correlation_, &integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_})
+            label->setInterceptsMouseClicks(false, false);
+        balance_.setTitle("RMS Balance");
+        balance_.setTooltip("Left and right RMS balance over the most recent two seconds of the primary Spectrum source.");
+        correlation_.setTitle("Stereo Correlation");
+        correlation_.setTooltip("Signed left and right correlation over the primary Spectrum window.");
+        balance_.setText("RMS balance --", juce::dontSendNotification);
+        correlation_.setText("Correlation --", juce::dontSendNotification);
+        for (auto *label : {&balance_, &correlation_}) addAndMakeVisible(*label);
+        integratedRms_.setTitle("Integrated RMS");
+        integratedRms_.setTooltip("Left and right integrated RMS since this level interval began.");
+        maxCrest_.setTitle("Max Crest");
+        maxCrest_.setTooltip("Highest left and right crest factors in this level interval.");
+        samplePeak_.setTitle("Sample Peak");
+        samplePeak_.setTooltip("Highest left and right sample peaks in this level interval.");
+        sampleClips_.setTitle("Sample Clips");
+        sampleClips_.setTooltip("Number of left and right samples with magnitude above full scale in this level interval.");
+        for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) addChildComponent(*label);
+        truePeak_.setTitle("Spectrum True Peak");
+        truePeak_.setTooltip("Show held true peak for each channel. Sample clip counts remain visible.");
+        truePeak_.onClick = [this] { if (onTruePeakChanged) onTruePeakChanged(); };
+        addChildComponent(truePeak_);
+        refreshAppearance();
+    }
+
+    void present(const Picture &window) {
+        if (samePicture(window, last_)) return;
+        last_ = window;
+        juce::String balance("--"), correlation("--");
+        if (window && window->balanceRms2s) {
+            const double left = (*window->balanceRms2s)[0], right = (*window->balanceRms2s)[1];
+            const bool hasLeft = std::isfinite(left) && left > 0., hasRight = std::isfinite(right) && right > 0.;
+            if (hasLeft && hasRight) {
+                const double difference = 20. * std::log10(left / right);
+                balance = std::abs(difference) < .05 ? juce::String("Centre")
+                    : juce::String(difference > 0. ? "L " : "R ") + juce::String(std::abs(difference), 1) + " dB";
+            } else if (hasLeft || hasRight) {
+                balance = hasLeft ? "L only" : "R only";
+            }
+        }
+        if (window && window->rms[0] > 0.f && window->rms[1] > 0.f && std::isfinite(window->correlation)) {
+            const auto value = std::abs(window->correlation) < .005 ? 0. : window->correlation;
+            correlation = juce::String(value < 0. ? "" : "+") + juce::String(value, 2);
+        }
+        balance_.setText("RMS balance " + balance, juce::dontSendNotification);
+        correlation_.setText("Correlation " + correlation, juce::dontSendNotification);
+        if (levelRowsVisible_) presentLevels(window);
+    }
+
+    std::function<void()> onTruePeakChanged;
+    bool truePeakRequested() const noexcept { return levelRowsVisible_ && truePeak_.getToggleState(); }
+    void updateTruePeakReadout(const Picture &current) {
+        const bool enabled = truePeak_.getToggleState();
+        if (enabled) truePeakBeforeAdmission_ = current;
+        else truePeakBeforeAdmission_.reset();
+        samplePeak_.setTitle(enabled ? "True Peak" : "Sample Peak");
+        samplePeak_.setTooltip(enabled ? "Highest left and right reconstructed peaks in this true peak interval."
+                                      : "Highest left and right sample peaks in this level interval.");
+        presentLevels(current);
+    }
+
+    void setLevelRowsVisible(bool visible, const Picture &current) {
+        if (levelRowsVisible_ == visible) return;
+        levelRowsVisible_ = visible;
+        if (visible) {
+            // The curve can remain on screen when a new level interval is admitted.
+            // Its old integrated readings do not belong to the new interval.
+            levelsBeforeAdmission_ = current;
+            presentLevels({});
+        } else {
+            levelsBeforeAdmission_.reset();
+        }
+        for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) label->setVisible(visible);
+        truePeak_.setVisible(visible);
+    }
+
+    void refreshAppearance() {
+        const std::pair appearance{look::themeId(), look::densityId()};
+        if (appearance_ == appearance) return;
+        appearance_ = appearance;
+        for (auto *label : {&balance_, &correlation_, &integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) {
+            label->setFont(look::font(look::fontCaption));
+            label->setColour(juce::Label::textColourId, look::textDim);
+        }
+    }
+
+    void resized() override {
+        const auto placeRow = [](juce::Rectangle<int> row, juce::Label &left, juce::Label &right) {
+            left.setBounds(row.removeFromLeft((row.getWidth() - look::gap) / 2));
+            row.removeFromLeft(look::gap);
+            right.setBounds(row);
+        };
+        auto area = getLocalBounds();
+        placeRow(area.removeFromTop(look::mixChannelRowHeight), balance_, correlation_);
+        if (levelRowsVisible_) {
+            placeRow(area.removeFromTop(look::mixChannelRowHeight), integratedRms_, maxCrest_);
+            truePeak_.setBounds(area.removeFromLeft(look::mixChannelLevelWidth + look::fieldHeight));
+            area.removeFromLeft(look::gap);
+            placeRow(area, samplePeak_, sampleClips_);
+        }
+    }
+    void visibilityChanged() override { if (!isShowing()) present({}); }
+
+  private:
+    static bool samePicture(const Picture &picture, const std::weak_ptr<const SharedAnalysis::Result> &reference) noexcept {
+        return !picture.owner_before(reference) && !reference.owner_before(picture);
+    }
+
+    void presentLevels(const Picture &window) {
+        const bool showTruePeak = truePeak_.getToggleState();
+        std::array<juce::String, 2> rms{"--", "--"}, crest{"--", "--"};
+        std::array<juce::String, 2> peak{"--", "--"}, clips{"--", "--"};
+        if (window && window->spectrumLevels && !samePicture(window, levelsBeforeAdmission_)) {
+            const auto &levels = *window->spectrumLevels;
+            const bool truePeakReady = levels.truePeak && !samePicture(window, truePeakBeforeAdmission_);
+            const auto text = [](double db) { return juce::String(std::abs(db) < .05 ? 0. : db, 1); };
+            for (std::size_t channel = 0; channel < rms.size(); ++channel) {
+                const double peakValue = showTruePeak
+                    ? (truePeakReady ? (*levels.truePeak)[channel] : 0.)
+                    : static_cast<double>(levels.samplePeak[channel]);
+                if (std::isfinite(peakValue) && peakValue > 0.) {
+                    const double db = 20. * std::log10(peakValue);
+                    peak[channel] = juce::String(db >= .05 ? "+" : "") + text(db);
+                }
+                clips[channel] = juce::String(static_cast<juce::uint64>(levels.sampleClips[channel]));
+                const auto magnitude = levels.integratedRms[channel];
+                if (!std::isfinite(magnitude) || magnitude <= 0.) continue;
+                rms[channel] = text(20. * std::log10(magnitude));
+                const auto crestDb = levels.maxCrestDb[channel];
+                if (std::isfinite(crestDb) && crestDb >= 0.) crest[channel] = text(crestDb);
+            }
+        }
+        integratedRms_.setText("Integrated RMS  L " + rms[0] + "  R " + rms[1] + " dBFS",
+                               juce::dontSendNotification);
+        maxCrest_.setText("Max crest  L " + crest[0] + "  R " + crest[1] + " dB", juce::dontSendNotification);
+        samplePeak_.setText((showTruePeak ? "True peak  L " : "Sample peak  L ") + peak[0] + "  R " + peak[1] +
+                            (showTruePeak ? " dBTP" : " dBFS"), juce::dontSendNotification);
+        sampleClips_.setText("Sample clips  L " + clips[0] + "  R " + clips[1], juce::dontSendNotification);
+    }
+
+    juce::Label balance_, correlation_, integratedRms_, maxCrest_, samplePeak_, sampleClips_;
+    juce::ToggleButton truePeak_{"TP"};
+    std::optional<std::pair<ThemeId, DensityId>> appearance_;
+    std::weak_ptr<const SharedAnalysis::Result> last_, levelsBeforeAdmission_, truePeakBeforeAdmission_;
+    bool levelRowsVisible_ = false;
+};
+
+class MixAnalysers::SpectrogramDelta final : public juce::Component {
+  public:
+    explicit SpectrogramDelta(AnalysisPane &exportPane) {
+        setTitle("Spectrogram post minus pre");
+        cursor_.setTitle("Spectrogram comparison cursor");
+        cursor_.setJustificationType(juce::Justification::centred);
+        cursor_.setInterceptsMouseClicks(false, false);
+        addAndMakeVisible(cursor_);
+        freeze_.setTitle("Freeze Spectrogram comparison");
+        freeze_.setEnabled(false);
+        freeze_.onClick = [this] {
+            if (!comparison_) return;
+            const SafePointer<SpectrogramDelta> alive(this);
+            if (comparison_->frozen()) {
+                if (comparison_->thaw() && alive) clear();
+            } else if (minimumRevision_) {
+                comparison_->freeze(heardEnd_, *minimumRevision_);
+            }
+            if (alive) syncFreeze();
+        };
+        addAndMakeVisible(freeze_);
+        export_.setTitle("Export Spectrogram comparison PNG");
+        export_.setEnabled(false);
+        export_.onClick = [this, &exportPane] {
+            if (image_.isValid()) exportPane.exportSpectrogramImage(exportImage(), *this, "Spectrogram comparison.png");
+        };
+        addAndMakeVisible(export_);
+        ruler_.setTitle("Spectrogram comparison frequency ruler");
+        ruler_.setTooltip("Label the comparison frequency scale beside the history.");
+        ruler_.onClick = [this] {
+            refreshCursor();
+            repaint();
+        };
+        addAndMakeVisible(ruler_);
+        spectrogram::configureScaleBox(scaleBox_);
+        scaleBox_.setTitle("Spectrogram comparison frequency scale");
+        scaleBox_.setTooltip("Choose how frequency is spaced vertically.");
+        scaleBox_.onChange = [this] {
+            const auto id = scaleBox_.getSelectedId();
+            if (id <= 0) return;
+            scale_ = static_cast<FrequencyScale>(id - 1);
+            if (image_.isValid() && scale_ != rasterScale_) renderColumns();
+        };
+        addAndMakeVisible(scaleBox_);
+    }
+
+    void setSweep(bool sweep) {
+        if (sweep_ == sweep) return;
+        sweep_ = sweep;
+        refreshCursor();
+        repaint();
+    }
+
+    void stop() {
+        cursorPoint_.reset();
+        cursor_.setText({}, juce::dontSendNotification);
+        if (!comparison_) return;
+        if (!comparison_->frozen()) clear();
+        comparison_->hide();
+    }
+
+    void frame(const std::shared_ptr<SharedAnalysis> &broker, std::int64_t track, SharedAnalysis::Channel channel,
+               std::int64_t heardEnd, std::optional<std::uint64_t> minimumRevision) {
+        const SafePointer<SpectrogramDelta> alive(this);
+        if (!broker || !broker->active()) {
+            auto retired = std::move(comparison_);
+            owner_.reset();
+            clear();
+            return;
+        }
+        if (owner_.lock() != broker) {
+            auto retired = std::move(comparison_);
+            owner_ = broker;
+            if (broker) comparison_ = std::make_unique<SpectrogramComparison>(broker);
+            clear();
+            retired.reset();
+            if (!alive) return;
+        }
+        if (!plotIsShowing() || !comparison_ || track <= 0) {
+            stop();
+            return;
+        }
+        if (track != track_ || channel != channel_) clear();
+        track_ = track;
+        channel_ = channel;
+        SharedAnalysis::Request request{track};
+        request.channel = channel;
+        const bool showing = comparison_->show(request);
+        if (!alive) return;
+        if (!showing) { stop(); return; }
+        heardEnd_ = heardEnd;
+        minimumRevision_ = minimumRevision;
+        const bool held = comparison_->frozen();
+        syncFreeze();
+        if (held && image_.isValid() && theme_ == look::themeId()) return;
+        comparison_->frame();
+        renderColumns();
+    }
+
+    void visibilityChanged() override { if (!isShowing()) stop(); }
+
+    void mouseMove(const juce::MouseEvent &event) override {
+        cursorPoint_ = event.position;
+        refreshCursor();
+    }
+
+    void mouseExit(const juce::MouseEvent &) override {
+        cursorPoint_.reset();
+        cursor_.setText({}, juce::dontSendNotification);
+    }
+
+    void resized() override {
+        auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
+        auto actions = header.removeFromRight(std::min(4 * look::mixPageWidth + 3 * look::gap, header.getWidth() / 2));
+        const auto buttonWidth = std::max(0, (actions.getWidth() - 3 * look::gap) / 4);
+        scaleBox_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
+        ruler_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
+        freeze_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
+        export_.setBounds(actions);
+        header.removeFromLeft(header.getWidth() / 3);
+        cursor_.setBounds(header.removeFromLeft(header.getWidth() / 2));
+        if (getLocalBounds().isEmpty()) stop();
+        else refreshCursor();
+    }
+
+    void paint(juce::Graphics &graphics) override {
+        auto bounds = getLocalBounds();
+        graphics.fillAll(look::display);
+        bounds.reduce(look::border, look::border);
+        auto header = bounds.removeFromTop(look::fieldHeight);
+        header = header.withRight(scaleBox_.getX());
+        graphics.setFont(look::font());
+        graphics.setColour(look::record);
+        graphics.drawFittedText("-24 dB", header.removeFromLeft(header.getWidth() / 3), juce::Justification::centredLeft, 1);
+        const auto centre = header.removeFromLeft(header.getWidth() / 2);
+        if (cursor_.getText().isEmpty()) {
+            graphics.setColour(look::textDim);
+            graphics.drawFittedText("Post minus pre", centre, juce::Justification::centred, 1);
+        }
+        graphics.setColour(look::accent);
+        graphics.drawFittedText("+24 dB", header, juce::Justification::centredRight, 1);
+        const auto plot = plotBounds();
+        if (image_.isValid()) {
+            if (sweep_) spectrogram::paintSweep(graphics, image_, plot, sweepRotation(), true);
+            else graphics.drawImage(image_, plot);
+            if (ruler_.getToggleState())
+                spectrogram::paintRuler(graphics, basePlotBounds(), plot, rasterScale_,
+                                        lowestHz, upperFrequency(format_.sampleRate));
+        } else {
+            graphics.setColour(look::textDim);
+            graphics.drawFittedText("Waiting for matched audio", plot.toNearestInt(), juce::Justification::centred, 1);
+        }
+    }
+
+  private:
+    static constexpr int width = 128, height = 128;
+    static constexpr float rangeDb = 24.f;
+    static constexpr double lowestHz = 20.;
+    using ColumnKey = std::array<std::uint64_t, 2>;
+    using FrequencyScale = SharedSpectrumView::SpectrogramScale;
+    struct BinChange {
+        std::size_t bin = 0;
+        float db = 0.f;
+    };
+
+    static double upperFrequency(double sampleRate) noexcept { return std::min(20000., sampleRate * .5); }
+
+    juce::Rectangle<float> basePlotBounds() const {
+        return getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap).toFloat();
+    }
+
+    juce::Rectangle<float> plotBounds() const {
+        return spectrogram::rulerPlot(basePlotBounds(), ruler_.getToggleState());
+    }
+
+    bool plotIsShowing() const {
+        if (!isShowing()) return false;
+        if (const auto *peer = getPeer(); peer && peer->isMinimised()) return false;
+        auto visible = plotBounds().toNearestInt();
+        for (auto *parent = getParentComponent(); parent && !visible.isEmpty(); parent = parent->getParentComponent())
+            visible = visible.getIntersection(getLocalArea(parent, parent->getLocalBounds()));
+        return !visible.isEmpty();
+    }
+
+    void syncFreeze() {
+        const bool held = comparison_->frozen();
+        freeze_.setToggleState(held, juce::dontSendNotification);
+        freeze_.setButtonText(held ? "Thaw" : "Freeze");
+    }
+
+    void clear() {
+        if (image_.isValid()) {
+            image_ = {};
+            lastHop_.reset();
+            repaint();
+        }
+        cursor_.setText({}, juce::dontSendNotification);
+        freeze_.setEnabled(comparison_ && comparison_->frozen());
+        export_.setEnabled(false);
+    }
+
+    void renderColumns() {
+        if (!comparison_ || (!minimumRevision_ && !comparison_->frozen())) { clear(); return; }
+        std::array<SpectrogramColumnPair, width> storage;
+        const auto columns = comparison_->columns(heardEnd_, minimumRevision_.value_or(0), storage);
+        const auto format = comparison_->format();
+        if (columns.empty() || !format) { clear(); return; }
+        freeze_.setEnabled(true);
+        updateRaster(columns, *format);
+        export_.setEnabled(true);
+    }
+
+    void prepareImage(SpectrogramComparison::Format format, std::size_t bins) {
+        format_ = format;
+        rasterScale_ = scale_;
+        theme_ = look::themeId();
+        image_ = juce::Image(juce::Image::RGB, width, height, true, juce::SoftwareImageType{});
+        image_.clear(image_.getBounds(), look::display);
+        keys_.fill({});
+        lastHop_.reset();
+        const double topHz = upperFrequency(format.sampleRate);
+        const double lowHz = std::min(lowestHz, topHz);
+        const auto edge = [&](int row) {
+            const double fraction = 1. - static_cast<double>(row) / height;
+            // Log uses the normalized endpoints to preserve the original comparison pixels.
+            const auto normalized = rasterScale_ == FrequencyScale::Log
+                ? spectrogram::frequencyAt(rasterScale_, 2. * lowHz / format.sampleRate, (topHz / format.sampleRate) * 2., fraction)
+                : 2. * spectrogram::frequencyAt(rasterScale_, lowHz, topHz, fraction) / format.sampleRate;
+            return static_cast<std::size_t>(std::clamp(normalized, 0., 1.) * static_cast<double>(bins - 1));
+        };
+        auto high = edge(0);
+        for (int y = 0; y < height; ++y) {
+            const auto low = std::min(edge(y + 1), bins - 1);
+            rowBins_[static_cast<std::size_t>(y)] = {low, std::min(bins, std::max(low, high) + 1)};
+            high = low;
+        }
+    }
+
+    static std::optional<BinChange> strongestChange(const SpectrogramColumnPair *pair, std::array<std::size_t, 2> bins) {
+        if (!pair) return {};
+        float strongest = dsp::kDbFloor;
+        std::optional<BinChange> result;
+        for (auto bin = bins[0]; bin < bins[1]; ++bin) {
+            const auto db = pair->changeDb(bin);
+            if (!db) continue;
+            const auto peak = std::max((*pair->pre->binsDbfs)[bin], (*pair->post->binsDbfs)[bin]);
+            if (peak > strongest) { strongest = peak; result = BinChange{bin, *db}; }
+        }
+        return result;
+    }
+
+    int sweepRotation() const noexcept {
+        if (!lastHop_) return 0;
+        return static_cast<int>((static_cast<std::uint64_t>(*lastHop_) - static_cast<std::uint64_t>(firstHop_) + 1) % width);
+    }
+
+    juce::Image exportImage() const {
+        if (!sweep_) return image_.createCopy();
+        juce::Image snapshot(juce::Image::RGB, width, height, true, juce::SoftwareImageType{});
+        juce::Graphics graphics(snapshot);
+        spectrogram::paintSweep(graphics, image_, snapshot.getBounds().toFloat(), sweepRotation(), false);
+        return snapshot;
+    }
+
+    void refreshCursor() {
+        if (!cursorPoint_ || !plotBounds().contains(*cursorPoint_) ||
+            !comparison_ || !lastHop_ || (!minimumRevision_ && !comparison_->frozen())) {
+            cursor_.setText({}, juce::dontSendNotification);
+            return;
+        }
+        std::array<SpectrogramColumnPair, width> storage;
+        updateCursor(comparison_->columns(heardEnd_, minimumRevision_.value_or(0), storage));
+    }
+
+    void updateCursor(std::span<const SpectrogramColumnPair> columns) {
+        juce::String text;
+        const auto plot = plotBounds();
+        if (cursorPoint_ && lastHop_ && plot.contains(*cursorPoint_)) {
+            const auto x = static_cast<int>((cursorPoint_->x - plot.getX()) / plot.getWidth() * width);
+            const auto y = static_cast<int>((cursorPoint_->y - plot.getY()) / plot.getHeight() * height);
+            const auto imageX = (std::clamp(x, 0, width - 1) + width - (sweep_ ? sweepRotation() : 0)) % width;
+            const auto age = static_cast<std::uint64_t>(width - 1 - imageX);
+            const auto rows = rowBins_[static_cast<std::size_t>(std::clamp(y, 0, height - 1))];
+            for (const auto &pair : columns) {
+                const auto hop = pair.pre->firstStamp / format_.hop;
+                if (static_cast<std::uint64_t>(*lastHop_) - static_cast<std::uint64_t>(hop) != age) continue;
+                if (const auto value = strongestChange(&pair, rows)) {
+                    const auto bins = pair.pre->binsDbfs->size();
+                    const auto hz = format_.sampleRate * (.5 * static_cast<double>(value->bin) / static_cast<double>(bins - 1));
+                    text = juce::String(hz, 1) + " Hz   " + (value->db >= 0.f ? "+" : "") + juce::String(value->db, 2) +
+                        " dB   Sample " + juce::String(static_cast<juce::int64>(pair.pre->firstStamp));
+                }
+                break;
+            }
+        }
+        cursor_.setText(text, juce::dontSendNotification);
+    }
+
+    void updateRaster(std::span<const SpectrogramColumnPair> columns, SpectrogramComparison::Format format) {
+        const auto nextHop = columns.back().pre->firstStamp / format.hop;
+        const bool newTimeline = !image_.isValid() || format != format_ || (lastHop_ && nextHop < *lastHop_);
+        if (newTimeline) firstHop_ = columns.front().pre->firstStamp / format.hop;
+        const bool reset = newTimeline || rasterScale_ != scale_ || theme_ != look::themeId();
+        if (reset) prepareImage(format, columns.back().pre->binsDbfs->size());
+        const auto distance = lastHop_ ? static_cast<std::uint64_t>(nextHop) - static_cast<std::uint64_t>(*lastHop_) : 0;
+        const auto shift = static_cast<int>(std::min<std::uint64_t>(distance, width));
+        if (shift > 0) {
+            if (shift < width) {
+                image_.moveImageSection(0, 0, shift, 0, width - shift, height);
+                std::move(keys_.begin() + shift, keys_.end(), keys_.begin());
+            }
+            std::fill(keys_.end() - shift, keys_.end(), ColumnKey{});
+            image_.clear({width - shift, 0, shift, height}, look::display);
+        }
+        lastHop_ = nextHop;
+        std::array<const SpectrogramColumnPair *, width> visible{};
+        for (const auto &pair : columns) {
+            const auto hop = pair.pre->firstStamp / format.hop;
+            const auto age = static_cast<std::uint64_t>(nextHop) - static_cast<std::uint64_t>(hop);
+            if (age < visible.size()) visible[visible.size() - 1 - static_cast<std::size_t>(age)] = &pair;
+        }
+        const auto key = [](const SpectrogramColumnPair *pair) {
+            return pair ? ColumnKey{pair->pre->serial, pair->post->serial} : ColumnKey{};
+        };
+        const bool changed = !std::equal(visible.begin(), visible.end(), keys_.begin(),
+                                         [&](const auto *pair, const auto &prior) { return key(pair) == prior; });
+        if (changed) {
+            juce::Image::BitmapData pixels(image_, juce::Image::BitmapData::writeOnly);
+            for (int x = 0; x < width; ++x) {
+                const auto index = static_cast<std::size_t>(x);
+                const auto *pair = visible[index];
+                const auto next = key(pair);
+                if (next == keys_[index]) continue;
+                keys_[index] = next;
+                for (int y = 0; y < height; ++y) {
+                    const auto db = strongestChange(pair, rowBins_[static_cast<std::size_t>(y)]);
+                    const juce::Colour colour = db ? look::frame.interpolatedWith(db->db < 0.f ? look::record : look::accent,
+                        std::min(1.f, std::abs(db->db) / rangeDb)) : look::display;
+                    pixels.setPixelColour(x, y, colour);
+                }
+            }
+        }
+        if (reset || shift > 0 || changed) {
+            if (cursorPoint_) updateCursor(columns);
+            repaint();
+        }
+    }
+
+    std::weak_ptr<SharedAnalysis> owner_;
+    std::unique_ptr<SpectrogramComparison> comparison_;
+    std::int64_t track_ = 0, heardEnd_ = 0, firstHop_ = 0;
+    SharedAnalysis::Channel channel_ = SharedAnalysis::Channel::Mid;
+    std::optional<std::uint64_t> minimumRevision_;
+    SpectrogramComparison::Format format_;
+    std::optional<std::int64_t> lastHop_;
+    std::optional<juce::Point<float>> cursorPoint_;
+    juce::Image image_;
+    std::array<ColumnKey, width> keys_{};
+    std::array<std::array<std::size_t, 2>, height> rowBins_{};
+    ThemeId theme_ = ThemeId::Dark;
+    juce::TextButton freeze_{"Freeze"}, export_{"Export PNG"};
+    juce::ToggleButton ruler_{"Hz ruler"};
+    juce::ComboBox scaleBox_;
+    FrequencyScale scale_ = FrequencyScale::Log, rasterScale_ = FrequencyScale::Log;
+    bool sweep_ = false;
+    juce::Label cursor_;
+};
+
 MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
+    spectrumStatistics_ = std::make_unique<SpectrumStatistics>();
+    spectrogramDelta_ = std::make_unique<SpectrogramDelta>(detail);
+    spectrumStatistics_->onTruePeakChanged = [this] {
+        spectrumStatistics_->updateTruePeakReadout(detail.view.snapshot());
+        detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());
+    };
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
                          "1 s Average", "Compare", "Bands", "Waveform"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
+    compareSpectrogram_.setTitle("Spectrogram comparison");
+    compareSpectrogram_.setTooltip("Show the signed change between this channel's pre and post effects.");
+    compareSpectrogram_.onClick = [this] {
+        const SafePointer<MixAnalysers> alive(this);
+        updateSpectrogramView();
+        if (alive) resized();
+    };
+    comparisonSweep_.setTitle("Spectrogram comparison Sweep");
+    comparisonSweep_.setTooltip("Switch between a scrolling comparison and a fixed display with a moving write head.");
+    comparisonSweep_.onClick = [this] { spectrogramDelta_->setSweep(comparisonSweep_.getToggleState()); };
+    // held-mixview merge: the Spectrum page is the Filled Spectrum of the analysers queue (27 Nov);
+    // the Mix View seat's line traces (Realtime, the averages, Sigma) are kept in the view, not
+    // offered here, until the director rules (held-mixview.md, "For the director").
     for (std::size_t i = 0; i < traceNames.size(); ++i)
         spectrumTraceBox.addItem(traceNames[i], static_cast<int>(i) + 1);
     spectrumTraceBox.setTitle("Spectrum trace");
@@ -346,6 +958,16 @@ MixAnalysers::MixAnalysers() {
         const auto id = spectrumTraceBox.getSelectedId();
         if (page_ == Page::Spectrum && id > 0 && id <= static_cast<int>(traceNames.size()))
             detail.view.setFilledSpectrumCurve(static_cast<FilledCurve>(id - 1));
+    };
+    phaseBandsBox_.addItemList({"Correlation", "Width", "Pan"}, 1);
+    phaseBandsBox_.setSelectedId(1, juce::dontSendNotification);
+    phaseBandsBox_.setTitle("Phase band display");
+    phaseBandsBox_.setTooltip("Show signed correlation, side energy fraction, or stereo pan by frequency band.");
+    phaseBandsBox_.onChange = [this] { updatePhaseBandDisplay(); };
+    pinnedTracks_.setTitle("Pinned tracks");
+    pinnedTracks_.setTooltip("Overlay your Stack pins in Realtime, either average, or Realtime Sigma.");
+    pinnedTracks_.onClick = [this] {
+        if (!pinnedTracks_.getToggleState()) clearPinnedSpectrum();
     };
     pageBox.onChange = [this] {
         if (const int id = pageBox.getSelectedId(); id > 0) setPage(static_cast<Page>(id - 1));
@@ -361,14 +983,22 @@ MixAnalysers::MixAnalysers() {
     };
     addAndMakeVisible(pageBox);
     addAndMakeVisible(sourceBox);
+    addChildComponent(compareSpectrogram_);
+    addChildComponent(comparisonSweep_);
     addChildComponent(spectrumTraceBox);
+    addChildComponent(phaseBandsBox_);
+    addChildComponent(pinnedTracks_);
     addChildComponent(detail);
     detail.usePageControls();
+    detail.view.enablePhaseBands();
     addChildComponent(*table_);
     addChildComponent(*compare_);
+    addChildComponent(*spectrumStatistics_);
+    addChildComponent(*spectrogramDelta_);
     const auto comparisonChanged = [this] { updateComparison(owner_.lock()); };
     compareA.onChange = comparisonChanged; compareB.onChange = comparisonChanged;
     for (std::size_t i = 0; i < tiles_.size(); ++i) {
+        if (modes[i] == Mode::Phase) tiles_[i].enablePhaseBands();
         tiles_[i].setMode(modes[i]);
         addChildComponent(tiles_[i]);
     }
@@ -387,6 +1017,7 @@ void MixAnalysers::setPage(Page page) {
     const bool comparing = page == Page::Compare;
     sourceBox.setVisible(page != Page::Analysis && !comparing);
     spectrumTraceBox.setVisible(page == Page::Spectrum);
+    if (page != Page::Spectrum) clearPinnedSpectrum();
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
     if (!showTable && !comparing) {
@@ -397,9 +1028,30 @@ void MixAnalysers::setPage(Page page) {
         else detail.setMode(modes[index - 1]);
         if (page == Page::Spectrum) spectrumTraceBox.onChange();
     }
-    detail.setVisible(!showTable && !comparing);
+    const SafePointer<MixAnalysers> alive(this);
+    updateSpectrogramView();
+    if (!alive) return;
+    const bool canPin = page == Page::Spectrum && SharedSpectrumView::supportsSpectrumOverlays(detail.mode());
+    // The pins overlay line traces only; the Filled Spectrum page shows no pin control.
+    pinnedTracks_.setVisible(canPin);
+    pinnedTracks_.setEnabled(canPin);
+    if (!canPin) clearPinnedSpectrum();
     compare_->setVisible(comparing);
     resized();
+}
+
+void MixAnalysers::updateSpectrogramView() {
+    const bool spectrogram = page_ == Page::Spectrogram;
+    const bool delta = spectrogram && compareSpectrogram_.getToggleState();
+    const bool detailVisible = page_ != Page::All && page_ != Page::Analysis && page_ != Page::Compare && !delta;
+    compareSpectrogram_.setVisible(spectrogram);
+    comparisonSweep_.setVisible(delta);
+    detail.setVisible(detailVisible);
+    spectrogramDelta_->setVisible(delta);
+}
+
+void MixAnalysers::visibilityChanged() {
+    if (!isShowing() && spectrogramDelta_) spectrogramDelta_->stop();
 }
 
 void MixAnalysers::setMode(Mode mode) {
@@ -483,6 +1135,10 @@ void MixAnalysers::refreshSourceControl() {
 }
 
 AnalysisComparison::View MixAnalysers::comparisonView() const noexcept { return compare_->view(); }
+
+std::array<std::uint64_t, 2> MixAnalysers::comparisonProjectionBuildsForTest() const noexcept {
+    return compare_->projectionBuilds();
+}
 void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broker) {
     const auto selected = [this](int id) {
         AnalysisComparison::Endpoint endpoint;
@@ -497,10 +1153,59 @@ void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broke
     };
     compare_->present(broker, selected(compareA.getSelectedId()), selected(compareB.getSelectedId()));
 }
+void MixAnalysers::updatePhaseBandDisplay() {
+    using Display = SharedSpectrumView::PhaseBandDisplay;
+    const auto selected = phaseBandsBox_.getSelectedId();
+    const auto mode = page_ == Page::Phase && phaseBandsBox_.isVisible() && selected > 0
+        ? static_cast<Display>(selected - 1) : Display::Correlation;
+    detail.view.setPhaseBandDisplay(mode);
+}
+void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint64_t generation, std::int64_t primary,
+                                       const ViewStateStore *viewState) {
+    if (page_ != Page::Spectrum || !SharedSpectrumView::supportsSpectrumOverlays(detail.mode()) ||
+        !pinnedTracks_.getToggleState() || !viewState) {
+        clearPinnedSpectrum();
+        return;
+    }
+    const auto &pins = viewState->stackPins();
+    const PinProjectionStamp current{viewState, reader.get(), generation, pins.revision, primary, look::themeId()};
+    if (pinnedSpectrumStamp_ == current) return;
+    // The primary trace counts toward the sixteen-curve Overview limit.
+    std::array<SharedSpectrumView::SpectrumOverlayTrack, SharedSpectrumView::kSpectrumOverlayTracks> selected{};
+    std::size_t count = 0;
+    const auto &tracks = reader.tracks();
+    if (!pins.ids.empty()) {
+        for (std::size_t i = 0; i < tracks.size() && count < selected.size(); ++i) {
+            const auto &track = *tracks[i];
+            if (track.id == primary || !std::binary_search(pins.ids.begin(), pins.ids.end(), track.id)) continue;
+            const auto colour = track.color && *track.color >= 0 ? look::paletteColour(*track.color) : look::trackColour(i);
+            selected[count++] = {track.id, channelName(track.id, track.name), colour};
+        }
+    }
+    detail.view.setSpectrumOverlayTracks(std::span{selected}.first(count),
+                                         SharedSpectrumView::SpectrumOverlayProfile::Overview);
+    pinnedSpectrumStamp_ = current;
+    const bool hasPins = count != 0;
+    if (hasPinnedSpectrum_ != hasPins) {
+        hasPinnedSpectrum_ = hasPins;
+        resized();
+    }
+}
+void MixAnalysers::clearPinnedSpectrum() {
+    if (!pinnedSpectrumStamp_) return;
+    pinnedSpectrumStamp_.reset();
+    detail.view.setSpectrumOverlayTracks({});
+    if (hasPinnedSpectrum_) {
+        hasPinnedSpectrum_ = false;
+        resized();
+    }
+}
 void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const SnapshotReader &reader,
-                         std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration) {
+                         std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration,
+                         const ViewStateStore *viewState, std::int64_t heardEnd, std::optional<std::uint64_t> minimumRevision) {
     if (!isShowing() || suspended_ || getLocalBounds().isEmpty()) return;
     if (owner_.owner_before(broker) || broker.owner_before(owner_)) {
+        clearPinnedSpectrum();
         owner_ = broker;
         followSelection(followsSelection_);
         channelGeneration_.reset();
@@ -516,12 +1221,19 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
         return;
     }
     const auto track = target(reader, main, selected);
+    updatePinnedSpectrum(reader, viewGeneration, track, viewState);
     if (page_ == Page::All) {
         for (auto &tile : tiles_) {
             tile.setSource(detail.point());
             tile.setChannel(detail.view.channel());
             tile.setPalette(detail.view.palette(), detail.view.paletteReversed());
             tile.setSpectrumSlope(detail.view.spectrumSlope());
+            if (tile.mode() == Mode::Spectrum) tile.setSpectrumScale(detail.view.spectrumScale());
+            if (tile.mode() == Mode::Spectrogram) {
+                tile.setSpectrogramScale(detail.view.spectrogramScale());
+                tile.setSpectrogramLevels(detail.view.spectrogramLevels());
+                tile.setSpectrogramGamma(detail.view.spectrogramGamma());
+            }
             tile.present(broker, track);
             tile.frame();
         }
@@ -530,7 +1242,15 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
         if (tableDirty_) { table_->refresh(); tableDirty_ = false; }
         table_->frame(broker);
     }
+    if (spectrogramDelta_->isVisible()) {
+        spectrogramDelta_->frame(broker, track, detail.view.channel(), heardEnd, minimumRevision);
+        return;
+    }
     if (detail.isVisible()) detail.frame(broker, track, track);
+    if (spectrumStatistics_->isShowing()) {
+        spectrumStatistics_->refreshAppearance();
+        spectrumStatistics_->present(detail.view.snapshot());
+    }
 }
 
 void MixAnalysers::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
@@ -545,24 +1265,62 @@ void MixAnalysers::suspend(bool value) {
     compare_->suspend(value);
     table_->suspend(value);
     for (auto &tile : tiles_) tile.suspend(value);
+    if (value) spectrumStatistics_->present({});
+    if (value) spectrogramDelta_->stop();
 }
 
 void MixAnalysers::resized() {
     auto area = getLocalBounds().reduced(look::border);
     auto header = area.removeFromTop(look::fieldHeight);
     const bool showsTrace = page_ == Page::Spectrum;
-    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsTrace ? 3 : 2))));
+    const bool showsPins = showsTrace && pinnedTracks_.isVisible();
+    const bool showsComparison = page_ == Page::Spectrogram;
+    const bool showsSweep = comparisonSweep_.isVisible();
+    const auto controls = showsPins || showsSweep ? 4 : showsTrace || showsComparison ? 3 : 2;
+    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / controls)));
     header.removeFromLeft(look::gap);
     if (showsTrace) {
-        sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 2)));
+        // Without the pin control the Spectrum header keeps today's two-field layout.
+        sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / (showsPins ? 3 : 2))));
         header.removeFromLeft(look::gap);
-        spectrumTraceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+        spectrumTraceBox.setBounds(header.removeFromLeft(
+            showsPins ? std::min(look::mixChannelMaxWidth, header.getWidth() / 2) : look::mixChannelMaxWidth));
+        if (showsPins) {
+            header.removeFromLeft(look::gap);
+            pinnedTracks_.setBounds(header.removeFromLeft(look::mixPageWidth));
+        }
     } else {
-        sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+        const auto width = showsComparison ? std::min(look::mixChannelMaxWidth, header.getWidth() / (showsSweep ? 3 : 2))
+                                           : look::mixChannelMaxWidth;
+        sourceBox.setBounds(header.removeFromLeft(width));
     }
+    header.removeFromLeft(look::gap);
+    if (showsComparison)
+        compareSpectrogram_.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsSweep ? 2 : 1))));
+    if (showsSweep) {
+        header.removeFromLeft(look::gap);
+        comparisonSweep_.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth())));
+    }
+    const bool showPhaseBands = page_ == Page::Phase && header.getWidth() >= look::mixChannelMinWidth;
+    phaseBandsBox_.setVisible(showPhaseBands);
+    if (showPhaseBands) phaseBandsBox_.setBounds(header.removeFromLeft(look::mixChannelMinWidth));
+    updatePhaseBandDisplay();
     area.removeFromTop(look::gap);
+    const bool showStatistics = hasPinnedSpectrum_ && showsTrace &&
+        area.getWidth() >= 2 * look::mixChannelMinWidth + look::gap && area.getHeight() >= 2 * look::mixChannelRowHeight;
+    const bool showLevels = showStatistics && area.getWidth() >= 2 * look::mixChannelMaxWidth + look::gap &&
+        area.getHeight() >= look::mixInfoHeight + 3 * look::mixChannelRowHeight;
+    spectrumStatistics_->setVisible(showStatistics);
+    spectrumStatistics_->setLevelRowsVisible(showLevels, detail.view.snapshot());
+    if (showLevels) detail.view.setSpectrumLevelsEnabled(true);
+    detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());
+    if (!showLevels) detail.view.setSpectrumLevelsEnabled(false);
+    detail.view.setStereoBalanceEnabled(showStatistics);
+    if (showStatistics)
+        spectrumStatistics_->setBounds(area.removeFromBottom((showLevels ? 3 : 1) * look::mixChannelRowHeight));
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
+    if (spectrogramDelta_->isVisible()) { spectrogramDelta_->setBounds(area); return; }
     if (page_ != Page::All) { detail.setBounds(area); return; }
     const int columns = area.getWidth() >= 3 * look::mixChannelMaxWidth ? 3 : 2;
     const int rows = 6 / columns;

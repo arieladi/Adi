@@ -79,7 +79,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     std::vector<stack::RowGeo> wanted;
     std::vector<std::int64_t> hidden;
     std::set<std::int64_t> folded;
-    std::vector<std::int64_t> demanded;
+    std::vector<std::int64_t> demanded, demandScratch;
     std::vector<std::int64_t> persistedPins;
     std::uint64_t pinRevision = 0;
     std::shared_ptr<const ParameterPublication> publication, structure, editPublication;
@@ -714,7 +714,8 @@ void StackTab::layoutRows() {
     const auto priorPublication = state_->publication;
     (void)priorPublication;
     if (root.devices.parameterDemand) {
-        std::vector<std::int64_t> devices;
+        auto &devices = state_->demandScratch;
+        devices.clear();
         for (const auto &geo : state_->wanted)
             model().forEachChainItem(geo.shown, [&](const stack::ItemGeo &item) {
                 if (!item.pill && !root.devices.folded(item.ref.device)) devices.push_back(item.ref.device);
@@ -1262,9 +1263,11 @@ void StackTab::parentHierarchyChanged() { visibilityChanged(); }
 void StackTab::updateParameterDemand(std::vector<std::int64_t> devices) {
     std::sort(devices.begin(), devices.end());
     devices.erase(std::unique(devices.begin(), devices.end()), devices.end());
-    if (devices == state_->demanded) return;
-    state_->demanded = std::move(devices);
-    if (root.devices.parameterDemand) root.devices.parameterDemand(this, state_->demanded);
+    const bool changed = devices != state_->demanded;
+    if (changed) state_->demanded.swap(devices);
+    // Reclaim the spare storage before notifying. The callback can enter a new layout.
+    if (devices.capacity() > state_->demandScratch.capacity()) state_->demandScratch.swap(devices);
+    if (changed && root.devices.parameterDemand) root.devices.parameterDemand(this, state_->demanded);
 }
 void StackTab::suspendParameters(bool suspended) {
     state_->parametersSuspended = suspended;

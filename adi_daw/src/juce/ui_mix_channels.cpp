@@ -2,12 +2,15 @@
 #include "ui_mix_channels.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/stack_model.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace adi::ui {
@@ -15,6 +18,12 @@ namespace {
 constexpr int kAllChannels = 1, kSoundingNow = 2;
 constexpr int kSpectrogram = 1, kSpectrum = 2;
 constexpr float kFloor = .001f; // -60 dBFS
+
+juce::String foldSearchText(std::string_view text) {
+    std::string folded;
+    stack::foldForSearch(text, folded);
+    return juce::String::fromUTF8(folded.c_str());
+}
 }
 
 MixChannelBrowser::MixChannelBrowser(AdiRootComponent &root) : root_(root) {
@@ -22,9 +31,9 @@ MixChannelBrowser::MixChannelBrowser(AdiRootComponent &root) : root_(root) {
     search.setTitle("Search channels and tools");
     search.setTextToShowWhenEmpty("Search channels and tools", look::textDim);
     search.onTextChange = [this] {
-        const auto next = search.getText().trim();
-        if (query_ == next) return;
-        query_ = next;
+        const auto next = foldSearchText(search.getText().trim().toRawUTF8());
+        if (searchQuery_ == next) return;
+        searchQuery_ = next;
         toolMatches_.clear();
         toolSearchGeneration_.reset();
         const juce::Component::SafePointer<MixChannelBrowser> alive(this);
@@ -131,7 +140,7 @@ void MixChannelBrowser::rebuildList() {
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const auto &e = entries_[i];
         if (membership_ && !std::binary_search(membership_->begin(), membership_->end(), e.id)) continue;
-        if (query_.isNotEmpty() && !e.name.containsIgnoreCase(query_) &&
+        if (searchQuery_.isNotEmpty() && !e.searchName.containsIgnoreCase(searchQuery_) &&
             !std::binary_search(toolMatches_.begin(), toolMatches_.end(), e.id)) continue;
         rows_.push_back(i);
     }
@@ -142,22 +151,22 @@ void MixChannelBrowser::rebuildList() {
 }
 
 bool MixChannelBrowser::refreshToolMatches() {
-    if (query_.isEmpty() || !isShowing()) return false;
+    if (searchQuery_.isEmpty() || !isShowing()) return false;
     const auto generation = root_.projectViewGeneration();
     if (toolSearchGeneration_ == generation) return false;
 
     // Read device names from the passive publication. An unchanged project
     // view does not need another lookup when live parameter values change.
-    const auto query = query_;
+    const auto query = searchQuery_;
     const juce::Component::SafePointer<MixChannelBrowser> alive(this);
     const auto devices = root_.devices.publication ? root_.devices.publication() : nullptr;
-    if (!alive || generation != root_.projectViewGeneration() || query != query_ || !isShowing()) return false;
+    if (!alive || generation != root_.projectViewGeneration() || query != searchQuery_ || !isShowing()) return false;
     toolSearchGeneration_ = generation;
 
     std::vector<std::int64_t> matches;
     if (devices)
         for (const auto &device : *devices)
-            if (juce::String::fromUTF8(device.name.c_str()).containsIgnoreCase(query))
+            if (foldSearchText(device.name).containsIgnoreCase(query))
                 matches.push_back(device.track);
     std::sort(matches.begin(), matches.end());
     matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
@@ -190,8 +199,10 @@ bool MixChannelBrowser::rebuildGroups(const SnapshotReader &reader, std::int64_t
         const auto &track = tree_[place.at];
         const auto colour = track.colour >= 0 ? look::paletteColour(track.colour) : look::trackColour(place.at);
         // The name as the track's header shows it: a stored "# Audio" shows its number (walk-B B3).
+        // Search folds the same shown name, so a viewer finds what the list shows.
         const auto shown = place.number != 0 ? displayName(track.name, place.number) : track.name;
-        entries_.push_back({place.id, juce::String::fromUTF8(shown.c_str()), colour, place.depth, place.group});
+        entries_.push_back({place.id, juce::String::fromUTF8(shown.c_str()), foldSearchText(shown),
+                            colour, place.depth, place.group});
         if (!place.group) continue;
         const auto old = std::find_if(groups_.begin(), groups_.end(), [&place](const Group &g) { return g.track == place.id; });
         const int item = old == groups_.end() ? nextGroupItem_++ : old->item;
@@ -316,6 +327,8 @@ void MixChannelBrowser::frame(const SnapshotReader &reader) {
     const auto &state = root_.state();
     preview.setPalette(state.analysisPalette, state.analysisPaletteReverse);
     preview.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+    if (preview.mode() == SharedSpectrumView::Mode::Spectrum)
+        preview.setSpectrumScale(root_.mixViewPanel.analysis.detail.view.spectrumScale());
     preview.present(root_.sharedAnalysis, selected != 0 ? selected : main_);
     preview.frame();
 }

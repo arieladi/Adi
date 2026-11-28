@@ -267,6 +267,10 @@ public:
     virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
     /// Actual graph suspension transition, on the same serialized audio owner.
     virtual void didSuspend() noexcept {}
+    /// Exact frame count of each active processor slice skipped on silence.
+    /// Dry bypass excludes the processor and does not advance its DSP clock.
+    /// Only interested native backends need to override this.
+    virtual void didSkip(std::int32_t /*frames*/) noexcept {}
     [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
@@ -640,6 +644,9 @@ public:
     [[nodiscard]] bool needsBypassTransition(std::int32_t configuredLatency) noexcept override;
     void processBypassTransition(const engine::NodeIo& io) noexcept override;
     void didSuspend() noexcept override;
+    void didSkip(std::int32_t frames) noexcept override {
+        if (inst_ != nullptr) inst_->didSkip(frames);
+    }
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;

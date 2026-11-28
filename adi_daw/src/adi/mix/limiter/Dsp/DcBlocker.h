@@ -23,6 +23,8 @@ public:
         reset();
     }
 
+    bool isNeutral() const noexcept { return priorInput == 0.0 && priorOutput == 0.0; }
+
     void reset() noexcept { priorInput = 0.0; priorOutput = 0.0; }
 
     float process(float sample) noexcept

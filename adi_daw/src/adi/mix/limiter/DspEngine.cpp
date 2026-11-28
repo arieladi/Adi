@@ -4,8 +4,11 @@
 #include "Dsp/ChannelGroups.h"
 #include "Dsp/ProcessingChain.h"
 #include "LoudnessMeter.h"
+#include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdint>
+#include <utility>
 
 namespace adi::mix::limiter
 {
@@ -197,6 +200,10 @@ struct DspEngine::Implementation
     MeterSnapshot meters;
     AtomicMeters published;
     bool peakWasEnabled = false;
+    // Native consumers opt in. Clock-only advancement requires a certified
+    // homogeneous history and a freshly settled control configuration.
+    bool trackQuiet = false, knownQuietHistory = true;
+    std::size_t quietFrames = 0, skippedFrames = 0, framesUntilHistoryCheck = 0;
     DisplayTelemetry displayHistory;
 
     Implementation() { published.publish(meters); }
@@ -300,6 +307,8 @@ struct DspEngine::Implementation
         const auto settings = validated(configuration);
         const auto key = structure(settings);
         resetRequested.store(false, std::memory_order_relaxed);
+        knownQuietHistory = true;
+        quietFrames = skippedFrames = framesUntilHistoryCheck = 0;
         mailbox.write(settings);
         requested.store(key, std::memory_order_relaxed);
         built.store(key, std::memory_order_relaxed);
@@ -354,6 +363,22 @@ struct DspEngine::Implementation
         publishConfiguration(validated(configuration));
     }
 
+    bool canSkipSilence() const noexcept
+    {
+        return trackQuiet && knownQuietHistory && active != nullptr && replacement == nullptr &&
+            quietFrames >= active->chain.silenceWarmupFrames() &&
+            pending.load(std::memory_order_acquire) == nullptr &&
+            active->key == requested.load(std::memory_order_acquire) &&
+            !resetRequested.load(std::memory_order_relaxed) &&
+            !clearMeters.load(std::memory_order_relaxed) && !clearLoudness.load(std::memory_order_relaxed) &&
+            active->chain.canSkipSilence();
+    }
+
+    void skipSilence(std::uint32_t frames) noexcept
+    {
+        skippedFrames += frames;
+    }
+
     void updateInstance(Instance& instance, EngineSettings settings)
     {
         settings.styleIndex = instance.initial.styleIndex;
@@ -369,12 +394,15 @@ struct DspEngine::Implementation
         if (measuredReduction) *measuredReduction = {};
         if (main == nullptr || active == nullptr || frames <= 0) return;
         for (int channel = 0; channel < channels; ++channel) if (main[channel] == nullptr) return;
+        if (skippedFrames != 0) active->chain.skipSilence(std::exchange(skippedFrames, 0));
         const auto settings = validated(configuration);
         const auto key = structure(settings);
         publishConfiguration(settings);
         if (resetRequested.exchange(false, std::memory_order_acq_rel))
         {
             active->chain.reset();
+            knownQuietHistory = true;
+            quietFrames = framesUntilHistoryCheck = 0;
             displayHistory.reset();
             if (replacement != nullptr)
             {
@@ -390,6 +418,20 @@ struct DspEngine::Implementation
             meters.momentaryLUFS = meters.shortTermLUFS = meters.integratedLUFS = -160.0f;
             meters.loudnessRange = 0;
             published.publish(meters);
+        }
+        bool zeroInput = trackQuiet && (knownQuietHistory || active->chain.canRecheckSilentHistory());
+        if (zeroInput)
+        {
+            const auto zero = [frames](const float* plane) noexcept
+            {
+                return plane == nullptr || std::all_of(plane, plane + frames, [](float v)
+                {
+                    return std::bit_cast<std::uint32_t>(v) == 0;
+                });
+            };
+            for (int channel = 0; channel < channels && zeroInput; ++channel)
+                zeroInput = zero(main[channel]) && (sidechain == nullptr || zero(sidechain[channel]));
+            if (!zeroInput) knownQuietHistory = false;
         }
         std::array<const float*, channelCapacity> input{}, detector{}, meteredOutput{};
         std::array<float*, channelCapacity> output{};
@@ -434,8 +476,26 @@ struct DspEngine::Implementation
                         meters.inputPeak[static_cast<std::size_t>(channel)] = decibels(inputHold[static_cast<std::size_t>(channel)]);
                     }
                 updateInstance(*active, settings);
+                const bool startingQuiet = zeroInput && replacement == nullptr &&
+                    active->chain.canSkipSilence();
                 active->chain.setDisplayBuffer(captureDisplay ? active->display.data() : nullptr);
                 const auto processed = active->chain.process(input.data(), active->pointers.data(), count, sidechain ? detector.data() : nullptr);
+                if (startingQuiet && processed)
+                {
+                    const auto chunkFrames = static_cast<std::size_t>(count);
+                    const auto warmup = active->chain.silenceWarmupFrames();
+                    quietFrames = std::min(quietFrames + chunkFrames, warmup);
+                    if (!knownQuietHistory && quietFrames == warmup)
+                    {
+                        if (framesUntilHistoryCheck > chunkFrames) framesUntilHistoryCheck -= chunkFrames;
+                        else
+                        {
+                            knownQuietHistory = active->chain.hasDrainedSignal();
+                            framesUntilHistoryCheck = static_cast<std::size_t>(rate * .25);
+                        }
+                    }
+                }
+                else quietFrames = framesUntilHistoryCheck = 0;
                 if (!processed)
                     for (int channel = 0; channel < channels; ++channel) std::fill_n(active->pointers[static_cast<std::size_t>(channel)], count, 0.0f);
                 if (active->chain.needsKernelService()) notifyBackground();
@@ -587,6 +647,9 @@ void DspEngine::requestConfiguration(const EngineSettings& settings) noexcept
 {
     implementation->requestConfiguration(settings);
 }
+void DspEngine::trackSilenceForSuspension(bool enabled) noexcept { implementation->trackQuiet = enabled; }
+bool DspEngine::canSkipSilence() const noexcept { return implementation->canSkipSilence(); }
+void DspEngine::skipSilence(std::uint32_t frames) noexcept { implementation->skipSilence(frames); }
 DspEngine::BlockContext DspEngine::beginBlock() const noexcept
 {
     return {implementation->latencyAcknowledged.load(std::memory_order_acquire)};

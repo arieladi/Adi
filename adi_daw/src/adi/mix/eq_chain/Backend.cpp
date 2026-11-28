@@ -161,6 +161,11 @@ bool Backend::process(double *const *main, const double *const *key, std::int32_
     return impl_->process(main, key, keyChannels, frames, settings, physicalBlock, configured);
 }
 void Backend::pumpMainThread() noexcept { impl_->pump(); }
+void Backend::trackEqSilenceForSuspension(bool enabled) noexcept { impl_->core.trackEqSilenceForSuspension(enabled); }
+bool Backend::hasStationaryEqSilence() const noexcept {
+    return impl_->core.hasStationaryEqSilence();
+}
+void Backend::skipSilentEqFrames(std::uint32_t frames) noexcept { impl_->core.skipSilentEqFrames(frames); }
 std::int32_t Backend::advertisedLatency() const noexcept {
     return impl_->advertised.load(std::memory_order_acquire);
 }

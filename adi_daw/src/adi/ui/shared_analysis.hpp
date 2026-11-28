@@ -19,6 +19,11 @@ namespace adi::ui {
 struct FocusScopeRange;
 class FocusScopeBarProjection;
 enum class FocusScopeChannels : std::uint8_t { Stereo = 1, Mid, Left, Right, Side };
+struct FocusScopeLayerAdjustment {
+    int offsetSamples = 0;
+    bool inverted = false;
+    bool operator==(const FocusScopeLayerAdjustment &) const = default;
+};
 struct FocusLagRequest;
 struct FocusLagPreview;
 // Owner-thread demand, immutable worker publications. No audio processor, callback lock,
@@ -30,6 +35,8 @@ class SharedAnalysis final {
     struct Domain;
     struct CumulativeHistory;
     struct FilledHistory;
+    struct CumulativeAverageHistory;
+    struct SpectrumBlockAverage;
     struct CaptureDomain;
     struct BarScopeDomain;
     struct FocusLagJob;
@@ -41,6 +48,11 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxWindowsPerFrame = 16;
     static constexpr std::size_t kMaxSamplesPerFrame = 262144;
     static constexpr std::size_t kMaxReadsPerFrame = 256;
+    static constexpr std::size_t kPhaseBandCount = 24;
+    using PhaseBandCorrelations = std::array<std::optional<float>, kPhaseBandCount>;
+    struct PhaseBandSpatial { PhaseBandCorrelations width, pan; };
+    static constexpr std::size_t kStripSpectrumPoints = 96;
+    static constexpr std::size_t kStripScopeColumns = 64;
     // Immutable spectrogram-bin payload, including buffers retained by frozen
     // snapshots. This is not a limit on FFT/tap/allocator or client metadata.
     static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
@@ -50,7 +62,21 @@ class SharedAnalysis final {
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
         RealtimeMaximum = 64, CumulativeMaximum = 128, FilledSpectrum = 256, PeriodScope = 512,
-        ColourWaveform = 1024
+        ColourWaveform = 1024,
+        // held-mixview merge: the Mix View seat's outputs took 256..8192 on their branch while the
+        // analysers queue landed FilledSpectrum, PeriodScope and ColourWaveform there; the landed bits
+        // keep their values and the seat's follow them.
+        Strip = 2048, DeviceBlockAverage = 4096, PhaseBands = 8192,
+        CumulativeAverage = 16384, RealtimeSigma = 32768, PhaseBandDetail = 65536
+    };
+    struct DeviceSpectrumRequest {
+        enum class Channel : std::uint8_t { Left, Right, Stereo };
+        static constexpr std::uint32_t kMaximumAverageBlocks = 64;
+        std::int64_t track = 0, device = 0;
+        std::int32_t fftSize = 1024;
+        Channel channel = Channel::Stereo;
+        std::uint32_t averageBlocks = 1;
+        bool maximum = false;
     };
     struct StereoMeterProfile {
         bool midSide = false;
@@ -71,6 +97,9 @@ class SharedAnalysis final {
         // A separate contiguous measurement incompatible with a windowed analysis domain.
         // Meter profiles on the same source still share the physical tap and worker.
         std::optional<StereoMeterProfile> stereoMeter = std::nullopt;
+        // Opt in when comparing spectrograms from different heard-time taps.
+        // Advances on the resolved hop grid from sample zero.
+        bool heardSpectrogramGrid = false;
         auto operator<=>(const Request &) const = default;
         engine::ScopeSource source() const noexcept { return {track, point, device}; }
     };
@@ -85,6 +114,12 @@ class SharedAnalysis final {
         std::array<std::vector<float>, 4> magnitudes;
         std::uint64_t processedWindows = 0;
     };
+    struct SpectrumLevels {
+        std::array<double, 2> integratedRms{}, maxCrestDb{};
+        std::array<float, 2> samplePeak{};
+        std::array<std::uint64_t, 2> sampleClips{};
+        std::optional<std::array<double, 2>> truePeak;
+    };
     struct Result {
         Request request;
         std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
@@ -97,8 +132,14 @@ class SharedAnalysis final {
         // Raw per-channel sample peak/RMS, not a true-peak or loudness meter. Spectrum uses
         // dsp::Spectrum's coherent sine calibration; Scope/Phase keep unwindowed samples.
         std::array<float, 2> peak{}, rms{};
+        std::optional<std::array<float, 2>> balanceRms2s;
+        std::optional<SpectrumLevels> spectrumLevels;
         std::size_t clippedSamples = 0; // Meters: finite samples at or above full scale across both channels.
         double correlation = 0;
+        // Optional L/R correlation in ascending ERB bands. Missing lanes
+        // in a band leave its entry unset.
+        std::shared_ptr<const PhaseBandCorrelations> phaseBands;
+        std::shared_ptr<const PhaseBandSpatial> phaseBandSpatial;
         std::vector<float> binsDbfs, scopeLeft, scopeRight;
         // Bounded newest columns. Serial and sourceEpoch expose missed or reset history.
         std::vector<Column> columns;
@@ -124,10 +165,34 @@ class SharedAnalysis final {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
     };
+    struct CumulativeAverageResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+        // Exact for this publication. A held zero picture retains its old
+        // count until another complete window is published.
+        std::uint64_t processedWindows = 0;
+    };
+    struct RealtimeSigmaResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+    };
+    struct BlockAverageResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+    };
     struct StereoMeterResult {
         dsp::StereoEnvelopeMeter::Reading reading;
         double sampleRate = 0;
         std::uint64_t generation = 0, epoch = 0;
+    };
+    struct StripResult {
+        struct ScopeColumn { std::array<float, 2> minimum{}, maximum{}; };
+        // Peak per evenly grouped frequency band, from DC to Nyquist.
+        std::array<float, kStripSpectrumPoints> spectrumDbfs{};
+        std::array<ScopeColumn, kStripScopeColumns> scope{};
+        std::uint64_t generation = 0, sourceEpoch = 0, transportRevision = 0;
+        std::int64_t firstStamp = 0, endSequence = 0;
+        double sampleRate = 0.;
     };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
@@ -137,6 +202,9 @@ class SharedAnalysis final {
         std::uint64_t droppedHistoryColumns = 0;
         // Successful insertions into this broker's shared scheduler queue.
         std::uint64_t successfulEnqueues = 0;
+        std::size_t stereoBalanceHistories = 0;
+        std::size_t spectrumLevelHistories = 0;
+        std::size_t spectrumTruePeakHistories = 0;
     };
     class Lease {
       public:
@@ -157,26 +225,44 @@ class SharedAnalysis final {
         // Only Average1s leases: same immutable sidecar/window for compatible
         // consumers. Missing/refused publication returns null; inspect status.
         std::shared_ptr<const AverageResult> readAverage() const noexcept;
+        // Groups of complete analysis windows, published in DC-to-Nyquist order.
+        // For a one-block request use read() directly.
+        std::shared_ptr<const BlockAverageResult> readBlockAverage() const noexcept;
         // Cumulative demand shares the FFT and owns its own hold interval.
         // A combined lease can select the maximum output explicitly.
         std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
         std::shared_ptr<const MaximumResult> readMaximum(Output) const noexcept;
         bool restartCumulativeMaximum() noexcept;
         bool restartFilledSpectrum() noexcept;
+        // Arithmetic mean of calibrated linear bin magnitudes over this lease's interval.
+        std::shared_ptr<const CumulativeAverageResult> readCumulativeAverage() const noexcept;
+        bool restartCumulativeAverage() noexcept;
+        std::shared_ptr<const RealtimeSigmaResult> readRealtimeSigma() const noexcept;
+        void setStereoBalanceEnabled(bool) noexcept;
+        void setSpectrumLevelsEnabled(bool) noexcept;
+        void setSpectrumTruePeakEnabled(bool) noexcept;
+        bool restartSpectrumLevels() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
+        std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
         // generation identifies the currently usable tap; written is its completed
         // sample count, independent of analysis backlog or publication revisions.
         SourcePosition sourcePosition() const noexcept;
+        // Owner-only physical format, even when this analysis window no longer fits the tap.
+        double preparedSampleRate() const noexcept;
       private:
         Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>,
+              std::shared_ptr<SpectrumBlockAverage>, std::shared_ptr<CumulativeAverageHistory>,
               std::shared_ptr<FilledHistory>);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
         std::shared_ptr<CumulativeHistory> cumulative_;
+        std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
+        std::shared_ptr<CumulativeAverageHistory> cumulativeAverage_;
         std::shared_ptr<FilledHistory> filled_;
         std::uint32_t outputs_ = 0;
+        bool balanceEnabled_ = false, spectrumLevelsEnabled_ = false, spectrumTruePeakEnabled_ = false;
         friend class SharedAnalysis;
     };
     // A continuous acquisition has its own sequence cursor. The physical tap
@@ -218,7 +304,13 @@ class SharedAnalysis final {
         engine::ScopeSource a, b;
         FocusScopeChannels fold = FocusScopeChannels::Stereo;
         std::uint64_t selection = 0;
+        bool spectrum = false;
         bool operator==(const ScopeDifference &) const = default;
+    };
+    struct ScopeDifferenceSpectrum {
+        ScopeDifference source;
+        std::int32_t fftSize = 0;
+        std::vector<float> binsDbfs;
     };
     enum class BarScopeStatus { Idle, Pending, Ready, Missed };
     struct BarScopeResult {
@@ -227,6 +319,11 @@ class SharedAnalysis final {
         double sampleRate = 0.;
         std::uint64_t transportRevision = 0;
         std::shared_ptr<const FocusScopeBarProjection> projection;
+        std::optional<ScopeDifferenceSpectrum> residual;
+        // Empty bins in a matching result mean the selected residual is zero.
+        [[nodiscard]] const ScopeDifferenceSpectrum *differenceSpectrum(const ScopeDifference &expected) const noexcept {
+            return residual && residual->source == expected ? &*residual : nullptr;
+        }
     };
     class BarScopeLease {
       public:
@@ -237,10 +334,21 @@ class SharedAnalysis final {
         BarScopeLease(const BarScopeLease &) = delete;
         BarScopeLease &operator=(const BarScopeLease &) = delete;
         explicit operator bool() const noexcept;
-        bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
+        // An exact revision pins the capture. A minimum lets the lanes agree on
+        // a newer revision after the transport acknowledges a seek.
+        bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0,
+                     std::uint64_t minimumRevision = 0) noexcept;
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
         void setMonoRequested(FocusScopeChannels) noexcept;
+        void setPhaseRequested(bool) noexcept;
+        // Measured on a complete capture that starts with this demand.
+        void setSumTruePeakRequested(bool) noexcept;
         void setDifferenceRequested(std::optional<ScopeDifference>) noexcept;
+        // Lane order. A changed preview invalidates the current bar without
+        // detaching the source taps. Missing entries default to no adjustment.
+        void setLayerAdjustments(std::span<const FocusScopeLayerAdjustment>) noexcept;
+        // Lane order. An absent choice follows the window's channel view.
+        void setLayerChannelViews(std::span<const std::optional<FocusScopeChannels>>) noexcept;
         double sampleRate() const noexcept;
         BarScopeStatus status() const noexcept;
         std::shared_ptr<const BarScopeResult> read() const noexcept;
@@ -284,6 +392,9 @@ class SharedAnalysis final {
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
+    Lease acquireDeviceSpectrum(const DeviceSpectrumRequest &);
+    // Hold only while the strip is visible. Uses the track's existing post-fader tap.
+    Lease acquireStrip(std::int64_t track);
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
     CaptureLease acquireCapture(const CaptureRequest &);
     BarScopeLease acquireBarScope(std::span<const engine::ScopeSource>, std::size_t columns);
@@ -301,6 +412,7 @@ class SharedAnalysis final {
     std::size_t pump();
     Stats stats() const;
   private:
+    Lease acquire(const Request &, std::uint32_t averageBlocks);
     std::shared_ptr<State> state_;
     Mode mode_;
 };

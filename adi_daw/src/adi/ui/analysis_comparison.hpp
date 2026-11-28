@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/shared_analysis.hpp"
+#include <array>
 #include <optional>
 #include <span>
 
@@ -110,7 +111,6 @@ class AnalysisComparison final {
     bool configured_ = false, visible_ = false, frozen_ = false;
 
     static bool normalize(Endpoint &) noexcept;
-    static bool sameCalibration(const SharedAnalysis::Request &, const SharedAnalysis::Request &) noexcept;
     static bool validPicture(Picture) noexcept;
     static Metadata metadata(const SharedAnalysis::Result &, std::uint64_t) noexcept;
     static Snapshot snapshot(Picture);
@@ -119,5 +119,61 @@ class AnalysisComparison final {
     static void update(Input &) noexcept;
     bool acquire(Input &) const;
     bool restart(bool retainReference) noexcept;
+};
+
+// Borrow immutable columns from two snapshots. Keep the snapshots alive while
+// the caller's output buffer is in use.
+struct SpectrogramColumnPair {
+    const SharedAnalysis::Column *pre = nullptr, *post = nullptr;
+    [[nodiscard]] std::optional<float> changeDb(std::size_t bin) const noexcept;
+};
+
+// The newest complete windows from a same-broker, same-track pre/post pair.
+// Returns an ascending view into the caller's storage. Missing windows remain
+// gaps in heard time, even when the surrounding column serials are consecutive.
+[[nodiscard]] std::span<const SpectrogramColumnPair> matchSpectrogramColumns(
+    const SharedAnalysis::Result &pre, const SharedAnalysis::Result &post, std::int64_t heardEnd,
+    std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage,
+    std::array<std::int64_t, 2> after = {}) noexcept;
+
+// Owner-thread controller for a paired Spectrogram on the caller's frame clock.
+class SpectrogramComparison final {
+  public:
+    struct Format {
+        double sampleRate = 0.;
+        int hop = 0;
+        std::uint64_t preGeneration = 0, postGeneration = 0, preEpoch = 0, postEpoch = 0;
+        bool operator==(const Format &) const = default;
+    };
+    explicit SpectrogramComparison(std::shared_ptr<SharedAnalysis> broker) noexcept;
+    bool show(SharedAnalysis::Request profile) noexcept;
+    void hide() noexcept;
+    void frame() noexcept;
+    bool freeze(std::int64_t heardEnd, std::uint64_t minimumRevision) noexcept;
+    bool thaw() noexcept;
+    [[nodiscard]] bool frozen() const noexcept { return held_.has_value(); }
+    [[nodiscard]] std::optional<Format> format() const noexcept;
+    // Keep this view only until the next mutation of the controller.
+    [[nodiscard]] std::span<const SpectrogramColumnPair> columns(
+        std::int64_t heardEnd, std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) const noexcept;
+
+  private:
+    struct Source {
+        SharedAnalysis::Lease lease;
+        SharedAnalysis::Lease::SourcePosition start;
+        std::shared_ptr<const SharedAnalysis::Result> picture;
+    };
+    struct HeldPosition {
+        std::int64_t heardEnd;
+        std::uint64_t minimumRevision;
+    };
+    bool activate(SharedAnalysis::Request) noexcept;
+    void release() noexcept;
+    static void update(Source &) noexcept;
+    std::shared_ptr<SharedAnalysis> broker_;
+    SharedAnalysis::Request profile_;
+    Source pre_, post_;
+    std::optional<HeldPosition> held_;
+    bool visible_ = false;
 };
 } // namespace adi::ui

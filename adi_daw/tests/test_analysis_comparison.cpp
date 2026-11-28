@@ -635,6 +635,244 @@ void preparedWindowGain() {
         }
     }
 }
+void matchedSpectrogramColumns() {
+    using adi::ui::SpectrogramColumnPair;
+    using adi::ui::matchSpectrogramColumns;
+    constexpr int fftSize = 1024, hop = 256;
+    constexpr std::size_t binCount = fftSize / 2 + 1;
+    constexpr std::uint64_t revision = 53;
+    constexpr std::int64_t firstStamp = 256, lastStamp = 1792, heardEnd = lastStamp + fftSize;
+    constexpr std::array<std::int64_t, 6> preStamps{firstStamp, 512, 768, 1280, 1536, lastStamp};
+    constexpr std::array<std::int64_t, 6> postStamps{firstStamp, 768, 1024, 1280, 1536, lastStamp};
+    const auto preBins = std::make_shared<const std::vector<float>>(binCount, -24.f);
+    const auto postBins = std::make_shared<const std::vector<float>>(binCount, -18.f);
+    const auto build = [&](ScopePoint point, std::span<const std::int64_t> stamps,
+                           std::int64_t sequenceStart, const auto &bins) {
+        SharedAnalysis::Result result;
+        result.request = {7, point, fftSize};
+        result.request.window = adi::dsp::Window::Rectangular;
+        result.request.hopSize = hop;
+        result.request.outputs = SharedAnalysis::Spectrogram;
+        result.request.heardSpectrogramGrid = true;
+        result.outputs = result.request.outputs;
+        result.sampleRate = 48000.;
+        result.coherentGain = 1.;
+        result.hopSize = hop;
+        result.advancing = true;
+        result.transportRevision = revision;
+        result.firstStamp = stamps.back();
+        result.firstSequence = sequenceStart + stamps.back() - stamps.front();
+        for (auto stamp : stamps) {
+            const auto serial = static_cast<std::uint64_t>((stamp - stamps.front()) / hop + 1);
+            result.columns.push_back({serial, stamp, bins, sequenceStart + stamp - stamps.front()});
+        }
+        result.revision = result.windowSerial = result.historySerial = result.columns.back().serial;
+        return result;
+    };
+    auto pre = build(ScopePoint::ChainInput, preStamps, 1000, preBins);
+    auto post = build(ScopePoint::PreFader, postStamps, 3400, postBins);
+    pre.generation = 3; pre.sourceEpoch = 4;
+    post.generation = 8; post.sourceEpoch = 12;
+
+    std::array<SpectrogramColumnPair, 6> output{};
+    auto matches = matchSpectrogramColumns(pre, post, heardEnd, revision, output);
+    check(matches.size() == 5 && matches[0].pre == &pre.columns[0] && matches[0].post == &post.columns[0] &&
+              matches[1].pre == &pre.columns[2] && matches[1].post == &post.columns[1] &&
+              matches[2].pre == &pre.columns[3] && matches[2].post == &post.columns[3] &&
+              matches[3].pre == &pre.columns[4] && matches[3].post == &post.columns[4] &&
+              matches[4].pre == &pre.columns[5] && matches[4].post == &post.columns[5],
+          "Spectrogram comparison borrows only exact ordered stamps despite independent sequences and source epochs");
+    check(!matches.empty() && matches.front().changeDb(16) == 6.f && !matches.front().changeDb(binCount),
+          "a matched Spectrogram bin subtracts pre from post and rejects a bin outside the FFT grid");
+
+    const auto newest = matchSpectrogramColumns(pre, post, heardEnd - 1, revision, std::span(output).first(2));
+    check(newest.size() == 2 && newest[0].pre == &pre.columns[3] && newest[1].pre == &pre.columns[4],
+          "bounded output keeps the newest eligible pair of columns in ascending order");
+    check(matchSpectrogramColumns(pre, post, firstStamp + fftSize - 1, revision, output).empty() &&
+              matchSpectrogramColumns(pre, post, firstStamp + fftSize, revision, output).size() == 1 &&
+              matchSpectrogramColumns(pre, post, heardEnd, revision, {}).empty(),
+          "the matching horizon excludes a partial future window and an empty destination");
+
+    auto incompatible = post;
+    const auto refused = [&] { return matchSpectrogramColumns(pre, incompatible, heardEnd, revision, output).empty(); };
+    incompatible.transportRevision = revision + 1;
+    check(refused() && matchSpectrogramColumns(pre, post, heardEnd, revision + 1, output).empty(),
+          "overlapping old stamps cannot cross the transport revision or the requested seek floor");
+    auto unknownPre = pre, unknownPost = post;
+    unknownPre.transportRevision = unknownPost.transportRevision = 0;
+    check(matchSpectrogramColumns(unknownPre, unknownPost, heardEnd, 0, output).empty(),
+          "equal zero revisions do not establish a heard transport epoch");
+    incompatible = post;
+    incompatible.advancing = false;
+    check(refused(), "parked histories cannot be compared as heard audio");
+    incompatible = post;
+    incompatible.request.heardSpectrogramGrid = false;
+    check(refused(), "ordinary free-running histories cannot masquerade as heard-grid data");
+    incompatible = post;
+    incompatible.request.track = 8;
+    check(refused() && matchSpectrogramColumns(post, pre, heardEnd, revision, output).empty(),
+          "the producer accepts only the ordered pre and post taps of the same track");
+    incompatible = post;
+    incompatible.sampleRate = 44100.;
+    check(refused(), "different source rates cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.window = adi::dsp::Window::Hann;
+    check(refused(), "different window functions cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.channel = SharedAnalysis::Channel::Side;
+    check(refused(), "different channel projections cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.fftSize = 512;
+    check(refused(), "different FFT sizes cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.hopSize = incompatible.hopSize = 128;
+    check(refused(), "different hops cannot share the same Spectrogram grid");
+    incompatible = post;
+    incompatible.coherentGain = .5;
+    check(refused(), "different coherent gains cannot share the same Spectrogram calibration");
+
+    auto broken = post;
+    broken.columns[1].binsDbfs.reset();
+    broken.columns[3].binsDbfs = std::make_shared<const std::vector<float>>(binCount - 1, -18.f);
+    matches = matchSpectrogramColumns(pre, broken, heardEnd, revision, output);
+    check(matches.size() == 3 && matches[0].post == &broken.columns[0] && matches[1].post == &broken.columns[4] &&
+              matches[2].post == &broken.columns[5],
+          "missing and wrong-sized bin buffers are skipped without losing the valid neighbors");
+
+    constexpr auto floor = adi::dsp::kDbFloor;
+    const SharedAnalysis::Column lower{1, firstStamp, std::make_shared<const std::vector<float>>(
+        std::initializer_list<float>{-18.f, floor, -18.f, floor - 1.f, -18.f, -18.f}), 0};
+    const SharedAnalysis::Column higher{1, firstStamp, std::make_shared<const std::vector<float>>(
+        std::initializer_list<float>{-24.f, -18.f, floor, floor, std::numeric_limits<float>::quiet_NaN(),
+                                     std::numeric_limits<float>::infinity()}), 0};
+    const SpectrogramColumnPair numbers{&lower, &higher};
+    check(numbers.changeDb(0) == -6.f && !numbers.changeDb(1) && !numbers.changeDb(2) &&
+              !numbers.changeDb(3) && !numbers.changeDb(4) && !numbers.changeDb(5) && !numbers.changeDb(6) &&
+              !SpectrogramColumnPair{}.changeDb(0),
+          "signed dB change rejects censored, non-finite and missing measurements");
+}
+void spectrogramComparisonDemand() {
+    using adi::ui::SpectrogramColumnPair;
+    constexpr int window = 1024, hop = 256, firstBatch = window + hop;
+    constexpr std::uint64_t revision = 67;
+    const auto preTap = std::make_shared<ScopeTap>(48000., .25);
+    const auto postTap = std::make_shared<ScopeTap>(48000., .25);
+    const auto stagedTap = std::make_shared<ScopeTap>(48000., .25);
+    std::optional<ScopePoint> failAt;
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](ScopeSource source, double) -> std::shared_ptr<const ScopeTap> {
+            if (source == ScopeSource{1, ScopePoint::ChainInput, 0}) return preTap;
+            if (source == ScopeSource{1, ScopePoint::PreFader, 0}) return postTap;
+            if (source.track == 2) {
+                if (failAt == source.point) throw std::runtime_error("generated Spectrogram tap failure");
+                return stagedTap;
+            }
+            return {};
+        }, [](ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    adi::ui::SpectrogramComparison view(broker);
+    SharedAnalysis::Request request{1, ScopePoint::ChainInput, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = SharedAnalysis::Spectrogram;
+    std::array<SpectrogramColumnPair, 4> storage{};
+    const auto isPair = [](auto pairs, std::int64_t stamp, double expected) {
+        if (pairs.size() != 1 || !pairs.front().pre || !pairs.front().post ||
+            pairs.front().pre->firstStamp != stamp || pairs.front().post->firstStamp != stamp) return false;
+        const auto db = pairs.front().changeDb(16);
+        return db && near(*db, expected);
+    };
+    const auto write = [](ScopeTap &tap, std::int64_t stamp, int count, float amplitude, std::uint64_t epoch) {
+        std::array<float, firstBatch> samples;
+        for (int i = 0; i < count; ++i) {
+            const auto phase = static_cast<double>((stamp + i) % window);
+            samples[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(
+                std::sin(2. * std::numbers::pi * 16. * phase / window));
+        }
+        tap.write(samples.data(), samples.data(), count, stamp, true, epoch);
+    };
+    const auto tick = [&] { broker->pump(); view.frame(); };
+    const auto gain = 20. * std::log10(2.);
+    check(!view.freeze(window, revision) && view.columns(window, revision, storage).empty() &&
+              broker->stats().consumers == 0,
+          "an unopened Spectrogram comparison owns no demand or frozen picture");
+    check(view.show(request) && broker->stats().taps == 2 && broker->stats().consumers == 2 &&
+              view.columns(window, revision, storage).empty(),
+          "show acquires pre and post demand and waits for fresh audio");
+
+    write(*preTap, 0, firstBatch, .5f, revision);
+    write(*postTap, 0, firstBatch, .25f, revision);
+    tick();
+    check(isPair(view.columns(window, revision, storage), 0, -gain) &&
+              view.columns(firstBatch, revision, storage).size() == 2 && broker->stats().transforms == 4,
+          "a live comparison joins two signed columns on the existing broker transforms");
+
+    auto replacement = request;
+    replacement.track = 2;
+    for (const auto point : {ScopePoint::ChainInput, ScopePoint::PreFader}) {
+        failAt = point;
+        check(!view.show(replacement) && isPair(view.columns(window, revision, storage), 0, -gain) &&
+                  broker->stats().taps == 2 && broker->stats().consumers == 2,
+              "failure staging either endpoint preserves the accepted comparison and releases staged demand");
+    }
+    failAt.reset();
+
+    check(view.freeze(window, revision) && view.frozen() && broker->stats().taps == 0 &&
+              broker->stats().consumers == 0 && isPair(view.columns(firstBatch, revision + 1, storage), 0, -gain),
+          "Freeze retains the displayed heard horizon and epoch while releasing both taps");
+    const auto frozenStats = broker->stats();
+    write(*preTap, 0, firstBatch, .25f, revision + 1);
+    write(*postTap, 0, firstBatch, .5f, revision + 1);
+    tick();
+    const auto afterFrozen = broker->stats();
+    check(isPair(view.columns(0, revision + 1, storage), 0, -gain) &&
+              afterFrozen.transforms == frozenStats.transforms && afterFrozen.cursorReads == frozenStats.cursorReads &&
+              afterFrozen.workerPasses == frozenStats.workerPasses,
+          "later audio and a changed transport floor neither alter the held picture nor wake the broker");
+    view.hide();
+    check(view.columns(firstBatch, revision, storage).empty() && broker->stats().consumers == 0,
+          "hiding removes the frozen picture from its destination");
+    check(view.show(request) && view.frozen() && isPair(view.columns(firstBatch, revision + 1, storage), 0, -gain) &&
+              broker->stats().taps == 0 && broker->stats().consumers == 0,
+          "showing the same frozen comparison restores the exact local picture without demand");
+
+    // Another view can keep matching broker history alive before the thaw.
+    auto companionRequest = request;
+    companionRequest.heardSpectrogramGrid = true;
+    auto companionPre = broker->acquire(companionRequest);
+    companionRequest.point = ScopePoint::PreFader;
+    auto companionPost = broker->acquire(companionRequest);
+    constexpr auto afterThaw = firstBatch + window;
+    write(*preTap, firstBatch, window, .25f, revision + 1);
+    write(*postTap, firstBatch, window, .5f, revision + 1);
+    tick();
+    check(companionPre.read() && companionPost.read(), "both compatible domains already contain pre-thaw history");
+    check(view.thaw() && !view.frozen() && broker->stats().taps == 2 && broker->stats().consumers == 4,
+          "thaw resumes both compatible domains");
+    tick();
+    check(view.columns(afterThaw, revision + 1, storage).empty(),
+          "thaw fences off complete histories published by other readers before it resumed");
+
+    write(*preTap, afterThaw, hop, .25f, revision + 1);
+    tick();
+    check(view.columns(afterThaw + hop, revision + 1, storage).empty(),
+          "the first fresh tap can advance without pairing with stale columns on the second tap");
+    write(*postTap, afterThaw, hop, .5f, revision + 1);
+    tick();
+    check(isPair(view.columns(afterThaw + hop, revision + 1, storage), firstBatch + hop, gain),
+          "thaw publishes only the fresh matched hop on the existing domains");
+
+    companionPre.reset(); companionPost.reset();
+    view.hide();
+    const auto hidden = broker->stats();
+    write(*preTap, afterThaw + hop, window, .25f, revision + 1);
+    write(*postTap, afterThaw + hop, window, .5f, revision + 1);
+    tick();
+    const auto afterHide = broker->stats();
+    check(view.columns(afterThaw + hop + window, revision + 1, storage).empty() && hidden.taps == 0 &&
+              hidden.consumers == 0 && afterHide.transforms == hidden.transforms &&
+              afterHide.workerPasses == hidden.workerPasses && afterHide.cursorReads == hidden.cursorReads,
+          "hiding a live comparison drops both sources and leaves no continued analysis work");
+}
 } // namespace
 int main() {
     calibrationAndSharing();
@@ -645,6 +883,8 @@ int main() {
     boundedCapture();
     directSpectrumAndIndependentIntervals();
     preparedWindowGain();
+    matchedSpectrogramColumns();
+    spectrogramComparisonDemand();
     std::printf("AnalysisComparison: %d checks, %d failures, %zu exact compared bins\n", checks, failures,
                 comparedBins);
     return failures ? 1 : 0;

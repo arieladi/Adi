@@ -27,10 +27,14 @@ public:
                                      offline_(offline) {}
     bool supportsDouble() const noexcept override { return true; }
     bool provesZeroTail() const noexcept override { return zeroTail_; }
+    void skipSilentFrames(std::uint32_t frames) noexcept override {
+        if (statefulTail_) serial_.skipSilentEqFrames(frames);
+    }
     void prepare(double rate, std::int32_t maximum, std::int32_t channels,
                  const Settings& settings) override {
         prepared_ = false;
         zeroTail_ = false;
+        statefulTail_ = false;
         // Keep a pristine history through the host's stopped format
         // handoff. Authored neutral settings do not erase an older stateful
         // stream. A failed preparation also leaves no suspension proof.
@@ -39,6 +43,7 @@ public:
         pristine_ = false;
         audioSettings_.eq = settings;
         serial_.prepare({rate, maximum, channels}, audioSettings_);
+        serial_.trackEqSilenceForSuspension(!offline_);
         pristine_ = pristine;
         channels_ = channels;
         maximum_ = maximum;
@@ -47,6 +52,7 @@ public:
     void release() noexcept override {
         prepared_ = false;
         zeroTail_ = false;
+        statefulTail_ = false;
         // The serial adapter joins its owner, then retains the same EQ object
         // for its authored learning/prepare law on stopped reactivation.
         serial_.release();
@@ -85,6 +91,7 @@ private:
              std::int32_t frames, const Settings& settings, std::uint64_t physicalBlock,
              std::int32_t configuredLatency) noexcept {
         zeroTail_ = false;
+        statefulTail_ = false;
         if (!prepared_ || frames <= 0 || frames > maximum_ || !main || !main[0] ||
             (channels_ == 2 && !main[1]) || keyChannels < 0 || keyChannels > 2 || (keyChannels && !key)) return;
         // The existing EQ facade refused malformed positive-width key planes.
@@ -94,7 +101,8 @@ private:
         audioSettings_.eq = settings;
         const bool processed = serial_.process(main, key, keyChannels, frames, audioSettings_,
                                                physicalBlock, configuredLatency);
-        zeroTail_ = pristine_ && processed;
+        statefulTail_ = !offline_ && processed && serial_.hasStationaryEqSilence();
+        zeroTail_ = (pristine_ && processed) || statefulTail_;
     }
     eq_chain::Backend serial_;
     // Audio-only DTO while running. Stopped preparation may initialize it;
@@ -103,7 +111,7 @@ private:
     std::int32_t channels_ = 0, maximum_ = 0;
     bool prepared_ = false;
     const bool offline_;
-    bool everPrepared_ = false, pristine_ = false, zeroTail_ = false;
+    bool everPrepared_ = false, pristine_ = false, zeroTail_ = false, statefulTail_ = false;
 };
 } // namespace
 std::unique_ptr<EqProcessingBackend> makeBackend(bool offline) { return std::make_unique<Backend>(offline); }

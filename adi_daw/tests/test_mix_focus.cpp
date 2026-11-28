@@ -19,6 +19,18 @@
 #include <stdexcept>
 #include <vector>
 #include <type_traits>
+// Keep the replacement delete boundary intact in optimized builds. Inlining
+// would expose its free() after the standard allocator's call to operator new,
+// hiding the matched replacement pair from the allocation diagnostic.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("no-inline")
+#endif
+#define ADI_TEST_COUNT_REPLACED_DELETE
+#include "replace_operator_new.hpp"
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
@@ -26,7 +38,7 @@ namespace f=adi::mix::focus;
 namespace {
 thread_local bool inAudio=false;
 thread_local bool countOwnerAllocations=false;
-thread_local std::size_t ownerAllocationBytes=0;
+thread_local std::size_t ownerAllocations=0;
 std::uint64_t allocations=0,deallocations=0;
 int checks=0,failures=0;
 std::uint64_t comparedSamples=0;
@@ -239,7 +251,7 @@ f::Settings firSettings(double q=3.) {
 }
 void lazyOwnerStorage() {
     struct CountOwnerStorage {
-        CountOwnerStorage() { ownerAllocationBytes=0;countOwnerAllocations=true; }
+        CountOwnerStorage() { ownerAllocations=0;countOwnerAllocations=true; }
         ~CountOwnerStorage() { countOwnerAllocations=false; }
     };
     const f::PrepareSpec spec{48000,256,2};
@@ -251,7 +263,7 @@ void lazyOwnerStorage() {
         CountOwnerStorage count;
         core.prepare(spec,iir);
     }
-    check(ownerAllocationBytes==0,"fresh native IIR prepares without allocating phase or FIR storage");
+    check(ownerAllocations==0,"fresh native IIR prepares without allocating phase or FIR storage");
     iir.nodes[0].q=2.;
     check(core.requestConfiguration(iir),"coefficient-only IIR request is accepted");
     bool built=false;
@@ -259,7 +271,7 @@ void lazyOwnerStorage() {
         CountOwnerStorage count;
         built=core.serviceConfiguration();
     }
-    check(built && ownerAllocationBytes==0,"ordinary IIR coefficient updates allocate no transform storage");
+    check(built && ownerAllocations==0,"ordinary IIR coefficient updates allocate no transform storage");
     { AudioScope scope;static_cast<void>(core.beginBlock(101,0,iir)); }
 
     auto phase=iir;
@@ -281,7 +293,7 @@ void lazyOwnerStorage() {
         }
         const auto offer=core.pendingLatencyChange();
         check(ready && offer.token!=0 && offer.samples==latency && core.latencySamples()==0 &&
-                  ownerAllocationBytes>0,
+                  ownerAllocations>0,
               "first transform storage is prepared by the owner before latency admission");
         { AudioScope scope;static_cast<void>(core.beginBlock(block++,latency,configured)); }
         reference.prepare(spec,configured);
@@ -1321,18 +1333,13 @@ void latencyAndSafety() {
     check(error<1.e-12,"missing Difference key cannot demand unlimited cut");
 }
 }
-#if defined(__GNUC__) && !defined(__clang__)
-#define ADI_TEST_NOINLINE __attribute__((noinline))
-#else
-#define ADI_TEST_NOINLINE
-#endif
-ADI_TEST_NOINLINE void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
-ADI_TEST_NOINLINE void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
-ADI_TEST_NOINLINE void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
-ADI_TEST_NOINLINE void* operator new[](std::size_t n){return ::operator new(n);}
-ADI_TEST_NOINLINE void operator delete[](void*p)noexcept{::operator delete(p);}
-ADI_TEST_NOINLINE void operator delete[](void*p,std::size_t)noexcept{::operator delete(p);}
-#undef ADI_TEST_NOINLINE
+void adi::test::countReplacedNew() noexcept {
+    if (countOwnerAllocations) ++ownerAllocations;
+    if (inAudio) ++allocations;
+}
+void adi::test::countReplacedDelete(void *p) noexcept {
+    if (inAudio && p) ++deallocations;
+}
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
 #if defined(_MSC_VER) && defined(_DEBUG)

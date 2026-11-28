@@ -382,7 +382,8 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         if (!alive) return;
     }
     analysis.frame(root_.sharedAnalysis, reader, root_.analysisTrack(reader), root_.analysisTrack(reader, true),
-                   root_.projectViewGeneration());
+                   root_.projectViewGeneration(), &root_.viewStateStore(), root_.renderedSamplePosition(),
+                   root_.settledLocateRevision());
     if (!alive) return;
     analyzerDock.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
     if (!alive) return;

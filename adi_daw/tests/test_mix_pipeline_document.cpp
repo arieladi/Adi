@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/shared_analysis.hpp"
 #include "adi/mix/clip/Values.hpp"
 #include "adi/store_rows.hpp"
 #include "juce/builtin_host.hpp"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 #include <chrono>
 #include <optional>
@@ -29,6 +31,198 @@ struct Tone final:engine::Node {
             for(int c=0;c<io.channels;++c)io.out[c][io.blockOffset+i]=value;}
     }
 };
+struct LimiterGraph {
+    static constexpr int capacity = 256;
+    struct Source final : engine::Node {
+        std::int64_t samples = 0;
+        bool audible = false;
+        float level = 1.f;
+        void process(const engine::NodeIo &io) noexcept override {
+            for (int i = 0; i < io.frames; ++i) {
+                const auto sample = static_cast<double>(samples++);
+                for (int c = 0; c < io.channels; ++c)
+                    io.out[c][i + io.blockOffset] = audible
+                        ? level * static_cast<float>(.78 * std::sin(sample * .173 + c) + .22 * std::cos(sample * .49))
+                        : 0.f;
+            }
+        }
+    } source;
+    std::unique_ptr<device::DeviceInstance> instance;
+    device::DeviceNode node;
+    engine::Graph graph;
+    std::array<std::array<float, capacity>, 2> output{};
+    std::array<float *, 2> planes{output[0].data(), output[1].data()};
+
+    explicit LimiterGraph(std::unique_ptr<device::DeviceInstance> limiter) : instance(std::move(limiter)), node(*instance) {}
+    bool prepare(double rate, bool continuous) {
+        node.setAlwaysProcess(continuous);
+        const auto generator = graph.addNode(source);
+        const auto effect = graph.addNode(node);
+        if (!graph.connect(generator, effect)) return false;
+        graph.setOutput(effect);
+        graph.prepare(rate, capacity);
+        return graph.ok();
+    }
+    void render(int frames) noexcept {
+        engine::AudioIo io;
+        io.out = planes.data();
+        io.numOut = static_cast<int>(planes.size());
+        io.frames = frames;
+        graph.process(io);
+    }
+};
+
+void limiterGraphSilence(bool full) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.limiter";
+    reference.name = "Limiter";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.channels = 2;
+    auto loader = device::withBuiltinDevices();
+    if (full) loader = device::withFullMixFunctions(std::move(loader));
+    std::string error;
+
+    for (const double rate : {44100., 48000.})
+        for (int style = 0; style < 8; ++style)
+            for (const bool oversampling : {false, true})
+                for (const bool truePeak : {false, true}) {
+                    auto first = loader(request, error), second = loader(request, error);
+                    check(first && second, "sleep fixture loads both native Limiter instances");
+                    if (!first || !second) return;
+                    LimiterGraph sleeping(std::move(first)), continuous(std::move(second));
+                    bool applied = true;
+                    for (auto *device : {sleeping.instance.get(), continuous.instance.get()}) {
+                        applied = device->setParam("0", device::ParamValue::fromNormalized(.4)) && applied;
+                        applied = device->setParam("1", device::ParamValue::fromNormalized(static_cast<double>(style) / 7.)) && applied;
+                        applied = device->setParam("7", device::ParamValue::fromNormalized(oversampling ? .2 : 0.)) && applied;
+                        applied = device->setParam("8", device::ParamValue::fromNormalized(truePeak ? 1. : 0.)) && applied;
+                    }
+                    check(applied && sleeping.prepare(rate, false) && continuous.prepare(rate, true),
+                          "both graph paths prepare the same limiter settings");
+                    if (!applied || !sleeping.graph.ok() || !continuous.graph.ok()) return;
+                    bool exact = true;
+                    const auto tick = [&](int frames) {
+                        sleeping.render(frames);
+                        continuous.render(frames);
+                        const auto bytes = static_cast<std::size_t>(frames) * sizeof(float);
+                        for (std::size_t c = 0; c < sleeping.output.size(); ++c)
+                            exact = std::memcmp(sleeping.output[c].data(), continuous.output[c].data(), bytes) == 0 && exact;
+                    };
+                    for (int block = 0; block < 64; ++block) tick(LimiterGraph::capacity);
+                    const auto before = sleeping.graph.stats().nodesSuspended;
+                    for (const int frames : {1, 17, 63, 129, 251, 117, 23}) tick(frames);
+                    const auto asleep = sleeping.graph.stats().nodesSuspended;
+                    const bool supported = style != 2;
+                    if (asleep != before + (supported ? 7u : 0u))
+                        std::printf("Limiter sleep census %s %.0f Hz style %d OS %d TP %d skipped %llu\n",
+                                    full ? "serial" : "direct", rate, style, oversampling, truePeak,
+                                    static_cast<unsigned long long>(asleep - before));
+                    check(asleep == before + (supported ? 7u : 0u),
+                          "only certified prepared limiter paths sleep across the irregular segments");
+                    check(continuous.graph.stats().nodesSuspended == 0, "the continuous test path runs every segment");
+                    sleeping.node.setBypassed(true);
+                    continuous.node.setBypassed(true);
+                    tick(111);
+                    sleeping.node.setBypassed(false);
+                    continuous.node.setBypassed(false);
+                    sleeping.source.audible = continuous.source.audible = true;
+                    for (int block = 0; block < 24; ++block) tick(block % 2 == 0 ? 117 : 139);
+                    sleeping.source.audible = continuous.source.audible = false;
+                    for (int block = 0; block < 75; ++block) tick(LimiterGraph::capacity);
+                    if (!exact)
+                        std::printf("Limiter wake PCM %s %.0f Hz style %d OS %d TP %d\n",
+                                    full ? "serial" : "direct", rate, style, oversampling, truePeak);
+                    check(exact && sleeping.instance->latencySamples() == continuous.instance->latencySamples(),
+                          "after odd-length sleep the rendered programme and its delay drain are byte-identical");
+                }
+}
+void limiterGraphSilentEdits(bool full) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.limiter";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.channels = 2;
+    auto loader = device::withBuiltinDevices();
+    if (full) loader = device::withFullMixFunctions(std::move(loader));
+    std::string error;
+    auto instance = loader(request, error);
+    if (!instance) { check(false, "silent edit fixture loads the Limiter"); return; }
+    LimiterGraph fixture(std::move(instance));
+    if (!fixture.prepare(48000., false)) { check(false, "silent edit graph prepares"); return; }
+    const auto render = [&] { fixture.render(129); };
+    for (int i = 0; i < 64; ++i) render();
+    const auto first = fixture.graph.stats().nodesSuspended;
+    check(first != 0, "the default limiter sleeps before a parameter edit");
+    fixture.instance->setOffline(true);
+    render();
+    check(fixture.graph.stats().nodesSuspended == first, "offline intent keeps a previously sleeping limiter awake");
+    fixture.instance->setOffline(false);
+    render();
+    render();
+    const auto resumed = fixture.graph.stats().nodesSuspended;
+    check(resumed > first, "the unchanged limiter returns to suspension in realtime");
+
+    check(fixture.instance->setParam("0", device::ParamValue::fromNormalized(.4)), "a sleeping limiter accepts an input gain edit");
+    render();
+    check(fixture.graph.stats().nodesSuspended == resumed, "the owner gain edit wakes the limiter while input is still zero");
+    for (int i = 0; i < 64; ++i) render();
+    const auto quiet = fixture.graph.stats().nodesSuspended;
+    check(quiet > resumed, "after the gain edit settles the silent limiter can sleep again");
+    check(fixture.instance->setParam("15", device::ParamValue::fromNormalized(.2)), "the sleeping limiter accepts dither");
+    bool noise = false;
+    for (int i = 0; i < 8; ++i) {
+        render();
+        noise = noise || std::any_of(fixture.output[0].begin(), fixture.output[0].begin() + 129,
+                                   [](float sample) { return sample != 0.f; });
+    }
+    check(noise && fixture.graph.stats().nodesSuspended == quiet,
+          "dither wakes the limiter and continues generating audio from silent input");
+}
+void limiterGraphWarmSleep() {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.limiter";
+    reference.name = "Limiter";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.channels = 2;
+    auto loader = device::withFullMixFunctions(device::withBuiltinDevices());
+    std::string error;
+    auto first = loader(request, error), second = loader(request, error);
+    if (!first || !second) { check(false, "warm silence fixture loads both Limiters"); return; }
+    LimiterGraph sleeping(std::move(first)), continuous(std::move(second));
+    if (!sleeping.prepare(48000., false) || !continuous.prepare(48000., true)) {
+        check(false, "warm silence fixture prepares both graphs");
+        return;
+    }
+    bool exact = true, heard = false;
+    const auto render = [&](int frames) {
+        sleeping.render(frames);
+        continuous.render(frames);
+        const auto size = static_cast<std::size_t>(frames) * sizeof(float);
+        for (std::size_t c = 0; c < sleeping.output.size(); ++c)
+            exact = std::memcmp(sleeping.output[c].data(), continuous.output[c].data(), size) == 0 && exact;
+        heard = heard || std::any_of(sleeping.output[0].begin(), sleeping.output[0].begin() + frames,
+                                    [](float sample) { return sample != 0.f; });
+    };
+    sleeping.source.level = continuous.source.level = .25f;
+    sleeping.source.audible = continuous.source.audible = true;
+    for (int i = 0; i < 16; ++i) render(256);
+    check(heard, "the prepared Transparent Limiter passes real programme before its late sleep");
+    sleeping.source.audible = continuous.source.audible = false;
+    for (int i = 0; i < 2250; ++i) render(256);
+    const auto before = sleeping.graph.stats().nodesSuspended;
+    for (const int frames : {17, 69, 65, 144, 256}) render(frames);
+    check(sleeping.graph.stats().nodesSuspended == before + 5,
+          "Transparent enters late sleep after its actual signal histories drain");
+    sleeping.source.level = continuous.source.level = 1.4f;
+    sleeping.source.audible = continuous.source.audible = true;
+    for (int i = 0; i < 30; ++i) render(256);
+    check(exact, "late sleep keeps the next programme byte-identical even when it drives gain reduction");
+}
 bool editParameter(ui::ProjectDocument& doc,const ui::DevicePanelData& data,const std::string& id,double value){
     const auto* instance=doc.session().instanceFor(data.id);if(!instance)return false;
     const auto before=instance->getParam(id).normalized;using K=engine::ParamEventKind;
@@ -151,6 +345,69 @@ void bypassedClaim(bool full) {
     check(session.graph().currentGraph() && session.graph().currentGraph()->latencySamples() == offered,
           "the pinned graph retains the advertised delay while bypassed");
     check(dry && *dry < 2.e-5, "bypassed node actually outputs coherent compensated dry");
+
+    // Exercise the analyser's production attachment alongside the direct probes.
+    {
+        using Analysis = ui::SharedAnalysis;
+        using Point = engine::ScopePoint;
+        using Tap = engine::ScopeTap;
+        const auto &broker = doc->analysis();
+        const auto idle = broker->stats();
+        Analysis::Request scopeIn{2, Point::DeviceInput, frames, Analysis::Channel::Left};
+        scopeIn.device = shown.id;
+        scopeIn.outputs = Analysis::Scope;
+        auto scopeOut = scopeIn;
+        scopeOut.point = Point::DeviceOutput;
+        auto inputView = broker->acquire(scopeIn);
+        auto outputView = broker->acquire(scopeOut);
+        auto spectrum = broker->acquireDeviceSpectrum({2, shown.id, frames, Analysis::DeviceSpectrumRequest::Channel::Left});
+        for (int i = 0; i < 6; ++i) {
+            cycle(1);
+            broker->pump();
+        }
+        const auto input = inputView.read(), output = outputView.read();
+        const auto stats = broker->stats();
+        check(input && output && spectrum.read() == output && stats.taps == idle.taps + 2 &&
+                  stats.domains == idle.domains + 2 && stats.spectralPlans == idle.spectralPlans + 1,
+              "the Document's real device Scope and Spectrum share one output picture and spectral plan");
+
+        const auto inputTap = trackInput.tap(), outputTap = trackOutput.tap();
+        const bool valid = input && output && inputTap && outputTap &&
+            output->scopeLeft.size() == static_cast<std::size_t>(frames) &&
+            output->scopeRight.size() == static_cast<std::size_t>(frames);
+        check(valid && input->request.source() == scopeIn.source() && output->request.source() == scopeOut.source() &&
+                  input->generation == inputTap->generation() && output->generation == outputTap->generation() &&
+                  input->advancing && output->advancing &&
+                  input->transportRevision == session.transport().revision() &&
+                  output->transportRevision == input->transportRevision &&
+                  input->firstStamp - output->firstStamp == offered,
+              "the real device's declared latency reaches both broker pictures as heard time");
+        if (valid) {
+            auto inCursor = inputTap->cursorAtEnd(), outCursor = outputTap->cursorAtEnd();
+            inCursor.next = input->firstSequence - offered;
+            outCursor.next = output->firstSequence;
+            std::array<float, frames> inLeft{}, inRight{}, outLeft{}, outRight{};
+            const auto heard = inputTap->read(inCursor, inLeft, inRight);
+            const auto observed = outputTap->read(outCursor, outLeft, outRight);
+            check(observed.status == Tap::ReadStatus::Ready && observed.frames == frames &&
+                      observed.firstStamp == output->firstStamp &&
+                      std::ranges::equal(outLeft, output->scopeLeft) && std::ranges::equal(outRight, output->scopeRight),
+                  "the broker's output waveform retains the physical tap's samples and stamp");
+            bool sameAtHeardTime = heard.status == Tap::ReadStatus::Ready && heard.frames == frames &&
+                heard.firstStamp == output->firstStamp;
+            bool heardTone = false;
+            for (std::size_t i = 0; i < outLeft.size(); ++i) {
+                heardTone = heardTone || std::abs(outLeft[i]) > .1f;
+                sameAtHeardTime = sameAtHeardTime &&
+                    std::abs(inLeft[i] - outLeft[i]) < 2.e-5f && std::abs(inRight[i] - outRight[i]) < 2.e-5f;
+            }
+            check(heardTone && sameAtHeardTime, "the bypass waveform and delayed input agree at the same heard sample");
+        }
+        spectrum.reset(); outputView.reset(); inputView.reset();
+        check(broker->stats().taps == idle.taps && broker->stats().consumers == idle.consumers &&
+                  trackInput.tap() == inputTap && trackOutput.tap() == outputTap,
+              "closing the analyser releases its demand while the direct observers keep their physical taps");
+    }
 
     const auto authored = [&](const std::string &param, double normalized, const char *label) {
         OpRequest op;
@@ -409,5 +666,10 @@ int main(){
     bypassedPinnedClaim(false);
     offlineInitialLatency(true);
     offlineInitialLatency(false);
+    limiterGraphSilence(true);
+    limiterGraphSilence(false);
+    limiterGraphSilentEdits(true);
+    limiterGraphSilentEdits(false);
+    limiterGraphWarmSleep();
     std::printf("pipeline document: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

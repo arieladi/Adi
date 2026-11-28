@@ -151,6 +151,8 @@ struct Core::Implementation {
     std::array<double *, 2> mainPointers{}, keyPointers{};
     std::array<ADISharedEqSpectralDynamics::Band, bandCount> spectralBands{};
     int detectorPosition = 0, spectralLatency = 0, maximumLatency = 0;
+    std::size_t quietFrames = 0, nextHistoryCheck = 0;
+    bool measureQuiet = false, stationarySilence = false;
     std::uint64_t generation = 0, block = 0, lastPhysical = 0, offerSerial = 0;
     std::atomic<std::uint64_t> pending{0};
     std::atomic<int> committedLatency{0}, reportedActual{0};
@@ -182,6 +184,41 @@ struct Core::Implementation {
     }
     Settings pinned(Settings desired) const noexcept {
         return pinPlanSettings(desired, active);
+    }
+    bool needsQuietProof(const Settings &s) const noexcept {
+        return measureQuiet && (s.structure == Structure::Zero || spectralLatency > 0) &&
+            !s.bypass && !s.automaticGain && !s.staticGain && !s.loudnessMatch && s.soloBand < 0;
+    }
+    void testQuietHistory(bool zero, std::size_t frames) noexcept {
+        if (!zero || pending.load(std::memory_order_acquire)) {
+            quietFrames = nextHistoryCheck = 0;
+            stationarySilence = false;
+            return;
+        }
+        if (stationarySilence) return;
+        // Two active window lengths cover the overlap-add and every old read
+        // head. Exact stationary filter and ring state still decides admission.
+        const auto minimum = 2 * (static_cast<std::size_t>(committedLatency.load(std::memory_order_relaxed)) +
+                                  static_cast<std::size_t>(spec.maximumFrames));
+        quietFrames = std::min(quietFrames + frames, minimum);
+        if (quietFrames < minimum) return;
+        if (nextHistoryCheck > frames) {
+            nextHistoryCheck -= frames;
+            return;
+        }
+        nextHistoryCheck = static_cast<std::size_t>(spec.sampleRate * .25);
+        if (!controller.hasStationarySilence() || !spectralEngine.hasStationarySilence()) return;
+        for (const auto &history : detectorDelay)
+            if (std::any_of(history.begin(), history.end(), [](double value) { return value != 0. || std::signbit(value); }))
+                return;
+        stationarySilence = true;
+    }
+    void skipSilentFrames(std::uint32_t frames) noexcept {
+        controller.skipSilentFrames(frames);
+        spectralEngine.skipSilentFrames(frames);
+        if (spectralLatency > 0)
+            detectorPosition = static_cast<int>((static_cast<std::uint32_t>(detectorPosition) +
+                static_cast<std::uint64_t>(frames)) % static_cast<std::uint32_t>(spectralLatency));
     }
     void apply(const Settings &s) noexcept {
         const bool all = !applied;
@@ -363,6 +400,18 @@ struct Core::Implementation {
         [[maybe_unused]] filters::FlushDenormals flush;
         consider(desired);
         const auto s = pinned(desired);
+        bool zero = !forced && needsQuietProof(s);
+        if (zero) {
+            const auto silent = [frames](const auto *plane) noexcept {
+                return std::all_of(plane, plane + frames, [](auto value) { return value == 0 && !std::signbit(value); });
+            };
+            for (int ch = 0; ch < spec.channels && zero; ++ch) zero = silent(main[ch]);
+            for (int ch = 0; ch < keyChannels && zero; ++ch) zero = silent(key[ch]);
+        }
+        if (zero && (!applied || last != s)) {
+            quietFrames = nextHistoryCheck = 0;
+            stationarySilence = false;
+        }
         apply(s);
         const bool bypass = forced || s.bypass;
         const bool missingExternalKey = s.externalSidechain && keyChannels == 0;
@@ -402,6 +451,7 @@ struct Core::Implementation {
                     main[ch][offset + i] = static_cast<Sample>(mainPointers[static_cast<std::size_t>(ch)][i]);
             offset += count;
         }
+        if (measureQuiet) testQuietHistory(zero, static_cast<std::size_t>(frames));
         return true;
     }
 };
@@ -448,6 +498,8 @@ void Core::prepare(PrepareSpec spec, const Settings &s) {
     i.lastPhysical = 0;
     i.offerSerial = 0;
     i.blockAdmitted = false;
+    i.quietFrames = i.nextHistoryCheck = 0;
+    i.stationarySilence = false;
     i.prepared = true;
 }
 void Core::reset(const Settings &s) { prepare(implementation->spec, s); }
@@ -457,6 +509,11 @@ std::int32_t Core::latencySamples() const noexcept {
 std::int32_t Core::maximumLatencySamples() const noexcept {
     return implementation->prepared ? implementation->maximumLatency : 0;
 }
+void Core::trackSilenceForSuspension(bool enabled) noexcept { implementation->measureQuiet = enabled; }
+bool Core::hasStationarySilence() const noexcept {
+    return implementation->stationarySilence && !implementation->pending.load(std::memory_order_acquire);
+}
+void Core::skipSilentFrames(std::uint32_t frames) noexcept { implementation->skipSilentFrames(frames); }
 LatencyChange Core::pendingLatencyChange() const noexcept {
     const auto token = implementation->pending.load(std::memory_order_acquire) & ~promisedLatencyBit;
     return {token, static_cast<std::int32_t>(token & 0xffffffffU)};

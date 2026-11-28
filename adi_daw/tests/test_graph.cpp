@@ -12,6 +12,8 @@
 // caller, which is the property ADR-0036 bought and ADR-0045 extends.
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/scope.hpp"
+#include "juce/device_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -429,6 +431,102 @@ void testBypassedTransitionWakesOnlyClaimedBlock() {
     check(transition.checks == 3 && transition.frames == 256 && transition.wetCalls == 0 &&
               g.stats().nodesSuspended > 0,
           "settlement restores suspension on the next physical block");
+}
+
+void testDeviceReceivesSkippedSliceFrames() {
+    section("DF-M34 -- the backend receives exactly the frames the graph skipped");
+    class Probe final : public adi::device::DeviceInstance {
+    public:
+        [[nodiscard]] const adi::device::DeviceIdentity& identity() const noexcept override { return identity_; }
+        [[nodiscard]] bool loaded() const noexcept override { return true; }
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 31; }
+        void process(const NodeIo& io) noexcept override {
+            ++calls;
+            suspended_ = false;
+            for (std::int32_t c = 0; c < io.channels; ++c) {
+                const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
+                float* out = io.out[c] + io.blockOffset;
+                for (std::int32_t i = 0; i < io.frames; ++i) out[i] = in ? in[i] : 0.f;
+            }
+        }
+        void didSuspend() noexcept override { ++suspensions; suspended_ = true; }
+        void didSkip(std::int32_t frames) noexcept override {
+            if (skipCount < skipped.size()) skipped[skipCount] = frames;
+            ++skipCount;
+            skipsFollowSuspension = skipsFollowSuspension && suspended_;
+        }
+        std::array<std::int32_t, 4> skipped{};
+        std::size_t skipCount = 0;
+        int calls = 0, suspensions = 0;
+        bool skipsFollowSuspension = true;
+    private:
+        adi::device::DeviceIdentity identity_;
+        bool suspended_ = false;
+    };
+
+    ConstNode source(1.f), unrelated(0.f);
+    Probe probe;
+    adi::device::DeviceNode device(probe);
+    ScopeTap outputTap(48000., 1.);
+    device.setOutputTap(&outputTap);
+    Graph graph;
+    const auto input = graph.addNode(source);
+    const auto target = graph.addNode(device);
+    const auto other = graph.addNode(unrelated);
+    check(graph.connect(input, target), "the real DeviceNode receives the source");
+    graph.setOutput(target);
+    graph.prepare(48000., 256);
+    check(graph.ok(), "the skip probe graph prepared");
+
+    Out output(256);
+    const auto render = [&](std::int32_t frames, std::uint64_t block) {
+        auto io = makeIo(output, frames);
+        io.renderBlock = block;
+        graph.process(io);
+    };
+    render(37, 1);
+    check(output.l[0] == 1.f && probe.calls == 1 && probe.skipCount == 0,
+          "active processing forwards audio and does not report skipped frames");
+    source.set(0.f);
+    render(17, 2);
+    render(14, 3);
+    check(probe.calls == 3 && probe.suspensions == 0 && probe.skipCount == 0,
+          "the exact 31-frame tail is processed before any suspension");
+
+    const auto tapBefore = outputTap.written();
+    render(13, 4);
+    render(61, 5);
+    Event remote;
+    remote.frame = 100;
+    remote.type = EventType::ParamValue;
+    check(graph.pushInputEvent(other, remote), "an unrelated event installs an internal graph split");
+    const auto previousSegments = graph.stats().segments;
+    render(187, 5);
+    check(graph.stats().segments == previousSegments + 2 &&
+              outputTap.written() == tapBefore + 13 + 61 + 187 && output.l[0] == 0.f,
+          "the skipped slice publishes its entire silent tap even with an unrelated internal split");
+    check(probe.skipCount == 3 && probe.skipped[0] == 13 && probe.skipped[1] == 61 && probe.skipped[2] == 187 &&
+              probe.calls == 3 && probe.suspensions == 1 && probe.skipsFollowSuspension,
+          "the backend receives each skipped slice exactly once, even inside the same physical callback");
+
+    Event wake;
+    wake.type = EventType::ParamValue;
+    check(graph.pushInputEvent(target, wake), "a parameter event reaches the silent device");
+    render(9, 6);
+    render(31, 7);
+    check(probe.calls == 5 && probe.skipCount == 3 && probe.suspensions == 1,
+          "a targeted event and its drained tail remain active and add no skip notification");
+    render(29, 8);
+    device.setBypassed(true);
+    render(41, 9);
+    check(probe.skipCount == probe.skipped.size() &&
+              probe.skipped == std::array<std::int32_t, 4>{13, 61, 187, 29} &&
+              probe.suspensions == 2 && probe.calls == 5 && probe.skipsFollowSuspension,
+          "the second sleep reports its length and silent dry bypass leaves the processor parked");
+    source.set(1.f);
+    render(73, 10);
+    check(probe.skipCount == probe.skipped.size() && probe.calls == 5 && output.l[0] == 1.f,
+          "audible compensated dry bypass renders without a skip notification");
 }
 
 void testSuspendedNodeClearsOnceToCapacity() {
@@ -2503,6 +2601,7 @@ int main() {
         testFloorBound();
         testSilenceSuspends();
         testBypassedTransitionWakesOnlyClaimedBlock();
+        testDeviceReceivesSkippedSliceFrames();
         testSuspendedNodeClearsOnceToCapacity();
         testMixSkipsSleepingSources();
         testTheAudioThreadNeverAsksALatency();

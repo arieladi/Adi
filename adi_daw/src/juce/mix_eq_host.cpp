@@ -225,6 +225,11 @@ public:
             return 0;
         return engine::kInfiniteTail;
     }
+    void didSkip(std::int32_t frames) noexcept override {
+        if (frames <= 0 || tailRevision_.load(std::memory_order_acquire) == 0) return;
+        const ReactivationGate::Pass pass(gate_);
+        if (pass && prepared_) backend_->skipSilentFrames(static_cast<std::uint32_t>(frames));
+    }
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
     std::uint64_t latencyEpoch() const noexcept override {return latencyEpoch_.load(std::memory_order_acquire);}
     void pumpMainThread() override {
