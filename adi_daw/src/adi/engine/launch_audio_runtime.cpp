@@ -96,25 +96,32 @@ NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot,
     const auto first = block.sampleAtTick(block.clock,restart.tick);
     if (first <= position.frame || first >= end) return wraps;
 
-    const auto sourceEnd = slot.loopEndTick > slot.loopStartTick ? slot.loopEndTick : slot.endTick;
+    const auto looping = slot.loopEndTick > slot.loopStartTick;
+    const auto sourceEnd = looping ? slot.loopEndTick : slot.endTick;
     if (restart.sourceTick < 0 || restart.sourceTick >= sourceEnd) return wraps;
     if (scheduled) {
         if (position.anchorTick < 0 || position.anchorSourceTick < 0 || position.anchorSourceTick >= sourceEnd)
             return wraps;
         const auto ticksUntilEnd = sourceEnd - position.anchorSourceTick;
         if (position.anchorTick > limit - ticksUntilEnd ||
-            first > block.sampleAtTick(block.clock,position.anchorTick + ticksUntilEnd) ||
             (restart.followingTick != limit && block.sampleAtTick(block.clock,restart.followingTick) < end))
             return wraps;
+        if (first > block.sampleAtTick(block.clock,position.anchorTick + ticksUntilEnd)) {
+            // The frame at the retrigger belongs to saved Start. Project
+            // only earlier ordinary wraps, with a single unfaded lap allowed.
+            if (!looping || slot.fade) return wraps;
+            const auto beforeRestart = static_cast<std::int32_t>(first - position.frame);
+            const auto ordinary = nativeCueWraps(block,slot,position,beforeRestart);
+            if (!ordinary.bounded || ordinary.count != 1) return wraps;
+            wraps.positions[wraps.count++] = ordinary.positions[0];
+        }
     }
     const auto lapTicks = sourceEnd - restart.sourceTick;
     if (restart.tick > limit - lapTicks || block.sampleAtTick(block.clock,restart.tick + lapTicks) < end)
         return wraps;
 
-    // Repeat owns an exact End tie and otherwise reaches saved Start before
-    // the ordinary wrap. Keep that separately anchored placement ready.
-    wraps.positions[0] = {first,restart.tick,restart.sourceTick};
-    wraps.count = 1;
+    // The Launcher uses a new clock anchor for saved Start, even on an End tie.
+    wraps.positions[wraps.count++] = {first,restart.tick,restart.sourceTick};
     wraps.bounded = true;
     return wraps;
 }
