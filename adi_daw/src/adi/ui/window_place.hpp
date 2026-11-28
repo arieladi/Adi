@@ -121,6 +121,16 @@ inline Rect clampOnto(Rect r, const Rect &usable, int minW, int minH) noexcept {
     r.y = std::clamp(r.y, usable.y, usable.bottom() - r.h);
     return r;
 }
+// SC-428: a window of a size it does not choose (a plug-in's) moved, not resized, to lie wholly on the
+// monitor it stands on most, as far as it fits: its left and top edges first when it is larger.
+inline Rect wholly(Rect r, const std::vector<Monitor> &ms) noexcept {
+    if (ms.empty())
+        return r;
+    const auto &usable = ms[static_cast<std::size_t>(monitorOf(r, ms))].usable;
+    r.x = r.w >= usable.w ? usable.x : std::clamp(r.x, usable.x, usable.right() - r.w);
+    r.y = r.h >= usable.h ? usable.y : std::clamp(r.y, usable.y, usable.bottom() - r.h);
+    return r;
+}
 // True when a monitor's usable area holds a grab of the title bar: never above the screen's top,
 // a grab's height of it down and a grab's width across on one monitor.
 inline bool reachable(const Rect &r, const std::vector<Monitor> &ms, Grab g = {}) noexcept {

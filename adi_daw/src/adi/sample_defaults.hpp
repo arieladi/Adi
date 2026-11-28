@@ -17,7 +17,7 @@ struct SampleDefaultsCapture {
                                                                library::Index&,std::string& error);
 // Resolve the captured or reused media row against authored settings. Absence
 // returns an empty result; an incompatible or unreadable default is an error.
-[[nodiscard]] std::optional<library::SampleSettings> loadSampleDefaults(Store &, library::Index &,
+[[nodiscard]] std::optional<library::SampleSettings> loadSampleDefaults(Store &, const library::Index &,
                                                                         const media::MediaResult &, const OpRequest &);
 // Material preparation helper: modifies only the caller's uncommitted image.
 // Existing media id/clip id/track/placement survive; authored defaults supply

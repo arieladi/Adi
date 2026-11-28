@@ -7,40 +7,91 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <utility>
 #include <vector>
 namespace adi { class Store; }
-namespace adi::audio { class ProgressiveDecoder; }
+namespace adi::audio { class ProgressiveDecoder; enum class PitchCompareSide; }
 namespace adi::engine {
 struct ClipProject;
 struct NoteExpressionsRead;
+struct TempoMap;
+class LaunchAudioRuntime;
+class LaunchAudioProject;
 struct ClipMediaSource {
     std::int64_t clipId = 0, mediaId = 0;
     std::filesystem::path path;
     std::string storedBlake3;
 };
 // Read the media hints and immutable rows off the callback. No Store survives.
-std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&);
+std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
+[[nodiscard]] bool sameLaunchSource(const ClipProject&, const ClipProject&) noexcept;
+[[nodiscard]] bool launchFilesCurrent(const ClipProject&);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
+bool sameStoredLaunchSources(const ClipProject&, const ClipProject&);
+bool sameStoredWarpSource(const ClipProject&, const ClipProject&, std::int64_t clip);
+inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
+struct StoredLaunchPageReuse {
+    const ClipProject* source = nullptr;
+    const LaunchAudioProject* bank = nullptr;
+};
+/// Owner-only. A scene handover can supply a flat clock for prepared media
+/// and warm the native sources that may inherit an arbitrary source phase.
+/// Cold start-window admission for long pinned media is only for a fresh incarnation.
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
+    std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
+    std::uint64_t incarnation, std::vector<std::string>& problems,
+    std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
+    std::span<const std::int64_t> warmWarpClips = {}, StoredLaunchPageReuse priorPinnedPages = {},
+    bool allowColdPinnedPages = false);
+/// Each retained scene period needs a fixed audio projection on its own clock.
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchHistoryBank(const ClipProject&, const TempoMap&,
+    std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
+    std::vector<std::string>& problems, std::uint64_t residentBudget);
 class ClipPlayback {
 public:
+    enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
-                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false);
+                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false,
+                 WarpPlayback = WarpPlayback::Streaming);
     ~ClipPlayback();
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
     std::vector<Node*> sourcesFor(std::int64_t trackId);
+    [[nodiscard]] static constexpr std::int32_t readAheadFrames(std::uint32_t rate) noexcept {
+        return static_cast<std::int32_t>((std::uint64_t{16384} * rate + 47999) / 48000);
+    }
+    /// Driver-only lookahead for an idle source. Each candidate is a physical
+    /// source window. Queue pages with the same worker used by playback.
+    static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
+    /// Driver only. One private source, reserving every page read by the first
+    /// render window. Releases partial admission on refusal.
+    [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames) noexcept;
+    static void releaseSource(Node&) noexcept;
+    /// Owner only, before publication. Keep a private physical slot's
+    /// Start in the same bounded request as the running reader.
+    static void keepSourceStartWarm(Node&, std::int64_t firstFrame) noexcept;
+    /// Owner-side R3 delay for a private source bank whose PCM is aligned.
+    [[nodiscard]] std::int32_t warpLatencyFor(std::int64_t trackId) const noexcept;
     using SampleRange = std::pair<std::int64_t, std::int64_t>;
     /// Owner-side half-open Arrangement extents from the prepared clip clock.
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;
     /// Owner only, before priming or publishing this source generation.
     void useMonitoredInput(std::int64_t track) noexcept;
+    /// Owner only, before publishing. A launched track still needs a source
+    /// when it has no Arrangement clips. Share matching delay history with
+    /// the previous generation without inspecting the driver's PCM.
+    void attachLaunchAudio(std::int64_t track, std::shared_ptr<const LaunchAudioRuntime>,
+                           bool createIfMissing = true, const ClipPlayback* previous = nullptr);
     /// Owner only, before publishing. The span object outlives rendering of this
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
+    // Includes notices for clips that use prepared Warp audio.
     const std::vector<std::string>& problems() const noexcept;
+    // Source errors for Session's export, Freeze and analysis preflight.
+    [[nodiscard]] std::span<const std::string> fatalProblems() const noexcept;
     // This clip was dropped while preparing the generation or its reader failed.
     [[nodiscard]] bool clipUnavailable(std::int64_t clipId) const noexcept;
     // Whether this clip's audio file could not be opened or used. Clip settings
@@ -58,11 +109,23 @@ public:
     // a promise about plugin-owned samples. Muted/unopened clips are absent.
     // Immutable for this generation's lifetime; callback use returns empty.
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
+    /// Owner-only check of the original native-rate WAV reader.
+    [[nodiscard]] bool readsNativePcm(std::int64_t clipId) const noexcept;
+
+    // Off-callback owner controls. One edited clip can be compared at a time
+    // in this source generation. Preparation leaves an existing comparison
+    // intact on failure. Both sides use the live Arrangement transport.
+    bool preparePitchComparison(std::int64_t clipId, audio::PitchCompareSide initial,
+                                std::string& error, std::uint32_t crossfadeFrames = 0,
+                                std::stop_token stop = {});
+    bool selectPitchComparison(std::int64_t clipId, audio::PitchCompareSide) noexcept;
+    void endPitchComparison();
+    void collectPitchComparisons();
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
     // Wait for preparation independently of the page-read timeout. Offline
-    // renders use this before reading their first block of a cold Warp clip.
+    // renders use this before reading their first block of a cold Warp or pitch-edited clip.
     bool waitForWarp(std::stop_token stop = {}) const;
     // Owner only, BEFORE publishing a candidate source generation: request and
     // wait for the pages selected by an immutable, owner-owned transport value.
@@ -81,6 +144,17 @@ public:
     bool primeAt(const Transport& snapshot,const Transport& alternate,
                  std::chrono::milliseconds timeout = std::chrono::seconds(10),
                  bool waitForPendingWarp = true);
+    /// Owner, before publishing a private paged source bank. Admit just this
+    /// private track's initial/loop window without replacing other requests.
+    /// An unrolled Legato source can retain its whole reachable range if it
+    /// fits the existing page slots, starting at retainFromFrame.
+    bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
+                      std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame = {});
+    // Prime the entire bounded physical window of a private one-shot source.
+    bool primeTrackWindow(std::int64_t track, const Transport& first, std::int32_t frames,
+                          std::chrono::milliseconds timeout);
+    /// Owner query after successfully priming a private unrolled clip.
+    [[nodiscard]] std::optional<SampleRange> retainedTrackRange(std::int64_t track) const noexcept;
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }
@@ -97,7 +171,8 @@ public:
     // call immediately before rendering the same transport range.
     // The closure retains its source generation even after this wrapper dies.
     // Construction on the audio callback refuses with an empty function.
-    [[nodiscard]] Readiness readiness() const;
+    enum class ReadinessScope { All, Delayed };
+    [[nodiscard]] Readiness readiness(ReadinessScope = ReadinessScope::All) const;
     // Simulates an unavailable disk worker, without stopping the audio driver.
     void stallForTest(bool stall) noexcept;
     struct RequestSnapshotProbeForTest {
@@ -113,12 +188,15 @@ public:
     void setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest*) noexcept;
     std::uint32_t underrunSamples() const noexcept;
     std::uint32_t readErrors() const noexcept;
+    [[nodiscard]] std::uint64_t pageBytesCeiling() const noexcept;
     // Off-callback owner snapshot of terminal asynchronous decode diagnostics.
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
+    friend struct LaunchWarpPageBank;
     bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
-                      std::stop_token stop = {});
+                      std::stop_token stop = {}, std::optional<std::int64_t> track = {},
+                      std::int32_t windowFrames = 0);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

@@ -38,14 +38,14 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     void present(const panel::Record &, double defaultNormalized);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
-    // or Backspace is Return to Default, one gesture to the plug-in's default, one undo step.
+    // Delete and Backspace remove a hosted Configure control or reset its value outside Configure.
     // Up/Down nudge a knob; Enter or a numeric key edits its normalized value.
     // Left and right still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
     // The parameter's automation commands, from the control or its labels.
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     juce::PopupMenu menuItems();
     void showMenu();
@@ -148,7 +148,7 @@ class SampleTile final : public juce::Component,
     std::shared_ptr<const media::MediaPeaks> peaks_;
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
-// the name and Configure; the controls in columns that fit the strip's height.
+// the name and Configure where available; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component,
                               public juce::FileDragAndDropTarget,
                               public juce::DragAndDropTarget,
@@ -226,6 +226,9 @@ class DevicePanelView final : public juce::Component,
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
     juce::TextButton parameterList{"Parameter List"};
+    // Optional presenters for Configure's parameter list and its removal confirmation.
+    std::function<void(juce::PopupMenu, std::function<void(int)>)> onParameterListMenu;
+    std::function<void(juce::MessageBoxOptions, std::function<void(bool)>)> onPanelRemovalWarning;
     ActivatorButton enabled;
     WrenchButton wrench;
     HotSwapButton hotSwapButton;
@@ -271,12 +274,19 @@ class DevicePanelView final : public juce::Component,
     void cancelInteractions();
 
   private:
+    friend class ParameterControl;
     SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
+    bool allowsConfigure() const noexcept;
     void endRename(bool commit);
     void showParameterList();
+    bool deleteConfigureParameter(std::string parameter);
+    void changeParameterPanel(const DevicePanelData &, std::uint64_t menuEpoch,
+                              std::optional<std::vector<std::string>> params);
     void closeConfigure();
     void queueConfigureTouch(const DevicePanelData &);
     void applyConfigureTouches();
+    bool beginParameterReorder(const std::string &parameter);
+    void endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance, bool labelClick);
     bool panelTargetCurrent(const DevicePanelData &);
     void chooseLastTouch(const DevicePanelData &, bool showAutomation);
     bool canHotSwap() const;
@@ -302,14 +312,23 @@ class DevicePanelView final : public juce::Component,
     bool playbackProblemPresented_ = false;
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
+    juce::ScopedMessageBox panelRemovalWarning_;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     struct ConfigureSession {
         DevicePanelData expected;
         std::uint64_t observed = 0;
         std::vector<std::string> pending;
+        bool openedEditor = false;
     };
     std::optional<ConfigureSession> configureSession_;
+    struct ParameterReorder {
+        std::string parameter;
+        std::vector<std::string> order;
+        bool configured = false;
+        std::uint64_t menuEpoch = 0, controlsEpoch = 0;
+    };
+    std::optional<ParameterReorder> parameterReorder_;
     std::optional<DevicePanelData> dragTarget_;
     std::vector<DevicePanelData> draggedDevices_;
     bool selectOnRelease_ = false;
@@ -389,6 +408,8 @@ class DeviceChainStrip final : public juce::Component,
     enum class Clip { Cut, Copy, Paste, Duplicate };
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
+    // Paste into an explicit destination, even when the strip itself lacks focus.
+    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::optional<std::int64_t> focusedDevice() const;
     bool hasHotSwapContext() const;
     bool hotSwapFocused();
@@ -489,7 +510,6 @@ class DeviceChainStrip final : public juce::Component,
     void selectTitle(const DevicePanelView &, bool extend);
     void clearSelection();
     void chooseEnd();
-    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
     DevicePanelView *focusedHotSwapPanel() const;

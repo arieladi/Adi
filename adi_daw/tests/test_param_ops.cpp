@@ -539,7 +539,11 @@ public:
         if (stateless) return {};
         return {"chunk"};
     }
+    [[nodiscard]] std::string_view stateCaptureIssue() const noexcept override {
+        return refuseSave && staleWhenRefused ? "remote Sampler state is stale" : "";
+    }
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override {
+        ++saveCalls;
         if (refuseSave) return {};
         if (stateless || role != "chunk") return {};
         std::vector<std::uint8_t> b(1 + 2 * sizeof(double));
@@ -584,6 +588,8 @@ public:
 
     bool stateless = false;
     bool refuseSave = false;
+    bool staleWhenRefused = false;
+    mutable int saveCalls = 0;
     mutable std::function<void()> afterSave;
     int sets = 0;
     int loads = 0;
@@ -1113,6 +1119,10 @@ void testSnapshotWithMissingDevice() {
               ops.appliedDeliveryStatus().state == AppliedDeliveryState::Idle &&
               near(store->db().execAndGet("SELECT normalized_value FROM plugin_params").getDouble(), 0.75),
           "save acknowledges the older stored-only receipt without waiting for a plug-in or changing its values");
+    const auto bestEffort = ops.snapshotAll(1100, ParamOps::SnapshotGestures::FinishOpen,
+                                            ParamOps::SnapshotPolicy::UseStoredOnCaptureFailure);
+    check(bestEffort.ok() && bestEffort.staleDevices.empty(),
+          "best-effort save retains the existing policy for an unloaded local plug-in");
 }
 
 void testSnapshotAll() {
@@ -1150,7 +1160,11 @@ void testSnapshotAll() {
         return store->db().execAndGet("SELECT count(*) FROM ops WHERE op_type='device.loadState'").getInt();
     };
 
+    const auto aBeforeFirst = a->saveCalls;
+    const auto bBeforeFirst = b->saveCalls;
     const auto first = ops.snapshotAll(1000);
+    check(a->saveCalls == aBeforeFirst + 1 && b->saveCalls == bBeforeFirst + 1,
+          "acknowledging the explicit save does not request the captured bytes again");
     check(first.ok() && first.journalOps == 2 && first.stateOps == 2 && count() == 2 &&
           rowHash(100) == hashOfState(*a) && rowHash(101) == hashOfState(*b),
           "first save writes one missing state row per attached device");
@@ -1225,6 +1239,61 @@ void testSnapshotAll() {
     const auto selected = ops.snapshotDeviceState(100, 2000, ParamOps::SnapshotGestures::FinishOpen);
     check(selected.ok() && selected.stateOps == 1 && count() == 10 && rowHash(100) == hashOfState(*a),
           "capturing one device does not read an unrelated plug-in's opaque state");
+
+    const auto lastRemoteState = rowHash(100);
+    a->changePatchSilently(30);
+    a->staleWhenRefused = true;
+    a->refuseSave = true;
+    const auto remoteRefused = ops.snapshotAll(2100);
+    check(!remoteRefused.ok() && remoteRefused.failedDevice == 100 &&
+          remoteRefused.status.message == "remote Sampler state is stale" && rowHash(100) == lastRemoteState,
+          "a strict remote capture identifies the stale device and its reported diagnostic");
+
+    b->refuseSave = false;
+    b->changePatchSilently(31);
+    using Gestures = ParamOps::SnapshotGestures;
+    using Policy = ParamOps::SnapshotPolicy;
+    const auto stale = ops.snapshotAll(2200, Gestures::FinishOpen, Policy::UseStoredOnCaptureFailure);
+    check(stale.ok() && stale.stateOps == 1 && count() == 11 && rowHash(100) == lastRemoteState &&
+          rowHash(101) == hashOfState(*b) && stale.staleDevices == std::vector<std::int64_t>{100},
+          "best-effort save keeps the remote device's old blob and records the other device");
+
+    Session reopened;
+    const auto initiallyStale = [](const DeviceRequest& request, std::string&)
+        -> std::unique_ptr<device::DeviceInstance> {
+        auto sampler = std::make_unique<Sampler>();
+        sampler->refuseSave = sampler->staleWhenRefused = request.device->id == 100;
+        return sampler;
+    };
+    ParamOps afterReopen;
+    check(reopened.load(*store, initiallyStale, SessionSpec{}) && afterReopen.attachSession(reopened) == 2,
+          "an initially stale remote device does not prevent attaching after reopening");
+    const auto reopenedSave = afterReopen.snapshotAll(2300, Gestures::FinishOpen, Policy::UseStoredOnCaptureFailure);
+    check(reopenedSave.ok() && reopenedSave.staleDevices == std::vector<std::int64_t>{100} &&
+          rowHash(100) == lastRemoteState,
+          "saving after reopening retains the stored remote state");
+
+    store->db().exec("INSERT INTO remote_hosts(id,name,host,port) VALUES(7,'Fixture','127.0.0.1',55056);"
+                     "UPDATE devices SET remote_host_id=7 WHERE id=100;");
+    Session disconnected;
+    const auto unavailable = [](const DeviceRequest& request, std::string& error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.device->remoteHostId) {
+            error = "server #7 is unavailable";
+            return {};
+        }
+        return std::make_unique<Sampler>();
+    };
+    ParamOps disconnectedOps;
+    const bool opened = disconnected.load(*store, unavailable, SessionSpec{});
+    const auto* placeholder = disconnected.entryFor(100);
+    check(opened && disconnectedOps.attachSession(disconnected) == 1 && placeholder && placeholder->placeholder,
+          "opening without the server leaves an unloaded remote placeholder");
+    const auto disconnectedSave = disconnectedOps.snapshotAll(2400, Gestures::FinishOpen,
+                                                              Policy::UseStoredOnCaptureFailure);
+    check(disconnectedSave.ok() && disconnectedSave.staleDevices == std::vector<std::int64_t>{100} &&
+          rowHash(100) == lastRemoteState,
+          "a remote device unavailable on first open enters the stale receipt and keeps its saved bytes");
 }
 
 }  // namespace

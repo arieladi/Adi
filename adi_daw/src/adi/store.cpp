@@ -191,7 +191,8 @@ const std::vector<MigrationStep>& migrationSteps() {
     // One entry per minor, in order, each naming what that minor ADDED. A new
     // minor appends a row here and freezes the previous schema.sql under
     // docs/format/history/ -- validate_schema check 9 fails until both exist.
-    static const std::vector<MigrationStep> steps = {
+    static const std::vector<MigrationStep> steps = [] {
+        std::vector<MigrationStep> released = {
         // 1.1 (ADR-0136): the lock on embedded media. The triggers refuse NEW
         // writes only; a 1.0 file's embedded rows stay until extracted.
         {1, {"media_never_embedded_insert", "media_never_embedded_update",
@@ -232,7 +233,18 @@ const std::vector<MigrationStep>& migrationSteps() {
         {21, {"history_roots", "history_origin_root"}},
         {22, {"routing_key_taps"}},
         {23, {"routing_send_taps"}}, // ADR-0245 d10: a tap on an individual send
-    };
+        };
+        // The Session branch stages the exact 1.26 DDL over 1.23 in tests.
+        // Only the real format bump activates this step. The contiguous
+        // registry and frozen-history checks still require 1.24 and 1.25.
+        if constexpr (kUserVersion >= kSessionSchemaUserVersion)
+            released.push_back({kSessionSchemaUserVersion % 1000,
+                {"scenes", "clip_slots", "idx_clip_slots_scene", "clip_launch",
+                 "clip_slots_validate_insert", "clip_slots_validate_update",
+                 "clips_validate_session_insert", "clips_validate_session_update",
+                 "scenes_delete_clips"}});
+        return released;
+    }();
     return steps;
 }
 
@@ -729,8 +741,40 @@ std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, S
             return nullptr;
         }
     }
+    store->lastError_ = store->essentialExtensionProblem();
     err = result;
     return store;
+}
+
+std::string Store::essentialExtensionProblem(int readerVersion) const {
+    if (!db_ || audio::onAudioThread)
+        return {};
+    try {
+        SQLite::Statement exists(*db_, "SELECT 1 FROM main.sqlite_master "
+                                        "WHERE type='table' AND name='extensions'");
+        if (!exists.executeStep())
+            return {};
+        SQLite::Statement rows(*db_, "SELECT ns, key, min_reader, scope_kind, scope_id FROM main.extensions "
+                                      "WHERE criticality='essential' ORDER BY ns, key, min_reader, id");
+        std::string problem;
+        while (rows.executeStep()) {
+            const auto ns = rows.getColumn(0).getString();
+            const auto key = rows.getColumn(1).getString();
+            const auto minimum = rows.getColumn(2).getInt64();
+            if (ns == "org.adidaw.session" && key == "clip_slots" &&
+                readerVersion >= kSessionSchemaUserVersion && readerVersion >= minimum &&
+                rows.getColumn(3).getString() == "project" && rows.getColumn(4).isNull())
+                continue;
+            problem += problem.empty() ? "Unsupported essential project extension " : ", ";
+            problem += ns + "/" + key;
+            if (minimum > 0)
+                problem += " (minimum reader " + std::to_string(minimum / 1000) + "." +
+                           std::to_string(minimum % 1000) + ")";
+        }
+        return problem;
+    } catch (const std::exception& error) {
+        return "Could not inspect essential project extensions: " + std::string(error.what());
+    }
 }
 
 bool Store::close() {

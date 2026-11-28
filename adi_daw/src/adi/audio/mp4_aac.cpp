@@ -366,7 +366,12 @@ static AacMovie readMovie(const std::filesystem::path &path,bool stereoAligned) 
                 if (frameDelta > 1024 || (!frameDelta) || (frameDelta != 1024 && i + 1 != times))
                     bad("unsupported AAC packet timing");
             }
-            if (samples != count || ticks != duration)
+            // SC-376: Media Foundation writes the media duration through 100-ns units and lands one tick
+            // short of its own sample table (4095 for 4 x 1024 at 48 kHz). That is its rounding, not
+            // missing audio: the sample table's total stands. Every file Windows' own encoder wrote was
+            // refused as damaged, and ADI's AAC self-test with it.
+            const auto mediaDuration = duration < ticks && ticks - duration <= 1 ? ticks : duration;
+            if (samples != count || ticks != mediaDuration)
                 bad("sample timing/duration mismatch");
             const auto co64 = one(stbl, "co64", false), stco = one(stbl, "stco", false);
             if (co64.empty() == stco.empty())
@@ -422,7 +427,7 @@ static AacMovie readMovie(const std::filesystem::path &path,bool stereoAligned) 
             }
             if (packet != count)
                 bad("incomplete chunk table");
-            track.frames = clockFrames(duration, clock, rate);
+            track.frames = clockFrames(mediaDuration, clock, rate);
             const auto edts = one(b.data, "edts", false);
             if (!edts.empty()) {
                 const auto elst = one(edts, "elst");
@@ -437,7 +442,7 @@ static AacMovie readMovie(const std::filesystem::path &path,bool stereoAligned) 
                 track.frames = clockFrames(length, movieClock, rate);
                 // Coarse movie clocks may round a valid exact media end. Clamp only
                 // their half-tick rounding, never invent missing compressed content.
-                const auto exact = clockFrames(duration, clock, rate);
+                const auto exact = clockFrames(mediaDuration, clock, rate);
                 if (track.priming <= exact && track.frames > exact - track.priming &&
                     track.frames - (exact - track.priming) <= rate / movieClock + 1)
                     track.frames = exact - track.priming;

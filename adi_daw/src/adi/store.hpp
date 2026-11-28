@@ -46,6 +46,7 @@ inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
 inline constexpr int kSchemaMinor = 23;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains; 1.14: track recording options; 1.15: return send taps (ADR-0203 d3); 1.16: local clip properties (N33); 1.18: whole-group freeze scope; 1.19: undo checkpoint (ADR-0203 d13); 1.20: content-addressed checkpoint rows (HI-02); 1.21: stored history baselines (HI-02); 1.22: device key taps (DEV-05/MX-24); 1.23: individual send taps (ADR-0245 d10)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
+inline constexpr int kSessionSchemaUserVersion = 1026; // TM-SV-02, reserved until 1.24 and 1.25 land
 
 enum class StoreError {
     Ok,
@@ -289,7 +290,12 @@ public:
     [[nodiscard]] std::optional<std::vector<std::byte>>
     getStateBlob(const std::string& hashBlake3) const;
 
-    /// Last SQLite message, for diagnostics when a put/get returns false.
+    /// Empty when the reader supports every essential extension in the file.
+    /// Owner-side read before playback/render/export, with the extension names
+    /// and minimum reader versions in the diagnostic.
+    [[nodiscard]] std::string essentialExtensionProblem(int readerVersion = kUserVersion) const;
+
+    /// Last operation diagnostic, including an essential-extension warning on open.
     [[nodiscard]] const std::string& lastError() const { return lastError_; }
 
     // --- who writes (ADR-0161) --------------------------------------------------

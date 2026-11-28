@@ -540,6 +540,26 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setEndMarker` | e | S | cap | P1 |
 | `clip.setTimeSignature` | e | S | cap | P1 |
 | `clip.setScale` | e | S | cap | P1 |
+| `clip.setPitchEdits` | e | S | cap | P1 |
+| `clip.splitPitchSegment` | e | S | cap | P1 |
+| `clip.mergePitchSegments` | e | S | cap | P1 |
+
+`clip.setPitchEdits` replaces one clip's complete set of authored pitch edits
+in the reserved schema 1.27 table. The operation captures the previous set
+for Undo. The request identifies the source hash, rate, frame count, analysis
+version and configuration. Each edit includes its original source-note
+bounds and its destination and controls. An empty set without authored
+segmentation clears the clip's edits. Worker evaluation of an edit set
+requires matching source analysis.
+
+`clip.splitPitchSegment` and `clip.mergePitchSegments` use the same source
+identity and complete edit rows, with the resolved `segmentation` required.
+The split image contains at least two segments and the merge image at least one.
+The producer resolves note bounds and corrections before submitting each
+action as its own Undo step. The journal captures the previous clip row or
+its absence. Undo restores that capture, and Redo and replay use the submitted
+image. Boundary correction and previously recorded structural images continue
+through `clip.setPitchEdits`.
 
 `clip.setLane {id,lane?}` preserves the clip identity and all child rows. A
 positive lane must exist, be a take lane and belong to the clip's track; omission
@@ -555,10 +575,12 @@ the full typed details row, including future fields or row absence; undo and
 redo restore it. This optional SQL seam adds no dependency on N17's schema.
 
 `clip.move {id,to,track}` and `clip.resize {id,pos,length}` take arrangement
-ticks. Linear clips store the converted position in nanoseconds. A linear
-resize converts both endpoints through the tempo map. A same-track move keeps
-its lane. Undo restores the exact native placement. Historical scalar inverses
-retain their recorded effects.
+ticks. Linear clips store their placement in nanoseconds. An anchored resize
+of unlooped audio with known source bounds preserves the native start and
+cannot extend over the playable end. Other linear resizes convert both
+endpoints through the tempo map. A same-track move keeps its lane. Undo
+restores the exact native placement. Redo preserves the end recorded when
+the resize was committed, including the effects of historical entries.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
@@ -864,12 +886,14 @@ note releases it on the next published playback callback.
 Implemented transform payloads:
 
 - `note.quantize {clip, note_ids[], grid_ticks, origin_ticks, strength, swing,
-  starts, ends}` supplies every setting explicitly. `note_ids` is a nonempty,
+  starts, ends, alternate_grid_ticks?}` supplies every setting explicitly. `note_ids` is a nonempty,
   duplicate-free array of positive uint64 IDs. `grid_ticks` is positive and at
   most INT64_MAX/2; `origin_ticks` is signed. Strength and swing are fixed-point
   percentages from 0 to 10000 (100.00%). Swing delays odd divisions by up to half
-  a grid division. Nearest-grid ties choose the later line; fractional strength
-  rounds the integer movement toward its target on a half tick. Starts and ends
+  a grid division. A positive optional alternate grid adds its lines at the same
+  origin, applying swing to each grid independently. Nearest-grid ties choose the
+  later line; fractional strength rounds the integer movement toward its target
+  on a half tick. Starts and ends
   may be chosen independently. Start-only preserves duration. Independently
   quantized endpoints that collapse keep a one-tick duration. Overflow refuses
   the complete op. All arithmetic uses integers, including above 2^53 ticks.
@@ -939,11 +963,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1002,11 +1025,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1157,11 +1179,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1281,11 +1302,10 @@ These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
 Playback prepares immutable per-track controller timelines off the callback.
-Musical/linear placement, source offsets, clip loops and step tempo changes use
+Musical/linear placement, source offsets, clip loops and tempo ramps use
 musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
 at the same channel/CC use the latest clip start, then greatest clip ID. Empty
-lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
-ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+lanes send nothing. Invalid lanes and aliases report preparation errors. Preparation is capped
 at one million spans and placed points. Controllers are sampled on a global
 64-sample cadence and at exact point/placement/note boundaries, independent of
 callback size, with exact state chased on start/seek.
@@ -1372,10 +1392,10 @@ and `commitMidi`. The spec supplies a fresh positive clip ID, project tick
 position, explicit integer source range containing the complete retained input,
 name and held-note closing policy. Source driver timestamps are independent of
 project placement. A coherent read checks the regular unlocked/unfrozen target,
-new identities and current step-tempo clock. Every note/CC boundary must roundtrip
+new identities and the current tempo map. Every note/CC boundary must roundtrip
 its exact sample at the captured rate. Prefix-truncated histories, serial/time
 gaps, unknown/duplicate ownership, mismatched releases, zero-duration notes,
-tempo ramps and unsupported expressions refuse without writes. Existing ANOT
+and unsupported expressions refuse without writes. Existing ANOT
 velocity bytes accept only source values that roundtrip exactly through the
 MIDI-1 word; arbitrary doubles are refused, never silently quantized. CC values
 remain full double. Held notes optionally close at the explicit Capture end with
@@ -1597,10 +1617,10 @@ underlying clip at its ongoing phase, then the arrangement.
 Owner-thread compilation reads clip-relative points with their original curves,
 content offset and musical loop window. It handles musical/linear placements,
 tick/nanosecond envelopes, the pre-loop intro, loops starting inside their window,
-and step tempos. Native curve phase survives trimming and tempo changes rather
+and tempo ramps. Native curve phase survives trimming and tempo changes rather
 than being renormalized between cropped samples. Nanosecond envelopes use elapsed
 seconds plus the musical content offset; while looping, the musical loop phase
-maps back through the source-relative step-tempo clock. All six shared curves and
+maps back through the source-relative tempo clock. All six shared curves and
 coincident-point ordering are preserved. Device-event emission includes exact
 rounded clip/point/wrap boundaries between the existing cadence ticks. Strip
 processing retains its existing control grid and smoothing; both graph widths
@@ -1614,8 +1634,8 @@ arrangement playback remain. Empty streams do not mask arrangement data. The cli
 must belong to the lane owner's track (including nested-device chains). Unknown
 clocks, aliases, unsupported owners and loops shorter than one session sample
 remain explicitly refused; clip-owned relative gain/modulation semantics are not
-claimed. Ramp tempos remain a reported step-tempo fallback, as in arrangement
-playback. No schema/opcode/UI change or measured Live parity claim is introduced.
+claimed. Tempo ramps are integrated as in arrangement playback (TM-TT-01).
+No schema/opcode/UI change or measured Live parity claim is introduced.
 
 Send gain automation addresses an existing track-origin `routing` row of kind
 `send`, with `owner_kind="routing"`, its row ID as `owner_id`,
@@ -2087,6 +2107,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `transport.setCountIn` | t | S | — | P1 |
+| `transport.setLaunchQuantization` | t | S | — | P1 |
 | `transport.setSongStart` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
 | `controller.unbind` | e | N | pair `controller.bind` | P1 |
@@ -2132,6 +2153,10 @@ export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
 
 `transport.setCountIn {bars}` saves one of `0` (None), `1`, `2`, `4`.
+`transport.setLaunchQuantization {code}` saves Global Quantization in
+`session_state` outside Undo. Codes 0–13 are None, 8 Bars, 4 Bars, 2 Bars,
+1 Bar, 1/2, 1/2T, 1/4, 1/4T, 1/8, 1/8T, 1/16, 1/16T and 1/32. The
+default is 1 Bar. The driver reads the setting from its pinned timing generation.
 `transport.setSongStart {on, start?}` saves a nonnegative musical tick when on;
 `on:false` clears the override. Both use session metadata, Snapshot impact and
 the same ephemeral/audit/batch-rollback rules as loop/click. A missing song start
@@ -2216,6 +2241,89 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
+### 9.13 Session scenes and clip slots
+
+| Op | S | E | Inv | P |
+|---|---|---|---|---|
+| `scene.create` | e | G | cap | P2 |
+| `scene.delete` | e | G | cap | P2 |
+| `scene.reorder` | e | G | cap | P2 |
+| `scene.rename` | e | G | cap | P2 |
+| `scene.setTempo` | e | G | cap | P2 |
+| `scene.setSignature` | e | G | cap | P2 |
+| `scene.setEnabled` | e | G | cap | P2 |
+| `session.setSlotClip` | e | G | cap | P2 |
+| `session.clearSlot` | e | G | cap | P2 |
+| `session.setStopButton` | e | G | cap | P2 |
+| `session.setLaunchMode` | e | G | cap | P2 |
+| `session.setLaunchQuant` | e | G | cap | P2 |
+| `session.setLaunchSettings` | e | G | cap | P2 |
+| `session.setFollowAction` | e | G | cap | P2 |
+| `session.launchClip` | s | N | — | P2 |
+| `session.launchScene` | s | N | — | P2 |
+| `session.stopTrack` | s | N | — | P2 |
+| `session.stopAll` | s | N | — | P2 |
+| `session.cancelSceneLaunch` | s | N | — | P2 |
+| `session.backToArrangement` | s | N | — | P2 |
+| `session.setFollowActionsEnabled` | s | S | — | P2 |
+| `capture.sessionPerformance` | e | G | cap | P2 |
+
+- `scene.create {id, ord, name?, color?}` inserts at an explicit order.
+  `scene.delete {id}` removes the scene and its slots.
+  `scene.reorder {scenes}` supplies the complete ordered list of scene IDs.
+  `scene.rename {id, name}` sets its name.
+- `scene.setTempo {id, bpm}` and `scene.setSignature {id, numerator, denominator}`
+  set the scene values. `scene.setEnabled {id, tempo?, signature?}` changes one
+  or both enable flags. A disabled value is retained.
+- `session.setSlotClip {track, scene, clip}` assigns a same-track clip to a
+  slot. Its Arrangement placement is captured for Undo.
+  `session.clearSlot {track, scene}` removes the occupied clip and retains
+  the slot's Stop-button choice. `session.setStopButton {track, scene, on}`
+  sets that choice. A missing row means an empty slot with Stop.
+- `session.setLaunchMode {clip, mode}` uses Trigger 0, Gate 1, Toggle 2 or
+  Repeat 3. `session.setLaunchQuant {clip, quant}` uses Global 0 and the
+  fourteen explicit transport codes offset by one.
+  `session.setLaunchSettings {clip, legato?, velocity?, fade?, ram?}` edits the
+  supplied fields. Velocity amount is normalized from 0 to 1.
+- `session.setFollowAction {clip?, scene?, enabled, duration, actionA, jumpA?,
+  actionB, jumpB?, chanceB, linked?, loops?}` targets exactly one clip or scene.
+  Duration uses ticks and Chance B is a percentage. Jump carries a literal
+  scene ID. Linked timing and loop counts belong to clips.
+
+The launcher accepts `session.launchClip {track, scene, clip, incarnation,
+release?, velocity?}`, `session.launchScene {scene, incarnation, velocity?}`,
+`session.stopTrack {track, incarnation}`, `session.stopAll {incarnation}`,
+`session.cancelSceneLaunch {scene, incarnation}` and
+`session.backToArrangement {track?, incarnation}`. An absent track in the last
+command covers every track. A gesture carries literal IDs and one live
+incarnation. The driver validates the whole gesture against its pinned
+generation. An owner can dispatch directly or deliver the committed audit batch
+as one gesture. A live Session with persisted slots subscribes to its Store's
+committed batches. The journal retains the commands outside the Undo head.
+For an enabled tempo or signature, the owner prepares the scene and its
+effective clock together for a Global boundary. A clock-bearing scene
+launch or cancellation is submitted on its own. While playback runs,
+the prepared generation needs one complete render buffer of lead.
+`session.setFollowActionsEnabled {on}` saves the global playback switch
+outside Undo. The default is enabled. The driver reads it from the pinned
+performance snapshot.
+
+`capture.sessionPerformance {changes}` places a prepared Session performance
+in the Arrangement in one undo transaction. The preparation pins the exact
+slot material and checks the performed clock. The literal change images
+contain the copied clip rows and their dependent material, along with the
+Arrangement ranges displaced by launches and stops. Applied scene tempo and
+meter can be recorded in the same changeset. Authored clock values resume
+outside the capture interval. The journal restores the recorded rows without
+running the launcher again.
+The `RenderBlock::observeLaunchCapture` tape detects performed gain and
+region overrides. An override needs complete PCM ranges for its run.
+For raw resident audio played at its source rate, the optional PCM range tape
+records fractional loop wraps, live region revisions and supported gain steps.
+Capture can place those ranges as linear Arrangement clips against the original
+verified source file. Recorded gain needs Float32 playback at unity authored
+gain and a dB value that reproduces the performed multiplier exactly.
+
 **How many ops:** `tools/validate_ops.py` counts the tables above and prints the
 total and the count per priority (check 7). No number is written here: every
 pull request that added an op rewrote it to the same new value, so two such pull
@@ -2256,10 +2364,10 @@ The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
 navigation.
 
-ADR-0037 removed the four `session.*` launch ops along with Session View, so the
-transport scope is the whole of this category, including Cue/monitor commands
-that save performance controls in the session layer. These do not reintroduce
-Session View or launching.
+ADR-0101 d4 restores the Session launch operations as ephemeral. The Transport
+scope includes Cue and monitor commands that save performance controls in the
+session layer. Session launches change the live launcher state and keep their
+audit rows outside Undo.
 
 They still go through the registry — same validation, same scopes, same
 attribution — and still emit an op row, tagged `ephemeral`. Undo skips ephemeral

@@ -12,13 +12,18 @@
 // mechanics. ADR-0122.
 
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_expression_clock.hpp"
 #include "adi/engine/project_view.hpp"
 
+#include "adi/applied_batches_detail.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/launch_audio_runtime.hpp"
+#include "adi/engine/launch_ops.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_capture_detail.hpp"
 
@@ -39,6 +44,93 @@ namespace {
 
 // Preserve playback with Monitor Off until the overlap behavior is measured (R45).
 constexpr bool kMonitorOffMutesPreviousTake = false;
+constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
+std::atomic<std::uint64_t> nextLaunchIncarnation{1};
+
+bool pinnedLegatoTarget(const LaunchSlot& slot, std::int64_t scene) noexcept {
+    return slot.scene == scene && slot.legato && slot.physicalFrames > 0;
+}
+
+bool pinnedLegatoLoop(const LaunchSlot& slot) noexcept {
+    return slot.legato && slot.physicalFrames > 0 && slot.physicalLoopEndFrame > 0;
+}
+
+bool retainedPinnedLegatoLoop(const LaunchSlot& slot, std::span<const LaunchSlot> slots,
+                             std::int64_t scene) noexcept {
+    if (!pinnedLegatoLoop(slot)) return false;
+    const auto cell = std::ranges::lower_bound(slots,std::pair{slot.track,scene},{},[](const LaunchSlot& candidate) {
+        return std::pair{candidate.track,candidate.scene};
+    });
+    return cell != slots.end() && cell->track == slot.track && cell->scene == scene && !cell->clip && !cell->hasStop;
+}
+
+bool hasReadyPhysicalSource(const LaunchAudioClip* clip, const LaunchSlot& slot) noexcept {
+    return clip && slot.physicalStartFrame >= 0 && slot.physicalFrames > 0 &&
+        !clip->followsTempo() && clip->latencySamples() == 0 &&
+        static_cast<std::uint64_t>(slot.physicalStartFrame) + static_cast<std::uint64_t>(slot.physicalFrames) <= clip->frames();
+}
+
+bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot& slot) noexcept {
+    const auto* clip = bank.clip(slot.clip);
+    return hasReadyPhysicalSource(clip,slot) &&
+        (!clip->pageReader() || clip->pageReader()->allPhysicalPhasesPrimed(slot.clip));
+}
+
+bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
+    return before.track == after.track && before.physicalStartFrame == after.physicalStartFrame &&
+        before.physicalFrames == after.physicalFrames && before.physicalLoopBeginFrame == after.physicalLoopBeginFrame &&
+        before.physicalLoopEndFrame == after.physicalLoopEndFrame;
+}
+
+bool sameLogicalWarpWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
+    return before.track == after.track && before.startTick == after.startTick && before.endTick == after.endTick &&
+        before.loopStartTick == after.loopStartTick && before.loopEndTick == after.loopEndTick;
+}
+
+bool sameNativeWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
+                          const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
+    const auto nativeWarp = [](const LaunchAudioClip* clip) {
+        return clip && clip->followsTempo() && clip->latencySamples() == 0;
+    };
+    return nativeWarp(beforeAudio) && nativeWarp(afterAudio) && beforeAudio->usesPages() == afterAudio->usesPages() &&
+        sameLogicalWarpWindow(before,after);
+}
+
+bool samePreparedWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
+                            const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
+    return beforeAudio && afterAudio && beforeAudio->latencySamples() > 0 &&
+        beforeAudio->latencySamples() == afterAudio->latencySamples() && sameLogicalWarpWindow(before,after);
+}
+
+const LaunchSlot* sceneCell(const LaunchView& view, std::int64_t track, std::int64_t scene) noexcept {
+    const auto key = std::pair{track,scene};
+    const auto address = [](const LaunchSlot& slot) { return std::pair{slot.track,slot.scene}; };
+    const auto it = std::ranges::lower_bound(view.slots,key,{},address);
+    return it != view.slots.end() && address(*it) == key ? &*it : nullptr;
+}
+
+bool retainsTrack(const LaunchView& view, std::int64_t track, std::int64_t scene) noexcept {
+    const auto* cell = sceneCell(view,track,scene);
+    return cell && !cell->clip && !cell->hasStop;
+}
+
+bool unpinnedNativeOneShot(const LaunchAudioProject& media, const LaunchSlot& slot) noexcept {
+    if (!slot.nativePcmClock || slot.physicalFrames > 0 || slot.legato || slot.loopEndTick > slot.loopStartTick)
+        return false;
+    const auto* pcm = media.clip(slot.clip);
+    return pcm && pcm->hasDirectPcm();
+}
+
+bool sameNativeOneShotWindow(const LaunchAudioProject& before, const LaunchSlot& oldSlot,
+                             const LaunchAudioProject& after, const LaunchSlot* newSlot) noexcept {
+    if (!newSlot || newSlot->clip != oldSlot.clip || !unpinnedNativeOneShot(before,oldSlot) ||
+        !unpinnedNativeOneShot(after,*newSlot)) return false;
+    const auto* oldPcm = before.clip(oldSlot.clip);
+    const auto* newPcm = after.clip(newSlot->clip);
+    return oldPcm->sameResidentSourceShape(*newPcm) &&
+        oldPcm->frameForTick(oldSlot.startTick,before.bpm()) == newPcm->frameForTick(newSlot->startTick,after.bpm()) &&
+        oldPcm->frameForTick(oldSlot.endTick,before.bpm()) == newPcm->frameForTick(newSlot->endTick,after.bpm());
+}
 
 std::string deviceRef(const rows::Device& row) {
     std::string s = "devices#" + std::to_string(row.id);
@@ -335,11 +427,7 @@ bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std
         return false;
     }
 
-    TempoMap authored;
-    for (const auto& point : model_.tempo)
-        authored.events.push_back({point.posTicks, point.bpm, static_cast<int>(point.curve)});
-    if (authored.events.empty())
-        authored.events.push_back({0, 120.0, 0});
+    auto authored = TempoMap::fromRows(model_.tempo);
     if (timing->spec.externalTempoBpm || timing->tempo.events != authored.events) {
         error = "Loop recording needs playback to follow the project's authored tempo.";
         return false;
@@ -586,6 +674,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
     e.deviceId = row.id;
     e.runtimeIdentity=std::make_shared<const int>(0);
     e.resolvedPluginRef = row.pluginRefId;
+    e.resolvedRemoteHost = row.remoteHostId;
     if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
     e.name = !row.name.empty() ? row.name
@@ -608,6 +697,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -618,6 +709,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         inst = makePlaceholder(store, row, ref);
         ++stats_.placeholders;
     } else {
+        if (row.remoteHostId && !err.empty()) sessionProblems_.push_back(deviceRef(row) + ": " + err);
         inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
         ++stats_.loaded;
@@ -655,6 +747,7 @@ void Session::resolveNewRows(const Store& store) {
         }
         const auto compatible = [&](const Entry& candidate) {
             return candidate.deviceId == row.id && candidate.resolvedPluginRef == row.pluginRefId &&
+                candidate.resolvedRemoteHost == row.remoteHostId &&
                 (ref ? candidate.resolvedFormat == ref->format && candidate.resolvedUid == ref->uid
                      : candidate.resolvedFormat.empty() && candidate.resolvedUid.empty());
         };
@@ -723,6 +816,8 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         std::string err;
         auto inst = loader_(rq, err);
         if (inst == nullptr) {
@@ -994,6 +1089,292 @@ Node* Session::TimingView::inputMonitorSource(std::int64_t track) const noexcept
     if (!inputMonitors) return nullptr;
     const auto found = inputMonitors->tracks.find(track);
     return found == inputMonitors->tracks.end() ? nullptr : found->second.get();
+}
+
+bool Session::sceneTempoBanksFit(const TempoMap& clock) const noexcept {
+    if (!sceneTempoBanks_ || sceneTempoBanks_->periods.empty()) return false;
+    const auto& periods = sceneTempoBanks_->periods;
+    for (std::size_t i = 0; i < periods.size(); ++i) {
+        const auto& period = periods[i];
+        const auto next = i+1 < periods.size() ? periods[i+1].posTicks : std::numeric_limits<std::int64_t>::max();
+        if (clock.bpmAt(period.posTicks) != period.bpm || std::ranges::any_of(clock.events,[&](const TempoEvent& event) {
+                return event.posTicks > period.posTicks && event.posTicks < next && event.bpm != period.bpm;
+            })) return false;
+    }
+    return true;
+}
+
+std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& timing, const rows::Model& model) {
+    auto periods = std::span<const TempoEvent>{sceneTempoBanks_->periods};
+    const auto* previous = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!previous || previous->sampleRate != timing.sampleRate || previous->spec.channels != timing.spec.channels ||
+        previous->spec.maxFrames != timing.spec.maxFrames)
+        throw std::runtime_error("a prepared Session tempo handover needs its original audio format");
+    const bool reuse = previous->launchAudio && previous->launchSource &&
+        sameLaunchSource(*previous->launchSource,*clipProject_);
+    if (!reuse && sceneClockPending())
+        throw std::runtime_error("a Session scene clock needs its current launch source image");
+    // Rebuilding the prepared banks still tolerates known unavailable cells.
+    // A new cell or one that previously played must have PCM in each bank.
+    std::set<std::pair<std::int64_t,std::int64_t>> unavailable;
+    if (previous->launchAudio) {
+        const auto& lastBank = previous->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max());
+        for (const auto& slot : lastBank->view().slots)
+            if (slot.clip != 0 && !lastBank->clip(slot.clip)) unavailable.emplace(slot.track,slot.clip);
+    }
+    const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
+    const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
+    auto budget = kSessionResidentPcmBudget;
+    auto diagnostics = model.slotProblems;
+    std::map<double,std::shared_ptr<const LaunchAudioProject>> prepared;
+    const auto prepareBank = [&](const TempoEvent& period) -> const std::shared_ptr<const LaunchAudioProject>& {
+        auto& bank = prepared[period.bpm];
+        if (!bank) {
+            if (reuse) bank = previous->launchAudio->bankAtTempo(period.bpm);
+            // A native Warp source uses absolute timeline frames. A flattened
+            // period clock is suitable only for fixed source projections.
+            if (bank && std::ranges::any_of(bank->view().slots,[&](const LaunchSlot& slot) {
+                    const auto* pcm = bank->clip(slot.clip);
+                    return pcm && pcm->followsTempo();
+                })) bank.reset();
+            if (!bank) {
+                const TempoMap clock{{{0,period.bpm,0}}};
+                bank = prepareStoredLaunchHistoryBank(*clipProject_,clock,rate,channels,timing.spec.maxFrames,
+                    storedLaunchIncarnation_,diagnostics,budget);
+            }
+            if (!bank || bank->residentBytes() > budget || std::ranges::any_of(model.slotClips,[&](const rows::Clip& clip) {
+                    return clip.kind == "audio" && !clip.muted && !bank->clip(clip.id) &&
+                        !unavailable.contains({clip.trackId,clip.id});
+                })) throw std::runtime_error("cannot prepare the complete Session media banks within the resident audio budget");
+            if (bank->view().tracks.size() > kMaximumStoredLaunchTracks)
+                throw std::runtime_error("Session launch track capacity exceeded");
+            budget -= bank->residentBytes();
+        }
+        return bank;
+    };
+    // An ordinary RAM Off refresh needs only the preceding and current page
+    // banks. Probe the current bank before preparing any earlier periods.
+    if (periods.size() > 2 && !sceneClockPending() && prepareBank(periods.back())->hasPagedAudio())
+        periods = periods.last(2);
+    std::vector<LaunchTempoBank> result;
+    result.reserve(periods.size());
+    for (std::size_t i = 0; i < periods.size(); ++i) {
+        const auto& period = periods[i];
+        const auto sample = i == 0 ? 0 : timing.sampleForTick(period.posTicks);
+        if ((!result.empty() && sample <= result.back().startSample) || sample == std::numeric_limits<std::int64_t>::max())
+            throw std::runtime_error("Session tempo bank boundaries need distinct samples");
+        const auto& bank = prepareBank(period);
+        if (periods.size() > 2 && bank->hasPagedAudio())
+            throw std::runtime_error("retained Session tempo history needs resident audio banks");
+        result.push_back({sample,bank});
+    }
+    if (sceneClockPending() && result.size() >= 2 && periods.back().posTicks == preparedScene_->tick) {
+        const auto& before = *result[result.size()-2].media;
+        const auto& after = *result.back().media;
+        const auto from = before.view();
+        const auto to = after.view();
+        for (const auto& clip : model.slotClips) {
+            if (clip.kind != "audio" || clip.muted || !retainsTrack(from,clip.trackId,preparedScene_->scene))
+                continue;
+            const auto oldSlot = std::ranges::find(from.slots,clip.id,&LaunchSlot::clip);
+            if (oldSlot == from.slots.end())
+                throw std::runtime_error("a retained Session clip needs a prepared source window");
+            if (!sameNativeOneShotWindow(before,*oldSlot,after,sceneCell(to,clip.trackId,oldSlot->scene)))
+                throw std::runtime_error("a retained Session clip needs the same native frame window across tempo banks");
+        }
+    }
+    if (!launchFilesCurrent(*clipProject_))
+        throw std::runtime_error("Session media changed during tempo bank preparation");
+    return result;
+}
+
+void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, ClipPlayback& clips) {
+    if (!timing.spec.performanceState || timing.spec.exporting || !launchAudioDriver_)
+        return;
+    launchAudioDriver_->collectSourceEdit();
+    auto project = timing.spec.launchAudio;
+    std::vector<LaunchTempoBank> banks;
+    std::shared_ptr<const LaunchAudioProject> beforeClock;
+    std::int64_t clockSample = 0;
+    const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    bool sameBankSources = false;
+    if (!project && clipProject_ && storedLaunchIncarnation_ != 0 && sceneTempoBanksFit(timing.tempo)) {
+        banks = prepareSceneTempoBanks(timing,model);
+        project = banks.back().media;
+        timing.launchSource = clipProject_;
+        sameBankSources = prior && prior->launchSource && sameStoredLaunchSources(*prior->launchSource,*clipProject_);
+    } else if (!project && clipProject_ && storedLaunchIncarnation_ != 0) {
+        if (sceneTempoBanks_ && !sceneTempoBanks_->periods.empty() && sceneClockPending())
+            throw std::runtime_error("a committed Session scene needs its prepared tempo map");
+        const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
+        const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
+        std::optional<double> preparedBpm;
+        std::span<const std::int64_t> warmWarpClips;
+        auto budget = kSessionResidentPcmBudget;
+        if (sceneTempoBanks_ && sceneTempoBanks_->before &&
+            timing.tempo.bpmAt(sceneTempoBanks_->tick) == sceneTempoBanks_->bpm &&
+            std::ranges::none_of(timing.tempo.events, [&](const TempoEvent& event) {
+                return event.posTicks > sceneTempoBanks_->tick && event.bpm != sceneTempoBanks_->bpm;
+            })) {
+            beforeClock = sceneTempoBanks_->before;
+            if (!beforeClock->supportsRate(timing.sampleRate) || channels != storedLaunchChannels_ ||
+                timing.spec.maxFrames != storedLaunchBlockFrames_)
+                throw std::runtime_error("a prepared Session tempo handover needs its original audio format");
+            clockSample = timing.sampleForTick(sceneTempoBanks_->tick);
+            preparedBpm = sceneTempoBanks_->bpm;
+            warmWarpClips = sceneTempoBanks_->warmWarpClips;
+            budget -= beforeClock->residentBytes();
+        }
+        const auto hasCompatibleFormat = [&](const TimingView* clock) {
+            return clock && clock->session == this && clock->launchAudio && clock->launchSource &&
+                clock->launchAudio->incarnation() == storedLaunchIncarnation_ &&
+                clock->sampleRate == timing.sampleRate && clock->spec.channels == timing.spec.channels &&
+                clock->spec.maxFrames == timing.spec.maxFrames;
+        };
+        const auto* adopted = dynamic_cast<const TimingView*>(graph_.adoptedTransportState());
+        const bool priorCompatible = hasCompatibleFormat(prior);
+        const bool adoptedCompatible = hasCompatibleFormat(adopted);
+        timing.protectCompatiblePinnedPages = priorCompatible || adoptedCompatible;
+        sameBankSources = priorCompatible &&
+            sameStoredLaunchSources(*prior->launchSource,*clipProject_);
+        const bool pinnedLegato = beforeClock && sceneClockPending() && preparedScene_->tempoBpm > 0 &&
+            sceneTempoBanks_->tick == preparedScene_->tick && std::ranges::any_of(beforeClock->view().slots,[&](const LaunchSlot& slot) {
+                return pinnedLegatoTarget(slot,preparedScene_->scene) ||
+                    retainedPinnedLegatoLoop(slot,beforeClock->view().slots,preparedScene_->scene);
+            });
+        // The driver may replace its outgoing run before the scene bar.
+        // Each publication while the cut is pending must keep the same
+        // saved sources as the publication that admitted the scene.
+        if (pinnedLegato && !sameBankSources)
+            throw std::runtime_error("a pinned Session Legato scene needs unchanged saved source audio and gain");
+        if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
+            storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events ||
+            storedLaunchPreparedBpm_ != preparedBpm || !std::ranges::equal(storedLaunchWarmWarpClips_,warmWarpClips)) {
+            auto diagnostics = model.slotProblems;
+            const bool hasPriorBank = (storedLaunchProject_ && storedLaunchProject_->incarnation() == storedLaunchIncarnation_) ||
+                (prior && prior->launchAudio && prior->launchAudio->incarnation() == storedLaunchIncarnation_);
+            // A superseded publication can have a different clock from the
+            // one still rendering. Prepare an ordinary replacement against
+            // the driver's exact clock, including a restoration of that clock.
+            const bool sameAdoptedTempo = adoptedCompatible && adopted->tempo.events == timing.tempo.events;
+            timing.preparedPinnedRestart = sameAdoptedTempo && !primeExternalAt_;
+            const auto* reuse = sameAdoptedTempo ? adopted : (priorCompatible ? prior : nullptr);
+            const auto priorPinnedPages = reuse
+                ? StoredLaunchPageReuse{reuse->launchSource.get(),
+                    reuse->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
+                : StoredLaunchPageReuse{};
+            auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
+                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages,
+                !hasPriorBank || (adoptedCompatible && !primeExternalAt_));
+            if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
+                throw std::runtime_error("Session launch track capacity exceeded");
+            if (beforeClock) {
+                if (!prepared) throw std::runtime_error("cannot prepare the Session media bank at the scene tempo");
+                for (const auto& slot : prepared->view().slots)
+                    if (beforeClock->clip(slot.clip) && !prepared->clip(slot.clip))
+                        throw std::runtime_error("Session clips#" + std::to_string(slot.clip) +
+                                                 ": cannot prepare media at the scene tempo");
+            }
+            storedLaunchTempo_ = timing.tempo.events;
+            storedLaunchPreparedBpm_ = preparedBpm;
+            storedLaunchWarmWarpClips_.assign(warmWarpClips.begin(),warmWarpClips.end());
+            storedLaunchSource_ = clipProject_;
+            storedLaunchRate_ = rate;
+            storedLaunchChannels_ = channels;
+            storedLaunchBlockFrames_ = timing.spec.maxFrames;
+            storedLaunchProject_ = std::move(prepared);
+            launchProblems_ = std::move(diagnostics);
+        } else if (priorCompatible && prior->preparedPinnedRestart &&
+                   prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()) == storedLaunchProject_) {
+            timing.preparedPinnedRestart = true;
+        }
+        if (pinnedLegato) {
+            const bool adoptedBefore = adoptedCompatible &&
+                adopted->launchAudio->mediaAt(clockSample - 1) == beforeClock;
+            const auto before = beforeClock->view().slots;
+            const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
+            for (const auto& target : before) {
+                const bool retained = retainedPinnedLegatoLoop(target,before,preparedScene_->scene);
+                if (!retained && !pinnedLegatoTarget(target,preparedScene_->scene)) continue;
+                for (const auto& oldSlot : before) {
+                    if (!oldSlot.clip || oldSlot.track != target.track || (retained && oldSlot.clip != target.clip)) continue;
+                    const auto newSlot = std::ranges::find(after,oldSlot.clip,&LaunchSlot::clip);
+                    const auto* oldAudio = beforeClock->clip(oldSlot.clip);
+                    const auto* newAudio = storedLaunchProject_ ? storedLaunchProject_->clip(oldSlot.clip) : nullptr;
+                    const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
+                        hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
+                        oldAudio->pageReader() == newAudio->pageReader();
+                    const bool sameWarp = !retained && newSlot != after.end() &&
+                        sameNativeWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
+                    const bool samePrepared = !retained && newSlot != after.end() &&
+                        samePreparedWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
+                    if (!samePhysical && !sameWarp && !samePrepared)
+                        throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");
+                    if (samePrepared && !adoptedBefore)
+                        throw std::runtime_error("a pinned Session Legato prepared Warp scene waits for the adopted outgoing bank");
+                    // An unadopted replacement pager may only have pages
+                    // around Start and Loop Begin.
+                    if (sameWarp && oldAudio->usesPages() && !adoptedBefore && !oldAudio->allWarpPhasesPrimed())
+                        throw std::runtime_error("a pinned Session Legato scene waits for the adopted outgoing bank");
+                    if (oldSlot.clip == target.clip) {
+                        const bool hasSceneSlot = retained
+                            ? retainedPinnedLegatoLoop(*newSlot,after,preparedScene_->scene)
+                            : pinnedLegatoTarget(*newSlot,preparedScene_->scene);
+                        if (!hasSceneSlot || !hasCompletePhysicalWindow(*storedLaunchProject_,*newSlot))
+                            throw std::runtime_error("a pinned Session Legato scene needs the clip's complete physical window");
+                    }
+                }
+            }
+        }
+        project = storedLaunchProject_;
+        if (launchFilesCurrent(*clipProject_)) timing.launchSource = clipProject_;
+    }
+    const bool timedScenePending = preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken();
+    if (!project || !project->supportsRate(timing.sampleRate) || (!project->stored() &&
+        std::ranges::any_of(timing.tempo.events, [&](const TempoEvent& event) { return event.bpm != project->bpm(); }))) {
+        if (timedScenePending) throw std::runtime_error("a committed Session scene needs its prepared project");
+        return;
+    }
+    std::vector<std::int64_t> tracks;
+    for (const auto id : project->view().tracks) {
+        const auto track = std::find_if(model.tracks.begin(), model.tracks.end(),
+            [id](const rows::Track& row) { return row.id == id; });
+        if (track == model.tracks.end()) continue;
+        const bool audio = track->kind == "audio";
+        const bool midi = track->kind == "midi" || track->kind == "instrument";
+        if ((audio || midi) && track->monitorMode != 1 && !track->frozen &&
+             !frozenGroupChildren_.contains(id) && !frozenSources_.contains(id))
+            tracks.push_back(id);
+    }
+    std::uint64_t gainRevision = 0;
+    if (prior && prior->launchAudio && prior->launchAudio->incarnation() == project->incarnation()) {
+        const auto& priorProject = prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max());
+        // A retimed generation gets fresh page and tail identities. Carry
+        // the gain baseline for an identical bank, its outgoing clock bank,
+        // or a reprojection of the same stored audio, settings and driver format.
+        // The gain driver clears the multiplier when the launch run changes.
+        if (project == priorProject || beforeClock == priorProject || sameBankSources)
+            gainRevision = prior->launchAudio->gainRevision();
+    }
+    if (banks.empty()) {
+        timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,
+                                                                 clockSample, gainRevision, launchAudioDriver_.get());
+    } else {
+        timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, std::move(banks),
+                                                                 gainRevision, launchAudioDriver_.get());
+    }
+    if (timedScenePending) {
+        if (!timing.launchAudio->hasScene(preparedScene_->scene))
+            throw std::runtime_error("a committed Session scene must remain available until launch");
+        timing.preparedScene = preparedScene_;
+    }
+    for (const auto id : tracks) {
+        const bool createAudioSource = !project->isMidiTrack(id) ||
+            std::ranges::any_of(project->view().slots, [&](const LaunchSlot& slot) {
+                return slot.track == id && (project->clip(slot.clip) || (beforeClock && beforeClock->clip(slot.clip)));
+            });
+        clips.attachLaunchAudio(id, timing.launchAudio, createAudioSource, clips_.get());
+    }
 }
 
 void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model, ClipPlayback& clips) {
@@ -1326,17 +1707,8 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         timing.midiInputRoutes.push_back(std::move(route));
     }
     if (std::any_of(timing.midiInputRoutes.begin(), timing.midiInputRoutes.end(),
-                    [](const auto& route) { return route.playGrid != 0; })) {
-        timing.playQuantizeRate = static_cast<std::uint32_t>(std::llround(timing.sampleRate));
-        timing.playQuantizeTempo.push_back({0, timing.tempo.bpmAt(0)});
-        for (const auto& point : timing.tempo.events) {
-            const auto sample = timing.sampleForTick(point.posTicks);
-            if (sample == timing.playQuantizeTempo.back().sample)
-                timing.playQuantizeTempo.back().bpm = point.bpm;
-            else
-                timing.playQuantizeTempo.push_back({sample, point.bpm});
-        }
-    }
+                    [](const auto& route) { return route.processes && route.playGrid != 0; }))
+        timing.playQuantizeClock.emplace(timing.tempo, timing.sampleRate);
     midiHistories_.swap(histories);
     prepareMidiPreview(timing, model);
 }
@@ -1394,19 +1766,26 @@ std::shared_ptr<DeviceAutomationBinding> Session::bindResolvedDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& suspended,
     const rows::Model& model) {
     return bindDeviceAutomation(std::move(program), suspended, transport_, spec_.sampleRate,
-        [&](std::int64_t id, std::uint32_t parameter) -> DeviceParameterSteps {
+        [&](std::int64_t id, std::uint32_t parameter) -> std::optional<DeviceParameterSteps> {
             const auto* instance = resolvedAutomationDevice(id, model);
-            if (!instance) return {};
+            if (!instance) return DeviceParameterSteps{};
             const auto native = entryFor(id)->resolvedFormat == "clap" ? device::ClapDevice::paramIdToText(parameter)
                                                                      : std::to_string(parameter);
             const auto* descriptor = instance->findParam(native);
-            if (!descriptor || descriptor->missing || !descriptor->automatable)
-                return {};
+            if (!descriptor) return DeviceParameterSteps{};
+            if (!descriptor->automatable) return std::nullopt;
+            if (descriptor->missing) return DeviceParameterSteps{};
             if (descriptor->shape == device::ParamShape::Switch)
-                return {true, 2};
+                return DeviceParameterSteps{true, 2};
             const bool stepped = descriptor->shape == device::ParamShape::Menu || descriptor->stepCount > 1;
-            return {stepped, descriptor->stepCount};
-        }, [&](std::int64_t id) { return resolvedAutomationDevice(id, model, true) != nullptr; });
+            return DeviceParameterSteps{stepped, descriptor->stepCount};
+        }, [&](std::int64_t id) {
+            const auto* entry = entryFor(id);
+            if (entry && entry->placeholder && !entry->retired && !entry->parked)
+                return DeviceActivatorTarget::WaitingForPlugin;
+            return resolvedAutomationDevice(id, model, true) ? DeviceActivatorTarget::Available
+                                                              : DeviceActivatorTarget::Unsupported;
+        });
 }
 
 bool Session::rebuild() {
@@ -1428,24 +1807,20 @@ bool Session::rebuild() {
     timing->inputSlice.resize(64);
     timing->outputSlice.resize(static_cast<std::size_t>(std::max(64, spec_.channels)));
     timing->outputSlice64.resize(timing->outputSlice.size());
-    // Same construction as MidiClips: TempoMap integrates STEP tempos, even
-    // when a stored event requests a ramp. Do not create a second converter.
-    for (const auto& e : playbackModel_.tempo)
-        timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
-    if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    timing->tempo = TempoMap::fromRows(playbackModel_.tempo);
     const auto loopSample = [&](std::int64_t ticks) { return timing->sampleForTick(ticks); };
     timing->setBraceSamples(loopSample(transportSettings_.loopStartTicks), loopSample(transportSettings_.loopEndTicks));
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
-    timing->signatures = model_.signatures;
+    timing->signatures = playbackSignatures(model_);
     timing->prepareDeviceClockChanges();
     std::shared_ptr<ClipPlayback> nextClips;
-    std::shared_ptr<MidiClips> nextMidi;
     try {
         nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder,
                                                 spec_.synchronousClipReads);
         prepareInputMonitors(*timing, model_, *nextClips);
+        prepareLaunchAudio(*timing, model_, *nextClips);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
     // lane the user overrode. An override of a lane that is gone goes with it.
@@ -1491,11 +1866,33 @@ bool Session::rebuild() {
     } else {
         primeWhilePlaying(*nextClips, *timing);
     }
+    timing->protectExternalSessionAudio = primeExternalAt_.has_value() && !timing->preparedScene;
+    if (timing->protectExternalSessionAudio) {
+        const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+        if (prior && prior->launchAudio) {
+            DriverClock clock;
+            std::array<LaunchTrackStatus,kMaximumStoredLaunchTracks> tracks{};
+            LaunchStatusHeader status;
+            if (readDriverClock(clock) && clock.playing && readLaunchStatus(tracks,status) &&
+                status.transportPlaying && status.incarnation == prior->launchAudio->incarnation()) {
+                for (const auto& track : std::span(tracks).first(status.trackCount)) {
+                    const auto dropsWarp = prior->launchAudio->dropsWorkerWarp(timing->launchAudio.get(),clock.sample,
+                                                                             track.track,track.clip);
+                    if (!dropsWarp && !prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
+                                                                          track.track,track.clip)) continue;
+                    error_ = "Session clips#" + std::to_string(track.clip) + (dropsWarp
+                        ? ": external tempo has no source for the running worker-stretched slot"
+                        : ": external tempo needs the active unwarped page bank");
+                    return false;
+                }
+            }
+        }
+    }
     if (externalPublishGuard_ && *externalPublishGuard_ && !(*externalPublishGuard_)()) {
         error_ = "external tempo preparation became stale";
         return false;
     }
-    timing->sourceReadiness = nextClips->readiness();
+    prepareSourceReadiness(*timing, *nextClips);
     clips_ = std::move(nextClips);
     auto suspended = overridden_;
     suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
@@ -1541,12 +1938,15 @@ bool Session::rebuild() {
             dynamic_cast<const TimingView*>(devices_.rebuildSpec().transportState.get());
         prepareMidiHardware(*timing, model_, previousTiming);
         const auto eventPath = eventPathFor(model_, *timing);
-        nextMidi = std::make_shared<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_,
+        auto nextMidi = std::make_shared<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_,
                                               eventPath, clipNoteExpressions(*clipProject_),
                                               spec_.performanceState && !spec_.exporting);
+        if (timing->launchAudio) nextMidi->attachLaunchPlayback(timing->launchAudio);
         midi_ = std::move(nextMidi);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     prepareMidiInput(*timing, model_, *midi_);
+    const auto retainedSceneBanks = timing->launchAudio && sceneTempoBanks_ && !sceneTempoBanks_->periods.empty()
+        ? timing->launchAudio->tempoBankCount() : 0;
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -1554,6 +1954,17 @@ bool Session::rebuild() {
     if (!ok) error_ = devices_.lastRebuildError();
     else {
         live_ = true; // durable audio publication; later auxiliary work cannot undo it
+        if (sceneTempoBanks_ && !sceneTempoBanks_->periods.empty()) {
+            if (retainedSceneBanks) {
+                auto& periods = sceneTempoBanks_->periods;
+                if (retainedSceneBanks < periods.size())
+                    periods.erase(periods.begin(),periods.end()-static_cast<std::ptrdiff_t>(retainedSceneBanks));
+                storedLaunchProject_.reset();
+                storedLaunchSource_.reset();
+            } else {
+                sceneTempoBanks_.reset();
+            }
+        }
         gestureAudio_->publishedGeneration(gestureGeneration);
         presentationPending_=!cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
     }
@@ -1575,12 +1986,16 @@ void Session::refreshProblems() {
 }
 
 std::vector<std::string> Session::exportBlockingProblems() {
-    return collectProblems(false);
+    auto problems = collectProblems(false);
+    // A range of leading silence can finish without rendering a graph block.
+    if (auto remote = offlineRemoteIssue(); !remote.empty())
+        problems.push_back(std::move(remote));
+    return problems;
 }
 
 std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
     auto problems = model_.problems;
-    const auto append = [&](const std::vector<std::string>& found) {
+    const auto append = [&](const auto& found) {
         problems.insert(problems.end(), found.begin(), found.end());
     };
     if (midi_) append(midi_->problems());
@@ -1589,12 +2004,14 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
         else c->appendExportBlockingProblems(problems);
     }
     append(sessionProblems_);
-    if (includeUnavailable)
+    if (includeUnavailable) {
+        append(launchProblems_);
         for (const auto& row : model_.devices) {
             const auto* entry = entryFor(row.id);
             if (entry && entry->placeholder && !entry->retired)
                 problems.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + entry->error);
         }
+    }
     append(strips_.problems());
     append(summing_.problems());
     // The program's own findings only when there is automation to find them in:
@@ -1603,7 +2020,10 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
         append(stripAutomation_->program->problems());
         append(stripAutomation_->problems);
     }
-    if (deviceAutomation_) append(deviceAutomation_->problems);
+    if (deviceAutomation_) {
+        append(deviceAutomation_->problems);
+        if (includeUnavailable) append(deviceAutomation_->waitingForPlugins);
+    }
     append(deviceSourceProblems_);
     if (includeUnavailable) append(placeholderAutomationProblems_);
     append(graph_.problems());
@@ -1615,6 +2035,27 @@ bool Session::parkedDevice(const rows::Device &device) const {
     return chain && chain->trackId &&
            (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
 }
+namespace {
+TempoRampSpan tempoSpan(const rows::TempoEvent& left, const rows::TempoEvent& right) {
+    return left.rampSpan.value_or(TempoRampSpan{left.posTicks, right.posTicks, left.bpm, right.bpm});
+}
+
+void appendAuthoredTempo(std::vector<rows::TempoEvent>& result,
+                         const std::vector<rows::TempoEvent>& authored, std::int64_t boundary) {
+    const auto next = std::upper_bound(authored.begin(), authored.end(), boundary,
+        [](auto tick, const auto& event) { return tick < event.posTicks; });
+    rows::TempoEvent resume{boundary, TempoMap::fromRows(authored).bpmAt(boundary), 0, 0};
+    if (next != authored.begin() && next != authored.end()) {
+        const auto& previous = *std::prev(next);
+        resume.curve = previous.curve;
+        resume.tension = previous.tension;
+        if (resume.curve != 0 && previous.posTicks != boundary) resume.rampSpan = tempoSpan(previous, *next);
+    }
+    result.push_back(resume);
+    result.insert(result.end(), next, authored.end());
+}
+}  // namespace
+
 std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) const {
     if (performedTempo_.empty()) {
         if (spec_.externalTempoBpm) return {rows::TempoEvent{0, *spec_.externalTempoBpm, 0, 0}};
@@ -1624,16 +2065,15 @@ std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) c
     if (authoredResumeAt_) {
         const auto boundary = *authoredResumeAt_;
         std::erase_if(result, [boundary](const auto& event) { return event.posTicks >= boundary; });
-        TempoMap authored;
-        for (const auto& event : model.tempo)
-            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-        result.push_back({boundary, authored.bpmAt(boundary), 0, 0});
-        for (const auto& event : model.tempo)
-            if (event.posTicks > boundary) result.push_back(event);
+        appendAuthoredTempo(result, model.tempo, boundary);
         if (result.size() > 4096)
             throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
     }
     return result;
+}
+
+const std::vector<rows::TimeSignature>& Session::playbackSignatures(const rows::Model& model) const noexcept {
+    return performedSignatures_.empty() ? model.signatures : performedSignatures_;
 }
 bool Session::readPlayback(const Store &store) {
     try {
@@ -1641,6 +2081,8 @@ bool Session::readPlayback(const Store &store) {
         std::optional<SQLite::Transaction> read;
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
             read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        if (auto problem = store.essentialExtensionProblem(kSessionSchemaUserVersion); !problem.empty())
+            throw std::runtime_error(problem);
         model_ = rows::readModel(store);
         transportSettings_ = readTransportSettings(store);
         cueSettings_ = readCueSettings(store);
@@ -1766,7 +2208,7 @@ bool Session::readPlayback(const Store &store) {
             });
         });
         playbackModel_.auditionedTakeLanes = auditionedTakeLanes_;
-        clipProject_ = readClipProject(store, playbackModel_);
+        clipProject_ = readClipProject(store, playbackModel_, storedLaunchIncarnation_ != 0);
         if (read) read->commit();
         return true;
     } catch (const std::exception &e) {
@@ -1797,6 +2239,30 @@ void Session::observeKeyRoutes() {
     auto observed = appliedSource_.observe(routes);
     routes->subscription = std::move(observed.subscription);
     endpoint_->keyRoutes_ = std::move(routes);
+}
+
+struct Session::LaunchAudit final : AppliedObserver {
+    std::weak_ptr<const SessionEndpoint> endpoint;
+    AppliedSubscription subscription;
+
+    void committed(std::shared_ptr<const AppliedBatch> batch) override {
+        const auto session = endpoint.lock();
+        if (session && session->get() && session->get()->launchIncarnation() != 0)
+            (void)dispatchLaunchOperations(*session->get(), *batch);
+    }
+    void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override {
+        subscription.reset();
+    }
+};
+
+void Session::observeLaunchAudits(bool readOnly) {
+    launchAudit_.reset();
+    if (readOnly || !spec_.performanceState || spec_.exporting || spec_.launchAudio)
+        return;
+    auto audit = std::make_shared<LaunchAudit>();
+    audit->endpoint = endpoint_;
+    audit->subscription = std::move(appliedSource_.observe(audit).subscription);
+    launchAudit_ = std::move(audit);
 }
 
 std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::shared_ptr<const std::vector<std::uint8_t>>& image) {
@@ -1944,10 +2410,26 @@ bool Session::prepareLoad(const Store& store, DeviceLoader loader, SessionSpec s
         error_ = "a project is already loaded in this session";
         return false;
     }
+    launchAudioDriver_.reset();
+    storedLaunchIncarnation_ = 0;
     if(spec.externalTempoBpm && (!spec.performanceState || !std::isfinite(*spec.externalTempoBpm) ||
        *spec.externalTempoBpm<20 || *spec.externalTempoBpm>999)) {
         error_="external tempo needs a performance generation and finite 20..999 BPM";
         return false;
+    }
+    if (spec.launchAudio && spec.performanceState && !spec.exporting) {
+        if (spec.launchAudio->stored()) {
+            error_ = "stored launch media has a private driver and cannot be injected";
+            return false;
+        }
+        if (!spec.launchAudio->supportsRate(spec.sampleRate)) {
+            error_ = "Session clip PCM rate differs from the session rate";
+            return false;
+        }
+        launchAudioDriver_ = std::make_unique<LaunchAudioDriver>(spec.launchAudio->view().tracks.size());
+    } else if (spec.performanceState && !spec.exporting && store.db().tableExists("clip_slots")) {
+        launchAudioDriver_ = std::make_unique<LaunchAudioDriver>(kMaximumStoredLaunchTracks);
+        storedLaunchIncarnation_ = nextLaunchIncarnation.fetch_add(1, std::memory_order_relaxed);
     }
     loader_ = std::move(loader);
     appliedSource_ = adi::appliedSource(store);
@@ -2061,6 +2543,7 @@ bool Session::finishLoad(const Store& store) {
             return false;
         }
         appliedSequence_ = pending.stamp ? pending.sequence : appliedSource_.sequence();
+        observeLaunchAudits(store.readOnly());
         pendingLoad_.reset();
         return true;
     } catch (const std::exception& exception) {
@@ -2238,7 +2721,10 @@ bool Session::refresh(const Store& store) {
     // switch kept its stamp and has landed in the old file first (PD06-SAVEAS-GUARD).
     if (replaced) recordingProject_ = recordingIdentity(store);
     if (replaced && !store.readOnly()) observeKeyRoutes();
-    if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
+    // The Session is already registered on this connection. A committed
+    // scene audit may rebuild its clock during read-only observer delivery.
+    const bool sceneAuditRefresh = !replaced && externalPublishGuard_ && adi::detail::appliedDispatchActive(store);
+    if(!store.readOnly() && !sceneAuditRefresh && !isGestureCommittedRefresh(gestureRuntime_)) {
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
         if(!registered.ok()) {error_=registered.message;return false;}
     }
@@ -2294,8 +2780,16 @@ bool Session::refresh(const Store& store) {
     retireDepartedRows();
     syncFlags();
     const bool rebuilt = rebuild();
-    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    if (rebuilt) {
+        appliedSequence_ = appliedSource_.sequence();
+        if (replaced)
+            observeLaunchAudits(store.readOnly());
+    }
     return rebuilt;
+}
+
+bool Session::sceneClockPending() const noexcept {
+    return launchAudioDriver_ && preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken();
 }
 
 bool Session::auditionTakeLane(const Store& store, std::int64_t track, std::int64_t lane) {
@@ -2342,11 +2836,16 @@ bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,
         error_ = "external tempo waits for the active gesture";
         return false;
     }
+    if (sceneClockPending()) {
+        error_ = "external tempo waits for the committed Session scene boundary";
+        return false;
+    }
     auto previousPlayback = playbackModel_;
     auto previousProject = clipProject_;
     const auto previousBpm = spec_.externalTempoBpm;
     auto previousHistory = performedTempo_;
     const auto previousResume = authoredResumeAt_;
+    auto previousBanks = std::exchange(sceneTempoBanks_, std::nullopt);
     spec_.externalTempoBpm = bpm;
     performedTempo_.clear();
     authoredResumeAt_.reset();
@@ -2365,6 +2864,7 @@ bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,
         spec_.externalTempoBpm = previousBpm;
         performedTempo_ = std::move(previousHistory);
         authoredResumeAt_ = previousResume;
+        sceneTempoBanks_ = std::move(previousBanks);
     }
     return ok;
 }
@@ -2372,6 +2872,18 @@ bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,
 bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, std::int64_t tick,
                                  const std::function<bool()>& publishGuard) {
     if (audio::onAudioThread) return false;
+    if (sceneClockPending()) {
+        error_ = "external tempo waits for the committed Session scene boundary";
+        return false;
+    }
+    auto previousBanks = std::exchange(sceneTempoBanks_, std::nullopt);
+    if (applyPerformedTempoAt(store, bpm, tick, publishGuard)) return true;
+    sceneTempoBanks_ = std::move(previousBanks);
+    return false;
+}
+
+bool Session::applyPerformedTempoAt(const Store& store, std::optional<double> bpm, std::int64_t tick,
+                                    const std::function<bool()>& publishGuard) {
     if (!loaded_ || !spec_.performanceState || tick < 0 ||
         (bpm && (!std::isfinite(*bpm) || *bpm < 20 || *bpm > 999))) {
         error_ = "performed tempo needs a loaded performance session, nonnegative tick and finite 20..999 BPM";
@@ -2381,19 +2893,18 @@ bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, 
         error_ = "external tempo waits for the active gesture";
         return false;
     }
-    std::vector<rows::TempoEvent> candidate;
-    for (const auto& event : playbackModel_.tempo)
-        if (event.posTicks < tick) candidate.push_back(event);
-    if (candidate.empty() && tick > 0) candidate.push_back({0, 120, 0, 0});
-    if (bpm) candidate.push_back({tick, *bpm, 0, 0});
-    else {
-        TempoMap authored;
-        for (const auto& event : model_.tempo)
-            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-        candidate.push_back({tick, authored.bpmAt(tick), 0, 0});
-        for (const auto& event : model_.tempo)
-            if (event.posTicks > tick) candidate.push_back(event);
+    const auto split = std::lower_bound(playbackModel_.tempo.begin(), playbackModel_.tempo.end(), tick,
+        [](const auto& event, auto at) { return event.posTicks < at; });
+    std::vector<rows::TempoEvent> candidate(playbackModel_.tempo.begin(), split);
+    if (!candidate.empty() && split != playbackModel_.tempo.end() && candidate.back().curve != 0)
+        candidate.back().rampSpan = tempoSpan(candidate.back(), *split);
+    if (candidate.empty() && tick > 0) {
+        // Before the first stored point the shared clock holds its BPM.
+        const auto firstBpm = TempoMap::fromRows(playbackModel_.tempo).bpmAt(0);
+        candidate.push_back({0, firstBpm, 0, 0});
     }
+    if (bpm) candidate.push_back({tick, *bpm, 0, 0});
+    else appendAuthoredTempo(candidate, model_.tempo, tick);
     if (candidate.size() > 4096) {
         error_ = "performed tempo history exceeds 4096 boundaries";
         return false;
@@ -2423,6 +2934,340 @@ bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, 
         authoredResumeAt_ = previousResume;
     }
     return ok;
+}
+
+bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::int64_t tick, float velocity) {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    const auto* clock = timing && timing->launchAudio ? timing->launchAudio->sceneClock(scene) : nullptr;
+    if (!loaded_ || !launchAudioDriver_ || !clock || !appliedSource_.sameConnection(adi::appliedSource(store)) ||
+        tick < 0 || !std::isfinite(velocity) || velocity < 0.0f || velocity > 1.0f ||
+        gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "a committed launch needs a loaded scene clock, project, boundary and normalized velocity";
+        return false;
+    }
+    if (sceneClockPending()) {
+        error_ = "wait for the committed Session scene boundary";
+        return false;
+    }
+    const auto grid = timing->settings.launchQuantization.value_or(timing->launchAudio->globalQuantization());
+    const auto sample = timing->sampleForTick(tick);
+    const auto arrangementLoops = [&](const DriverClock& position) {
+        return position.loopEnd > position.loopBegin ||
+            (timing->settings.hasLoop && timing->settings.loopEnabled && position.sample < timing->loopEnd);
+    };
+    DriverClock origin;
+    if (launch_quantize::nextGridTick(tick, grid, timing->signatures) != tick ||
+        sample == std::numeric_limits<std::int64_t>::max() || !readDriverClock(origin) ||
+        origin.sample > sample || arrangementLoops(origin)) {
+        error_ = "the Session scene boundary must be reachable on the current Global grid without an Arrangement loop";
+        return false;
+    }
+    const auto bpm = clock->bpm;
+    auto signature = clock->signature;
+    auto nextBanks = sceneTempoBanks_;
+    const auto hasAudio = [&](const rows::Clip& clip) {
+        return clip.kind == "audio" && !clip.muted && timing->launchAudio->hasTrack(clip.trackId);
+    };
+    const auto followsSceneTempo = [&](const LaunchAudioProject& project) {
+        return project.stored() && std::ranges::all_of(model_.slotClips, [&](const rows::Clip& clip) {
+            if (!hasAudio(clip)) return true;
+            const auto* source=project.clip(clip.id);
+            return source && source->followsTempo();
+        });
+    };
+    bool keepStreamingBank = false;
+    bool missingWorkerLegato = false;
+    std::vector<std::int64_t> workerLegatoTargets;
+    constexpr auto legatoReadinessError = "a tempo scene needs the Legato R3 target's complete bounded playback window";
+    const LaunchAudioProject* mixedBefore = nullptr;
+    std::vector<std::int64_t> continuingWarp;
+    std::vector<std::int64_t> retainedWarp;
+    std::vector<std::int64_t> retainedPinned;
+    std::vector<std::int64_t> retainedNative;
+    std::vector<std::int64_t> nativeTracks;
+    bool changedNative = false;
+    bool missingNative = false;
+    std::optional<std::int64_t> missingWarp;
+    std::optional<std::int64_t> changedWarp;
+    std::optional<std::int64_t> missingPin;
+    std::optional<std::int64_t> changedPin;
+    if (bpm && tick > 0) {
+        const auto& before = timing->launchAudio->mediaAt(sample - 1);
+        if ((*bpm != before->bpm() || *bpm != timing->tempo.bpmAt(tick)) &&
+            std::ranges::any_of(model_.slotClips, hasAudio)) {
+            keepStreamingBank = followsSceneTempo(*before);
+            if (keepStreamingBank) {
+                // The performed clock carries the same prefix and the new
+                // tempo after the scene. Resident Warp keeps its source
+                // phase and run identity on that clock.
+                nextBanks.reset();
+            } else {
+                const auto view = before->view();
+                const auto continuesWarp = [&](std::int64_t id) {
+                    const auto* source = before->clip(id);
+                    if (!source || !source->followsTempo()) return false;
+                    continuingWarp.push_back(id);
+                    return true;
+                };
+                const auto needsRestart = [&](const rows::Clip& clip) {
+                    if (!hasAudio(clip)) return false;
+                    const auto cell = std::ranges::find_if(view.slots, [&](const LaunchSlot& slot) {
+                        return slot.track == clip.trackId && slot.scene == scene;
+                    });
+                    if (cell == view.slots.end()) return false;
+                    if (!cell->clip) {
+                        if (cell->hasStop) return false;
+                        const auto old = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
+                        if (old != view.slots.end() && old->physicalFrames > 0 && before->clip(clip.id) &&
+                            (!pinnedLegatoLoop(*old) || hasCompletePhysicalWindow(*before,*old))) {
+                            retainedPinned.push_back(clip.id);
+                            return false;
+                        }
+                        if (old != view.slots.end() && unpinnedNativeOneShot(*before,*old)) {
+                            retainedNative.push_back(clip.id);
+                            nativeTracks.push_back(clip.trackId);
+                            return false;
+                        }
+                        if (!continuesWarp(clip.id)) return true;
+                        retainedWarp.push_back(clip.id);
+                        return false;
+                    }
+                    if (!cell->legato) return false;
+                    if (continuesWarp(cell->clip)) return false;
+                    if (pinnedLegatoTarget(*cell,scene)) return !hasCompletePhysicalWindow(*before,*cell);
+                    const auto* target = before->clip(cell->clip);
+                    if (!target || target->latencySamples() == 0) return true;
+                    if (!target->allWorkerPhasesPrimed()) {
+                        missingWorkerLegato = true;
+                        return true;
+                    }
+                    if (std::ranges::find(workerLegatoTargets,cell->clip) == workerLegatoTargets.end())
+                        workerLegatoTargets.push_back(cell->clip);
+                    return false;
+                };
+                const auto since = sceneTempoBanks_ ? sceneTempoBanks_->tick : 0;
+                if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
+                    std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
+                        return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
+                    }) || std::ranges::any_of(model_.slotClips, needsRestart)) {
+                    error_ = missingWorkerLegato ? legatoReadinessError :
+                        "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
+                    return false;
+                }
+                std::ranges::sort(continuingWarp);
+                const auto uniqueEnd = std::unique(continuingWarp.begin(),continuingWarp.end());
+                continuingWarp.erase(uniqueEnd,continuingWarp.end());
+                // Retain clock history for ordinary resident clips. A paged,
+                // continuing Warp, worker, or physical Legato run instead
+                // needs the exact outgoing source and phase across the cut.
+                const bool retainHistory = !before->hasPagedAudio() && continuingWarp.empty() &&
+                    workerLegatoTargets.empty() && retainedPinned.empty() &&
+                    std::ranges::none_of(view.slots, [&](const LaunchSlot& slot) { return pinnedLegatoTarget(slot,scene); });
+                if (!nativeTracks.empty()) {
+                    if (launchAudioDriver_->sourceEditReserved()) {
+                        error_ = "a tempo scene cannot retain a clip while a live source replacement is reserved";
+                        return false;
+                    }
+                    LaunchStatusHeader status;
+                    if (!launchAudioDriver_->regionEditsSettled(status,nativeTracks)) {
+                        std::vector<LaunchTrackStatus> tracks(kMaximumStoredLaunchTracks);
+                        if (!readLaunchStatus(tracks,status) || status.incarnation != before->incarnation() ||
+                            !launchAudioDriver_->regionEditsSettled(status,nativeTracks) ||
+                            std::ranges::any_of(std::span(tracks).first(status.trackCount),[&](const auto& track) {
+                                return track.hasLiveRegion && before->clip(track.clip) &&
+                                    std::ranges::find(nativeTracks,track.track) != nativeTracks.end();
+                            })) {
+                            error_ = "a tempo scene needs unedited playback bounds on retained Session clips";
+                            return false;
+                        }
+                    }
+                }
+                if (retainHistory) {
+                    auto periods = nextBanks && !nextBanks->periods.empty() && nextBanks->periods.front().posTicks == 0
+                        ? nextBanks->periods : std::vector<TempoEvent>{{since,before->bpm(),0}};
+                    periods.push_back({tick,*bpm,0});
+                    nextBanks = SceneTempoBanks{{},tick,*bpm,{},std::move(periods)};
+                } else {
+                    mixedBefore = before.get();
+                    nextBanks = SceneTempoBanks{before,tick,*bpm,continuingWarp,{}};
+                }
+            }
+        }
+    } else if (bpm) {
+        nextBanks.reset();
+    }
+    // The candidate already carries this exact scene action. Publication is
+    // the only admission point: a full audit queue cannot orphan the clock.
+    const auto maxFrames = timing->spec.maxFrames;
+    const std::function<bool()> guard = [&] {
+        // A ratio or memory bound in the retimed clock may refuse a source.
+        // Leave the old graph playing rather than publish an incomplete bank.
+        if (keepStreamingBank && (!storedLaunchProject_ || !followsSceneTempo(*storedLaunchProject_))) return false;
+        if (std::ranges::any_of(workerLegatoTargets,[&](const auto id) {
+                const auto* target = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
+                return !target || !target->allWorkerPhasesPrimed();
+            })) {
+            missingWorkerLegato = true;
+            return false;
+        }
+        for (const auto id : continuingWarp) {
+            const auto* target = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
+            if (!target || !target->allWarpPhasesPrimed()) {
+                missingWarp = id;
+                return false;
+            }
+        }
+        if (mixedBefore && !retainedNative.empty()) {
+            changedNative = !timing->launchSource || !storedLaunchSource_ ||
+                !sameLaunchSource(*timing->launchSource,*storedLaunchSource_) || !launchFilesCurrent(*storedLaunchSource_);
+            if (changedNative || !storedLaunchProject_) return false;
+            const auto from = mixedBefore->view();
+            const auto to = storedLaunchProject_->view();
+            for (const auto id : retainedNative) {
+                const auto oldSlot = std::ranges::find(from.slots,id,&LaunchSlot::clip);
+                if (oldSlot == from.slots.end() || !sameNativeOneShotWindow(*mixedBefore,*oldSlot,*storedLaunchProject_,
+                        sceneCell(to,oldSlot->track,oldSlot->scene))) {
+                    missingNative = true;
+                    return false;
+                }
+            }
+        }
+        if (mixedBefore && (!retainedWarp.empty() || !retainedPinned.empty())) {
+            const auto before = mixedBefore->view().slots;
+            const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
+            // No Stop may retain any slot on this track after a queued or
+            // Follow action. Its live gain belongs to the old source baseline.
+            const bool sameBank = timing->launchSource && storedLaunchSource_ &&
+                sameStoredLaunchSources(*timing->launchSource,*storedLaunchSource_);
+            if (!retainedPinned.empty() && !sameBank) {
+                changedPin = retainedPinned.front();
+                return false;
+            }
+            for (const auto id : retainedPinned) {
+                const auto oldSlot = std::ranges::find(before,id,&LaunchSlot::clip);
+                const auto newSlot = std::ranges::find(after,id,&LaunchSlot::clip);
+                const auto* oldSource = mixedBefore->clip(id);
+                const auto* newSource = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
+                if (oldSlot == before.end() || newSlot == after.end() || !oldSource || !newSource ||
+                    !samePhysicalWindow(*oldSlot,*newSlot) || oldSource->pageReader() != newSource->pageReader() ||
+                    (pinnedLegatoLoop(*oldSlot) && !hasCompletePhysicalWindow(*storedLaunchProject_,*newSlot))) {
+                    missingPin = id;
+                    return false;
+                }
+            }
+            for (const auto id : retainedWarp) {
+                const auto oldSlot = std::ranges::find(before,id,&LaunchSlot::clip);
+                const auto newSlot = std::ranges::find(after,id,&LaunchSlot::clip);
+                if (oldSlot == before.end() || newSlot == after.end() ||
+                    oldSlot->track != newSlot->track || oldSlot->startTick != newSlot->startTick ||
+                    oldSlot->endTick != newSlot->endTick || oldSlot->loopStartTick != newSlot->loopStartTick ||
+                    oldSlot->loopEndTick != newSlot->loopEndTick) {
+                    missingWarp = id;
+                    return false;
+                }
+                if (!sameBank && (!timing->launchSource || !storedLaunchSource_ ||
+                    !sameStoredWarpSource(*timing->launchSource,*storedLaunchSource_,id))) {
+                    changedWarp = id;
+                    return false;
+                }
+            }
+        }
+        DriverClock latest;
+        return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
+            !arrangementLoops(latest) && (!latest.playing || sample - latest.sample >= maxFrames);
+    };
+    const auto previousScene = preparedScene_;
+    const auto previousBanks = sceneTempoBanks_;
+    auto previousSignatures = performedSignatures_;
+    auto previousClock = SceneClockRollback{performedTempo_, previousSignatures, previousBanks,
+        spec_.externalTempoBpm, authoredResumeAt_};
+    auto staged = std::make_shared<const PreparedSceneLaunch>(PreparedSceneLaunch{scene, tick, velocity,
+        ++preparedSceneToken_, bpm.value_or(0), signature ? static_cast<std::int32_t>(signature->numerator) : 0,
+        signature ? static_cast<std::int32_t>(signature->denominator) : 0});
+    if (signature) {
+        auto meters = timing->signatures;
+        std::erase_if(meters, [&](const rows::TimeSignature& event) { return event.posTicks >= tick; });
+        signature->posTicks = tick;
+        meters.push_back(*signature);
+        performedSignatures_ = std::move(meters);
+    }
+    preparedScene_ = std::move(staged);
+    sceneTempoBanks_ = std::move(nextBanks);
+    bool admitted = false;
+    if (bpm)
+        admitted = applyPerformedTempoAt(store, bpm, tick, guard);
+    else {
+        primeExternalAt_ = tick;
+        primeExternalFollowDriver_ = true;
+        externalPublishGuard_ = &guard;
+        try { admitted = refresh(store); }
+        catch (const std::exception& failure) { error_ = failure.what(); }
+        catch (...) { error_ = "Session scene meter preparation failed"; }
+        externalPublishGuard_ = nullptr;
+        primeExternalAt_.reset();
+    }
+    if (!admitted) {
+        performedSignatures_ = std::move(previousSignatures);
+        preparedScene_ = previousScene;
+        sceneTempoBanks_ = previousBanks;
+        if (missingWorkerLegato) error_ = legatoReadinessError;
+        else if (changedNative) error_ = "a Session scene clock needs its current launch source image";
+        else if (missingNative) error_ = "a retained Session clip needs the same native frame window across tempo banks";
+        else if (missingWarp) error_ = "Session clips#" + std::to_string(*missingWarp) +
+                                       ": a continuing tempo scene needs the same Warp region and warm source pages";
+        else if (changedWarp) error_ = "Session clips#" + std::to_string(*changedWarp) +
+                                       ": No Stop needs unchanged Warp source audio and clip gain at the scene tempo";
+        else if (missingPin) error_ = "Session clips#" + std::to_string(*missingPin) +
+                                      ": No Stop needs the same physical region and ready unwarped source";
+        else if (changedPin) error_ = "Session clips#" + std::to_string(*changedPin) +
+                                      ": No Stop needs unchanged unwarped source audio and clip gain at the scene tempo";
+        else if (keepStreamingBank && storedLaunchProject_ && !followsSceneTempo(*storedLaunchProject_) && !launchProblems_.empty())
+            error_ = launchProblems_.front();
+    } else sceneClockRollback_ = std::move(previousClock);
+    return admitted;
+}
+
+bool Session::cancelPreparedScene(const Store& store, std::int64_t scene) {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing || !sceneClockRollback_ || !preparedScene_ || preparedScene_->scene != scene) return false;
+    const auto staged = preparedScene_;
+    const auto sample = timing->sampleForTick(staged->tick);
+    const auto maxFrames = timing->spec.maxFrames;
+    DriverClock origin;
+    if (!readDriverClock(origin)) return false;
+    const std::function<bool()> guard = [&] {
+        DriverClock latest;
+        return launchAudioDriver_->performedSceneToken() < staged->token && readDriverClock(latest) &&
+            latest.revision == origin.revision && latest.sample <= sample &&
+            (!latest.playing || sample - latest.sample >= maxFrames);
+    };
+    if (!guard()) return false;
+    auto& prior = *sceneClockRollback_;
+    performedTempo_.swap(prior.tempo);
+    performedSignatures_.swap(prior.signatures);
+    std::swap(sceneTempoBanks_, prior.banks);
+    std::swap(spec_.externalTempoBpm, prior.externalBpm);
+    std::swap(authoredResumeAt_, prior.authoredResume);
+    preparedScene_.reset();
+    primeExternalAt_ = staged->tick;
+    primeExternalFollowDriver_ = true;
+    externalPublishGuard_ = &guard;
+    bool canceled = false;
+    try { canceled = refresh(store); }
+    catch (const std::exception& failure) { error_ = failure.what(); }
+    catch (...) { error_ = "Session scene cancellation failed"; }
+    externalPublishGuard_ = nullptr;
+    primeExternalAt_.reset();
+    if (!canceled) {
+        performedTempo_.swap(prior.tempo);
+        performedSignatures_.swap(prior.signatures);
+        std::swap(sceneTempoBanks_, prior.banks);
+        std::swap(spec_.externalTempoBpm, prior.externalBpm);
+        std::swap(authoredResumeAt_, prior.authoredResume);
+        preparedScene_ = staged;
+    } else sceneClockRollback_.reset();
+    return canceled;
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
@@ -2734,7 +3579,9 @@ bool Session::tick(std::int64_t nowMs) {
         presentationPending_=false;error_.clear();
     }
     collectScopeTaps();
+    if (launchAudioDriver_) launchAudioDriver_->collectSourceEdit();
     if(gestureAudio_)gestureAudio_->collect();
+    if(auto* playback=clips())playback->collectPitchComparisons();
     mainLoudness_.collect();
     cueMonitor_.collect();
     const auto clients=runtimeClients_;
@@ -2792,6 +3639,14 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work
     if (changed) {
         ++runtimeEpoch_;
         ++stats_.formatChanges;
+        // SC-382: the song stays where it was. The position is kept in samples, so a new rate moved it
+        // (4.01 s became 1.85 s from 44.1 to 96 kHz); it is carried over as time. Loops follow from their
+        // ticks at the rebuild.
+        if (sampleRate != spec_.sampleRate && spec_.sampleRate > 0 && sampleRate > 0) {
+            const auto seconds = static_cast<long double>(transport_.position()) / spec_.sampleRate;
+            const auto moved = static_cast<std::int64_t>(std::llround(seconds * sampleRate));
+            transport_.locate(moved); // playing or not, as it was
+        }
         spec_.sampleRate = sampleRate;
         spec_.maxFrames = maxFrames;
     }
@@ -2835,11 +3690,12 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     constexpr auto whole = textproj::kWhole;
     info.ticksInQuarter = ticks % ppq;
 
-    // Allocation-free counterpart of renderPosition(metersOf(signatures)).
-    // Default 4/4 from zero; a change truncating a bar still counts that bar.
+    // Default 4/4 from zero. A change truncating a bar still counts that bar.
+    // Driver traversal avoids MSVC Debug's locking vector iterators.
     std::int64_t start = 0, barsBefore = 0;
     std::int64_t barTicks = whole;
-    for (const auto& meter : signatures) {
+    for (std::size_t i = 0; i < signatures.size(); ++i) {
+        const auto& meter = signatures[i];
         if (meter.posTicks > ticks) break;
         const auto span = meter.posTicks - start;
         barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
@@ -2861,6 +3717,33 @@ std::int64_t Session::TimingView::sampleForTick(std::int64_t tick) const noexcep
     if (!std::isfinite(sample) || sample >= static_cast<long double>(limit)) return limit;
     if (sample <= 0) return 0;
     return static_cast<std::int64_t>(std::llround(sample));
+}
+
+LaunchBlock Session::TimingView::launchBlock(std::int32_t frames) const noexcept {
+    LaunchBlock block;
+    block.frames = frames;
+    block.global = settings.launchQuantization.value_or(launchAudio->globalQuantization());
+    block.meters = signatures;
+    block.followActionsEnabled = settings.followActionsEnabled;
+    block.preparedScenePinned = true;
+    if (preparedScene) block.preparedScene = *preparedScene;
+    block.sampleRate = sampleRate;
+    block.preciseTickAtSample = [](const void* state, std::int64_t sample) noexcept {
+        return static_cast<const TimingView*>(state)->quartersAt(sample) * static_cast<double>(textproj::kPPQ);
+    };
+    block.notePositionAtSample = [](const void* state, std::int64_t sample) noexcept {
+        const auto& timing = *static_cast<const TimingView*>(state);
+        return midiNotePosition(timing.tempo, static_cast<double>(sample) / timing.sampleRate);
+    };
+    block.clock = this;
+    block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {
+        const auto& timing = *static_cast<const TimingView*>(state);
+        return timing.tempo.secondsToTicks(static_cast<double>(sample) / timing.sampleRate);
+    };
+    block.sampleAtTick = [](const void* state, std::int64_t tick) noexcept {
+        return static_cast<const TimingView*>(state)->sampleForTick(tick);
+    };
+    return block;
 }
 
 void Session::TimingView::setBraceSamples(std::int64_t begin, std::int64_t end) noexcept {
@@ -2900,14 +3783,16 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
-    const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
+    const auto* changes = deviceClockChanges.data();
+    const auto* endOfChanges = changes + deviceClockChanges.size();
+    const auto* next = std::upper_bound(changes, endOfChanges, sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
-    if (next != deviceClockChanges.end()) result.nextChange = next->first;
+    if (next != endOfChanges) result.nextChange = next->first;
     constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
     const auto seconds = static_cast<double>(sample) / sampleRate;
     auto tick = seconds >= lastTickSeconds ? maximumTick : tempo.secondsToTicks(seconds);
-    if (next != deviceClockChanges.begin()) {
-        const auto changeTick = std::prev(next)->second;
+    if (next != changes) {
+        const auto changeTick = (next - 1)->second;
         tick = std::max(tick, changeTick);
         result.quarterNotes = std::max(result.quarterNotes, static_cast<double>(changeTick) / ppq);
     }
@@ -2926,7 +3811,8 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     std::int64_t start = 0;
     std::int64_t barsBefore = 0;
     std::int64_t barTicks = textproj::kWhole;
-    for (const auto& meter : signatures) {
+    for (std::size_t i = 0; i < signatures.size(); ++i) {
+        const auto& meter = signatures[i];
         if (meter.posTicks > tick) break;
         const auto span = meter.posTicks - start;
         barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
@@ -2945,15 +3831,81 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     return result;
 }
 
-void Session::TimingView::applyLoop() const noexcept {
+bool Session::TimingView::projectLoop(Transport& transport) const noexcept {
     const bool sameLoop = session->loopApplied_ && session->loopOn_ == settings.loopEnabled &&
                           session->loopStartTick_ == settings.loopStartTicks && session->loopEndTick_ == settings.loopEndTicks;
-    if(settings.hasLoop && (!sameLoop || session->loopBegin_!=loopBegin || session->loopEnd_!=loopEnd)) {
-        session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
-        session->loopStartTick_ = settings.loopStartTicks; session->loopEndTick_ = settings.loopEndTicks;
-        if (sameLoop) session->transport_.retimeLoop(loopBegin,loopEnd,settings.loopEnabled);
-        else session->transport_.loop(loopBegin,loopEnd,settings.loopEnabled);
+    if (!settings.hasLoop || (sameLoop && session->loopBegin_==loopBegin && session->loopEnd_==loopEnd)) return false;
+    if (sameLoop) transport.retimeLoop(loopBegin,loopEnd,settings.loopEnabled);
+    else transport.loop(loopBegin,loopEnd,settings.loopEnabled);
+    return true;
+}
+
+void Session::TimingView::applyLoop() const noexcept {
+    if (!projectLoop(session->transport_)) return;
+    session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
+    session->loopStartTick_ = settings.loopStartTicks; session->loopEndTick_ = settings.loopEndTicks;
+}
+
+void Session::prepareSourceReadiness(TimingView& timing, const ClipPlayback& clips) {
+    timing.sourceReadiness = clips.readiness();
+    const auto* previous = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    // Use the publication's unique owner-assigned generation for each changed
+    // tempo. Equal clocks carry the same revision through superseding edits.
+    timing.tempoRevision = previous && previous->tempo.events == timing.tempo.events
+        ? previous->tempoRevision : timing.gestureGeneration;
+    timing.authoredPerformanceTempo = timing.spec.performanceState && !timing.spec.offline &&
+        !timing.spec.exporting && !primeExternalAt_ && !timing.spec.externalTempoBpm && performedTempo_.empty();
+    if (timing.authoredPerformanceTempo)
+        timing.delayedSourceReadiness = clips.readiness(ClipPlayback::ReadinessScope::Delayed);
+}
+
+bool Session::TimingView::samePausedTempo(const TimingView& previous) const noexcept {
+    if (previous.tempoRevision == tempoRevision) return true;
+    if (comparedPausedTempo != previous.tempoRevision) {
+        const auto& left = previous.tempo.events;
+        const auto& right = tempo.events;
+        matchesComparedPausedTempo = left.size() == right.size() &&
+            (left.empty() || std::equal(left.data(),left.data() + left.size(),right.data()));
+        comparedPausedTempo = previous.tempoRevision;
     }
+    return matchesComparedPausedTempo;
+}
+
+void Session::TimingView::collectRetiredSources() const noexcept {
+    if (auto* driver = session->launchAudioDriver_.get()) driver->collectPinnedSourceOwners();
+}
+
+bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const noexcept {
+    const auto* previous = dynamic_cast<const TimingView*>(before);
+    if (!previous || previous->session != session) return true;
+    const auto playing = session->transport_.playing();
+    const auto position = session->transport_.position();
+    const auto protectExternal = playing && protectExternalSessionAudio;
+    // Compare with the graph that actually played. The owner's prior publication
+    // can have been superseded before its page reader ever reached the driver.
+    // A global pause preserves the old slot run on the same clock.
+    const bool compatibleFormat = previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
+        previous->spec.maxFrames == spec.maxFrames;
+    const bool protectPinned = (protectExternal || protectCompatiblePinnedPages) && compatibleFormat;
+    auto* driver = session->launchAudioDriver_.get();
+    const bool dropped = (protectExternal || protectPinned) && previous->launchAudio && driver &&
+        driver->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
+            position,protectExternal,protectPinned);
+    if (dropped && (playing || preparedPinnedRestart || samePausedTempo(*previous))) return false;
+    if (playing && delayedSourceReadiness && previous->authoredPerformanceTempo &&
+        previous->tempoRevision != tempoRevision && compatibleFormat &&
+        previous->spec.precision == spec.precision && previous->spec.delayCompensation == spec.delayCompensation) {
+        // The driver owns this clock. Its elapsed and loop history select the
+        // page that will actually be heard after this generation's source delay.
+        auto requested = session->transport_;
+        (void)projectLoop(requested);
+        if (!delayedSourceReadiness(requested,spec.maxFrames,true)) return false;
+    }
+    if (driver) {
+        driver->discardIncompatiblePinnedRuns(compatibleFormat ? launchAudio.get() : nullptr,position);
+        if (dropped && launchAudio) driver->retainPinnedRuns(*previous->launchAudio,*launchAudio,position);
+    }
+    return true;
 }
 
 const TransportInfo* Session::TimingView::beginBlock()const noexcept {
@@ -3111,7 +4063,8 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     if (sample == std::numeric_limits<std::int64_t>::max())
         return false;
     std::int64_t numerator = 4, denominator = 4;
-    for (const auto &meter : timing->signatures) {
+    for (std::size_t i = 0; i < timing->signatures.size(); ++i) {
+        const auto& meter = timing->signatures[i];
         if (meter.posTicks > tick)
             break;
         numerator = meter.numerator;
@@ -3177,6 +4130,10 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         }
         return false;
     }
+    auto* launchAudio = timing ? timing->launchAudio.get() : nullptr;
+    auto* launchDriver = session_.launchAudioDriver_.get();
+    if (launchAudio && launchDriver)
+        launchAudio->startIfQueued(*launchDriver, timing->launchBlock(io.frames), session_.transport_);
     const auto remaining = session_.transport_.countInRemaining();
     auto prefix = io.frames;
     auto punch = RecordingPunch::Within;
@@ -3246,8 +4203,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
+        const auto* playClock = timing->playQuantizeClock ? &*timing->playQuantizeClock : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories, session_.transport_,
-                                    {timing->playQuantizeTempo, timing->playQuantizeRate}, capture, punch, punchWindow);
+                                    {{}, 0, playClock}, capture, punch, punchWindow);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     const auto* midiSink = timing && timing->spec.performanceState && !block.exporting && !io.exporting &&
@@ -3261,10 +4219,11 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     struct RenderContext {
         RenderBlock& driver;
         const AudioIo& block;
+        const TimingView* timing;
         InputMonitors* monitors;
         const MidiHardwareSink* midi;
     };
-    RenderContext renderContext{*this, block, timing ? timing->inputMonitors.get() : nullptr, midiSink};
+    RenderContext renderContext{*this, block, timing, timing ? timing->inputMonitors.get() : nullptr, midiSink};
     const auto render = [](void* raw, std::span<const std::int64_t> tracks,
                            std::span<const std::int64_t> resampling, const AudioIo* mainOutput) noexcept {
         const auto& call = *static_cast<RenderContext*>(raw);
@@ -3276,7 +4235,17 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         }
         liveSession.midiHardwareSink_ = call.midi;
         liveSession.midiHardwareStreamSample_ = call.block.streamTimeSamples;
+        auto* runtime = call.timing ? call.timing->launchAudio.get() : nullptr;
+        auto* launcher = liveSession.launchAudioDriver_.get();
+        if (runtime && launcher) {
+            runtime->begin(*launcher, call.timing->launchBlock(call.block.frames), liveSession.transport_,
+                           call.block.streamTimeSamples, call.driver.launchObserverContext_, call.driver.launchObserver_,
+                           call.driver.sceneObserverContext_, call.driver.sceneObserver_, call.driver.launchCapture_);
+        } else if (launcher) {
+            launcher->suspend();
+        }
         const bool rendered = call.driver.graph_.process(call.block, resampling);
+        if (runtime && launcher) runtime->finish(*launcher);
         liveSession.midiHardwareSink_ = nullptr;
         liveSession.recordingAudioTracks_ = {};
         if (call.monitors) {
@@ -3332,6 +4301,119 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
 void Session::process(const AudioIo& io) noexcept {
     auto block = beginRender();
     (void)block.process(io);
+}
+
+bool Session::postLaunchGesture(std::span<const LaunchRequest> requests) noexcept {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!launchAudioDriver_ || !timing || !timing->launchAudio) return false;
+    for (const auto& request : requests)
+        if (request.kind == LaunchRequestKind::ScenePress && request.scene && timing->launchAudio->sceneClock(*request.scene))
+            return false;
+    const auto stops = [](const LaunchRequest& request) {
+        return request.kind == LaunchRequestKind::StopTrack || request.kind == LaunchRequestKind::StopAll;
+    };
+    if (timing->preparedScene && timing->preparedScene->token > launchAudioDriver_->performedSceneToken() &&
+        std::ranges::any_of(requests, stops)) {
+        std::array<LaunchRequest, LaunchGestureQueue::capacity> stamped;
+        if (requests.size() > stamped.size()) return false;
+        const auto gesture = std::span(stamped).first(requests.size());
+        std::ranges::copy(requests, gesture.begin());
+        for (auto& request : gesture)
+            if (stops(request)) request.preparedSceneToken = timing->preparedScene->token;
+        return launchAudioDriver_->post(gesture);
+    }
+    return launchAudioDriver_->post(requests);
+}
+
+bool Session::submitLaunchGesture(std::span<const LaunchRequest> requests) {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!launchAudioDriver_ || !timing || !timing->launchAudio) return false;
+    const auto* store = adi::detail::appliedSourceStore(appliedSource_);
+    if (requests.size() == 1 && requests.front().kind == LaunchRequestKind::StopAll && sceneClockPending()) {
+        if (requests.front().incarnation != timing->launchAudio->incarnation() ||
+            !postLaunchGesture(requests)) return false;
+        // Keep the stop queued even when the clock has reached its publish deadline.
+        if (store) (void)cancelPreparedScene(*store, preparedScene_->scene);
+        return true;
+    }
+    const auto cancel = std::ranges::find_if(requests, [&](const LaunchRequest& request) {
+        return request.kind == LaunchRequestKind::CancelScene && preparedScene_ &&
+            request.scene == preparedScene_->scene && preparedScene_->token > launchAudioDriver_->performedSceneToken();
+    });
+    if (cancel != requests.end())
+        return requests.size() == 1 && cancel->incarnation == timing->launchAudio->incarnation() &&
+            store && cancelPreparedScene(*store, *cancel->scene);
+    const auto clockRequest = std::ranges::find_if(requests, [&](const LaunchRequest& request) {
+        return request.kind == LaunchRequestKind::ScenePress && request.scene &&
+            timing->launchAudio->sceneClock(*request.scene);
+    });
+    if (clockRequest == requests.end()) return postLaunchGesture(requests);
+    if (requests.size() != 1 || clockRequest->incarnation != timing->launchAudio->incarnation()) return false;
+    DriverClock origin;
+    if (!store || !readDriverClock(origin)) return false;
+    // One full driver buffer of lead allows this new clock and its media to
+    // publish together. The owner preparation rechecks that against the
+    // completed driver position before the candidate can publish.
+    const auto lead = origin.playing ? timing->spec.maxFrames : 0;
+    if (origin.sample > std::numeric_limits<std::int64_t>::max() - lead) return false;
+    const auto earliest = origin.sample + lead;
+    auto tick = timing->tempo.secondsToTicks(static_cast<double>(earliest) / timing->sampleRate);
+    if (timing->sampleForTick(tick) < earliest && tick < std::numeric_limits<std::int64_t>::max()) ++tick;
+    const auto grid = timing->settings.launchQuantization.value_or(timing->launchAudio->globalQuantization());
+    const auto boundary = launch_quantize::nextGridTick(tick, grid, timing->signatures);
+    return boundary && prepareSceneLaunch(*store, *clockRequest->scene, *boundary, clockRequest->velocity);
+}
+
+bool Session::postLaunchClipGainEdit(const LaunchClipGainEdit& edit) noexcept {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    return launchAudioDriver_ && timing && timing->launchAudio &&
+        timing->launchAudio->postGainEdit(*launchAudioDriver_, edit);
+}
+
+bool Session::postLaunchClipRegionEdit(const LaunchClipRegionEdit& edit) noexcept {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    DriverClock clock;
+    if (!launchAudioDriver_ || !timing || !timing->launchAudio || !readDriverClock(clock)) return false;
+    const auto& audio = *timing->launchAudio;
+    if (timing->preparedScene && sceneClockPending() && timing->preparedScene->tempoBpm > 0) {
+        const auto cut = timing->sampleForTick(timing->preparedScene->tick);
+        if (cut > 0) {
+            const auto& before = audio.mediaAt(cut-1);
+            const auto& after = audio.mediaAt(cut);
+            const auto view = before->view();
+            const auto slot = std::ranges::find(view.slots,edit.clip,&LaunchSlot::clip);
+            if (before->bpm() != after->bpm() && slot != view.slots.end() && slot->track == edit.track &&
+                unpinnedNativeOneShot(*before,*slot) && retainsTrack(view,edit.track,timing->preparedScene->scene))
+                return false;
+        }
+    }
+    return audio.postRegionEdit(*launchAudioDriver_,edit,clock.sample);
+}
+
+bool Session::postLaunchClipSourceEdit(const LaunchClipSourceEdit& edit,
+                                       std::unique_ptr<LaunchAudioClip>& replacement) noexcept {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    DriverClock clock;
+    return launchAudioDriver_ && timing && timing->launchAudio && readDriverClock(clock) && clock.playing &&
+        timing->launchAudio->postSourceEdit(*launchAudioDriver_, edit, replacement);
+}
+
+bool Session::launchSourceEditReserved() const noexcept {
+    return launchAudioDriver_ && launchAudioDriver_->sourceEditReserved();
+}
+
+std::uint64_t Session::launchIncarnation() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    return timing && timing->launchAudio ? timing->launchAudio->incarnation() : 0;
+}
+
+bool Session::readLaunchStatus(std::span<LaunchTrackStatus> tracks, LaunchStatusHeader& header) const noexcept {
+    return launchAudioDriver_ && launchAudioDriver_->readStatus(tracks, header);
 }
 
 bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int64_t inputSample,
@@ -3576,6 +4658,11 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
     const auto streamFrame = transport_.streamedFrames();
     // Heard count-in clock of this callback's first frame (DF-E6 (a)).
     const auto heard=countInTailTotal_-countInTailLag_+transport_.streamedFrames();
+    std::int64_t previous = -1, beatTick = 0;
+    double boundary = 0, nextBoundary = 0;
+    bool accented = false;
+    const auto* firstMeter = timing.signatures.data();
+    const auto* endOfMeters = firstMeter + timing.signatures.size();
     for(std::int32_t i=0;i<io.frames;++i) {
         const auto sample=transport_.delayedSample(i,latency);
         if(sample<0 && tail && heard+i<countInTailTotal_) {
@@ -3588,28 +4675,46 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
             }
             clickWasPlaying_=false;continue;
         }
-        if(!rollingClick){clickEnvelope_=0;clickWasPlaying_=false;countInTail_=false;return;}
-        // Capture changed on the undelayed clock, which can be several
-        // slices ahead of the timeline heard now, even for a complete punch.
+        if (!rollingClick) {
+            clickEnvelope_ = 0;
+            clickWasPlaying_ = false;
+            countInTail_ = false;
+            return;
+        }
+        // Capture edges are stored on the undelayed driver clock.
         while (edge != captureEdges.end() && edge->streamFrame - streamFrame <= i - latency)
             clickAllowed = (edge++)->capturing;
-        if(sample<0 || !clickAllowed){clickWasPlaying_=false;clickEnvelope_=0;continue;}
-        const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
-        std::int64_t signature=0,numerator=4,denominator=4;
-        for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
-        const auto signatureBeat = textproj::kWhole / denominator;
-        const auto barTicks = signatureBeat * numerator;
-        const auto barStart = tick - (tick - signature) % barTicks;
-        const auto interval = options.eighthNotes && metronomeEighthNotesFit(barTicks)
-            ? kMetronomeEighthNoteTicks : signatureBeat;
-        const auto beatTick = tick - (tick - barStart) % interval;
-        const double boundary=tempo.ticksToSeconds(beatTick)*rate;
-        const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
-        const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
-        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary))
-            triggerClick(beatTick == barStart, options.sound);
+        if (sample < 0 || !clickAllowed) {
+            clickWasPlaying_ = false;
+            clickEnvelope_ = 0;
+            previous = -1;
+            continue;
+        }
+        if (previous < 0 || sample - 1 != previous || static_cast<double>(sample) >= nextBoundary) {
+            const auto tick = tempo.secondsToTicks(static_cast<double>(sample) / rate);
+            const auto* nextMeter = std::upper_bound(firstMeter, endOfMeters, tick,
+                [](auto at, const auto& meter) { return at < meter.posTicks; });
+            const auto meter = nextMeter == firstMeter ? rows::TimeSignature{} : *(nextMeter - 1);
+            const auto signatureBeat = textproj::kWhole / meter.denominator;
+            const auto barTicks = signatureBeat * meter.numerator;
+            const auto barStart = tick - (tick - meter.posTicks) % barTicks;
+            const auto interval = options.eighthNotes && metronomeEighthNotesFit(barTicks)
+                ? kMetronomeEighthNoteTicks : signatureBeat;
+            beatTick = tick - (tick - barStart) % interval;
+            accented = beatTick == barStart;
+            boundary = tempo.ticksToSeconds(beatTick) * rate;
+            auto nextTick = beatTick + std::min(interval, std::numeric_limits<std::int64_t>::max() - beatTick);
+            if (nextMeter != endOfMeters) nextTick = std::min(nextTick, nextMeter->posTicks);
+            nextBoundary = std::nextafter(tempo.ticksToSeconds(nextTick) * rate,
+                                          -std::numeric_limits<double>::infinity());
+        }
+        previous = sample;
+        const bool adjacent = clickWasPlaying_ && sample > 0 && clickLastSample_ == sample - 1;
+        const bool atBoundary = std::abs(static_cast<double>(sample) - boundary) <= 1.01;
+        if ((adjacent && beatTick != clickLastBeat_) || (!adjacent && atBoundary))
+            triggerClick(accented, options.sound);
         const double click = nextClickSample(rate, decay, options.sound);
-        if(clickEnvelope_<1e-12)clickEnvelope_=0;
+        if (clickEnvelope_ < 1e-12) clickEnvelope_ = 0;
         // Default Cue pair until the separate Cue Out routing (N23) is built.
         for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
             if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
@@ -3621,6 +4726,10 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
 
 void Session::release() {
     ++runtimeEpoch_;
+    if (launchAudioDriver_) {
+        launchAudioDriver_->suspendSourceEdits();
+        launchAudioDriver_->collectSourceEdit();
+    }
     recording_->stop();
     midiInputCapture_->deviceStopped();
     resetMidiInput();

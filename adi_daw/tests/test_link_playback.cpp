@@ -21,10 +21,12 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <numbers>
 #include <optional>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 #ifdef ADI_TEST_LINK_WRAP_LOCKS
 #include <pthread.h>
 #endif
@@ -146,7 +148,17 @@ struct Content {
     std::int64_t clipStart = 0;
     bool ramp = false;
     std::optional<std::pair<std::int64_t, std::int64_t>> loop;
+    bool warpLandmarks = false;
+    std::string_view warpMode = "re-pitch";
 };
+
+void addLandmark(std::vector<float>& pcm, std::size_t channel, std::size_t position) {
+    constexpr int radius = 24;
+    for (int i = -radius; i <= radius; ++i) {
+        const auto frame = static_cast<std::size_t>(static_cast<std::int64_t>(position) + i);
+        pcm[frame * 2 + channel] = static_cast<float>(0.45 + 0.45 * std::cos(std::numbers::pi * i / radius));
+    }
+}
 
 struct Project {
     test::TempDirectory directory{"link_playback", "project"};
@@ -161,8 +173,13 @@ struct Project {
         store = Store::createEmpty(directory.path() / "song.adi", error);
         if (!store) throw std::runtime_error("create Link playback project");
         std::vector<float> samples(96000, 0);
-        for (std::size_t i = 0; i < 48000; ++i)
-            samples[i * 2] = content.ramp ? .125f + static_cast<float>(i) / 192000.f : .25f;
+        if (content.warpLandmarks) {
+            addLandmark(samples, 0, 6000);
+            addLandmark(samples, 0, 18000);
+        } else {
+            for (std::size_t i = 0; i < 48000; ++i)
+                samples[i * 2] = content.ramp ? .125f + static_cast<float>(i) / 192000.f : .25f;
+        }
         {
             audio::WavWriter writer(directory.path() / "source.wav", 48000, 2, audio::WavFormat::Float32);
             writer.write(samples.data(), 48000); writer.close();
@@ -182,6 +199,23 @@ struct Project {
                 "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode) VALUES"
                 "(7,1,48000,1,'re-pitch');"
                 "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(7,0,1000000000)");
+        if (content.warpLandmarks) {
+            std::vector<float> dry(96000, 0);
+            for (const auto at : {10000u, 22000u, 34000u}) addLandmark(dry, 1, at);
+            audio::WavWriter writer(directory.path() / "dry.wav", 48000, 2, audio::WavFormat::Float32);
+            writer.write(dry.data(), 48000); writer.close();
+            db.exec("UPDATE clips SET muted=1 WHERE id=8;"
+                    "UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=5765760,"
+                    "length_ticks=23063040 WHERE id=7;"
+                    "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','Dry',2);"
+                    "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) VALUES"
+                    "(2,'link-warp-dry','dry.wav','wav',48000,2,48000);"
+                    "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(10,3,'audio',0,23063040);"
+                    "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(10,2,48000)");
+            SQLite::Statement warpMode(db, "UPDATE audio_clips SET warp_mode=? WHERE clip_id=7");
+            warpMode.bind(1, std::string(content.warpMode));
+            warpMode.exec();
+        }
         if (content.clipStart != 0) {
             SQLite::Statement position(db, "UPDATE clips SET pos_ticks=?");
             position.bind(1, content.clipStart); position.exec();
@@ -424,6 +458,79 @@ void continuity() {
         check(project.instances == 1 && project.unchanged(),
               "tempo change and disable restoration retain one device and the complete authored project");
     }
+}
+
+void warpedLoopFollowsPeerTempo(std::string_view mode) {
+    constexpr int change = 188 * blockSize;
+    constexpr int length = 48'000;
+    static_assert(length % blockSize == 0);
+    constexpr double initial = 120, target = 140;
+    Project project(Precision::Float64, initial, {.loop = std::nullopt, .warpLandmarks = true, .warpMode = mode});
+    const auto latency = project.session.graph().currentGraph()->latencySamples();
+    const bool r3 = mode == "complex";
+    check(r3 ? latency > 0 : latency == 0, "the Link project reports its Warp mode's graph latency");
+    auto link = participant();
+    LinkPlayback playback(project.session, *link);
+    Buffer buffer(Precision::Float64);
+    constexpr std::int64_t origin = 28000000;
+    auto frame = captured(origin, true, initial);
+    std::array<std::vector<double>, 2> pcm{std::vector<double>(length), std::vector<double>(length)};
+    bool valid = true, clean = true;
+    double prepareMs = 0;
+    for (int offset = 0; offset < length; offset += blockSize) {
+        if (offset != change + blockSize) project.prime();
+        frame.audibleMicros = origin + microsForFrames(offset);
+        frame.tempo = offset < change ? initial : target;
+        frame.beat = (std::min(offset, change) * initial + std::max(0, offset - change) * target) / (60 * rate);
+        Audit audit;
+        const auto result = render(playback, buffer, frame);
+        clean = clean && audit.clean();
+        valid = valid && result.valid && project.session.transport().position() == offset + blockSize;
+        if (offset == change) {
+            check(static_cast<bool>(result.preparation) && result.preparation.tempo == target,
+                  "peer tempo change requests an exact performed boundary");
+            const auto start = std::chrono::steady_clock::now();
+            check(playback.prepare(*project.store, result.preparation, frame.audibleMicros),
+                  "peer change publishes already requested streaming source pages");
+            prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        } else {
+            valid = valid && !result.preparation;
+        }
+        for (int channel = 0; channel < 2; ++channel)
+            for (int i = 0; i < blockSize; ++i)
+                pcm[static_cast<std::size_t>(channel)][static_cast<std::size_t>(offset + i)] = buffer.sample(channel, i);
+    }
+    check(valid, "Link Warp playback advances without an extra locate or tempo preparation");
+    check(clean && project.sqlOnCallback == 0 && project.session.clips()->underrunSamples() == 0,
+          "peer tempo and Warp loop transitions are clean in the callback");
+
+    const auto peak = [&](std::size_t channel, int expected) {
+        const auto& audio = pcm[channel];
+        constexpr int window = 5000;
+        const auto best = std::max_element(audio.begin() + expected - window, audio.begin() + expected + window + 1);
+        return std::pair{static_cast<int>(std::abs((best - audio.begin()) - expected)), *best};
+    };
+    int warpError = 0, dryError = 0;
+    double minWarpPeak = 1, minDryPeak = 1;
+    for (const auto source : {6000, 18000, 30000, 42000}) {
+        const auto expected = source < change ? source :
+            static_cast<int>(std::lround(change + (source - change) * initial / target));
+        const auto [error, level] = peak(0, expected + latency);
+        warpError = std::max(warpError, error);
+        minWarpPeak = std::min(minWarpPeak, level);
+    }
+    for (const auto expected : {10000, 22000, 34000}) {
+        const auto [error, level] = peak(1, expected + latency);
+        dryError = std::max(dryError, error);
+        minDryPeak = std::min(minDryPeak, level);
+    }
+    std::printf("Link %.*s 120→140 BPM at frame %d: Warp loop peak error %d samples, dry peak error %d samples, "
+                "minimum Warp peak %.3f FS, owner %.2f ms\n",
+                static_cast<int>(mode.size()), mode.data(), change, warpError, dryError, minWarpPeak, prepareMs);
+    check(minWarpPeak >= (r3 ? 0.4 : 0.6) && minDryPeak >= 0.6, "warped and dry landmarks retain audible peaks");
+    check(warpError <= (r3 ? 160 : 1), "warped repeats follow the new peer tempo within method tolerance");
+    check(dryError == 0, "unwarped PCM retains its physical source clock through a peer tempo change");
+    check(project.unchanged(), "a realtime Warp peer tempo change leaves the project and history untouched");
 }
 
 void optOutAndValidation() {
@@ -996,7 +1103,8 @@ void peers() {
 
 int main(int argc, char** argv) {
     try {
-        launchStop(); preparation(); latencyBoundary(); continuity(); optOutAndValidation(); drift();
+        launchStop(); preparation(); latencyBoundary(); continuity(); warpedLoopFollowsPeerTempo("re-pitch");
+        warpedLoopFollowsPeerTempo("complex"); optOutAndValidation(); drift();
         pendingLaunchUpdates(); restartClearsPerformedHistory(); cancelPendingIntent();
         captureTimeAdmission(); slowOwnerAndLoops(); repeatedLocalPlay(); localPlayCancelsPendingPeerStop();
         distantLaunchReadiness();

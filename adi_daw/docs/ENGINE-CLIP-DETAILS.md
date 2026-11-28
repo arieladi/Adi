@@ -17,9 +17,9 @@ ids, original tick/ns placement and length, mute/gain, fades and their curves,
 content offset, loop start/length and enabled switch. NULL stays distinct from
 zero. `startMarkerTicks` is the stored content offset. Until a local end marker
 exists, `endMarkerTicks` derives from offset plus visible length; a linear clip's
-length is converted through the step tempo map. Unrepresentable derived times
-and unsupported tempo ramps are named in `propertiesProblem`, while raw stored
-positions remain available.
+length is converted through the effective tempo map, integrating linear and
+Bezier ramps (TM-TT-01). Unrepresentable derived times are named in
+`propertiesProblem`, while raw stored positions remain available.
 
 Signature and scale inherit at the arrangement start, defaulting to 4/4 and
 C major when no earlier project event exists. Native project tuning id/degrees

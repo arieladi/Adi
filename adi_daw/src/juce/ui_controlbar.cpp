@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <span>
 #include <utility>
 namespace adi::ui {
 namespace {
@@ -487,7 +488,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         metronomeMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&metronome));
     };
     punchIn.onClick = [this] { root_.togglePunch(true); };
-    loop.onClick = [this] { root_.toggleLoop(); };
+    loop.onClick = [this] { root_.clickLoopSwitch(); };
     punchOut.onClick = [this] { root_.togglePunch(false); };
     loopStart.onClick = [this] { beginLoopStartEdit(); };
     loopLength.onClick = [this] { beginLoopLengthEdit(); };
@@ -556,56 +557,90 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
 }
 void TransportBar::resized() {
-    // Live's widths, in points; the left group from the left, the right group from the
-    // right, the transport and the loop centred.
-    const int y = (getHeight() - look::fieldHeight) / 2, h = look::fieldHeight;
-    int x = 8;
-    auto place = [&](BarItem &item, int w, int after = 2) {
-        item.setBounds(x, y, w, h);
-        x += w + after;
+    // Keep Live's wide positions. At narrower widths reclaim spacing and unavailable
+    // controls before hiding working controls, leaving the transport until last.
+    enum class Overflow {
+        Placeholders, Mapping, MidiActivity, EditTools, LoopRange, Secondary, Fields, Workspace, Transport
     };
-    place(link, 43);
-    place(tap, 25);
-    place(tempo, 41, 4);
-    place(nudgeDown, 17);
-    place(nudgeUp, 16, 2);
-    place(signature, 40);
-    place(metronome, 40);
-    place(quantize, 45);
-    // Live puts the middle group's left edge 297 points left of the window's centre.
-    x = std::max(x + 20, getWidth() / 2 - 297);
-    place(follow, 21);
-    place(position, 82, 18);
-    place(play, 18);
-    place(stop, 18);
-    place(record, 18, 18);
-    place(overdub, 17, 1);
-    place(automationArm, 17, 1);
-    place(reEnable, 17, 1);
-    place(capture, 17, 1);
-    place(sessionRecord, 17, 12);
-    place(loopStart, 85, 1);
-    place(punchIn, 20, 1);
-    place(loop, 21, 1);
-    place(punchOut, 20, 1);
-    place(loopLength, 85);
-    // Preserve the positions of the right-hand global switches. The
-    // workspace labels shorten when the controls to their left need room.
-    const auto workspaceRight = getWidth() - 223;
-    const auto full = workspaceRight - x >= 2 * look::workspaceSegmentWidth + look::gap;
-    const int segmentWidth = full ? look::workspaceSegmentWidth : look::workspaceCompactSegmentWidth;
-    x = workspaceRight - 2 * segmentWidth;
+    struct Slot {
+        BarItem &item;
+        int width;
+        int after;
+        Overflow overflow;
+    };
+    std::array left{
+        Slot{link, 43, 2, Overflow::Placeholders}, Slot{tap, 25, 2, Overflow::Secondary},
+        Slot{tempo, 41, 4, Overflow::Fields}, Slot{nudgeDown, 17, 2, Overflow::Placeholders},
+        Slot{nudgeUp, 16, 2, Overflow::Placeholders}, Slot{signature, 40, 2, Overflow::Fields},
+        Slot{metronome, 40, 2, Overflow::Fields}, Slot{quantize, 45, 2, Overflow::Placeholders},
+    };
+    std::array middle{
+        Slot{follow, 21, 2, Overflow::Secondary}, Slot{position, 82, 18, Overflow::Fields},
+        Slot{play, 18, 2, Overflow::Transport}, Slot{stop, 18, 2, Overflow::Transport}, Slot{record, 18, 18, Overflow::Transport},
+        Slot{overdub, 17, 1, Overflow::Secondary}, Slot{automationArm, 17, 1, Overflow::Secondary},
+        Slot{reEnable, 17, 1, Overflow::EditTools}, Slot{capture, 17, 1, Overflow::EditTools},
+        Slot{sessionRecord, 17, 12, Overflow::Placeholders}, Slot{loopStart, 85, 1, Overflow::LoopRange},
+        Slot{punchIn, 20, 1, Overflow::Fields}, Slot{loop, 21, 1, Overflow::Workspace},
+        Slot{punchOut, 20, 1, Overflow::Fields}, Slot{loopLength, 85, 2, Overflow::LoopRange},
+    };
+    const int segment = look::workspaceSegmentWidth;
+    std::array right{
+        Slot{arrangementPage, segment, 0, Overflow::Workspace}, Slot{mix, segment, look::gap, Overflow::Workspace},
+        Slot{draw, 17, 2, Overflow::EditTools}, Slot{keyboard, 17, 2, Overflow::EditTools}, Slot{key, 26, 12, Overflow::Mapping},
+        Slot{midi, 28, 2, Overflow::Mapping}, Slot{cpu, 58, 2, Overflow::Fields}, Slot{indicators, 13, 1, Overflow::MidiActivity},
+        Slot{midiOutIndicator, 18, 0, Overflow::MidiActivity},
+    };
+    const auto widthOf = [](std::span<const Slot> group) {
+        int width = 0;
+        for (const auto &slot : group)
+            if (slot.width > 0)
+                width += slot.width + slot.after;
+        return width;
+    };
+    const int width = getWidth(), leftMargin = 8;
+    // The segment's right edge used to sit 223 px from the window's edge.
+    const int rightMargin = 223 - (widthOf(right) - 2 * segment);
+    int leftGap = 20;
+    const auto middleMinimum = [&] { return leftMargin + widthOf(left) + leftGap; };
+    const auto middlePreferred = [&] { return std::max(middleMinimum(), width / 2 - 297); };
+    const auto middleMaximum = [&] { return width - rightMargin - widthOf(right) - look::gap - widthOf(middle); };
+    const bool full = middlePreferred() <= middleMaximum();
+    if (!full) {
+        right[0].width = right[1].width = look::workspaceCompactSegmentWidth;
+        if (middleMinimum() > middleMaximum()) {
+            leftGap = look::gap;
+            for (auto group : {std::span<Slot>(left), std::span<Slot>(middle)})
+                for (auto &slot : group)
+                    slot.after = std::min(slot.after, 2);
+        }
+        for (auto tier = static_cast<int>(Overflow::Placeholders); tier <= static_cast<int>(Overflow::Transport) &&
+             middleMinimum() > middleMaximum(); ++tier)
+            for (auto group : {std::span<Slot>(left), std::span<Slot>(middle), std::span<Slot>(right)})
+                for (auto &slot : group)
+                    if (static_cast<int>(slot.overflow) == tier)
+                        slot.width = 0;
+    }
+    const int y = (getHeight() - look::fieldHeight) / 2, h = look::fieldHeight;
+    const auto place = [&](std::span<const Slot> group, int x) {
+        for (const auto &slot : group) {
+            const bool shown = slot.width > 0;
+            slot.item.setBounds(shown ? juce::Rectangle<int>(x, y, slot.width, h) : juce::Rectangle<int>());
+            slot.item.setVisible(shown);
+            if (shown)
+                x += slot.width + slot.after;
+        }
+    };
     arrangementPage.setText(full ? "Arrangement" : "Arr");
     mix.setText(full ? "Mix View" : "Mix");
-    place(arrangementPage, segmentWidth, 0);
-    place(mix, segmentWidth, look::gap);
-    place(draw, 17, 2);
-    place(keyboard, 17, 2);
-    place(key, 26, 12);
-    place(midi, 28, 2);
-    place(cpu, 58, 2);
-    place(indicators, 13, 1);
-    place(midiOutIndicator, 18, 0);
+    place(left, leftMargin);
+    place(middle, std::min(middlePreferred(), middleMaximum()));
+    place(right, width - rightMargin - widthOf(right));
+    if (const auto *item = editing(); item != nullptr) {
+        if (item->isVisible())
+            fieldEditor.setBounds(item->getBounds());
+        else
+            fieldEditor.setVisible(false);
+    }
 }
 juce::PopupMenu TransportBar::metronomeMenu() const {
     juce::PopupMenu menu;
@@ -766,12 +801,17 @@ juce::PopupMenu TransportBar::cpuMenu() {
 void TransportBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const auto group = arrangementPage.getBounds().getUnion(mix.getBounds()).toFloat();
-    g.setColour(look::field);
-    g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
+    if (!group.isEmpty()) {
+        g.setColour(look::field);
+        g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
+    }
 }
 void TransportBar::focus() {
-    auto &item = lastFocused_ && lastFocused_->isEnabled() ? *lastFocused_ : link.isEnabled() ? link : tap;
-    focusIfShowing(item);
+    for (auto *item : {lastFocused_, &link, &tap, &play})
+        if (item != nullptr && item->isVisible() && item->isEnabled()) {
+            focusIfShowing(*item);
+            return;
+        }
 }
 juce::String TransportBar::adjustTime(TimeField field, int part, int steps, bool commit) {
     const auto current = root_.current();

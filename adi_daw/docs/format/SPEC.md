@@ -642,21 +642,36 @@ Readers stride by rec_size, retaining future record tails and stream trailer
 bytes in the original BLOB; a producer that needs to rewrite unknown fields
 must refuse rather than discard them.
 
-### 6.5 There is no Session View
+### 6.5 Session scenes, slots and clip launch settings (reserved schema 1.26)
 
-ADI is a **linear, arrangement-timeline DAW**. There is no clip-launching matrix,
-and the format has no tables for one. ADR-0037 removed `scenes` and `clip_slots`.
+Through schema 1.23, clips are placed on the Arrangement timeline. ADR-0101 and
+ADR-0117 restore the Session matrix in reserved schema 1.26. The migration adds
+three tables after the rack-macro and modulation minors land.
 
-This reverses ADR-0006, which had made them Layer 1 on the argument that
-"Ableton and Cubase combined" required both paradigms as peers. It means
-something narrower now: Ableton's **interface** — channel strips on the right,
-the device chain along the bottom, one window — over Cubase's **arrangement and
-audio-editing depth**, including comping, take lanes and crossfade control.
+- `scenes` stores a stable ID and unique nonnegative ordinal for every scene. It
+  stores the name, optional palette index, the authored tempo and time signature
+  with separate enable flags, and the scene's follow settings.
+- `clip_slots` addresses a cell by track and scene. An omitted row means an empty
+  cell with a Stop button. A row can preserve an empty cell's Stop override or
+  hold one audio or MIDI clip from its track. Each clip can occupy at most one
+  cell. Deleting a scene deletes the clips it owns. Deleting a clip clears its
+  cell and preserves the cell's Stop setting.
+- `clip_launch` stores an optional settings row for a slotted clip. An omitted
+  row defaults to Trigger, Global quantization, no Legato or velocity influence,
+  disabled follow actions with Linked time, clip Fade off and RAM mode off.
+  The launch-mode codes 0–3 represent Trigger, Gate, Toggle and Repeat. A clip's
+  quantization uses Global at 0, followed by the Set codes from None through
+  1/32. Follow settings use a stable scene ID for Jump and store the second
+  action's chance in percent.
 
-A consequence worth stating in the format rather than only in the UI docs: every
-`clip` is on the timeline. `clips.track_id` is `NOT NULL`, and a clip carries a
-position in the time domain it declares. There is no unplaced clip, so a reader
-never has to ask where a clip lives.
+Slot membership is the clip's address. A slotted clip stays on its owning track,
+uses a zero origin in its declared time domain, and has no take lane. Arrangement
+readers exclude clips addressed by slots. Both clip and slot writes validate
+those relationships. Deferred references allow history to restore the records
+in table order and check referential integrity at commit.
+
+Writing a slot with clip material records the essential project extension
+`org.adidaw.session/clip_slots` with minimum reader `1026` (§9.1).
 
 ### 6.6 Devices, chains, racks and macros
 

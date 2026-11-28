@@ -3,6 +3,7 @@
 #include "adi/automation_clipboard.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
@@ -181,11 +182,19 @@ EditScope materialScope(std::span<const std::int64_t> tracks,PlacementClock cloc
 
 clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& scope,PlacementBatch batch,
     const Options& options,clip_edit::CopyIds& ids,const char* label) {
+    return prepareCaptured(store, scope, std::move(batch), options, ids, label, nullptr);
+}
+
+clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& scope,PlacementBatch batch,
+    const Options& options,clip_edit::CopyIds& ids,const char* label,const edit::TimeMap* prospectiveClock) {
     clip_edit::PreparedEdit result;
     try {
         Read read(store.db());validateScope(store,scope,options);const auto base=clockBase(scope.clock);
         result.sourceFile=filename(store);result.options.expectHead.emplace(OpJournal(store).headSeq());
-        edit::TimeMap time(store.db());OpContext context{store,store.db()};
+        std::optional<edit::TimeMap> storedClock;
+        if (!prospectiveClock) storedClock.emplace(store.db());
+        const auto& time=prospectiveClock?*prospectiveClock:*storedClock;
+        OpContext context{store,store.db()};
         // Physical nanoseconds are this resolver request's single declared
         // clock. Public literal scope and descriptions retain their explicit
         // input clock; rounded tick projections cannot hide physical overlap.
@@ -215,7 +224,8 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
         for(const auto& placed:input.incoming)masks.push_back({placed.lane,placed.span});
         const std::set<std::int64_t> relocated(batch.relocated.begin(),batch.relocated.end());
         for(const auto& lane:scope.targets) {
-            SQLite::Statement query(store.db(),"SELECT id FROM clips WHERE track_id=? AND lane_id IS ? ORDER BY id");
+            SQLite::Statement query(store.db(),"SELECT id FROM clips WHERE track_id=? AND lane_id IS ?" +
+                engine::excludeSlotClips(store.db(), "clips.id") + " ORDER BY id");
             query.bind(1,lane.track);
             if(lane.lane)query.bind(2,*lane.lane);else query.bind(2);
             while(query.executeStep()) {
@@ -265,7 +275,8 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
                     const auto end=span.end==original.original.end?native.end:
                         (nativeClock==1?span.end:directedTick(span.end,native,false,time));
                     if(begin>=end)throw std::runtime_error("placement survivor collapses in its native clock");
-                    auto survivor=index==0?image:clip_edit::cloneImage(image,ids.next("clips"),ids);
+                    auto survivor=index==0?image:clip_edit::cloneImage(image,ids.next("clips"),ids,
+                        clip_edit::ClonePurpose::SplitPiece);
                     detail::trimFrozenImage(survivor,begin,end,time,options.referenceRate);
                     const auto actual=interval(survivor,1,time);
                     // Checked native-clock conversion may leave a harmless gap.
@@ -375,7 +386,8 @@ clip_edit::PreparedEdit prepareResizeEnd(Store& store,const EditScope& scope,Res
         Read read(store.db());validateScope(store,scope,options);edit::TimeMap time(store.db());
         OpContext context{store,store.db()};auto image=clip_edit::captureImage(context,resize.id);
         if(resize.end.base!=clockBase(scope.clock))throw std::runtime_error("resize end must use the declared operation clock");
-        const auto end=convert(resize.end.value,resize.end.base,nativeBase(image),time);
+        auto end=convert(resize.end.value,resize.end.base,nativeBase(image),time);
+        if(const auto limit=clip_edit::audioResizeLimit(store,resize.id,time))end=std::min(end,limit->value);
         if(end!=nativeSpan(image).end) {
             detail::freezeImage(store,image,time,options.referenceRate);
             detail::resizeFrozenEnd(image,end,time,options.referenceRate);

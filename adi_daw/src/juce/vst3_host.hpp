@@ -49,6 +49,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace adi::device {
@@ -101,7 +102,7 @@ public:
     std::unique_ptr<DeviceInstance> makeDevice(const juce::PluginDescription& desc,
                                                const juce::PluginDescription& module,
                                                double sampleRate, int blockSize,
-                                               std::string& error);
+                                               std::string& error, std::string_view stableClassId = {});
 
     [[nodiscard]] juce::AudioPluginFormatManager& formats() noexcept { return formats_; }
 

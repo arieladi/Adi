@@ -40,6 +40,46 @@ a size mismatch produces a cache miss, never a partial successful record.
 
 `APKS`, version 1/configuration 0, embeds the existing APKS waveform codec
 including its own source identity/dimensions. The consumer validates that codec
-and matches those fields to the media pool. Other tags remain opaque and survive
-ordinary same-process updates. An inconsistent or invalid optional envelope can
-be rebuilt; user Warp/clip settings must never be stored here.
+and matches those fields to the media pool.
+
+`PNOT`, version 1/configuration 0, contains monophonic pitch notes measured from
+the equal-weight average of the source channels. The payload begins with a
+64-bit note count. Each note is six 64-bit words in order: start frame, exclusive
+end frame, median pitch, fitted drift, RMS vibrato and curve point count. A
+point is a 64-bit source frame followed by the measured pitch. Pitch, drift and
+vibrato are little-endian IEEE 754 binary64 values in cents, with absolute
+MIDI cents for pitch (A4 is 6900). Notes are ordered, disjoint and bounded by
+the envelope's source frame count. Each has at least one point and its
+points are strictly increasing inside the note. A source with no voiced notes
+has a zero count. The payload is limited to 16 MiB.
+
+An optional `BND1` trailer follows the final note. The four ASCII bytes are
+followed by a little-endian 64-bit hint count, then that many records. Each
+record has a little-endian 64-bit source frame and a one-byte reason mask.
+Bits 0, 1 and 2 mark an aperiodic transition, a rapid pitch change and competing
+periodicity, respectively. At least one reason is set and the remaining bits
+are zero. Frames increase strictly and may equal the source frame count for an
+exclusive end boundary. An absent trailer means the boundaries were not
+assessed. A zero count means the assessment found no hints. Hints are evidence
+for reviewing boundaries and leave the note geometry and identities intact.
+
+`ALIB` version 2 carries library descriptors, optional gated LUFS, type,
+tempo and key with provenance and key strength, plus bounded read-only file
+tags. Configuration 1 identifies the expanded tag reader. Like APKS, the
+payload repeats source dimensions and checks them against the envelope.
+
+`AWTM` version 2 carries a derived Warp analysis in the 44,100 Hz source
+clock. Configuration packs the meter numerator, denominator and transient
+sensitivity. The 56-byte payload header repeats the source dimensions,
+counts the four point series, and carries the median tempo, an optional
+source quarter-note tempo cue and the musical ticks per detected pulse.
+Its series are ordered onsets (frame, normalized strength, local peak dBFS),
+beat frames, downbeat indices, and tempo regions (first beat index and BPM).
+Positions use 64-bit frames, indices use 32 bits and values use IEEE binary32
+for onset measurements and binary64 for BPM. Tempo zero is the missing value.
+The cache checks configuration, dimensions, size, ordering, and value bounds
+before returning data. Authored AWRP remains in the project edit.
+
+Other tags stay opaque and survive ordinary same-process updates. An invalid
+optional envelope or pitch payload can be rebuilt. Authored clip edits belong
+in project rows.

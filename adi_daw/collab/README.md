@@ -353,6 +353,8 @@ subject, say so in your log instead of writing it twice.
 | 0264 | win | `win/adr-0264-tip-zone` | the Tip Zone, a goal: techniques taught in ADI's own terms, written by anyone, read by agents, with links to videos at a saved moment | used |
 | 0265 | win | `win/adr-0264-tip-zone` | after the director's own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, a double-click that adds a track | used |
 | 0266 | win | `win/adr-0266` | after the director's second test: the encoders, backups on a timer, a clip ends with its audio, an export does not stop the song, the EQ on a track | used |
+| 0267 | win | `win/adr-0267` | the built-in devices' look (sheets 3 to 8), the name EQ, one Auto Filter for lows and highs, a device's presets found at the device | used |
+| 0268 | win | `win/adr-0267` | instruments built from the material at hand, a goal: what the director's panel proposed beyond Live, and the rules that already bind it | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

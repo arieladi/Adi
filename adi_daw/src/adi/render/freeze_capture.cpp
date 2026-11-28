@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/render/freeze_capture.hpp"
 #include "adi/engine/timeline_clips.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/freeze_fingerprint.hpp"
 #include "adi/freeze_groups.hpp"
@@ -98,7 +99,8 @@ void backup(Store &source, const fs::path &path, const std::set<std::int64_t> &s
     SQLite::Statement unrelated(copy, "SELECT id FROM tracks WHERE frozen=0 "
                                        "AND id NOT IN (SELECT id FROM freeze_tracks)");
     SQLite::Statement mute(copy, "UPDATE clips SET muted=1 WHERE track_id=? "
-                                  "AND kind='audio' AND lane_id IS NULL AND muted=0");
+                                  "AND kind='audio' AND lane_id IS NULL AND muted=0" +
+                                  engine::excludeSlotClips(copy, "clips.id"));
     while (unrelated.executeStep()) {
         const auto id=unrelated.getColumn(0).getInt64();
         if (inactive.contains(id))
@@ -137,7 +139,8 @@ void backup(Store &source, const fs::path &path, const std::set<std::int64_t> &s
     SQLite::Statement clips(copy, "SELECT a.media_id,c.track_id FROM audio_clips a JOIN clips c ON "
                                   "c.id=a.clip_id JOIN tracks t ON t.id=c.track_id "
                                   "JOIN freeze_tracks s ON s.id=c.track_id "
-                                  "WHERE t.frozen=0 AND c.kind='audio' AND c.lane_id IS NULL AND c.muted=0");
+                                  "WHERE t.frozen=0 AND c.kind='audio' AND c.lane_id IS NULL AND c.muted=0" +
+                                  engine::excludeSlotClips(copy, "c.id"));
     while (clips.executeStep())
         if (!inactive.contains(clips.getColumn(1).getInt64()))
             assets.insert(clips.getColumn(0).getInt64());
@@ -435,7 +438,8 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;
             io.frames = frames;
-            session.process(io);
+            if (auto blockError = session.renderOfflineBlock(io); !blockError.empty())
+                throw std::runtime_error(blockError);
             if (session.clips()->readErrors() || session.clips()->underrunSamples())
                 throw std::runtime_error("freeze clip read failed or underrun");
             for (auto &sink : sinks) {

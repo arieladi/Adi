@@ -222,8 +222,12 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         // moves it, never sizes it.
         raw->window->setContentNonOwned(raw->component.getComponent(), true);
         raw->window->setResizable(raw->userResizable, false);
-        if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
+        if (const auto kept = states_.loadFloating(key); !kept.monitor.empty()) {
             raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
+            // SC-428: at its kept place but at the plug-in's own size, it could run off the screen: moved,
+            // never resized, to lie on the monitor it stands on.
+            raw->window->setBounds(fromPlace(window_place::wholly(toPlace(raw->window->getBounds()), asPlaces(currentMonitors()))));
+        }
         else if (const auto screens = currentMonitors(); !screens.empty()) {
             // Never placed: cascaded off the windows already open, from the main display's corner (WIN-03).
             auto home = screens.front();

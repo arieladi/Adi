@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace adi::engine {
 
@@ -19,7 +20,15 @@ void DeviceAutomation::add(const AutomationLaneProgram& lane, std::uint32_t para
     l.program = &lane;
     l.paramId = paramId;
     l.steps = steps;
+    l.playing = &playingValues_.try_emplace(lane.laneId, std::numeric_limits<double>::quiet_NaN()).first->second;
     lanes_.push_back(l);
+}
+
+std::optional<double> DeviceAutomation::playingValue(std::int64_t laneId) const noexcept {
+    const auto slot = playingValues_.find(laneId);
+    if (slot == playingValues_.end()) return std::nullopt;
+    const double value = slot->second.load(std::memory_order_relaxed);
+    return std::isfinite(value) ? std::optional<double>{value} : std::nullopt;
 }
 
 void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std::int64_t sample) noexcept {
@@ -43,6 +52,8 @@ void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std
     }
     lane.last = v;
     lane.sent = true;
+    static_assert(std::atomic<double>::is_always_lock_free);
+    lane.playing->store(v, std::memory_order_relaxed);
 }
 
 void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::int32_t end,
@@ -120,7 +131,7 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
                                                               const std::set<std::int64_t>& overridden,
                                                               const Transport& transport, double sampleRate,
                                                               const DeviceAutomationSteps& steps,
-                                                              const DeviceActivatorAvailable& activatorAvailable) {
+                                                              const DeviceActivatorResolver& activatorTarget) {
     auto out = std::make_shared<DeviceAutomationBinding>();
     out->program = std::move(program);
     if (!out->program) return out;
@@ -155,14 +166,26 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
         }
         out->laneFor[key] = lane.laneId;
         if (overridden.count(lane.laneId)) continue;   // ADR-0162: known, not bound
-        if (activator && (!activatorAvailable || !activatorAvailable(lane.ownerId))) {
-            out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
-            continue;
+        DeviceParameterSteps laneSteps;
+        if (activator) {
+            const auto target = activatorTarget ? activatorTarget(lane.ownerId) : DeviceActivatorTarget::Unsupported;
+            if (target == DeviceActivatorTarget::WaitingForPlugin) {
+                out->waitingForPlugins.push_back(who + ": Device Activator waits for the plug-in");
+                continue;
+            }
+            if (target == DeviceActivatorTarget::Unsupported) {
+                out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
+                continue;
+            }
+        } else if (steps) {
+            const auto resolved = steps(lane.ownerId, paramId);
+            if (!resolved) continue;
+            laneSteps = *resolved;
         }
         auto& device = out->byDevice[lane.ownerId];
         if (!device) device = std::make_unique<DeviceAutomation>(transport, interval);
         if (activator) device->addActivator(lane);
-        else device->add(lane, paramId, steps ? steps(lane.ownerId, paramId) : DeviceParameterSteps{});
+        else device->add(lane, paramId, laneSteps);
     }
     return out;
 }

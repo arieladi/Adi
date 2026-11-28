@@ -601,12 +601,14 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control);
             advanceWork(frames);
         };
+        const auto clipFailure = [&](std::string reason) {
+            for (const auto& problem : session.clips()->decodeProblems()) reason += ". " + problem;
+            return std::runtime_error(reason);
+        };
         progress(0);
         if (!session.clips()->waitForWarp(control.stop)) {
             cancellation(control);
-            std::string why = "export Warp preparation failed";
-            for (const auto& problem : session.clips()->decodeProblems()) why += "; " + problem;
-            throw std::runtime_error(why);
+            throw clipFailure("export Warp preparation failed");
         }
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
@@ -639,7 +641,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             service();
             if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
                 cancellation(control);
-                throw std::runtime_error("export clip read failed or timed out");
+                throw clipFailure("export clip read failed or timed out");
             }
             const auto frames = static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), rawEnd - at));
             engine::AudioIo io;
@@ -648,9 +650,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             io.numOut = job.session.channels; io.frames = frames;
             engine::AudioIo processIo;
             processIo.frames = frames;
-            session.process(processIo); // the whole graph, including unexported sidechains and returns
+            // The whole graph, including unexported sidechains and returns.
+            if (auto blockError = session.renderOfflineBlock(processIo); !blockError.empty())
+                throw std::runtime_error(blockError);
             if (!graph->copyNodeOutput(endpoint->node, io)) throw std::runtime_error("export source has no complete rendered block");
-            if (session.clips()->readErrors() || session.clips()->underrunSamples()) throw std::runtime_error("export clip read failed or underrun");
+            if (session.clips()->readErrors() || session.clips()->underrunSamples())
+                throw clipFailure("export clip read failed or underrun");
             const auto first = (std::max)(at, rawBegin);
             const auto last = at + frames;
             // Validate preroll too: a nonfinite value may poison later state.

@@ -5,8 +5,9 @@ after editing or navigating history. It resolves N32's inherited scale at the
 clip's arrangement start, or its N33-compatible local 12-TET override. It
 reads no note blobs and makes no project or history changes. A caller-owned
 read transaction remains open; otherwise the reader owns one coherent read.
-Missing references, invalid degrees and unsupported inherited linear/ramp
-placement return an error, without silently substituting another scale.
+A linear clip's inherited placement follows the effective tempo map, ramps
+included (TM-TT-01). Missing references, invalid degrees and an underivable
+linear placement return an error, without silently substituting another scale.
 
 `compileScaleContext(scale, tuning, error)` also accepts owner-supplied values.
 An implicit scale uses twelve relative mask bits and root pitch-class names.

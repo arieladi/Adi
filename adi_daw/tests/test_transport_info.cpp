@@ -124,13 +124,7 @@ struct Fixture {
                         std::to_string(21 * ppq / 2) + ",2,2),(" +
                         std::to_string(14 * ppq) + ",7,16);");
     }
-    TempoMap tempo() const {
-        TempoMap t;
-        for (const auto& e : session.model().tempo)
-            t.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
-        if (t.events.empty()) t.events.push_back({0,120,0});
-        return t;
-    }
+    TempoMap tempo() const { return TempoMap::fromRows(session.model().tempo); }
 };
 
 void boundaries() {
@@ -155,7 +149,12 @@ void boundaries() {
                   "projection oracle parses");
             check(info.bar == bar && info.beat == beat, "bar/beat agree with projection around every change");
             check(info.timelineSample == first && info.playing, "timeline is block start, independent of stream clock");
-            check(info.bpm == (actualTicks < 4*ppq ? 120.0 : 60.0), "stored ramp uses step BPM including change boundary");
+            // TM-TT-01: the authored linear ramp plays; BPM falls linearly in
+            // ticks from 120 to 60 and holds 60 from the change on.
+            const double rampBpm = actualTicks < 4*ppq
+                ? 120.0 - 60.0 * static_cast<double>(actualTicks) / static_cast<double>(4*ppq) : 60.0;
+            check(std::abs(info.bpm - rampBpm) <= 1e-9 * rampBpm,
+                  "stored linear ramp reports its instantaneous BPM including change boundary");
             const auto active = std::find_if(meters.rbegin(), meters.rend(), [actualTicks](const auto& m) {
                 return m.start_ticks <= actualTicks;
             });
@@ -167,16 +166,30 @@ void boundaries() {
                   "quarter remainder is bounded and exact as Pd float");
         }
     }
-    f.session.transport().locate(96000); // 4q at the tempo change
+    // The 120 to 60 BPM linear ramp over four quarters lasts
+    // 60*4/(120-60)*ln(120/60) = 4 ln 2 seconds; 60 BPM holds after it.
+    // Each locate is the first sample at or after the musical position,
+    // which at 60 BPM is less than 120 ticks past it.
+    const double rampSeconds = 4.0 * std::log(2.0);
+    const auto firstSampleAt = [](double seconds) { return static_cast<std::int64_t>(std::ceil(seconds * 48000)); };
+    const auto changeSample = firstSampleAt(rampSeconds);
+    check(changeSample == static_cast<std::int64_t>(std::ceil(tempo.ticksToSeconds(4*ppq) * 48000)),
+          "tempo map integrates the stored linear ramp exactly");
+    constexpr std::int64_t sampleTicks = ppq / 48000 + 1; // ticks per sample at 60 BPM, rounded up
+    f.session.transport().locate(changeSample); // 4q at the tempo change
     auto info = f.render(64);
     check(info.bar == 2 && info.beat == 1 && info.bpm == 60, "known bar/beat at tempo change");
-    f.session.transport().locate(192000); // 6q; incomplete 4/4 bar counts
+    f.session.transport().locate(firstSampleAt(rampSeconds + 2.0)); // 6q; incomplete 4/4 bar counts
     info = f.render(64);
     check(info.bar == 3 && info.beat == 1 && info.timeSigNumerator == 3 && info.timeSigDenominator == 8,
           "known bar/beat at truncated-bar meter change");
-    f.session.transport().locate(228000); // 6.75q: quarter ticks are NOT beat-local ticks
+    const auto quarterSample = firstSampleAt(rampSeconds + 2.75); // 6.75q: quarter ticks are NOT beat-local ticks
+    f.session.transport().locate(quarterSample);
     info = f.render(64);
-    check(info.ticksInQuarter == 3*ppq/4 && info.beat == 2, "quarter remainder independent of signature denominator");
+    const auto quarterTicks = tempo.secondsToTicks(static_cast<double>(quarterSample) / 48000);
+    check(quarterTicks >= 27*ppq/4 && quarterTicks - 27*ppq/4 <= sampleTicks &&
+          info.ticksInQuarter == quarterTicks % ppq && info.beat == 2,
+          "quarter remainder independent of signature denominator");
 }
 
 void defaultsAndBlocks() {

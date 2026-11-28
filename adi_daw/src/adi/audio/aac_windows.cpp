@@ -8,6 +8,7 @@
 #include <cstring>
 #include <mfapi.h>
 #include <mfidl.h>
+#include <mftransform.h>
 #include <mfreadwrite.h>
 #include <stdexcept>
 #include <string>
@@ -62,73 +63,138 @@ LONGLONG clock(std::uint64_t frame, std::uint32_t rate) {
 }
 } // namespace
 static void decodeNative(const AacTrack &, const std::filesystem::path &, CodecCheckpoint);
-bool aacCodecAvailable() noexcept {
-    // MF codec versions differ in gapless metadata. Probe the real native
-    // path once, rather than advertise sample alignment without proof.
-    static const bool available = [] {
-        std::filesystem::path folder;
-        try {
-            for (unsigned attempt = 0; attempt < 128; ++attempt) {
-                const auto candidate = std::filesystem::temp_directory_path() /
-                                       (L"adi-aac-probe-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                                        std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(attempt));
-                std::error_code error;
-                if (std::filesystem::create_directory(candidate, error)) {
-                    folder = candidate;
-                    break;
-                }
-                if (error)
-                    return false;
+static AacTrack encodeNative(const std::filesystem::path &wav, const std::filesystem::path &packets,
+                             std::uint32_t bitRate, CodecCheckpoint call, std::uint64_t &inputFrames);
+namespace {
+// The probes' verdicts, decided once. SC-376: decoding and encoding are probed apart. The decode probe
+// encodes at 192 kbit/s, a rate every Microsoft AAC encoder takes (96, 128, 160 or 192 kbit/s; Windows 10's
+// refuses 256), and asks nothing of the encoder's gapless metadata: it measures the decode, its length and
+// its alignment against the source. The encoder probe keeps the export's strict checks.
+struct Probe {
+    bool decodes = false, encodes = false;
+    std::string why;
+};
+Probe probeOnce() {
+    Probe out;
+    std::filesystem::path folder;
+    try {
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            const auto candidate = std::filesystem::temp_directory_path() /
+                                   (L"adi-aac-probe-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                    std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(attempt));
+            std::error_code error;
+            if (std::filesystem::create_directory(candidate, error)) {
+                folder = candidate;
+                break;
             }
-            if (folder.empty())
-                return false;
-            struct Cleanup {
-                std::filesystem::path path;
-                ~Cleanup() {
-                    std::error_code error;
-                    std::filesystem::remove_all(path, error);
-                }
-            } cleanup{folder};
-            std::array<float, 8192> samples{};
-            for (std::size_t i = 0; i < 4096; ++i)
-                for (std::size_t channel = 0; channel < 2; ++channel)
-                    samples[i * 2 + channel] = static_cast<float>(
-                        0.2 * std::sin(static_cast<double>(i) * (channel ? 0.037 : 0.071)));
-            const auto input = folder / L"input.wav", decoded = folder / L"decoded.wav";
-            {
-                WavWriter writer(input, 48000, 2, WavFormat::Float32);
-                writer.write(samples.data(), 4096);
-                writer.close();
+            if (error) {
+                out.why = "no private folder for the probe: " + error.message();
+                return out;
             }
-            const auto encoded = encodeAac(input, folder / L"encoded", 256000);
-            decodeNative(encoded, decoded, {});
-            WavReader reader(decoded);
-            std::array<float, 8192> actual{};
-            if (reader.frames() != 4096 || reader.read(actual.data(), 4096) != 4096)
-                return false;
-            std::array<double, 17> error{};
-            for (int lag = -8; lag <= 8; ++lag)
-                for (int i = 1024; i < 3072; ++i)
-                    for (int channel = 0; channel < 2; ++channel) {
-                        const double delta = actual[static_cast<std::size_t>((i + lag) * 2 + channel)] -
-                                             samples[static_cast<std::size_t>(i * 2 + channel)];
-                        error[static_cast<std::size_t>(lag + 8)] += delta * delta;
-                    }
-            return std::min_element(error.begin(), error.end()) - error.begin() == 8;
-        } catch (...) {
-            if (!folder.empty()) {
-                std::error_code ignored;
-                std::filesystem::remove_all(folder, ignored);
-            }
-            return false;
         }
-    }();
-    return available;
+        if (folder.empty()) {
+            out.why = "no private folder for the probe";
+            return out;
+        }
+        struct Cleanup {
+            std::filesystem::path path;
+            ~Cleanup() {
+                std::error_code error;
+                std::filesystem::remove_all(path, error);
+            }
+        } cleanup{folder};
+        std::array<float, 8192> samples{};
+        for (std::size_t i = 0; i < 4096; ++i)
+            for (std::size_t channel = 0; channel < 2; ++channel)
+                samples[i * 2 + channel] = static_cast<float>(
+                    0.2 * std::sin(static_cast<double>(i) * (channel ? 0.037 : 0.071)));
+        const auto input = folder / L"input.wav", decoded = folder / L"decoded.wav";
+        {
+            WavWriter writer(input, 48000, 2, WavFormat::Float32);
+            writer.write(samples.data(), 4096);
+            writer.close();
+        }
+        std::uint64_t frames = 0;
+        auto encoded = encodeNative(input, folder / L"encoded", 192000, {}, frames);
+        out.encodes = encoded.priming != 0 && encoded.frames == frames;
+        decodeNative(encoded, decoded, {});
+        WavReader reader(decoded);
+        std::array<float, 8192> actual{};
+        if (reader.frames() != 4096 || reader.read(actual.data(), 4096) != 4096) {
+            out.why = "the decode returned " + std::to_string(reader.frames()) + " frames for 4096";
+            return out;
+        }
+        std::array<double, 17> error{};
+        for (int lag = -8; lag <= 8; ++lag)
+            for (int i = 1024; i < 3072; ++i)
+                for (int channel = 0; channel < 2; ++channel) {
+                    const double delta = actual[static_cast<std::size_t>((i + lag) * 2 + channel)] -
+                                         samples[static_cast<std::size_t>(i * 2 + channel)];
+                    error[static_cast<std::size_t>(lag + 8)] += delta * delta;
+                }
+        const auto best = std::min_element(error.begin(), error.end()) - error.begin() - 8;
+        out.decodes = best == 0;
+        if (!out.decodes)
+            out.why = "the decode is " + std::to_string(best) + " samples out of alignment";
+    } catch (const std::exception &e) {
+        out.why = e.what();
+    } catch (...) {
+        out.why = "the probe failed";
+    }
+    return out;
+}
+const Probe &probe() {
+    static const Probe verdict = probeOnce();
+    return verdict;
+}
+} // namespace
+bool aacCodecAvailable() noexcept {
+    try {
+        return probe().decodes;
+    } catch (...) {
+        return false;
+    }
+}
+bool aacEncoderAvailable() noexcept {
+    try {
+        return probe().encodes;
+    } catch (...) {
+        return false;
+    }
+}
+std::string aacUnavailableReason() { return aacCodecAvailable() ? std::string() : probe().why; }
+bool aacPlatformDecoderPresent() noexcept {
+    try {
+        Runtime runtime;
+        MFT_REGISTER_TYPE_INFO aac{MFMediaType_Audio, MFAudioFormat_AAC};
+        IMFActivate **found = nullptr;
+        UINT32 count = 0;
+        if (FAILED(MFTEnumEx(MFT_CATEGORY_AUDIO_DECODER, MFT_ENUM_FLAG_ALL, &aac, nullptr, &found, &count)))
+            return false;
+        for (UINT32 i = 0; i < count; ++i)
+            found[i]->Release();
+        CoTaskMemFree(found);
+        return count > 0;
+    } catch (...) {
+        return false;
+    }
 }
 
 AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path &packets,
                    std::uint32_t bitRate, CodecCheckpoint call) {
+    std::uint64_t frames = 0;
+    auto track = encodeNative(wav, packets, bitRate, std::move(call), frames);
+    // MF versions without an explicit priming edit cannot establish sample
+    // alignment. Refuse that export rather than guess a fixed encoder delay.
+    if (!track.priming || track.frames != frames)
+        throw std::runtime_error("Media Foundation did not expose sample-exact AAC priming/duration; NI "
+                                 "Stems export unavailable on this codec version");
+    return track;
+}
+static AacTrack encodeNative(const std::filesystem::path &wav, const std::filesystem::path &packets,
+                             std::uint32_t bitRate, CodecCheckpoint call, std::uint64_t &inputFrames) {
     WavReader reader(wav);
+    inputFrames = reader.frames();
     if (reader.channels() != 2 || (reader.sampleRate() != 44100 && reader.sampleRate() != 48000) ||
         !reader.frames() || reader.frames() > 999990ULL * 1024 || bitRate < 64000 || bitRate > 320000)
         throw std::invalid_argument("AAC export requires bounded stereo 44.1/48 kHz and 64000..320000 bit/s");
@@ -185,13 +251,7 @@ AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path
     auto movie = readAacMovie(path);
     if (movie.tracks.size() != 1)
         throw std::runtime_error("Media Foundation returned multiple AAC tracks");
-    auto track = std::move(movie.tracks[0]);
-    // MF versions without an explicit priming edit cannot establish sample
-    // alignment. Refuse that export rather than guess a fixed encoder delay.
-    if (!track.priming || track.frames != reader.frames())
-        throw std::runtime_error("Media Foundation did not expose sample-exact AAC priming/duration; NI "
-                                 "Stems export unavailable on this codec version");
-    return track;
+    return std::move(movie.tracks[0]);
 }
 static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &wav, const AacPcmSink &sink, CodecCheckpoint call) {
     if (!sink) throw std::invalid_argument("AAC PCM sink is empty");
@@ -208,7 +268,14 @@ static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &
             std::filesystem::remove(path, ec);
         }
     } cleanup{path};
-    writeAacAudioMovie(path,track,call);
+    // SC-376: Windows 10's Media Foundation plays an edit list's priming (1,024 frames late) where later
+    // versions skip it. The packets are handed over whole, with no priming edit, on every version, and ADI
+    // trims the priming and the tail itself, as the track declares them.
+    auto whole = track;
+    whole.priming = 0;
+    whole.frames = static_cast<std::uint64_t>(track.packets.size()) * 1024;
+    writeAacAudioMovie(path, whole, call);
+    std::uint64_t skip = track.priming;
     ComPtr<IMFSourceReader> reader;
     check(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader), "source reader");
     // MSVC /WX: the MF_SOURCE_READER_* stream ids are an enum, and passing one as the DWORD
@@ -244,14 +311,17 @@ static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &
                 buffer->Unlock();
                 throw std::runtime_error("unaligned AAC PCM");
             }
-            const auto count = static_cast<std::uint32_t>(
-                (std::min)(static_cast<std::uint64_t>(length / frameBytes), track.frames - done));
+            const auto available = static_cast<std::uint64_t>(length / frameBytes);
+            const auto dropped = (std::min)(available, skip);
+            skip -= dropped;
+            const auto count = static_cast<std::uint32_t>((std::min)(available - dropped, track.frames - done));
             try {
                 if (count) {
                     if (count > 65536)
                         throw std::runtime_error("AAC PCM block exceeds bound");
                     std::vector<float> aligned(static_cast<std::size_t>(count) * channels);
-                    std::memcpy(aligned.data(), bytes, static_cast<std::size_t>(count) * frameBytes);
+                    std::memcpy(aligned.data(), bytes + static_cast<std::size_t>(dropped) * frameBytes,
+                                static_cast<std::size_t>(count) * frameBytes);
                     for (const auto value : aligned)
                         if (!std::isfinite(value))
                             throw std::runtime_error("nonfinite native AAC decode");
@@ -277,13 +347,12 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
     writer.close();
 }
 void decodeAacPcm(const AacTrack &track, const std::filesystem::path &scratch, const AacPcmSink &sink, CodecCheckpoint call) {
-    if (!aacCodecAvailable()) throw std::runtime_error("Media Foundation AAC cannot verify sample-exact priming/duration on this codec version");
+    if (!aacCodecAvailable()) throw std::runtime_error("Media Foundation AAC decoding is unavailable: " + aacUnavailableReason());
     decodeNativePcm(track,scratch,sink,std::move(call));
 }
 void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
     if (!aacCodecAvailable())
-        throw std::runtime_error(
-            "Media Foundation AAC cannot verify sample-exact priming/duration on this codec version");
+        throw std::runtime_error("Media Foundation AAC decoding is unavailable: " + aacUnavailableReason());
     decodeNative(track, wav, std::move(call));
 }
 } // namespace adi::audio

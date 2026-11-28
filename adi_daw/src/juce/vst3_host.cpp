@@ -211,8 +211,9 @@ std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescripti
 std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescription& desc,
                                                      const juce::PluginDescription& module,
                                                      double sampleRate, int blockSize,
-                                                     std::string& error) {
-    const DeviceIdentity id = identityOf(desc);
+                                                     std::string& error, std::string_view stableClassId) {
+    DeviceIdentity id = identityOf(desc);
+    if (!stableClassId.empty()) id.uid = stableClassId;
     auto inst = instantiate(module, sampleRate, blockSize, error);
     if (inst == nullptr) {
         // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip: the

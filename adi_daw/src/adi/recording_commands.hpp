@@ -8,6 +8,9 @@
 #include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 #include <stop_token>
+#include <string_view>
+namespace adi::clip_edit { class CopyIds; }
+namespace adi::engine::launch { struct SlotRecordingResult; }
 namespace adi::recording {
 struct ClipIds {
     std::int64_t clip=0,media=0;
@@ -119,6 +122,12 @@ private:
         const StagedTake* = nullptr);
     static RecordingEdit prepareLinear(Store&,const engine::AudioRecordingResult*,std::span<const ClipIds>,
         std::span<const MidiLinearTake>,double,std::int64_t,const StagedTake* = nullptr);
+    static std::vector<std::int64_t> prepareSlotFiles(Store&, std::string_view sourceProject,
+        const engine::AudioRecordingResult*, std::span<const ClipIds>, RecordingEdit&, const StagedTake*);
+    static std::int64_t slotTickAt(const engine::TempoMap&, std::int64_t sample, std::uint32_t rate);
+    static Payload slotAudioImage(Store&, const engine::TempoMap&, const ClipIds&, std::int64_t track,
+        std::int64_t media, std::int64_t frames, std::int64_t ticks, std::uint32_t rate);
+    static Payload slotMidiImage(Store&, const MidiLinearTake&, clip_edit::CopyIds&);
     std::shared_ptr<Files> files_;
     const Store* owner_=nullptr;
     std::string client_;
@@ -131,6 +140,8 @@ private:
     friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
         std::span<const MidiLinearTake>,std::int64_t);
     friend RecordingEdit prepareMidiLinearCommit(Store&,std::span<const MidiLinearTake>,double);
+    friend RecordingEdit prepareSlotCommit(Store&,const engine::launch::SlotRecordingResult&,
+        std::span<const ClipIds>,const engine::TempoMap&,const StagedTake*);
     friend RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,std::span<const std::optional<Payload>>);
     friend RecordingEdit prepareMidiLoopCommit(Store&,const MidiLoopPlacement&,std::span<const MidiTakePass>);
     friend CommitResult commit(Store&,RecordingEdit&,Actor);
@@ -159,6 +170,13 @@ private:
 /// caller assigns distinct clip IDs and closes held notes at the take's end.
 /// Empty notes are allowed for a take with a positive recorded length.
 [[nodiscard]] RecordingEdit prepareMidiLinearCommit(Store&,std::span<const MidiLinearTake>,double sampleRate);
+/// Create a take in each frozen empty slot, with one Undo and no Arrangement
+/// placement edit. The supplied performed step-tempo map is local to the take,
+/// from its first sample. Supply IDs in capture-target order and media IDs for
+/// audio only. A staged WAV proof, if supplied, must belong to this same take.
+/// If the journal head moves, refuse the stale commit and prepare again.
+[[nodiscard]] RecordingEdit prepareSlotCommit(Store&,const engine::launch::SlotRecordingResult&,
+    std::span<const ClipIds>,const engine::TempoMap& captureClock,const StagedTake* = nullptr);
 /// Document owner: assemble current project rows from the staged media proof.
 /// No full file reads or publication. The resulting Store binding stays on the
 /// owner thread even while its prepared files are handed to a worker.
@@ -170,7 +188,8 @@ private:
 /// after success, or reads edit.error. No SQLite access on the worker.
 [[nodiscard]] bool publishStagedTake(RecordingEdit&,std::stop_token = {});
 /// Owner, before commit: when the Undo head moved during publication, rebuild
-/// against current rows if the already-published media binding is unchanged.
+/// Arrangement placement if the published media binding is unchanged. A
+/// stale Session take needs fresh preparation against its frozen slots.
 [[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,
     std::int64_t placementOffsetSamples=0);
 [[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,

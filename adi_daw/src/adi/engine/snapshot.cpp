@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/freeze_groups.hpp"
 
@@ -34,7 +35,6 @@ bool same(const SendRoute& a, const SendRoute& b) {
         a.sendTap==b.sendTap;
 }
 
-constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 
 /// Do two clips hold the same values? Used to decide whether a node can be
 /// reused. Comparing content rather than tracking dirty flags is deliberate: a
@@ -123,85 +123,6 @@ bool same(const TrackNode& a, const TrackNode& b) {
 
 }  // namespace
 
-// --- tempo ---------------------------------------------------------------------
-
-double TempoMap::bpmAt(std::int64_t ticks) const noexcept {
-    if (events.empty()) return 120.0;
-    double bpm = events.front().bpm;
-    for (const auto& e : events) {
-        if (e.posTicks > ticks) break;
-        bpm = e.bpm;
-    }
-    return bpm;
-}
-
-double TempoMap::ticksToSeconds(std::int64_t ticks) const noexcept {
-    if (ticks <= 0 || events.empty()) return 0.0;
-
-    // Integrate segment by segment. A tempo map is a piecewise-constant function
-    // of tick position, so the honest conversion is a sum over segments, not
-    // ticks * (60 / bpm / ppq) with one bpm -- which is the bug every DAW has
-    // shipped at least once and which only shows up after a tempo change.
-    double seconds = 0.0;
-    std::int64_t at = 0;
-    double bpm = events.front().bpm;
-
-    for (const auto& e : events) {
-        if (e.posTicks >= ticks) break;
-        if (e.posTicks > at) {
-            const double quarters = static_cast<double>(e.posTicks - at) / kTicksPerQuarter;
-            seconds += quarters * 60.0 / bpm;
-            at = e.posTicks;
-        }
-        bpm = e.bpm;
-    }
-    const double quarters = static_cast<double>(ticks - at) / kTicksPerQuarter;
-    return seconds + quarters * 60.0 / bpm;
-}
-
-std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
-    if (!(seconds > 0.0) || !std::isfinite(seconds) || events.empty()) return 0;
-
-    double elapsed = 0.0;
-    std::int64_t at = 0;
-    double bpm = events.front().bpm;
-    const auto tickAt = [&] {
-        const double offset = (seconds - elapsed) * bpm / 60.0 * kTicksPerQuarter;
-        if (!(offset > 0.0)) return at;
-        const auto maximum = std::numeric_limits<std::int64_t>::max();
-        if (offset >= static_cast<double>(maximum - at)) return maximum;
-        const auto whole = static_cast<std::int64_t>(offset);
-        // Subtraction after a tempo step inherits the precision of the
-        // absolute clock. Allow a few ulps of that clock in the current
-        // segment, while keeping a genuinely fractional tick on the floor.
-        const double noise = std::min(0.125,
-            (4.0 * std::numeric_limits<double>::epsilon()) * seconds * bpm / 60.0 * kTicksPerQuarter);
-        const auto next = whole + 1;
-        return at + (static_cast<double>(next) - offset <= noise ? next : whole);
-    };
-
-    for (const auto& e : events) {
-        if (e.posTicks <= at) { bpm = e.bpm; continue; }
-        const double quarters = static_cast<double>(e.posTicks - at) / kTicksPerQuarter;
-        const double segment = quarters * 60.0 / bpm;
-        if (elapsed + segment >= seconds) return std::min(e.posTicks, tickAt());
-        elapsed += segment;
-        at = e.posTicks;
-        bpm = e.bpm;
-    }
-    return tickAt();
-}
-
-std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexcept {
-    if(nanos<0 || events.empty())return 0;
-    const auto floor=secondsToTicks(static_cast<double>(nanos)*1e-9);
-    if(floor==std::numeric_limits<std::int64_t>::max())return floor;
-    // An integer nanosecond can round just below its originating tick.
-    const auto following=static_cast<long double>(ticksToSeconds(floor+1))*1e9L;
-    const auto requested=static_cast<long double>(nanos);
-    return following>=requested-0.5L && following<requested+0.5L?floor+1:floor;
-}
-
 // --- snapshot -------------------------------------------------------------------
 
 const TrackNode* Snapshot::findTrack(std::int64_t id) const noexcept {
@@ -284,11 +205,12 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         auto tempo = std::make_shared<TempoMap>();
         try {
             SQLite::Statement st(db,
-                "SELECT pos_ticks, bpm, curve FROM tempo_map ORDER BY pos_ticks");
+                "SELECT pos_ticks, bpm, curve, tension FROM tempo_map ORDER BY pos_ticks");
             while (st.executeStep())
                 tempo->events.push_back({st.getColumn(0).getInt64(),
                                          st.getColumn(1).getDouble(),
-                                         st.getColumn(2).getInt()});
+                                         st.getColumn(2).getInt(),
+                                         st.getColumn(3).getDouble()});
         } catch (const std::exception&) {
         }
         // A map with no event at 0 has no defined tempo before its first one
@@ -401,7 +323,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement notes(db, "SELECT e.clip_id,e.data FROM event_streams e JOIN clips c ON c.id=e.clip_id "
                                     "WHERE c.kind='midi' AND e.stream_kind='notes' AND e.channel IS NULL "
-                                    "AND e.controller IS NULL ORDER BY e.clip_id,e.id");
+                                    "AND e.controller IS NULL" + excludeSlotClips(db, "c.id") +
+                                    " ORDER BY e.clip_id,e.id");
         while (notes.executeStep()) {
             const auto clip = notes.getColumn(0).getInt64();
             if (!midiContents.contains(clip)) midiContents.emplace(clip, readMidiBars(notes.getColumn(1)));
@@ -416,7 +339,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
             "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color, "
             "kind,loop_enabled,loop_start_ticks,loop_len_ticks "
-            "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+            "FROM clips WHERE track_id IS NOT NULL" + excludeSlotClips(db, "clips.id") +
+            " ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();

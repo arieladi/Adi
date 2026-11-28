@@ -109,6 +109,21 @@ bool persistentCatalogueContracts() {
             "fresh loader/reopen instantiates real VST3 and CLAP from cache with helper absent"))return false;
         auto noHint=vstRef;noHint.pathHint.clear();
         if(!check(load(loader,noHint) && loader.stats().catalogueReads==1,"known cached UID needs no hint or repeated SQL hydration"))return false;
+        auto canonical = noHint;
+        canonical.uid = "AD1E00014D5045319F2A0C1100000001";
+        adi::rows::Device remote;
+        remote.remoteHostId = 7;
+        adi::engine::DeviceRequest fallbackRequest;
+        fallbackRequest.device = &remote;
+        fallbackRequest.ref = &canonical;
+        std::string fallbackError;
+        auto fallback = loader.fn({}, [&](std::string_view uid) -> std::optional<std::string> {
+            if (uid == canonical.uid) return vstRef.uid;
+            return {};
+        })(fallbackRequest, fallbackError);
+        if (!check(fallback && fallback->loaded() && fallback->identity().uid == canonical.uid &&
+                   fallbackError.find("playing the local plug-in") != std::string::npos,
+                   "unavailable server falls back through the local class ID mapping")) return false;
         // A deliberately bad root/target must not reach enumeration or helper
         // discovery once a valid persistent snapshot has been installed.
         const auto trap=scratch.path()/"root-trap";fs::create_directories(trap);
@@ -296,6 +311,8 @@ int main() {
         if(!session.setParallelRendering(workers,1,2))return 1;
         session.setSourcesFor([&](std::int64_t id){return id==1 ? std::vector<adi::engine::Node*>{&tone} : std::vector<adi::engine::Node*>{};});
         adi::engine::SessionSpec spec;spec.channels=channels;spec.sampleRate=48000;spec.maxFrames=64;
+        spec.offline = true;
+        spec.performanceState = false;
         if(!session.load(*store,{},spec))return 1;
         // Worker count is an upper bound: this single-track graph need not
         // contain a wide eligible level. Do not mistake that for failed setup.

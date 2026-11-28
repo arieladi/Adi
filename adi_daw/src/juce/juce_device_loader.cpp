@@ -7,6 +7,8 @@
 #include "juce/mix_pipeline_host.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/appdata.hpp"
+#include "adi/engine/remote_devices.hpp"
+#include "juce/net_plugin_admission.hpp"
 #include "adi/scan_catalogue.hpp"
 #include "adi/scan_prune.hpp"
 #include "adi/media/media_ops.hpp"
@@ -400,8 +402,11 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
     return result;
 }
 
-engine::DeviceLoader JuceDeviceLoader::fn() {
-    return [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); };
+engine::DeviceLoader JuceDeviceLoader::fn(engine::DeviceLoader grantedRemote, Vst3ClassLookup localVst3) {
+    return engine::withRemoteDevices(
+        [this, localVst3 = std::move(localVst3)](const engine::DeviceRequest& rq, std::string& err) {
+            return make(rq, err, localVst3);
+        }, std::move(grantedRemote));
 }
 
 std::vector<std::string> JuceDeviceLoader::knownPlugins() const {
@@ -418,7 +423,7 @@ std::vector<std::string> JuceDeviceLoader::knownPlugins() const {
 }
 
 std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceRequest& rq,
-                                                       std::string& err) {
+                                                       std::string& err, const Vst3ClassLookup& localVst3) {
     if(audio::onAudioThread)return nullptr;
     ++stats_.requests;
     if (rq.ref == nullptr) {
@@ -431,7 +436,7 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
         if(!hydrationAttempted_)(void)hydrateCatalogue(err);
         if(!hydrationError_.empty()){++stats_.failed;err=hydrationError_;return nullptr;}
     }
-    if (f == "vst3") return makeVst3(rq, err);
+    if (f == "vst3") return makeVst3(rq, err, localVst3);
     if (f == "clap") return makeClap(rq, err);
     if (f == "internal") {
         const auto* function=mix::functionForReference(f,rq.ref->uid);
@@ -466,9 +471,10 @@ std::optional<juce::PluginDescription> movedVst3(const juce::KnownPluginList& ca
 } // namespace
 
 std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceRequest& rq,
-                                                           std::string& err) {
+                                                           std::string& err, const Vst3ClassLookup& localVst3) {
     const rows::PluginRef& ref = *rq.ref;
-    const auto uid = juce::String::fromUTF8(ref.uid.c_str());
+    const auto catalogueId = localVst3 && net::isVst3ClassId(ref.uid) ? localVst3(ref.uid) : std::nullopt;
+    const auto uid = juce::String::fromUTF8((catalogueId ? *catalogueId : ref.uid).c_str());
     const auto find = [&](const juce::KnownPluginList& catalog) -> std::unique_ptr<juce::PluginDescription> {
         auto candidate = catalog.getTypeForIdentifierString(uid);
         if (!candidate || candidate->createIdentifierString() == uid) return candidate;
@@ -576,7 +582,8 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
         }
     }
     std::unique_ptr<DeviceInstance> dev =
-        vst3_.makeDevice(*found, module ? *module : *found, rq.sampleRate, rq.maxFrames, err);
+        vst3_.makeDevice(*found, module ? *module : *found, rq.sampleRate, rq.maxFrames, err,
+                         catalogueId ? std::string_view(ref.uid) : std::string_view{});
     if (dev == nullptr || !dev->loaded()) {
         // The host's placeholder is discarded: the session builds its own,
         // with the mirror and the bytes (ADR-0122 d4).

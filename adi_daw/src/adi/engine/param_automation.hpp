@@ -52,8 +52,10 @@ struct DeviceParameterSteps {
     bool stepped = false;
     std::int32_t count = 0;
 };
-using DeviceAutomationSteps = std::function<DeviceParameterSteps(std::int64_t device, std::uint32_t parameter)>;
-using DeviceActivatorAvailable = std::function<bool(std::int64_t device)>;
+using DeviceAutomationSteps = std::function<std::optional<DeviceParameterSteps>(
+    std::int64_t device, std::uint32_t parameter)>;
+enum class DeviceActivatorTarget { Available, WaitingForPlugin, Unsupported };
+using DeviceActivatorResolver = std::function<DeviceActivatorTarget(std::int64_t device)>;
 
 /// One device's lanes, emitted as ParamValue events addressed to its node.
 class DeviceAutomation final : public EventSource {
@@ -67,6 +69,8 @@ public:
     bool selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept override;
     /// Audio observation for this binding. Empty until a graph renders it.
     [[nodiscard]] std::optional<bool> playingEnabled() const noexcept;
+    /// Last normalized value accepted by the graph's event list for this lane.
+    [[nodiscard]] std::optional<double> playingValue(std::int64_t laneId) const noexcept;
 
     void emit(EventList& out, std::int32_t frames) noexcept override;
     void emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept override;
@@ -81,6 +85,7 @@ private:
         const AutomationLaneProgram* program = nullptr;
         std::uint32_t paramId = 0;
         DeviceParameterSteps steps;
+        std::atomic<double>* playing = nullptr;
         double last = 0.0;       ///< audio thread
         bool sent = false;       ///< audio thread: nothing sent yet, so the first value goes (the chase)
     };
@@ -94,6 +99,7 @@ private:
     bool bypassForBlock_ = false;
     std::atomic<int> playingEnabled_{-1};
     std::atomic<std::uint64_t> dropped_{0};
+    std::map<std::int64_t, std::atomic<double>> playingValues_; ///< owner lookup, audio writes stable slots
 };
 
 /// One compiled program's device lanes, bound per device. Immutable once built;
@@ -105,16 +111,17 @@ struct DeviceAutomationBinding {
     /// a change to that parameter would override (ADR-0162).
     std::map<std::pair<std::int64_t, std::string>, std::int64_t> laneFor;
     std::vector<std::string> problems;
+    std::vector<std::string> waitingForPlugins;
 };
 
 /// Bind a program's device lanes. A lane in `overridden` is known but not
 /// bound. Named, never dropped: a lane that is not normalized, a param_ref that
 /// is not a plug-in parameter id, and a second lane for one parameter.
-/// A resolver can describe matching native parameters on this owner call.
-/// Its result is copied into the binding and it is never used by audio.
+/// Resolvers run only on the owner. An empty parameter result keeps a lane
+/// without sending its events. A placeholder Activator waits for its plug-in.
 [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden,
     const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {},
-    const DeviceActivatorAvailable& activatorAvailable = {});
+    const DeviceActivatorResolver& activatorTarget = {});
 
 }  // namespace adi::engine

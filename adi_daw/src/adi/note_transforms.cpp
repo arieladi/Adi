@@ -127,9 +127,12 @@ std::int64_t phase(std::int64_t value, std::int64_t period) {
 QuantizeSettings parseSettings(const Payload &payload) {
     QuantizeSettings result;
     result.gridTicks = signedValue(payload.at("grid_ticks"));
+    if (const auto alternate = payload.find("alternate_grid_ticks"); alternate != payload.end())
+        result.alternateGridTicks = signedValue(*alternate);
     result.originTicks = signedValue(payload.at("origin_ticks"));
     const auto amount = signedValue(payload.at("strength")), swing = signedValue(payload.at("swing"));
     if (result.gridTicks < 1 || result.gridTicks > std::numeric_limits<std::int64_t>::max() / 2 ||
+        result.alternateGridTicks < 0 || result.alternateGridTicks > std::numeric_limits<std::int64_t>::max() / 2 ||
         amount < 0 || amount > 10000 || swing < 0 || swing > 10000)
         throw std::runtime_error("invalid quantize grid, strength or swing");
     result.strength = static_cast<int>(amount);
@@ -140,18 +143,27 @@ QuantizeSettings parseSettings(const Payload &payload) {
         throw std::runtime_error("choose note starts, ends, or both");
     return result;
 }
-std::int64_t quantized(std::int64_t time, const QuantizeSettings &options) {
-    const auto period = options.gridTicks * 2;
-    auto position = phase(time, period) - phase(options.originTicks, period);
+std::int64_t nearestGridDelta(std::int64_t time, std::int64_t grid, std::int64_t origin, int swing) {
+    const auto period = grid * 2;
+    auto position = phase(time, period) - phase(origin, period);
     if (position < 0)
         position += period;
-    const auto odd = options.gridTicks + scale(options.gridTicks, options.swing, 20000);
+    const auto odd = grid + scale(grid, swing, 20000);
     std::int64_t delta = -position;
     for (const auto point : {odd, period}) {
         const auto candidate = point - position;
         // Exact half-way positions prefer the later grid line.
         if (std::abs(candidate) <= std::abs(delta))
             delta = candidate;
+    }
+    return delta;
+}
+std::int64_t quantized(std::int64_t time, const QuantizeSettings &options) {
+    auto delta = nearestGridDelta(time, options.gridTicks, options.originTicks, options.swing);
+    if (options.alternateGridTicks > 0) {
+        const auto alternate = nearestGridDelta(time, options.alternateGridTicks, options.originTicks, options.swing);
+        if (std::abs(alternate) < std::abs(delta) || (std::abs(alternate) == std::abs(delta) && alternate > delta))
+            delta = alternate;
     }
     const auto movement = scale(std::abs(delta), options.strength, 10000);
     return add(time, delta < 0 ? -movement : movement);
@@ -265,7 +277,8 @@ bool transposeInverse(OpContext &context, const Payload &payload, Payload &inver
 constexpr Field quantizeFields[] = {{"clip", FieldType::Int},       {"note_ids", FieldType::Array},
                                     {"grid_ticks", FieldType::Int}, {"origin_ticks", FieldType::Int},
                                     {"strength", FieldType::Int},   {"swing", FieldType::Int},
-                                    {"starts", FieldType::Bool},    {"ends", FieldType::Bool}};
+                                    {"starts", FieldType::Bool},    {"ends", FieldType::Bool},
+                                    {"alternate_grid_ticks", FieldType::Int, false}};
 constexpr Field transposeFields[] = {
     {"clip", FieldType::Int}, {"note_ids", FieldType::Array}, {"semitones", FieldType::Int}};
 constexpr Field restoreFields[] = {{"clip", FieldType::Int}, {"stream", FieldType::Object}};
@@ -290,6 +303,8 @@ OpRequest quantizeRequest(std::int64_t clip, std::span<const std::uint64_t> ids,
                       {"swing", settings.swing},
                       {"starts", settings.starts},
                       {"ends", settings.ends}};
+    if (settings.alternateGridTicks > 0)
+        result.payload["alternate_grid_ticks"] = settings.alternateGridTicks;
     return result;
 }
 OpRequest transposeRequest(std::int64_t clip, std::span<const std::uint64_t> ids, int semitones) {

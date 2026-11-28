@@ -10,6 +10,7 @@
 
 #include "adi/media/media_ops.hpp"
 #include "temp_directory.hpp"
+#include "session_schema_fixture.hpp"
 
 #include "adi/check.hpp"
 #include "adi/history.hpp"
@@ -449,6 +450,119 @@ void testOrder() {
     check(!migrateToCurrent(db, kSchemaMinor, err), "there is nothing to upgrade at the current minor");
 }
 
+void testReservedSessionSchema() {
+    section("reserved Session 1.26 additive objects");
+    adi::test::TempDirectory temp("migrate", "session");
+    const auto file = temp.path() / "session.adi";
+    StoreError error = StoreError::Ok;
+    auto project = Store::createEmpty(file, error);
+    check(project && error == StoreError::Ok, "base project created for pending Session migration");
+    if (!project)
+        return;
+    auto& db = project->db();
+    db.exec("INSERT INTO tracks(id,kind) VALUES(10,'midi'),(20,'audio');"
+            "INSERT INTO lanes(id,track_id) VALUES(1,10);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
+            "VALUES(1,10,'midi',0,500),(2,10,'midi',20,500),(3,10,'midi',0,500);"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(10,20,'audio',1,0,2000);");
+    const auto before = objectsOf(db);
+    adi::test::applySessionSchema(db, fs::path(ADI_SCHEMA_HISTORY_DIR).parent_path() /
+                                       "schema-session-1.26.sql");
+    const auto after = objectsOf(db);
+    check(std::includes(after.begin(), after.end(), before.begin(), before.end()),
+          "Session objects do not rewrite an existing SQLite definition");
+    check(db.execAndGet("PRAGMA user_version").getInt() == kUserVersion &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt() == 4,
+          "staged migration preserves version bookkeeping and old clips");
+    check(db.execAndGet("SELECT count(*) FROM scenes").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM clip_slots").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM clip_launch").getInt() == 0,
+          "old arrangement upgrades with an empty Session");
+
+    db.exec("INSERT INTO scenes(id,ord,name,tempo_bpm,signature_numerator,signature_denominator) "
+            "VALUES(1,0,'first',128.25,7,8),(2,1,'second',140,4,4),(3,2,'third',120,4,4);"
+            "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(10,1,1),(20,2,10);"
+            "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(10,2,0),(10,3,1);"
+            "INSERT INTO clip_launch(clip_id,launch_mode,launch_quant,follow_a,follow_a_scene_id) "
+            "VALUES(1,3,14,9,3);");
+    check(db.execAndGet("SELECT tempo_bpm FROM scenes WHERE id=1 AND tempo_enabled=0 "
+                        "AND signature_enabled=0 AND signature_numerator=7 AND signature_denominator=8")
+                   .getDouble() == 128.25,
+          "stored dormant tempo and signature keep their authored values");
+    check(db.execAndGet("SELECT sum(has_stop) FROM clip_slots").getInt() == 3 &&
+          db.execAndGet("SELECT count(*) FROM clip_slots WHERE clip_id IS NULL").getInt() == 2,
+          "sparse empty cells and their Stop overrides coexist");
+
+    const auto denied = [&](const char* sql) {
+        try {
+            SQLite::Transaction transaction(db);
+            db.exec(sql);
+            transaction.commit();
+        } catch (const SQLite::Exception&) {
+            return true;
+        }
+        return false;
+    };
+    check(denied("UPDATE clip_slots SET clip_id=1 WHERE scene_id=2 AND track_id=10"),
+          "one clip cannot occupy two cells");
+    check(denied("UPDATE clip_slots SET clip_id=2 WHERE scene_id=2 AND track_id=10"),
+          "nonzero arrangement clip cannot appear in a slot");
+    check(denied("INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(20,3,3)"),
+          "slot rejects another track's clip");
+    check(denied("UPDATE clips SET pos_ticks=1 WHERE id=1") &&
+          denied("UPDATE clips SET track_id=20 WHERE id=1") &&
+          denied("UPDATE clips SET lane_id=1 WHERE id=1") &&
+          denied("UPDATE clips SET pos_ticks=1 WHERE id=10"),
+          "owned clip cannot change its track, lane or zero origin");
+    check(denied("INSERT INTO clip_launch(clip_id) VALUES(3)") &&
+          denied("UPDATE clip_launch SET launch_quant=15 WHERE clip_id=1"),
+          "launch row requires slot ownership and valid quantization");
+    check(denied("DELETE FROM scenes WHERE id=3") &&
+          denied("UPDATE scenes SET follow_a=9 WHERE id=2"),
+          "a Jump keeps its stable target identity until explicitly changed");
+
+    {
+        SQLite::Transaction transaction(db);
+        db.exec("INSERT INTO clip_launch(clip_id) VALUES(90);"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(20,4,90);"
+                "INSERT INTO clips(id,track_id,kind,pos_ticks) VALUES(90,20,'midi',0);"
+                "INSERT INTO scenes(id,ord) VALUES(4,3);");
+        transaction.commit();
+    }
+    check(db.execAndGet("SELECT count(*) FROM clip_launch WHERE clip_id=90").getInt() == 1,
+          "alphabetical history ingest can restore settings before slots, clips and scenes");
+    check(denied("INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(20,3,91);"
+                 "INSERT INTO clips(id,track_id,kind,pos_ticks) VALUES(91,20,'midi',5);"),
+          "reverse-order history ingest still validates a slotted clip's origin");
+    check(SQLite::Statement(db, "PRAGMA foreign_key_check").executeStep() == false,
+          "Session foreign keys are clean");
+
+    adi::test::seedSessionMarker(db);
+    const auto outdated = project->essentialExtensionProblem(1023);
+    check(outdated.find("org.adidaw.session/clip_slots") != std::string::npos &&
+          outdated.find("minimum reader 1.26") != std::string::npos,
+          "protected reader names the Session marker and required minor");
+    check(project->essentialExtensionProblem(kSessionSchemaUserVersion).empty(),
+          "1.26 reader recognizes the Session marker");
+    db.exec("INSERT INTO extensions(ns,key,criticality) VALUES('example.addon','metadata','advisory')");
+    check(project->essentialExtensionProblem(kSessionSchemaUserVersion).empty(),
+          "advisory rows do not block playback");
+    db.exec("INSERT INTO extensions(ns,key,criticality,min_reader) "
+            "VALUES('example.addon','performance','essential',1020)");
+    check(project->essentialExtensionProblem(kSessionSchemaUserVersion).find("example.addon/performance") !=
+              std::string::npos,
+          "unknown essential data stays unknown even when its minimum version is older");
+    check(project->close(), "Session fixture closes");
+    project = Store::open(file, error, true);
+    check(project && error == StoreError::Ok &&
+          project->lastError().find("example.addon/performance") != std::string::npos,
+          "open leaves the project readable and records the warning");
+    if (!project)
+        return;
+    check(project->db().execAndGet("SELECT count(*) FROM extensions").getInt() == 3,
+          "open preserves essential and advisory rows");
+}
+
 int runAll() {
     std::printf("adi_migrate_tests -- ADR-0144, SPEC 11\n\n");
     testUpgradeEachMinor();
@@ -463,6 +577,7 @@ int runAll() {
     testUpgradeRequiresSafetyCopy();
 #endif
     testOrder();
+    testReservedSessionSchema();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;

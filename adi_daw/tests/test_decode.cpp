@@ -2,17 +2,22 @@
 //
 // ADR-0156: one decoder for imported audio, into the decoding cache.
 // Fixtures: tests/fixtures/decode (README.md there says how each was made).
+#include "adi/appdata.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/library/index.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "temp_directory.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -189,12 +194,53 @@ void refusals(const fs::path& root) {
     const auto folder = root / "refusals";
     DecodeCache cache(folder, unlimited(), clock.hooks());
     std::string why;
-    check(problemOf([&] { (void)cache.playable(fixture("truncated.flac")); }, &why) == DecodeProblem::Corrupt,
-          "a truncated FLAC is refused as decode.corrupt");
-    check(why.find("decode.corrupt") == 0 && why.find("truncated.flac") != std::string::npos, "... the message names the problem and the file: " + why);
+    {
+        // SC-391: a download cut short plays as far as it goes (it was refused whole as decode.corrupt).
+        std::uint64_t played = 0;
+        try {
+            WavReader cut(cache.playable(fixture("truncated.flac")));
+            played = cut.frames();
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        check(played > 0, "a truncated FLAC plays what it holds: " + std::to_string(played) + " frames " + why);
+    }
+    {
+        // SC-391: a WAV whose size fields a crashed recorder left at zero reads its data to the end of the file.
+        const auto zero = root / "crashed-recorder.wav";
+        {
+            std::vector<unsigned char> b;
+            const auto put = [&b](std::uint32_t v, int n) { for (int i = 0; i < n; ++i) b.push_back(static_cast<unsigned char>(v >> (8 * i))); };
+            const auto tag = [&b](const char* t) { b.insert(b.end(), t, t + 4); };
+            tag("RIFF"); put(0, 4); tag("WAVE");
+            tag("fmt "); put(16, 4); put(1, 2); put(1, 2); put(48000, 4); put(96000, 4); put(2, 2); put(16, 2);
+            tag("data"); put(0, 4);
+            for (int i = 0; i < 4800; ++i) put(static_cast<std::uint32_t>(static_cast<std::int16_t>(1000 * (i % 7))) & 0xffffu, 2);
+            std::ofstream out(zero, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+        }
+        std::uint64_t frames = 0;
+        why.clear();
+        try {
+            WavReader read(cache.playable(zero));
+            frames = read.frames();
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        check(frames == 4800, "a WAV with zeroed size fields plays its 4800 frames: " + std::to_string(frames) + " " + why);
+    }
+    // The cut-short files above play (SC-391) and are cached; what follows is refused and adds nothing.
+    const auto cached = cache.entries().size();
     check(problemOf([&] { (void)cache.playable(fixture("not_audio.bin")); }) == DecodeProblem::UnknownFormat, "not audio: decode.unknown_format");
     check(problemOf([&] { (void)cache.playable(root / "absent.flac"); }) == DecodeProblem::Unreadable, "a missing file: decode.unreadable");
-    check(cache.entries().empty() && leftovers(folder) == 0, "a refused decode leaves no file in the cache, not even a partial one");
+    const auto damaged = root / "damaged.flac";
+    {
+        const char bytes[] = "fLaC\x00\x00\x00\x22 nothing in here is a FLAC stream at all";
+        std::ofstream out(damaged, std::ios::binary);
+        out.write(bytes, static_cast<std::streamsize>(sizeof bytes - 1));
+    }
+    check(problemOf([&] { (void)cache.playable(damaged); }) == DecodeProblem::Corrupt, "a FLAC with no audio in it is refused as decode.corrupt");
+    check(cache.entries().size() == cached && leftovers(folder) == 0, "a refused decode leaves no file in the cache, not even a partial one");
     check(std::string(toString(DecodeProblem::AudioThread)) == "decode.audio_thread", "problem names");
 }
 
@@ -319,6 +365,90 @@ void freeSpace(const fs::path& root) {
     check(leftovers(folder) == 0, "... and no partial file is left");
 }
 
+void cleanup(const fs::path& root) {
+    namespace media = adi::media;
+    namespace library = adi::library;
+    const auto cacheRoot = root / "manual-cleanup";
+    Clock clock;
+    DecodeCache decoded(cacheRoot / "decoded", unlimited(), clock.hooks());
+    media::AnalysisCache analysed(cacheRoot / "analysed");
+    std::string error;
+
+    struct Sample {
+        fs::path pcm, analysis;
+        media::AnalysisIdentity identity;
+    };
+    const media::AnalysisSection marker{1, 0, {std::byte{1}}};
+    const auto cacheSample = [&](const char* name) {
+        const auto pcm = decoded.playable(fixture(name));
+        WavReader reader(pcm);
+        const media::AnalysisIdentity id{pcm.stem().string(), reader.sampleRate(), reader.channels(), reader.frames()};
+        if (analysed.update(id, "TEST", marker, error) != media::AnalysisCacheProblem::None)
+            throw std::runtime_error("seed analysed sample: " + error);
+        return Sample{pcm, analysed.folder() / (id.hash + ".adia"), id};
+    };
+    const auto playing = cacheSample("tone16.flac");
+    const auto current = cacheSample("tone24.flac");
+    const auto unused = cacheSample("rate8k.flac");
+    decoded.release(current.pcm);
+    decoded.release(unused.pcm);
+
+    const auto foreignPcm = decoded.folder() / "recording.wav";
+    fs::copy_file(fixture("src16.wav"), foreignPcm);
+    const auto foreignAnalysis = analysed.folder() / "notes.txt";
+    std::ofstream(foreignAnalysis) << "session notes";
+    const auto libraryFile = root / "data" / "Shared" / "library.sqlite";
+    fs::create_directories(libraryFile.parent_path());
+    auto authored = library::Index::open(libraryFile, error, false);
+    if (!authored) throw std::runtime_error("open persistent library: " + error);
+    library::SampleSettings sampleSettings;
+    sampleSettings.sampleRate = unused.identity.sampleRate;
+    sampleSettings.channels = unused.identity.channels;
+    sampleSettings.frames = sampleSettings.sourceLength = unused.identity.frames;
+    sampleSettings.gainDb = -6;
+    if (authored->saveSampleSettings(unused.identity.hash, sampleSettings, error) != library::SampleSettingsProblem::None)
+        throw std::runtime_error("write persistent sample settings: " + error);
+    authored.reset();
+
+    const std::array<std::string, 1> currentHashes{current.identity.hash};
+    const auto retainedBytes = fs::file_size(playing.pcm) + fs::file_size(playing.analysis) +
+                               fs::file_size(current.pcm) + fs::file_size(current.analysis);
+    {
+        WavReader playingReader(playing.pcm);
+        const auto first = media::cleanupMediaCache(analysed, decoded, currentHashes, error);
+        check(first && first.filesRemoved == 2 && first.retainedEntries == 4 && first.bytesAfter == retainedBytes,
+              "Cleanup accounts for two removed files and four retained files: " + error);
+        check(fs::exists(playing.pcm) && fs::exists(playing.analysis) && fs::exists(current.pcm) &&
+                  fs::exists(current.analysis) && !fs::exists(unused.pcm) && !fs::exists(unused.analysis),
+              "Cleanup retains the playing and current hashes in both stores and removes the unused pair");
+        std::array<float, 2> frame{};
+        check(playingReader.read(frame.data(), 1) == 1 && analysed.read(playing.identity),
+              "the playing PCM reader and its matching analysis are still usable");
+    }
+
+    decoded.release(playing.pcm);
+    const auto second = media::cleanupMediaCache(analysed, decoded, {}, error);
+    check(second && second.filesRemoved == 4 && second.retainedEntries == 0 && second.bytesAfter == 0 &&
+              decoded.entries().empty() && !fs::exists(playing.pcm) && !fs::exists(playing.analysis) &&
+              !fs::exists(current.pcm) && !fs::exists(current.analysis),
+          "Cleanup removes the remaining pairs after release and leaving the current Set: " + error);
+    check(fs::exists(foreignPcm) && fs::exists(foreignAnalysis) && fs::exists(libraryFile),
+          "Cleanup preserves unowned files and the persistent library");
+    authored = library::Index::open(libraryFile, error, false);
+    check(authored && authored->sampleSettings(unused.identity.hash).data == sampleSettings,
+          "the evicted sample's authored settings survive both Cleanup passes");
+
+    const auto pcmOnlyRoot = root / "pcm-only-cleanup";
+    DecodeCache pcmOnly(pcmOnlyRoot / "decoded", unlimited(), clock.hooks());
+    media::AnalysisCache emptyAnalysis(pcmOnlyRoot / "analysed");
+    const auto lonePcm = pcmOnly.playable(fixture("tone24.flac"));
+    pcmOnly.release(lonePcm);
+    const auto cleaned = media::cleanupMediaCache(emptyAnalysis, pcmOnly, {}, error);
+    check(cleaned && cleaned.filesRemoved == 1 && cleaned.bytesAfter == 0 && !fs::exists(lonePcm) &&
+              !fs::exists(emptyAnalysis.folder()),
+          "Cleanup also removes unused PCM before the first analysis has been published: " + error);
+}
+
 void settings() {
     const auto d = limitsFromSettings(nlohmann::json::object());
     check(d.maxBytes == kCacheMaxSizeMbDefault << 20 && d.minFreeBytes == kCacheMinFreeMbDefault << 20, "limits: defaults when the settings are absent");
@@ -326,6 +456,37 @@ void settings() {
     check(l.maxBytes == std::uint64_t{100} << 20 && l.minFreeBytes == std::uint64_t{7} << 20, "limits: read from the Decoding Cache settings, in MB");
     const auto bad = limitsFromSettings({{kCacheMaxSizeKey, -5}, {kCacheMinFreeKey, "x"}});
     check(bad.maxBytes == d.maxBytes && bad.minFreeBytes == d.minFreeBytes, "limits: an illegal value keeps the default");
+}
+
+void applicationBudget(const fs::path& root) {
+    namespace media = adi::media;
+    const auto selected = root / "application-cache";
+    adi::appdata::setCacheFolderPreference(selected);
+    media::setDefaultAnalysisCacheLimits({1u << 24, 0});
+    auto& decoded = defaultDecodeCache();
+    auto& analysed = media::defaultAnalysisCache();
+    const auto source = fixture("tone16.flac");
+    const auto pcm = decoded.playable(source);
+    const auto pcmBytes = fs::file_size(pcm);
+    decoded.release(pcm);
+    const auto limit = pcmBytes + 4096;
+    media::setDefaultAnalysisCacheLimits({limit, 0});
+
+    const media::AnalysisIdentity identity{std::string(64, '9'), 44100, 1, 128};
+    const media::AnalysisSection measured{1, 0, std::vector<std::byte>(32u << 10)};
+    const auto adia = analysed.folder() / (identity.hash + ".adia");
+    std::string error;
+    check(analysed.update(identity, "TEST", measured, error) == media::AnalysisCacheProblem::None &&
+              decoded.folder() == selected / "decoded" && analysed.folder() == selected / "analysed" &&
+              fs::exists(adia) && !fs::exists(pcm),
+          "a new analysis and decoded PCM share one budget and evict the older PCM first: " + error);
+    const auto adiaBytes = fs::file_size(adia);
+    const auto restored = decoded.playable(source);
+    check(restored == pcm && fs::exists(restored) && !fs::exists(adia) && decoded.totalBytes() <= limit,
+          "a later decode admission evicts the older ADIA before publishing fresh PCM");
+    decoded.release(restored);
+    std::printf("shared cache: %ju-byte PCM and %ju-byte ADIA under a %ju-byte cap\n",
+                pcmBytes, adiaBytes, limit);
 }
 }  // namespace
 
@@ -339,7 +500,9 @@ int main() {
         eviction(tmp.path());
         pinned(tmp.path());
         freeSpace(tmp.path());
+        cleanup(tmp.path());
         settings();
+        applicationBudget(tmp.path());
     } catch (const std::exception& e) {
         check(false, std::string("unexpected exception: ") + e.what());
     }

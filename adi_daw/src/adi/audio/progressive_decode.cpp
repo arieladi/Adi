@@ -346,7 +346,7 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::openHashed(const fs::path& 
     auto file=std::shared_ptr<ProgressiveFile>(new ProgressiveFile(state));
     {std::lock_guard cacheLock(impl_->cache.mutex_);
         const auto bytes=*state->info.frames*state->info.channels*4+4096;
-        if(bytes>impl_->cache.limits_.maxBytes || impl_->reserved>impl_->cache.limits_.maxBytes-bytes)
+        if(impl_->reserved>std::numeric_limits<std::uint64_t>::max()-bytes)
             throw DecodeError(DecodeProblem::NoSpace,"progressive jobs exceed cache budget");
         impl_->cache.admitSpace(bytes+impl_->reserved,hash.hex);
     }

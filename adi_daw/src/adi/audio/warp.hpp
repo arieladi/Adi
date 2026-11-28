@@ -13,6 +13,7 @@
 namespace adi::audio {
 class DecodeCache;
 class WarpRenderCache;
+struct WarpTimingSettings;
 enum class WarpMode { Beats,Tones,Texture,RePitch,Complex,ComplexPro };
 [[nodiscard]] const char* warpModeName(WarpMode)noexcept;
 [[nodiscard]] std::optional<WarpMode> parseWarpMode(std::string_view)noexcept;
@@ -76,7 +77,14 @@ private:
     // The worker writes the result once, then publishes it to other threads.
     std::shared_ptr<const WarpResult> result_;
     std::atomic<bool> ready_{false};
+    // Protected by the worker queue mutex. Cache-aware requests may share
+    // work only until that worker starts resolving the current timing data.
+    bool timingLookupStarted_ = false;
     friend class WarpRenderCache;
 };
 [[nodiscard]] std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan);
+// An owner opting into shared timing captures the same settings as its AWTM
+// producer. Only automatic Beats uses it. On a missing or incompatible AWTM
+// record the worker keeps the incumbent detector and its prepared PCM cache.
+[[nodiscard]] std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan, WarpTimingSettings);
 } // namespace adi::audio

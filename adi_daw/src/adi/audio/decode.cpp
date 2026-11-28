@@ -3,6 +3,7 @@
 #include "adi/audio/pcm_stream.hpp"
 
 #include "adi/appdata.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/aac_codec.hpp"
@@ -177,6 +178,20 @@ public:
         if (!ok) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable WAV or AIFF file");
         open_ = true;
         channels = wav_.channels; rate = wav_.sampleRate; frames = wav_.totalPCMFrameCount;
+        // SC-391: a recorder that crashed leaves its size fields at zero (or at the streaming maximum): the
+        // data runs to the end of the file, whole frames of it, as a cut-short download's does.
+        if ((frames == 0 || wav_.dataChunkDataSize == 0xFFFFFFFFu) && wav_.fmt.blockAlign > 0) {
+            std::error_code ec;
+            const auto size = static_cast<std::uint64_t>(fs::file_size(p, ec));
+            if (!ec && size > wav_.dataChunkDataPos) {
+                auto bytes = size - wav_.dataChunkDataPos;
+                bytes -= bytes % wav_.fmt.blockAlign;
+                wav_.dataChunkDataSize = bytes;
+                wav_.bytesRemaining = bytes;
+                wav_.totalPCMFrameCount = bytes / wav_.fmt.blockAlign;
+                frames = wav_.totalPCMFrameCount;
+            }
+        }
     }
     ~WavDecoder() override { if (open_) drwav_uninit(&wav_); }
     std::uint64_t read(float* out, std::uint64_t n) override { return drwav_read_pcm_frames_f32(&wav_, n, out); }
@@ -309,7 +324,7 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
             if(track.frames>(std::numeric_limits<std::uint64_t>::max()-4096)/(info.channels*4U))
                 throw DecodeError(DecodeProblem::Unsupported,"AAC decoded size overflow");
             reserve(track.frames*info.channels*4+4096);cancelled(stop);
-            if(!aacCodecAvailable())throw DecodeError(DecodeProblem::CodecUnavailable,display(source)+": native AAC codec unavailable on this system");
+            if(!aacCodecAvailable())throw DecodeError(DecodeProblem::CodecUnavailable,display(source)+": native AAC codec unavailable on this system ("+aacUnavailableReason()+")");
             decodeAac(track,out,service);service();return;
         } catch(const DecodeError&){throw;}
         catch(const AacTransportError& error) {
@@ -335,7 +350,15 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
         WavWriter w(out, d->rate, static_cast<std::uint16_t>(d->channels), WavFormat::Float32);
         for (;;) {
             service();
-            const auto got = d->read(buffer.data(), block);
+            std::uint64_t got = 0;
+            try {
+                got = d->read(buffer.data(), block);
+            } catch (const DecodeError &failure) {
+                // SC-391: a download cut short plays as far as it goes: damage after some audio ends it there.
+                if (failure.problem() != DecodeProblem::Corrupt || done == 0)
+                    throw;
+                break;
+            }
             if (got == 0) break;
             w.write(buffer.data(), static_cast<std::uint32_t>(got));
             done += got;
@@ -347,9 +370,11 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
         throw DecodeError(DecodeProblem::CacheWrite, display(out) + ": " + e.what());
     }
     if (done == 0) throw DecodeError(DecodeProblem::Corrupt, display(source) + ": no audio decodes");
-    if (d->frames != 0 && done != d->frames)
+    // SC-391: fewer frames than the header declares is a file cut short: it plays as far as it goes. More
+    // than it declares is a damaged one.
+    if (d->frames != 0 && done > d->frames)
         throw DecodeError(DecodeProblem::Corrupt, display(source) + ": decoded " + std::to_string(done) +
-                                                      " of " + std::to_string(d->frames) + " frames; the file is truncated or damaged");
+                                                      " of " + std::to_string(d->frames) + " frames; the file is damaged");
 }
 
 bool isHash(const std::string& s) {
@@ -483,12 +508,19 @@ DecodeCache::DecodeCache(fs::path folder, DecodeCacheLimits limits, DecodeCacheH
             const auto s = fs::space(p, ec);
             return ec ? UINT64_MAX : static_cast<std::uint64_t>(s.available);
         };
+    if (folder_.empty()) return;
     std::error_code ec;
+    const auto status = fs::symlink_status(folder_, ec);
+    if ((!ec && fs::is_symlink(status)) || (ec && ec != std::errc::no_such_file_or_directory)) {
+        folder_.clear();
+        return;
+    }
+    ec.clear();
     fs::create_directories(folder_, ec);
     loadIndex();
 }
 
-fs::path DecodeCache::fileFor(const std::string& hash) const { return folder_ / (hash + ".wav"); }
+fs::path DecodeCache::fileFor(const std::string& hash) const { return folder_.empty() ? fs::path{} : folder_ / (hash + ".wav"); }
 
 std::int64_t DecodeCache::stamp() {
     // A representable but extreme index hint must not overflow on the next use.
@@ -539,6 +571,7 @@ void DecodeCache::loadIndex() {
 }
 
 void DecodeCache::saveIndex() const {
+    if (folder_.empty()) return;
     nlohmann::json entries = nlohmann::json::object();
     for (const auto& [hash, item] : items_) entries[hash] = {{"bytes", item.bytes}, {"lastUse", item.lastUse}};
     const nlohmann::json index = {{"schema", 1}, {"entries", entries}};
@@ -563,8 +596,20 @@ std::uint64_t DecodeCache::totalBytes() const {
 void DecodeCache::admitSpace(std::uint64_t incoming,const std::string& keep) {
     // Called with mutex_ held. This is an estimated refusal preflight, not a disk-space
     // reservation: a later writer or undeletable file still needs the final check.
+    if(folder_.empty())throw DecodeError(DecodeProblem::CacheWrite,"application cache folder is unavailable");
+    if (usesApplicationBudget_) {
+        const auto limits = media::defaultAnalysisCacheLimits();
+        limits_ = {limits.maximumBytes, limits.minimumFreeBytes};
+    }
     if(incoming>limits_.maxBytes)throw DecodeError(DecodeProblem::NoSpace,
         "estimated decoded size "+std::to_string(incoming)+" bytes exceeds cache maximum "+std::to_string(limits_.maxBytes));
+    if (usesApplicationBudget_) {
+        media::defaultAnalysisCache().maintainForDecoder(*this, incoming, keep, true);
+        const auto available = freeBytes();
+        if (!fitsSpace(available, limits_.minFreeBytes, incoming))
+            throw DecodeError(DecodeProblem::NoSpace,"decoded output cannot keep the media cache's minimum free space");
+        return;
+    }
     const auto free=freeBytes();
     if(!fitsSpace(free,limits_.minFreeBytes,incoming)) {
         std::uint64_t reclaimable=0;
@@ -595,6 +640,10 @@ void DecodeCache::admitSpace(std::uint64_t incoming,const std::string& keep) {
 
 void DecodeCache::evict(std::uint64_t incoming, const std::string& keep) {
     // Called with the lock held.
+    if (usesApplicationBudget_ && !folder_.empty()) {
+        media::defaultAnalysisCache().maintainForDecoder(*this, incoming, keep, false);
+        return;
+    }
     auto total = [&] {
         std::uint64_t t = 0;
         for (const auto& [hash, item] : items_) t = saturatedAdd(t,item.bytes);
@@ -646,6 +695,7 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     }
     if (format == SourceFormat::Unknown)
         throw DecodeError(DecodeProblem::UnknownFormat, display(source) + ": not WAV, AIFF, FLAC, MP3, Ogg Vorbis or AAC");
+    if (folder_.empty()) throw DecodeError(DecodeProblem::CacheWrite, "application cache folder is unavailable");
     const auto hash = media::blake3File(source,stop);cancelled(stop);
     if (!hash) throw DecodeError(DecodeProblem::Unreadable, display(source) + ": cannot be hashed");
     const auto target = fileFor(hash.hex);
@@ -722,10 +772,15 @@ void DecodeCache::release(const fs::path& cached) {
 void DecodeCache::setLimits(DecodeCacheLimits l) {
     std::lock_guard lock(mutex_);
     limits_ = l;
+    if (usesApplicationBudget_) media::setDefaultAnalysisCacheLimits({l.maxBytes, l.minFreeBytes});
 }
 
 DecodeCacheLimits DecodeCache::limits() const {
     std::lock_guard lock(mutex_);
+    if (usesApplicationBudget_) {
+        const auto limits = media::defaultAnalysisCacheLimits();
+        return {limits.maximumBytes, limits.minimumFreeBytes};
+    }
     return limits_;
 }
 
@@ -754,7 +809,10 @@ std::vector<std::string> DecodeCache::problems() const {
 }
 
 DecodeCache& defaultDecodeCache() {
-    static DecodeCache cache(appdata::pathsFor(appdata::App::Daw).cache / "decoded");
+    const auto& root = appdata::processCacheRoot();
+    static DecodeCache cache(root.empty() ? fs::path{} : root / "decoded");
+    static const bool paired = (cache.usesApplicationBudget_ = true);
+    (void)paired;
     return cache;
 }
 

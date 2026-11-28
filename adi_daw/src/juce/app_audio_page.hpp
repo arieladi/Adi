@@ -35,10 +35,18 @@ bool keepChannelConfig(settings::AppSettings &, const std::string &device, bool 
 // device manager's error, empty when it opened or nothing changed.
 juce::String useChannelConfig(juce::AudioDeviceManager &, const settings::AppSettings &);
 // Opens the devices `setup` names, then the channels their records keep in use (useChannelConfig).
-// An empty input is the system's default input, opened with the output as Live opens both on a
-// first run, inputs 1/2 recordable (manual 17.2); with no input to open, the output opens alone.
+// SC-381: an empty input -- the system's, as a first run keeps it -- is not opened here: the output opens
+// alone. Opening a Bluetooth headset's own microphone beside its headphones drops them to telephone
+// quality, so no input is taken until one is wanted: a track armed (openDefaultInput) or an input chosen.
 juce::String openAudioDevice(juce::AudioDeviceManager &, const juce::AudioDeviceManager::AudioDeviceSetup &,
                              const settings::AppSettings &);
+// SC-381: the system's default input opened beside the open output, inputs 1/2 recordable, for a track just
+// armed when no input is open. Empty when it opened (or one was already open); else why not, the output
+// left as it was. `opened` names the input.
+juce::String openDefaultInput(juce::AudioDeviceManager &, const settings::AppSettings &, juce::String &opened);
+// SC-383: `audio.inputDevice` when the user chose No Device: no input, never the system's (which is the
+// empty name, what a first run keeps). Opened as no input, and never opened for an armed track.
+inline constexpr const char *kNoInputDevice = "No Device";
 // The head of the Settings window's Audio page, as Live 11's (measured 2026-10-27): Audio
 // Device (driver type, input and output devices, Channel Configuration), Sample Rate, and
 // Latency (buffer size, the input, output and overall latencies). It drives the application's
@@ -65,6 +73,10 @@ class AudioDevicePage final : public juce::Component, public SettingsPageHead, p
         void resized() override;
         juce::TextButton input{"Input Config"}, output{"Output Config"};
     } channels;
+    // SC-380: Live's Hardware Setup: the driver's own control panel (an ASIO driver's, where many set their
+    // buffer size). Enabled while the open device has one; the device reopens after it, as the panel may
+    // have changed what the driver grants.
+    juce::TextButton hardware{"Hardware Setup"};
     // The open dialog, if any.
     ChannelConfigPanel *configPanel() const;
     // A setup attempt or a saved Input/Output Config edit, including names alone.

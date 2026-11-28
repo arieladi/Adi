@@ -19,15 +19,22 @@
 #include "temp_directory.hpp"
 
 #include "adi/history.hpp"
+#include "adi/media/clip_pitch.hpp"
 #include "adi/ops.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
 #include "adi/textproj_store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
+#include <array>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -707,6 +714,225 @@ void testRemarksEndToEnd() {
           "redo puts back exactly the same text");
 }
 
+void testPitchEdits() {
+    section("staged pitch edits project by content, including dormant edits");
+    const adi::test::TempDirectory scratch("textproj_store", "pitchEdits");
+    const auto path = scratch.path() / "pitch.adi";
+    std::ifstream ddl(ADI_PITCH_SCHEMA_PATH);
+    if (!ddl) throw std::runtime_error("could not open staged pitch SQL");
+    const std::string schema{std::istreambuf_iterator<char>(ddl), std::istreambuf_iterator<char>()};
+    const std::string hash(64, 'a');
+    const std::string replacement(64, 'b');
+    const auto seed = [&](const fs::path& file, std::int64_t id, bool freshPitch = false) {
+        StoreError error{};
+        auto store = Store::createEmpty(file, error);
+        if (!store) throw std::runtime_error(toString(error));
+        auto& db = store->db();
+        if (freshPitch) db.exec(schema);
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Voice');");
+        SQLite::Statement clip(db, "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) "
+                                   "VALUES(?,1,'audio','Take',0,1441440)");
+        clip.bind(1, id);
+        clip.exec();
+        SQLite::Statement media(db, "INSERT INTO media_files(id,hash_blake3,sample_rate,channels,frames) "
+                                    "VALUES(11,?,48000,1,2000),(12,?,48000,1,2000)");
+        media.bind(1, hash);
+        media.bind(2, replacement);
+        media.exec();
+        SQLite::Statement audio(db, "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) "
+                                    "VALUES(?,11,0,2000)");
+        audio.bind(1, id);
+        audio.exec();
+        return store;
+    };
+    auto store = seed(path, 19);
+    const auto baseline = projectStore(*store).text;
+    store.reset();
+    StoreError error{};
+    store = Store::open(path, error, true);
+    check(store && store->readOnly() && projectStore(*store).text == baseline &&
+              !store->db().tableExists("clip_pitch_edits"),
+          "read-only 1.23 projection has no pitch rows and leaves its schema intact");
+    store.reset();
+    store = Store::open(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    auto& db = store->db();
+    const auto version = db.execAndGet("PRAGMA user_version").getInt();
+    {
+        SQLite::Transaction rolledBack(db);
+        db.exec(schema);
+        check(db.tableExists("clip_pitch_edits"), "staged pitch DDL is visible inside its transaction");
+    }
+    check(!db.tableExists("clip_pitch_edits") && projectStore(*store).text == baseline,
+          "rolling back the staged DDL restores the old projection and schema");
+    db.exec(schema);
+    check(db.execAndGet("PRAGMA user_version").getInt() == version && projectStore(*store).text == baseline,
+          "installing empty staged DDL preserves existing content and the actual schema version");
+
+    const auto setPitch = [&](Store& target, std::int64_t id, std::uint64_t segmentId, double cents) {
+        const media::ClipPitchAnalysis analysis{id, {hash, 48000, 1, 2000}, 0, 2000, false, 1, 0,
+            {48000, 2000, {{100, 500, 6100, 0, 0, {{200, 6100}}}, {700, 1000, 6400, 0, 0, {{800, 6400}}}}}};
+        audio::PitchNoteEdit adjusted;
+        adjusted.startFrame = 120;
+        adjusted.endFrame = 540;
+        adjusted.pitchShiftCents = cents;
+        adjusted.straighten = 0.5;
+        adjusted.straightenRange = audio::PitchStraightenRange{160, 250};
+        adjusted.tiltCents = -20;
+        adjusted.tiltGeometry = {0.4, 12, -7};
+        adjusted.formantShiftCents = -125.5;
+        adjusted.gainDb = 3.5;
+        adjusted.drift = 0.75;
+        adjusted.preserveExpression = true;
+        adjusted.transitionFrames = 200;
+        audio::PitchNoteEdit muted;
+        muted.noteIndex = 1;
+        muted.startFrame = 700;
+        muted.endFrame = 1000;
+        muted.gainDb = -std::numeric_limits<double>::infinity();
+        const audio::PitchSegmentation geometry{{{segmentId, 100, 500}, {segmentId + 2, 700, 1000}}, segmentId + 3};
+        const auto prepared = clip_edit::prepareClipPitchEdits(analysis, {{adjusted, muted}}, &geometry);
+        if (!prepared.request) throw std::runtime_error(prepared.error);
+        OpJournal journal(target);
+        commits(journal, *prepared.request, "commit literal pitch geometry and controls");
+    };
+    setPitch(*store, 19, 47, 100.25);
+    const auto authored = projectStore(*store).text;
+    const std::string pitchBlock =
+        "    pitch edits\n"
+        "      source " + hash + "\n"
+        "      sourceFrames 2000\n"
+        "      sampleRate 48000\n"
+        "      analysisVersion 1\n"
+        "      analysisConfiguration 0\n"
+        "      segments\n"
+        "      segment 100 500\n"
+        "      segment 700 1000\n"
+        "      pitchEdit 100 500 to 120 540 pitch 100.25 straighten 0.5 straightenRange 160 250"
+        " tilt -20.0 tiltAnchor 0.4 tiltStart 12.0 tiltEnd -7.0 formant -125.5 gain 3.5"
+        " drift 0.75 preserveExpression transition 200\n"
+        "      pitchEdit 700 1000 to 700 1000 muted\n";
+    check(contains(authored, pitchBlock), "source-bound geometry, timing and the complete authored controls render under the clip");
+
+    auto other = seed(scratch.path() / "equivalent.adi", 271, true);
+    const auto schemaObjects = [](SQLite::Database& database) {
+        SQLite::Statement query(database, "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema "
+                                          "ORDER BY type, name, tbl_name");
+        std::vector<std::array<std::string, 4>> objects;
+        while (query.executeStep()) objects.push_back({query.getColumn(0).getString(), query.getColumn(1).getString(),
+                                                      query.getColumn(2).getString(), query.getColumn(3).getString()});
+        return objects;
+    };
+    check(schemaObjects(db) == schemaObjects(other->db()) &&
+              other->db().execAndGet("PRAGMA user_version").getInt() == version,
+          "staged upgrade and fresh staged creation produce the same schema objects and version");
+    setPitch(*other, 271, 830, 100.25);
+    eq(projectStore(*other).text, authored, "SQL and authored segment IDs do not affect canonical text");
+
+    setPitch(*store, 19, 47, 101.25);
+    auto adjustedText = authored;
+    if (const auto pitch = adjustedText.find("pitch 100.25"); pitch != std::string::npos)
+        adjustedText.replace(pitch, std::string_view("pitch 100.25").size(), "pitch 101.25");
+    check(adjustedText != authored && projectStore(*store).text == adjustedText,
+          "one changed control modifies only its literal pitch line");
+    History history(*store);
+    check(history.undo().ok && projectStore(*store).text == authored && history.redo().ok &&
+              projectStore(*store).text == adjustedText, "pitch Undo and Redo reproduce the exact projection");
+    check(history.undo().ok, "restore the original edit for dormant projection checks");
+
+    OpRequest detach;
+    detach.opType = "clip.detachAudio";
+    detach.payload = {{"id", 19}};
+    OpJournal journal(*store);
+    commits(journal, detach, "detach the source without clearing its authored pitch");
+    check(contains(projectStore(*store).text, pitchBlock), "detached pitch edits remain under their owning clip");
+    OpRequest attach;
+    attach.opType = "clip.attachAudio";
+    attach.payload = {{"id", 19}, {"media", 12}, {"frames", 2000}};
+    commits(journal, attach, "attach different source content");
+    check(contains(projectStore(*store).text, pitchBlock), "a replacement source preserves the original pitch binding");
+    check(history.undo().ok && history.undo().ok && projectStore(*store).text == authored,
+          "Undoing the source replacement restores the exact active projection");
+
+    OpRequest empty;
+    empty.opType = "clip.setPitchEdits";
+    empty.payload = {{"id", 19}, {"hash", hash}, {"sampleRate", 48000}, {"sourceFrames", 2000},
+        {"version", 1}, {"configuration", 0}, {"rows", Payload::array()},
+        {"segmentation", {{"nextId", 1}, {"segments", Payload::array()}}}};
+    commits(journal, empty, "author an empty set of pitch segments");
+    const auto emptyText = projectStore(*store).text;
+    check(contains(emptyText, "      segments\n") && !contains(emptyText, "      segment ") &&
+              !contains(emptyText, "      pitchEdit "), "explicitly empty geometry remains distinguishable");
+    check(history.undo().ok && projectStore(*store).text == authored,
+          "undoing empty geometry restores all source spans and edits");
+
+    db.exec("UPDATE clip_pitch_edits SET edits=X'FF' WHERE clip_id=19");
+    check(contains(projectStore(*store).text, "    pitchUnreadable\n"),
+          "corrupt authored data leaves a deterministic marker on the owning clip");
+}
+
+void testPitchExtractionMarker() {
+    section("staged pitch extraction provenance belongs to the MIDI output");
+    const adi::test::TempDirectory scratch("textproj_store", "pitchExtraction");
+    const auto path = scratch.path() / "pitch-extraction.adi";
+    std::ifstream ddl(ADI_PITCH_SCHEMA_PATH);
+    if (!ddl) throw std::runtime_error("could not open staged pitch SQL");
+    const std::string schema{std::istreambuf_iterator<char>(ddl), std::istreambuf_iterator<char>()};
+    StoreError error{};
+    auto store = Store::createEmpty(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(19,'audio','Voice',0),(57,'midi','Notes',1);"
+        "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES"
+        "(71,19,'audio','Source',0,1441440),(84,57,'midi','Extracted',0,1441440),"
+        "(92,57,'midi','Independent',1441440,1441440)");
+    const auto oldText = projectStore(*store).text;
+    store.reset();
+    store = Store::open(path, error, true);
+    check(store && store->readOnly() && !store->db().tableExists("clip_pitch_extractions") &&
+              projectStore(*store).text == oldText && !contains(oldText, "pitchExtraction"),
+          "a read-only project without staged provenance keeps its exact text");
+    store.reset();
+    store = Store::open(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    auto& db = store->db();
+    db.exec(schema);
+    eq(projectStore(*store).text, oldText, "an empty staged extraction table changes no text");
+    db.exec("INSERT INTO clip_pitch_extractions(clip_id) VALUES(84)");
+    const std::string clipHeader = "  clip Extracted\n    at 1|1|0\n    len 1/16\n    kind midi\n";
+    const auto clip = oldText.find(clipHeader);
+    if (clip == std::string::npos) throw std::runtime_error("missing canonical extraction fixture clip");
+    auto marked = oldText;
+    marked.insert(clip + clipHeader.size(), "    pitchExtraction\n");
+    eq(projectStore(*store).text, marked, "only the extracted clip gains the canonical marker");
+    unsigned markerReads = 0;
+    sqlite3_trace_v2(db.getHandle(), SQLITE_TRACE_STMT, [](unsigned, void* state, void* statement, void*) -> int {
+        const auto* sql = sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+        if (sql && std::string_view(sql).find("clip_pitch_extractions") != std::string_view::npos)
+            ++*static_cast<unsigned*>(state);
+        return 0;
+    }, &markerReads);
+    const auto ordinary = render(rows::readModel(*store));
+    sqlite3_trace_v2(db.getHandle(), 0, nullptr, nullptr);
+    check(ordinary == oldText && markerReads == 0, "the ordinary model read skips extraction provenance");
+    store.reset();
+    store = Store::open(path, error, true);
+    check(store && store->readOnly() && projectStore(*store).text == marked,
+          "staged marker survives reopen for canonical read-only projection");
+    store.reset();
+    store = Store::open(path, error);
+    if (!store) throw std::runtime_error(toString(error));
+    store->db().exec("DELETE FROM clips WHERE id=71");
+    check(contains(projectStore(*store).text, clipHeader + "    pitchExtraction\n"),
+          "the output marker remains renderable after the source clip is deleted");
+    store->db().exec("DELETE FROM clips WHERE id=84");
+    check(store->db().execAndGet("SELECT COUNT(*) FROM clip_pitch_extractions").getInt() == 0 &&
+              !contains(projectStore(*store).text, "pitchExtraction"),
+          "deleting the output cascades the marker and leaves no extraction text");
+    store->db().exec("DROP TABLE clip_pitch_extractions; CREATE TABLE clip_pitch_extractions(incomplete INTEGER)");
+    check(contains(projectStore(*store).text, "  pitchExtractionUnreadable\n"),
+          "unreadable provenance leaves a deterministic marker on the project");
+}
+
 int main() {
     // Unbuffered, so the last line before a crash survives. On Windows a
     // crashing test binary loses its whole block-buffered stdout, and the
@@ -726,6 +952,8 @@ int main() {
         testCorruptBlobIsNamed();
         testRemarksModel();
         testRemarksEndToEnd();
+        testPitchEdits();
+        testPitchExtractionMarker();
     } catch (const std::exception& ex) {
         // A modal abort dialog on Windows is a worse failure than the failure.
         std::printf("\nFAILED -- exception escaped: %s\n", ex.what());

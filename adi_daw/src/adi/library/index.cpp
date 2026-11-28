@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/library/sample_analysis.hpp"
 #include "index.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -23,6 +28,7 @@ namespace {
 using Key = std::pair<std::string, std::string>;
 struct ScanCancelled {};
 constexpr std::size_t maxLibraryJsonBytes=256*1024*1024;
+constexpr std::size_t annotationJournalSize = 128;
 class LibraryJsonGuard final:public nlohmann::json_sax<Json> {
     struct Context {bool object=false;std::set<std::string> keys;};
     std::vector<Context> stack_;
@@ -63,6 +69,115 @@ std::string normalized(const std::string& s, bool sensitive) {
 }
 bool validHash(const std::string& hash) {
     return hash.size() == 64 && hash.find_first_not_of("0123456789abcdef") == std::string::npos;
+}
+using MetadataSource = audio::SampleKindSource;
+
+bool validBpm(const Json& value) {
+    return value.is_number() && std::isfinite(value.get<double>()) && value.get<double>() > 0 && value.get<double>() <= 1000;
+}
+
+Json writeKey(SampleKey key) {
+    if (key.tonic >= 12) throw std::invalid_argument("invalid sample key");
+    return {{"tonic", key.tonic}, {"minor", key.minor}};
+}
+
+std::optional<SampleKey> readKey(const Json& value) {
+    if (!value.is_object() || value.size() != 2 || !value.contains("tonic") || !value.contains("minor") ||
+        !value.at("tonic").is_number_integer() || !value.at("minor").is_boolean()) return {};
+    const auto tonic = value.at("tonic");
+    if (tonic < 0 || tonic > 11) return {};
+    return SampleKey{tonic.get<std::uint8_t>(), value.at("minor").get<bool>()};
+}
+
+SampleAnalysisOverrides readAnalysisOverrides(const SQLite::Column& field) {
+    try {
+        if (field.getBytes() < 0 || static_cast<std::size_t>(field.getBytes()) > kMaxSampleWarpBytes * 2 + 65536)
+            return {};
+        const auto payload = libraryJson(field.getString());
+        if (!payload.is_object()) return {};
+        SampleAnalysisOverrides result;
+        if (const auto bpm = payload.find("bpm"); bpm != payload.end() && bpm->is_number())
+            result.classification.bpm = bpm->get<double>();
+        if (const auto tags = payload.find("tags"); tags != payload.end() && tags->is_array())
+            for (const auto& tag : *tags) if (tag.is_string()) result.tags.push_back(tag.get<std::string>());
+        if (const auto key = payload.find("key"); key != payload.end()) result.key = readKey(*key);
+        if (const auto settings = payload.find("sample_settings"); settings != payload.end()) {
+            const auto saved = decodeSampleSettings(*settings);
+            if (saved)
+                result.classification.kind = saved.data->loopEnabled ? audio::SampleKind::Loop : audio::SampleKind::OneShot;
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+const char* writeSource(MetadataSource value) {
+    switch (value) {
+    case MetadataSource::Detection: return "detected";
+    case MetadataSource::Acid: return "acid";
+    case MetadataSource::FileTag: return "file";
+    case MetadataSource::User: break;
+    }
+    throw std::invalid_argument("an analysis observation needs a read-only source");
+}
+
+MetadataSource readSource(const Json& value) {
+    if (value == "detected") return MetadataSource::Detection;
+    if (value == "acid") return MetadataSource::Acid;
+    if (value == "file") return MetadataSource::FileTag;
+    throw std::invalid_argument("invalid sample analysis source");
+}
+
+Json writeAnalysisMetadata(const SampleAnalysisMetadata& value) {
+    auto result = Json::object();
+    if (value.tempoBpm) {
+        if (!validBpm(*value.tempoBpm)) throw std::invalid_argument("invalid observed BPM");
+        result["tempo"] = {{"bpm", *value.tempoBpm}, {"source", writeSource(value.tempoSource)}};
+    }
+    if (value.key) {
+        if (!std::isfinite(value.keyStrength) || value.keyStrength < 0 || value.keyStrength > 1)
+            throw std::invalid_argument("invalid observed key strength");
+        result["key"] = {{"value", writeKey(*value.key)}, {"source", writeSource(value.keySource)},
+                         {"strength", value.keyStrength}};
+    }
+    return result;
+}
+
+SampleAnalysisMetadata readAnalysisMetadata(const std::string& hash, const Json& value) {
+    if (!value.is_object() || value.empty()) throw std::invalid_argument("invalid sample analysis metadata");
+    SampleAnalysisMetadata result;
+    result.contentHash = hash;
+    for (const auto& [name, field] : value.items()) {
+        if (name == "tempo" && field.is_object() && field.size() == 2 && validBpm(field.at("bpm"))) {
+            result.tempoBpm = field.at("bpm").get<double>();
+            result.tempoSource = readSource(field.at("source"));
+        } else if (name == "key" && field.is_object() && field.size() == 3 && field.at("strength").is_number()) {
+            result.key = readKey(field.at("value"));
+            result.keySource = readSource(field.at("source"));
+            const auto strength = field.at("strength").get<double>();
+            if (!result.key || !std::isfinite(strength) || strength < 0 || strength > 1)
+                throw std::invalid_argument("invalid observed key");
+            result.keyStrength = static_cast<float>(strength);
+        } else {
+            throw std::invalid_argument("invalid sample analysis field");
+        }
+    }
+    return result;
+}
+
+void mergeExchangedMetadata(SampleAnalysisMetadata& current, const SampleAnalysisMetadata& incoming) {
+    if (incoming.tempoBpm && (!current.tempoBpm || incoming.tempoSource >= current.tempoSource)) {
+        current.tempoBpm = incoming.tempoBpm;
+        current.tempoSource = incoming.tempoSource;
+    }
+    if (incoming.key && (!current.key || incoming.keySource >= current.keySource)) {
+        current.key = incoming.key;
+        current.keySource = incoming.keySource;
+        current.keyStrength = incoming.keyStrength;
+    }
 }
 // The standard permits file_clock to expose either sys or UTC conversion.
 // MSVC supplies to_utc; libstdc++/libc++ supply to_sys. Keep both dependent
@@ -113,6 +228,7 @@ std::string relativeText(const fs::path& p) {
 }
 }
 struct Index::Impl {
+    using Observations = std::map<std::string, SampleAnalysisMetadata, std::less<>>;
     std::unique_ptr<SQLite::Database> db;
     fs::path path;
     Hasher hash;
@@ -124,6 +240,34 @@ struct Index::Impl {
     std::jthread worker;
     WorkerStats counts;
     bool active = false;
+    std::atomic<std::uint64_t> annotationRevision{0};
+    std::uint64_t bulkAnnotationRevision = 0;
+    std::array<std::array<char, 64>, annotationJournalSize> annotationHashes{};
+    Observations observations;
+
+    // The caller holds the database mutex for both inputs.
+    SampleAnalysisResolution resolve(std::string_view contentHash, SampleAnalysisOverrides authored) const {
+        const auto found = observations.find(contentHash);
+        if (found == observations.end()) return {std::move(authored), {}};
+        return {std::move(authored), found->second};
+    }
+
+    // The database mutex serializes these calls. Publish the revision only
+    // after COMMIT, with no allocation that can fail after the durable write.
+    void annotationsChanged(std::span<const std::string_view> hashes, bool bulk = false) noexcept {
+        auto next = annotationRevision.load(std::memory_order_relaxed);
+        if (bulk) {
+            bulkAnnotationRevision = ++next;
+        } else {
+            for (const auto changedHash : hashes) {
+                auto& entry = annotationHashes[static_cast<std::size_t>(next % annotationHashes.size())];
+                std::copy(changedHash.begin(), changedHash.end(), entry.begin());
+                ++next;
+            }
+        }
+        annotationRevision.store(next, std::memory_order_release);
+    }
+
     void enqueue(const Key& key) {
         const auto [position, inserted] = queued.insert(key);
         if (!inserted) return;
@@ -426,6 +570,69 @@ std::vector<Entry> Index::entries() const {
     while(q.executeStep()) result.push_back({q.getColumn(0).getString(),q.getColumn(1).getString(),q.getColumn(4).getString(),q.getColumn(5).getString(),static_cast<std::uintmax_t>(q.getColumn(2).getInt64()),q.getColumn(3).getInt64(),q.getColumn(6).getInt()!=0});
     return result;
 }
+SampleAnalysisOverrides Index::analysisOverrides(const std::string& hash) const {
+    if (audio::onAudioThread) return {};
+    return analysisResolution(hash).authored;
+}
+SampleAnalysisResolution Index::analysisResolution(const std::string& hash) const {
+    if (audio::onAudioThread || !validHash(hash)) return {};
+    try {
+        std::lock_guard lock(impl_->mutex);
+        SQLite::Statement query(*impl_->db, "SELECT payload FROM annotations WHERE hash=?");
+        query.bind(1, hash);
+        auto authored = query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
+        return impl_->resolve(hash, std::move(authored));
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+SampleAnalysisResolutionChanges Index::analysisResolutionSince(std::uint64_t revision) const {
+    if (audio::onAudioThread || revision == impl_->annotationRevision.load(std::memory_order_acquire))
+        return {revision, false, {}};
+    try {
+        std::lock_guard lock(impl_->mutex);
+        SampleAnalysisResolutionChanges result;
+        result.revision = impl_->annotationRevision.load(std::memory_order_relaxed);
+        result.fullSnapshot = revision > result.revision || revision < impl_->bulkAnnotationRevision ||
+                              result.revision - revision > annotationJournalSize;
+        if (result.fullSnapshot) {
+            result.entries.reserve(impl_->observations.size());
+            for (const auto& [hash, metadata] : impl_->observations)
+                result.entries.emplace_back(hash, SampleAnalysisResolution{{}, metadata});
+            const auto observedCount = static_cast<std::ptrdiff_t>(result.entries.size());
+            SQLite::Statement query(*impl_->db, "SELECT hash,payload FROM annotations");
+            while (query.executeStep()) {
+                auto authored = readAnalysisOverrides(query.getColumn(1));
+                if (authored.empty()) continue;
+                auto hash = query.getColumn(0).getString();
+                // The observed rows came from an ordered map. Merge authored
+                // fields with that prefix even after appending authored-only rows.
+                const auto end = result.entries.begin() + observedCount;
+                const auto found = std::lower_bound(result.entries.begin(), end, hash,
+                    [](const auto& entry, const std::string& key) { return entry.first < key; });
+                if (found != end && found->first == hash) found->second.authored = std::move(authored);
+                else result.entries.emplace_back(std::move(hash), SampleAnalysisResolution{std::move(authored), {}});
+            }
+        } else {
+            std::set<std::string> changed;
+            for (auto entry = revision; entry < result.revision; ++entry) {
+                const auto& hash = impl_->annotationHashes[static_cast<std::size_t>(entry % annotationJournalSize)];
+                changed.emplace(hash.data(), hash.size());
+            }
+            SQLite::Statement query(*impl_->db, "SELECT payload FROM annotations WHERE hash=?");
+            for (const auto& hash : changed) {
+                query.bind(1, hash);
+                auto authored = query.executeStep() ? readAnalysisOverrides(query.getColumn(0)) : SampleAnalysisOverrides{};
+                result.entries.emplace_back(hash, impl_->resolve(hash, std::move(authored)));
+                query.reset();
+            }
+        }
+        return result;
+    } catch (const std::exception&) {
+        // Keep the old publication and retry the same revision on the next poll.
+        return {revision, false, {}};
+    }
+}
 SampleSettingsResult Index::sampleSettings(const std::string& hash) const {
     if(audio::onAudioThread)return {SampleSettingsProblem::Realtime,{},{}};
     if(!validHash(hash))return {SampleSettingsProblem::Invalid,"invalid sample content hash",{}};
@@ -463,7 +670,9 @@ SampleSettingsProblem Index::saveSampleSettings(const std::string& hash,const Sa
         }
         payload["sample_settings"]=encoded;
         SQLite::Statement put(*impl_->db,"INSERT INTO annotations(hash,payload) VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload");const auto serialized=payload.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
-        put.bind(1,hash);put.bind(2,serialized);put.exec();transaction.commit();error.clear();return SampleSettingsProblem::None;
+        put.bind(1,hash);put.bind(2,serialized);put.exec();transaction.commit();
+        impl_->annotationsChanged(std::array{std::string_view(hash)});
+        error.clear();return SampleSettingsProblem::None;
     }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
     catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
 }
@@ -472,6 +681,7 @@ SampleSettingsProblem Index::clearSampleSettings(const std::string& hash,std::st
     if(!validHash(hash)){error="invalid sample content hash";return SampleSettingsProblem::Invalid;}
     try {
         std::lock_guard lock(impl_->mutex);SQLite::Transaction transaction(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
+        bool changed = false;
         SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
         if(query.executeStep()) {
             const auto field=query.getColumn(0);
@@ -479,52 +689,103 @@ SampleSettingsProblem Index::clearSampleSettings(const std::string& hash,std::st
             auto payload=libraryJson(field.getString());if(!payload.is_object()){error="invalid library annotation";return SampleSettingsProblem::Invalid;}
             if(payload.erase("sample_settings")) {
                 SQLite::Statement update(*impl_->db,"UPDATE annotations SET payload=? WHERE hash=?");update.bind(1,payload.dump());update.bind(2,hash);update.exec();
+                changed = true;
             }
         }
-        transaction.commit();error.clear();return SampleSettingsProblem::None;
+        transaction.commit();
+        if (changed) impl_->annotationsChanged(std::array{std::string_view(hash)});
+        error.clear();return SampleSettingsProblem::None;
     }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
     catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
 }
-std::string Index::exportJson() const {
+std::string Index::exportJson(std::span<const SampleAnalysisMetadata> observations) const {
     if(audio::onAudioThread)return {};
     std::lock_guard lock(impl_->mutex); Json media = Json::object();
     SQLite::Statement q(*impl_->db,"SELECT hash,payload FROM annotations ORDER BY hash");
-    bool sampleDefaults=false;
+    int exchangeVersion = 1;
     while(q.executeStep()) {
-        auto payload=libraryJson(q.getColumn(1).getString());sampleDefaults=sampleDefaults || payload.contains("sample_settings");media[q.getColumn(0).getString()]=std::move(payload);
+        auto payload=libraryJson(q.getColumn(1).getString());
+        if (payload.contains("key")) exchangeVersion = 3;
+        else if (payload.contains("sample_settings")) exchangeVersion = std::max(exchangeVersion, 2);
+        media[q.getColumn(0).getString()]=std::move(payload);
     }
-    auto encoded=Json{{"version",sampleDefaults?2:1},{"media",media}}.dump(2);
+    for (const auto& observation : observations) {
+        if (!validHash(observation.contentHash)) throw std::invalid_argument("invalid analysis content hash");
+        auto metadata = writeAnalysisMetadata(observation);
+        if (metadata.empty()) continue;
+        auto& fields = media[observation.contentHash];
+        if (fields.contains("analysis_metadata")) throw std::invalid_argument("duplicate analysis content hash");
+        fields["analysis_metadata"] = std::move(metadata);
+        exchangeVersion = 3;
+    }
+    auto encoded=Json{{"version",exchangeVersion},{"media",std::move(media)}}.dump(2);
     if(encoded.size()>maxLibraryJsonBytes)throw std::length_error("library JSON export exceeds 256 MiB");
     return encoded;
 }
-bool Index::importJson(const std::string& text,std::string& error) {
+bool Index::importJson(const std::string& text,std::string& error,std::vector<SampleAnalysisMetadata>* observations) {
     if(audio::onAudioThread)return false;
     try {
         const auto document=libraryJson(text);
-        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() || (document.at("version")!=1 && document.at("version")!=2) || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
+        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() ||
+            document.at("version") < 1 || document.at("version") > 3 || !document.at("media").is_object())
+            throw std::runtime_error("invalid library JSON envelope");
+        const auto exchangeVersion = document.at("version").get<int>();
+        std::vector<SampleAnalysisMetadata> received;
+        Impl::Observations stagedObservations;
+        std::array<std::string_view, annotationJournalSize> changed{};
+        std::size_t changedCount = 0;
+        bool bulk = false;
         std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
         for (const auto& [hash, incoming] : document.at("media").items()) {
             if (!validHash(hash) || !incoming.is_object()) throw std::runtime_error("metadata must be keyed by BLAKE3 hash");
-            Json merged={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
-            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
-            if(old.executeStep()) {
-                const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
-                merged=libraryJson(field.getString());
+            const bool updateAuthored = incoming.size() != 1 || !incoming.contains("analysis_metadata");
+            Json merged;
+            if (updateAuthored) {
+                merged = {{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
+                SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
+                if (old.executeStep()) {
+                    const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                    merged=libraryJson(field.getString());
+                }
             }
+            bool updateObservation = false;
             for(const auto& [key,value] : incoming.items()) {
+                if (key == "analysis_metadata") {
+                    if (exchangeVersion != 3) throw std::runtime_error("analysis metadata requires library JSON version 3");
+                    auto imported = readAnalysisMetadata(hash, value);
+                    if (observations) received.push_back(imported);
+                    const auto previous = impl_->observations.find(hash);
+                    if (previous == impl_->observations.end()) {
+                        stagedObservations.emplace(hash, std::move(imported));
+                        updateObservation = true;
+                    } else {
+                        auto nextObservation = previous->second;
+                        mergeExchangedMetadata(nextObservation, imported);
+                        if (nextObservation != previous->second) {
+                            stagedObservations.emplace(hash, std::move(nextObservation));
+                            updateObservation = true;
+                        }
+                    }
+                    continue;
+                }
                 if (key=="tags") {
                     if(!value.is_array()) throw std::runtime_error("tags must be an array");
                     std::set<std::string> tags=merged.at("tags").get<std::set<std::string>>();
                     for(const auto& tag:value) { if(!tag.is_string()) throw std::runtime_error("tag must be text"); tags.insert(normalized(tag.get<std::string>(),true)); }
                     merged["tags"]=tags;
                 } else if(key=="bpm") {
-                    if(!value.is_null() && (!value.is_number() || !std::isfinite(value.get<double>()) || value.get<double>()<=0 || value.get<double>()>1000)) throw std::runtime_error("invalid BPM");
+                    if(!value.is_null() && !validBpm(value)) throw std::runtime_error("invalid BPM");
                     merged[key]=value;
+                } else if (key=="key") {
+                    if (exchangeVersion != 3) throw std::runtime_error("authored key requires library JSON version 3");
+                    if (value.is_null()) merged.erase(key);
+                    else if (const auto parsed = readKey(value)) merged[key] = writeKey(*parsed);
+                    else throw std::runtime_error("invalid authored key");
                 } else if(key=="rating") {
                     if(!value.is_null() && (!value.is_number_integer() || value.get<std::int64_t>()<0 || value.get<std::int64_t>()>5)) throw std::runtime_error("invalid rating");
                     merged[key]=value;
                 } else if(key=="sample_settings") {
-                    if(document.at("version")!=2)throw std::runtime_error("sample defaults require library JSON version 2");
+                    if(exchangeVersion<2)throw std::runtime_error("sample defaults require library JSON version 2 or later");
                     const auto decoded=decodeSampleSettings(value);if(!decoded)throw std::runtime_error("invalid imported sample defaults: "+decoded.error);
                     if(merged.contains(key)) {
                         const auto oldSettings=decodeSampleSettings(merged.at(key));if(!oldSettings)throw std::runtime_error("existing sample defaults are not editable by this version");
@@ -532,10 +793,23 @@ bool Index::importJson(const std::string& text,std::string& error) {
                     merged[key]=encodeSampleSettings(*decoded.data);
                 } else throw std::runtime_error("unknown metadata field");
             }
-            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
-            put.bind(1,hash);put.bind(2,serialized);put.exec();
+            if (updateAuthored) {
+                SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                put.bind(1,hash);put.bind(2,serialized);put.exec();
+            }
+            if (!updateAuthored && !updateObservation) continue;
+            if (changedCount < changed.size()) changed[changedCount++] = hash;
+            else bulk = true;
         }
-        tx.commit(); error.clear(); return true;
+        tx.commit();
+        // Node transfer and replacing an existing value require no allocation.
+        // Readers see the durable and in-process portions at the same revision.
+        impl_->observations.merge(stagedObservations);
+        for (auto& [hash, metadata] : stagedObservations)
+            impl_->observations.find(hash)->second = std::move(metadata);
+        if (changedCount > 0) impl_->annotationsChanged(std::span(changed).first(changedCount), bulk);
+        if (observations) observations->swap(received);
+        error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); return false; }
 }
 }

@@ -4,11 +4,15 @@
 #include <memory>
 #include <utility>
 
+namespace adi::edit {class TimeMap;}
 namespace adi::edit_plan {struct CapturedDescription;struct Options;}
 
 namespace adi::clip_edit {
 /// Input coordinate, never an implicit conversion: 0 musical ticks, 1 ns.
 struct TimePoint {int base=0;std::int64_t value=0;};
+/// Rightmost endpoint for an anchored resize of measured, non-looping audio, in the clip's clock.
+/// A preexisting extension is left intact until the user trims it.
+[[nodiscard]] std::optional<TimePoint> audioResizeLimit(Store&,std::int64_t clipId,const edit::TimeMap&);
 struct PreparedEdit {
     bool ok=false;
     std::string error,sourceFile;

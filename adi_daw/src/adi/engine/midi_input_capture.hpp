@@ -16,6 +16,7 @@ namespace adi::engine {
 
 class Session;
 class LiveMidiInput;
+namespace launch { class SlotInputRecorder; }
 
 enum class MidiCaptureState : std::uint8_t {
     Idle, Waiting, Recording, Complete, InputReset, Discontinuity, Overflow, DeviceStopped
@@ -51,7 +52,8 @@ public:
 private:
     friend class Session;
     friend class LiveMidiInput;
-    bool start(std::vector<std::int64_t> targets, double sampleRate, bool overdub);
+    friend class launch::SlotInputRecorder;
+    bool start(std::vector<std::int64_t> targets, double sampleRate, bool overdub = false);
     void deviceStopped() noexcept; ///< owner, with the driver already quiescent
     void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch, RecordingPunch,
                     const RecordingPunchWindow&) noexcept;

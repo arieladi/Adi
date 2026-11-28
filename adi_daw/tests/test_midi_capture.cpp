@@ -407,8 +407,10 @@ void refusalCases() {
     }
     check(refused==17 && digestProject(*f.store).text==before && !History(*f.store).canUndo(),"truncation, nonrepresentable values, ambiguous ownership, bad clocks/ranges and invalid targets refuse without writes");
     f.store->db().exec("UPDATE tracks SET locked=1 WHERE id=1");check(!capture::prepareMidi(*f.store,good,spec(),error),"locked Capture target is refused");
-    f.store->db().exec("UPDATE tracks SET locked=0 WHERE id=1;INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,1)");
-    check(!capture::prepareMidi(*f.store,good,spec(),error),"tempo ramps are named rather than silently remapping Capture time");
+    f.store->db().exec("UPDATE tracks SET locked=0 WHERE id=1;"
+                      "INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,1),(2,57657600,90,0)");
+    check(capture::prepareMidi(*f.store,good,spec(),error).has_value(),
+          "Capture projects the physical stream through a valid tempo ramp");
     f.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,0.1,0)");
     check(!capture::prepareMidi(*f.store,good,spec(),error),"a musical grid too coarse to preserve captured samples is refused");
 }

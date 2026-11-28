@@ -21,7 +21,10 @@ public:
 private:
     RowIds ids_;
 };
-/// Remap row ids/clip links only. Note identities and blob bytes stay exact;
-/// creating a copy never rewires aliases of the original.
-[[nodiscard]] Payload cloneImage(const Payload&,std::int64_t,CopyIds&);
+enum class ClonePurpose { Independent, SplitPiece };
+void detachPitchExtraction(Payload&);
+/// Remap row ids and clip links, keeping note identities and blob bytes exact.
+/// Split pieces inherit extraction ownership. A new clipboard copy is independent.
+[[nodiscard]] Payload cloneImage(const Payload&,std::int64_t,CopyIds&,
+                                 ClonePurpose=ClonePurpose::Independent);
 } // namespace adi::clip_edit

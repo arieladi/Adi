@@ -16,7 +16,9 @@
 #include "adi/engine/session.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
+#include <array>
 #include <cmath>
 #include <map>
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -370,6 +372,28 @@ void testAProjectLoadsAndPlays() {
     eqi(loader.made[0]->unpreparedBlocks, 0, "nothing processed an unprepared device");
 }
 
+void testRateChangeKeepsThePlace() {
+    const adi::test::TempDirectory scratch("session", "rate-place");
+    section("SC-382 -- a sample-rate change keeps the song where it was, in time");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+    Loader loader;
+    Session s;
+    SessionSpec spec;
+    spec.sampleRate = 44100.0;
+    spec.maxFrames = 512;
+    check(s.load(*store, loader.fn(), spec), "load: " + s.error());
+    s.transport().locate(static_cast<std::int64_t>(4.01 * 44100.0));
+    s.transport().play();
+    s.prepare(96000.0, 512);
+    eqi(s.transport().position(), std::llround(4.01 * 96000.0), "4.01 s at 44.1 kHz is 4.01 s at 96 kHz");
+    check(s.transport().playing(), "and it goes on playing");
+    s.prepare(96000.0, 256);
+    eqi(s.transport().position(), std::llround(4.01 * 96000.0), "a block size change alone moves nothing");
+    s.prepare(48000.0, 256);
+    eqi(s.transport().position(), std::llround(4.01 * 48000.0), "and back down, still 4.01 s");
+}
+
 void testBlockSizeChangesWithoutReload() {
     const adi::test::TempDirectory scratch("session", "resize");
     section("ADR-0042 d5 / ADR-0122 d3 -- a format change rebuilds; it never reloads");
@@ -692,6 +716,62 @@ void testARouteADeviceCannotTake() {
     check(st.executeStep() && st.getColumn(0).getString() == "note_expression", "the row is kept");
 }
 
+void testTempoRampTransport() {
+    section("TM-TT-01 -- metronome and external tempo share the integrated ramp");
+    test::TempDirectory scratch("session","tempo_ramp");
+    StoreError error{};
+    auto store = Store::createEmpty(scratch.path() / "ramp.adi",error);
+    if (!store) {
+        check(false,"create ramp fixture");
+        return;
+    }
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main');"
+                     "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0);"
+                     "INSERT INTO session_state(key,value) VALUES('transport.metronome','true')");
+    Session s;
+    if (!s.load(*store,{},SessionSpec{2,48000,64})) {
+        check(false,"load ramp fixture: " + s.error());
+        return;
+    }
+    constexpr auto q = textproj::kPPQ;
+    constexpr auto middle = 61907;
+    s.transport().locate(middle-1);
+    s.transport().play();
+    std::array<float,8> left{},right{};
+    float* output[]{left.data(),right.data()};
+    AudioIo io;
+    io.frames=8;io.numOut=2;io.out=output;
+    s.process(io);
+    check(left[0]==0 && left[1]==0 && left[2]!=0 && left==right,
+          "the metronome begins its waveform on the integrated ramp beat");
+    s.transport().play(false);
+    {
+        const auto block = s.beginRender();
+        eqi(block.sampleAtTick(2*q),middle,"native clock places the Bezier midpoint");
+    }
+    auto sample = [&](std::int64_t tick) { return s.beginRender().sampleAtTick(tick); };
+    const auto originalQuarter = sample(q);
+    const auto originalBefore = sample(q/2);
+    const auto originalAfter = sample(3*q) - sample(2*q);
+    check(s.setExternalTempoAt(*store,150,q),"apply external tempo inside the ramp");
+    eqi(sample(q/2),originalBefore,"external tempo preserves the rendered part before takeover");
+    eqi(sample(q),originalQuarter,"external tempo starts on the original takeover sample");
+    eqi(sample(2*q)-sample(q),19200,"one performed quarter uses the external BPM");
+    check(s.setExternalTempoAt(*store,std::nullopt,2*q),"resume the authored ramp inside its span");
+    {
+        const auto block = s.beginRender();
+        const double fraction = 0.625;
+        const double parameter = 1-std::sqrt(1-fraction);
+        check(std::abs(block.bpmAtTick(5*q/2)-(90+120*parameter*parameter))<1e-12,
+              "authored tempo resumes at its original Bezier phase");
+        check(std::abs((block.sampleAtTick(3*q)-block.sampleAtTick(2*q))-originalAfter)<=1,
+              "the resumed interval has the same duration at the new physical origin");
+    }
+    check(store->db().execAndGet("SELECT count(*) FROM tempo_map").getInt()==2 &&
+          store->db().execAndGet("SELECT tension FROM tempo_map WHERE pos_ticks=0").getDouble()==1 &&
+          OpJournal(*store).count()==0,"performed tempo changes leave the authored map and journal intact");
+}
+
 }  // namespace
 
 void testAPlaceholderWakesOnceInstalled() {
@@ -797,6 +877,7 @@ int main() {
     std::printf("adi_session_tests -- a project, live (ADR-0122)\n\n");
     testAProjectLoadsAndPlays();
     testBlockSizeChangesWithoutReload();
+    testRateChangeKeepsThePlace();
     testRefreshFollowsTheRows();
     testStateAndTheMirror();
     testAProjectWithoutAMasterIsRefusedNotCrashed();
@@ -805,6 +886,7 @@ int main() {
     testARouteADeviceCannotTake();
     testAPlaceholderWakesOnceInstalled();
     testADeviceKnowsADIRecords();
+    testTempoRampTransport();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

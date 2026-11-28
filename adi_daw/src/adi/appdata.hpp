@@ -49,6 +49,12 @@ struct Paths {
 /// its data in memory and says so, rather than writing somewhere surprising.
 [[nodiscard]] Paths pathsFor(App app);
 
+// App settings publish this choice without filesystem access. The shared
+// process cache root is selected once, before the first default cache opens.
+// An empty or relative preference falls back to the normal app-data cache.
+void setCacheFolderPreference(std::filesystem::path);
+[[nodiscard]] const std::filesystem::path& processCacheRoot();
+
 /// The shared data folder's two files that exist today.
 [[nodiscard]] std::filesystem::path pluginRegistryFile();   ///< data/plugins.sqlite
 [[nodiscard]] std::filesystem::path libraryIndexFile();     ///< data/library.sqlite

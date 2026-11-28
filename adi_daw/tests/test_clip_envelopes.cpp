@@ -78,6 +78,13 @@ void curvesAndTempo() {
         good=good && near(valueAt(l,24000),curveValue(-1,3,0.5,shape,tension)) && near(valueAt(l,48000),curveValue(-1,3,0.75,shape,tension));
     }
     check(good,"all six native curves preserve beat phase across step tempos");
+    auto ramp = model();
+    ramp.tempo = {{0,90,2,1},{4*Q,210,0,0}};
+    ramp.clips.push_back(clip(10,0,4*Q));
+    data(ramp,10,{pt(0,0),pt(4*Q,1)});
+    AutomationProgram rampProgram(ramp,48000);
+    check(rampProgram.problems().empty() && near(valueAt(lane(rampProgram),61907),0.5,2e-5),
+          "the clip envelope keeps musical phase through the Bezier tempo midpoint");
     auto m=model();auto c=clip(10,Q,2*Q);c.contentOffsetTicks=Q;m.clips.push_back(c);data(m,10,{pt(0,0,4,0.6f),pt(4*Q,1)});
     AutomationProgram p(m,48000);
     check(near(valueAt(lane(p),24000),curveValue(0,1,0.25,4,0.6f)) && near(valueAt(lane(p),48000),curveValue(0,1,0.5,4,0.6f)),"trimming retains original nonlinear curve phase");

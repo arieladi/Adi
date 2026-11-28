@@ -9,6 +9,9 @@ struct AutoWarpOptions {
     int numerator=4,denominator=4;
     double tempoHint=120;
     std::optional<double> sourceBpm;
+    bool useCachedBeatGrid=false; // Explicit candidate evaluation while the reference readings are pending.
+    int transientSensitivity=50;
+    std::optional<double> sourceMeterBpm={};// Source quarter BPM hint for classifying a detected subdivision.
 };
 enum class AutoWarpError {None,Realtime,InvalidSource,InvalidOptions,NoTempo,Precision,TooManyMarkers,Cancelled};
 struct AutoWarpResult {

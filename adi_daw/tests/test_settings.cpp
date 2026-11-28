@@ -10,6 +10,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/decode.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/media/zip_writer.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
@@ -21,7 +22,9 @@
 #include <miniz.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -30,7 +33,9 @@
 #include <map>
 #include <sstream>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifndef ADI_DOCS_DIR
 #error "ADI_DOCS_DIR must name adi_daw/docs"
@@ -235,6 +240,8 @@ void testRulings() {
     };
     check(onPage("midi.chaseNotes", "Tempo & MIDI", true) && onPage("midi.envelopeAutoReset", "Tempo & MIDI", true),
           "Chase MIDI Notes and MIDI Envelope Auto-Reset: Tempo & MIDI switches, on as Live's Options");
+    check(onPage("sync.audioGridderDiscovery", "Plug-Ins", false),
+          "plug-in server discovery is local app settings and disabled by default");
     check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
               onPage("audio.recordPdcThresholdEnabled", "Audio", false),
           "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");
@@ -263,8 +270,8 @@ void testRulings() {
               fileType->choices == std::vector<Value>{"wav", "aiff", "flac", "mp3", "aac"},
           "export: WAV, AIFF, FLAC, MP3 or AAC, WAV by default");
     check(depth && depth->choices == std::vector<Value>{16, 24, 32} && depth->defaultValue == 24 &&
-              dither && dither->defaultValue == "triangular" && dither->choices.size() == 6,
-          "export: 16, 24 or 32 bit, 24 by default; Live's six dither choices, Triangular by default");
+              dither && dither->defaultValue == "none" && dither->choices.size() == 6,
+          "SC-469: 24-bit export starts with No Dither, with all six dither choices available");
     check(normalize && normalize->choices == std::vector<Value>{"off", "peak", "loudness"} &&
               normalize->defaultValue == "off" && dflt("export.loudnessTargetLufs") == -14.0 &&
               dflt("export.truePeakCeilingDb") == -1.0 && dflt("export.nameTemplate") == "{project} - {track}",
@@ -1226,6 +1233,73 @@ void testDeviceGrant() {
           "an offered grant becomes the setting (the Audio page's own change): " + why);
 }
 
+void testDriverModeKept() {
+    section("SC-379: Windows Audio's mode is kept: Exclusive and Low Latency reopen as themselves");
+    using adi::settings::driverSettingFor;
+    using adi::settings::driverSettingNames;
+    check(driverSettingFor("Windows Audio") == "WASAPI" &&
+              driverSettingFor("Windows Audio (Exclusive Mode)") == "WASAPI Exclusive" &&
+              driverSettingFor("Windows Audio (Low Latency Mode)") == "WASAPI Low Latency" &&
+              driverSettingFor("ASIO") == "ASIO" && driverSettingFor("DirectSound") == "DirectSound",
+          "each mode has a setting of its own; other types keep their names");
+    const std::vector<std::string> types{"Windows Audio", "Windows Audio (Exclusive Mode)",
+                                         "Windows Audio (Low Latency Mode)", "DirectSound", "ASIO"};
+    for (const auto& type : types) {
+        int matches = 0;
+        std::string matched;
+        for (const auto& candidate : types)
+            if (driverSettingNames(driverSettingFor(type), candidate)) {
+                ++matches;
+                matched = candidate;
+            }
+        check(matches == 1 && matched == type, "\"" + type + "\" saved reopens as itself, and only itself");
+    }
+    check(driverSettingNames("WASAPI", "Windows Audio") && !driverSettingNames("WASAPI", "Windows Audio (Exclusive Mode)"),
+          "an older file's \"WASAPI\" is shared mode, as it was");
+    check(!driverSettingNames("", "Windows Audio"), "an empty setting names no type (the system's default)");
+    adi::test::TempDirectory temp("settings", "driver-mode");
+    AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
+    std::string why;
+    for (const auto* mode : {"WASAPI Exclusive", "WASAPI Low Latency", "WASAPI"})
+        check(keepGrant(s, {mode, "", "Speakers", 48000, 512}, kUser, why) && s.get("audio.driverType") == mode,
+              std::string("the store keeps ") + mode + ": " + why);
+}
+
+void testDeviceUnpluggedAndBack() {
+    section("SC-378: an interface unplugged keeps the user's choice, and comes back when it does");
+    using adi::settings::DeviceChange;
+    using adi::settings::DeviceWatch;
+    using adi::settings::deviceChange;
+    DeviceWatch w;
+    w.chosenOutput = "Interface";
+    w.chosenInput = "Interface";
+    w.openOutput = "Interface";
+    w.openInput = "Interface";
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Keep, "the chosen device open: its grant is kept as before");
+    w.openOutput = "Speakers";
+    w.openInput = "Microphone";
+    w.outputs = {"Speakers"};
+    w.inputs = {"Microphone"};
+    check(deviceChange(w) == DeviceChange::Hold,
+          "unplugged, the system's device opened in its place: the choice is held, nothing saved over it");
+    w.outputs = {"Speakers", "Interface"};
+    w.inputs = {"Microphone", "Interface"};
+    check(deviceChange(w) == DeviceChange::Return, "plugged back: it is reopened");
+    w.userChose = true;
+    check(deviceChange(w) == DeviceChange::Keep, "a device the user chose on the Audio page is saved, whatever was chosen before");
+    DeviceWatch system;
+    system.openOutput = "Speakers";
+    system.outputs = {"Speakers"};
+    check(deviceChange(system) == DeviceChange::Keep, "the system's default chosen (empty): nothing to hold");
+    DeviceWatch outputOnly = w;
+    outputOnly.userChose = false;
+    outputOnly.chosenInput.clear();
+    outputOnly.outputs = {"Speakers"};
+    check(deviceChange(outputOnly) == DeviceChange::Hold, "the output alone missing holds");
+}
+
 void testChannelConfig() {
     section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
     const Setting* c = find("audio.channelConfig");
@@ -1392,6 +1466,60 @@ void testCatalogue() {
                 answeredRows().size(), absentRows().size());
 }
 
+void testAnalysisCacheSettings() {
+    section("the application cache reads saved byte and disk headroom preferences");
+    adi::test::TempDirectory home("settings", "cache-preferences");
+#if defined(_WIN32)
+    if (_wputenv_s(L"ADI_HOME", home.path().wstring().c_str()) != 0)
+        throw std::runtime_error("set portable app home");
+#else
+    if (setenv("ADI_HOME", home.path().c_str(), 1) != 0) throw std::runtime_error("set portable app home");
+#endif
+    const auto paths = appdata::pathsFor(appdata::App::Daw);
+    const auto chosen = home.path() / "chosen cache";
+    const auto chosenText = chosen.u8string();
+    const auto doc = Value{{"schema", 1}, {"app", "ADI"},
+        {"values", {{"cache.maxSizeMb", 1}, {"cache.minFreeSpaceMb", 0},
+                    {"cache.folder", std::string(chosenText.begin(), chosenText.end())}}}};
+    writeText(paths.config / "settings.json", doc.dump());
+    auto settings = AppSettings::forApp(appdata::App::Daw);
+    auto& cache = adi::media::defaultAnalysisCache();
+    const adi::media::AnalysisIdentity identity{std::string(64, 'c'), 48000, 1, 32};
+    const adi::media::AnalysisSection section{1, 0, {std::byte{1}}};
+    const auto target = cache.folder() / (identity.hash + ".adia");
+    std::string why;
+    const auto publish = [&] {
+        return cache.update(identity, "APKS", section, why) == adi::media::AnalysisCacheProblem::None;
+    };
+    check(cache.folder() == chosen / "analysed" && !fs::exists(chosen),
+          "opening AppSettings configures the central cache without filesystem maintenance");
+    check(adi::audio::defaultDecodeCache().folder() == chosen / "decoded" && !fs::exists(paths.cache),
+          "analysis and decoded playback pick the same absolute configured root");
+    const adi::media::AnalysisIdentity older{std::string(64, 'b'), 48000, 1, 32};
+    const adi::media::AnalysisSection large{1, 0, std::vector<std::byte>(2u << 20)};
+    const auto oldTarget = cache.folder() / (older.hash + ".adia");
+    adi::media::AnalysisCache priorSession(cache.folder());
+    if (priorSession.update(older, "APKS", large, why) != adi::media::AnalysisCacheProblem::None)
+        throw std::runtime_error("seed an existing analysed cache: " + why);
+    fs::last_write_time(oldTarget, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    check(cache.read(older) && fs::exists(oldTarget), "the first warm read can serve an existing analysis without inventory");
+    check(publish() && fs::exists(target) && !fs::exists(oldTarget),
+          "a one-megabyte limit loaded at startup evicts a real two-megabyte record on publication");
+    const auto refuse = [](const fs::path&, const fs::path&) {
+        return std::make_error_code(std::errc::permission_denied);
+    };
+    check(settings.set(adi::audio::kCacheMaxSizeKey, 0, kUser, why) && !settings.save(why, refuse) &&
+              cache.read(identity) && fs::exists(target),
+          "a failed settings save does not apply the proposed policy");
+    check(settings.save(why) && fs::exists(target) && cache.read(identity) && !fs::exists(target),
+          "a committed preference waits for the next cache read before evicting its stored analysis");
+    check(settings.set(adi::audio::kCacheMaxSizeKey, 1, kUser, why) && settings.save(why) && publish() && fs::exists(target),
+          "a successful preference increase permits the next normal publication to cache the result");
+    check(settings.set("cache.folder", "", kUser, why) && settings.save(why) &&
+              cache.folder() == chosen / "analysed" && adi::audio::defaultDecodeCache().folder() == chosen / "decoded",
+          "a saved folder preference takes effect at next startup while current cache paths remain valid");
+}
+
 int runAll() {
     std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203, ADR-0214, ADR-0232\n\n");
     testRegistry();
@@ -1410,12 +1538,15 @@ int runAll() {
     testWindowZoom();
     testChannelConfig();
     testDeviceGrant();
+    testDriverModeKept();
+    testDeviceUnpluggedAndBack();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
     testPortableSettingsPublication();
     testBundlePublication();
     testBundleSchemas();
+    testAnalysisCacheSettings();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;

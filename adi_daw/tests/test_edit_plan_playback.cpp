@@ -169,6 +169,49 @@ void warpDestinationTrim(Precision width,bool musical) {
     check(f.render(2200)==expected,"destination Warp fragments preserve every sample, inherited fade and loop phase outside the actual mask");
     f.undoRedo(before,expected);
 }
+void resizeStopsAtSourceEnd() {
+    for(const bool warped:{false,true}) {
+        Fixture f(48000,Precision::Float32,warped,false);
+        f.add(1,100,900,79);
+        auto& db=f.store->db();
+        if(warped) {
+            f.warp(1);
+            db.exec("UPDATE clips SET content_offset_ticks=240240");
+        } else {
+            // Give the linear clip a sub-tick start and a pinned offset. The
+            // source window starts at frame 79 and contains 6000 frames, of
+            // which transposition consumes 3000 timeline frames, before offset.
+            db.exec("UPDATE clips SET pos_ns=pos_ns+11;"
+                    "UPDATE media_files SET sample_rate=48000;"
+                    "UPDATE audio_clips SET transpose_semis=12;"
+                    "INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(1,12500000)");
+        }
+        const auto start=warped?f.coordinate(100):f.coordinate(100)+11;
+        const auto initial=f.coordinate(900)-f.coordinate(100);
+        const auto bound=warped?ticks(5100,false):start+nanos(2400);
+        const auto length=[&] {return db.execAndGet(warped?"SELECT length_ticks FROM clips":"SELECT length_ns FROM clips").getInt64();};
+        OpRequest request;
+        request.opType="clip.resize";
+        request.payload={{"id",1},{"pos",ticks(100,false)},{"length",ticks(7000,false)}};
+        History history(*f.store);
+        const auto raw=OpJournal(*f.store).commit(request);
+        check(raw.ok && length()==bound-start,"SC-476: a direct resize stops at the pitched or warped source-window end");
+        if(!raw.ok || length()!=bound-start)std::printf("resize error: warp=%d expected=%lld actual=%lld %s\n",
+            warped,static_cast<long long>(bound-start),static_cast<long long>(length()),raw.error.c_str());
+        check(history.undo().ok && length()==initial,"SC-476: Undo restores the prior native length");
+        check(history.redo().ok && length()==bound-start,"SC-476: Redo restores the captured native end");
+        check(history.undo().ok,"SC-476: return to the short clip for the placement planner");
+        const auto prepared=placement::prepareResizeEnd(*f.store,f.scope(8000),{1,f.point(7100)},{});
+        const auto committed=clip_edit::commitPrepared(*f.store,prepared);
+        check(committed.ok && length()==bound-start,"SC-476: a prepared resize agrees with the direct resize");
+        if(!committed.ok || length()!=bound-start)std::printf("prepared resize error: warp=%d expected=%lld actual=%lld %s\n",
+            warped,static_cast<long long>(bound-start),static_cast<long long>(length()),committed.error.c_str());
+        check(history.undo().ok && length()==initial,"SC-476: Undo also restores the prepared resize");
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=240240");
+        const auto looped=OpJournal(*f.store).commit(request);
+        check(looped.ok && length()>bound-start,"SC-476: a looped clip can extend beyond its audio source");
+    }
+}
 void inheritedResizeFade(Precision width,bool musical,bool warped,bool incomingFade) {
     Fixture f(48000,width,musical,false,true);f.add(1,0,800,0);if(warped)f.warp(1);
     f.store->db().exec(incomingFade?"UPDATE clips SET fade_in_ticks=168168,fade_in_curve=2":
@@ -227,6 +270,7 @@ int main() {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     test::TempDirectory appData{"edit_plan_playback","appdata"};
     try {
+        resizeStopsAtSourceEnd();
         setAppData(appData.path());
         for(const auto sourceRate:{44100u,48000u})for(const auto width:{Precision::Float32,Precision::Float64})for(const bool musical:{false,true})
             groupMovePcm(sourceRate,width,musical);

@@ -59,6 +59,9 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
   public:
     explicit ScrubArea(ArrangementView &);
     void paint(juce::Graphics &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
     void mouseDown(const juce::MouseEvent &) override;
     // A marker dragged follows the mouse, to the nearest grid line while snapping, never before the
     // first grid line; let go, it moves there, one step (manual 6.5).
@@ -261,6 +264,7 @@ class ArrangementCanvas final : public juce::Component,
     // The engine projection supplies sorted, unique clip IDs.
     void setPlaybackProblemIds(std::vector<std::int64_t> ids);
     [[nodiscard]] bool hasPlaybackProblem(std::int64_t id) const noexcept;
+    bool hasInfoAt(juce::Point<int>) const;
     juce::String getTooltip() override;
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
@@ -327,7 +331,7 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t movingTo() const noexcept { return movingTo_; }
     // The clip whose right edge is being dragged (§6.7), and its length so far; 0 when none.
     std::int64_t resizingClip() const noexcept { return resizing_; }
-    std::int64_t resizedLength() const noexcept { return resizeLength_; }
+    std::int64_t resizedLength() const noexcept;
     // A clip's bar, Live's clip title strip: where a drag moves the clip (§6.7), and the
     // width of its right edge, where a drag changes its length.
     static constexpr int kClipBarHeight = 11, kClipEdge = 4;
@@ -593,6 +597,7 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<RangeDrag> rangeDrag_;
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    std::optional<std::int64_t> resizeLimit_;
     ResizeEdge resizeEdge_ = ResizeEdge::None;
     bool keyResize_ = false, stretching_ = false;
     std::optional<std::pair<std::int64_t, std::int64_t>> clipTimeBounds_;
@@ -605,6 +610,10 @@ class ArrangementCanvas final : public juce::Component,
     // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
     bool copying_ = false;
     bool contextMenuPress_ = false;
+    bool emptyTrackPress_ = false, emptyTrackClick_ = false;
+    bool emptyTrackDoubleClicked_ = false;
+    bool inEmptyTrackArea(juce::Point<int>) const;
+    void addTrackInEmptyArea(juce::Point<int>);
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
@@ -622,8 +631,8 @@ class ArrangementCanvas final : public juce::Component,
                        float bottom) const;
     // Draw the snapshot's note bars over the body, spreading the keys used by
     // the clip over its height (Live 12 manual 6.1).
-    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
-                    float bottom) const;
+    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, std::int64_t clipEnd,
+                    float left, float right, float top, float bottom) const;
     void paintLiveMidiTake(juce::Graphics &, const LiveMidiTake &, const engine::TrackNode &,
                            std::size_t trackNumber, int y, int height) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;

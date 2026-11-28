@@ -48,7 +48,7 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
     std::span<const Move>,const Options&);
 /// Build a scope from exact native material extents for an interactive drag.
 [[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,std::span<const Move>,const Options&);
-/// Keeps the native start fixed; left trim and Crop are separate intents.
+/// Keeps the native start fixed and clamps unlooped audio extensions at the playable end.
 [[nodiscard]] clip_edit::PreparedEdit prepareResizeEnd(Store&,const EditScope&,
     ResizeEnd,const Options&);
 
@@ -110,6 +110,8 @@ struct PlacementBatch {
 };
 [[nodiscard]] clip_edit::PreparedEdit prepareCaptured(Store&,const EditScope&,
     PlacementBatch,const Options&,clip_edit::CopyIds&,const char* label);
+[[nodiscard]] clip_edit::PreparedEdit prepareCaptured(Store&,const EditScope&,
+    PlacementBatch,const Options&,clip_edit::CopyIds&,const char* label,const edit::TimeMap* prospectiveClock);
 // Reused ED-01 image arithmetic. Freeze before changing any visible boundary;
 // trimFrozenImage performs only value/time-map arithmetic and preserves native
 // outer boundaries supplied by the owner.

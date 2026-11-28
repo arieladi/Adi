@@ -117,7 +117,7 @@ library::SampleSettingsProblem saveSampleDefaults(Store& store,std::int64_t clip
     const auto captured=captureSampleDefaults(store,clipId,referenceRate);if(!captured.ok){error=captured.error;return library::SampleSettingsProblem::Invalid;}
     return index.saveSampleSettings(captured.hash,*captured.settings,error);
 }
-std::optional<SampleSettings> loadSampleDefaults(Store &store, library::Index &index, const media::MediaResult &imported,
+std::optional<SampleSettings> loadSampleDefaults(Store &store, const library::Index &index, const media::MediaResult &imported,
                                                  const OpRequest &capture) {
     const auto key = capture.opType == "media.import" ? capture.payload.at("row").at("hash_blake3")
                                                       : media::mediaRow(store.db(), imported.mediaId).at("hash_blake3");
@@ -146,7 +146,7 @@ void applySampleDefaults(Store& store,Payload& image,const SampleSettings& s,dou
         const auto last=map.markers.back().tick;std::optional<std::int64_t> loopEnd;
         if(s.loopEnabled){loopEnd=edit::addTime(s.loopStartTicks,*s.loopLengthTicks);if(*loopEnd>last)throw std::runtime_error("saved Warp loop extends beyond its source map");}
         tickSpan=initialSpan(s.contentOffsetTicks,std::min(last,s.endMarkerTicks.value_or(last)),s.loopEnabled?std::optional(s.loopStartTicks):std::nullopt,loopEnd);
-        engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});if(tempo.events.empty())tempo.events.push_back({0,120,0});
+        engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt(),points.getColumn(3).getDouble()});if(tempo.events.empty())tempo.events.push_back({0,120,0});
         const auto anchors=engine::projectWarpAnchors(map.markers,tempo,origin-s.contentOffsetTicks,referenceRate);if(anchors.empty() || !anchors.back().outputFrame || anchors.back().outputFrame>0x7fffffffULL)throw std::runtime_error("saved Warp output exceeds native bounds");
         root["time_base"]=0;root["pos_ticks"]=origin;root["pos_ns"]=nullptr;root["length_ticks"]=tickSpan;root["length_ns"]=nullptr;
     }else {

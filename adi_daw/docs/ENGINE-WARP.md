@@ -41,10 +41,9 @@ the private directory created for that preparation. The type cannot be
 constructed or copied by callers, and its file/metadata cannot be changed.
 This file is temporary playback data, never a media-pool asset path.
 
-R3 runs offline, including study and exact-duration processing. Its prepared
-PCM is already aligned at output frame zero, so a paged reader of it adds
-zero live stretcher latency. A future live stretcher needs its own declared
-PDC delay. Preparation and destruction belong off the audio thread.
+The prepared R3 path runs offline, including study and exact-duration
+processing. Its PCM is already aligned at output frame zero. Preparation and
+destruction belong off the audio thread.
 
 src/adi/audio/warp_map.hpp defines AWRP's 16-byte frame/tick records and
 checked canonical maps (SPEC 6.4). Readers accept wider future records through
@@ -54,13 +53,28 @@ detectTransients reader in audio/transients.hpp supplies source-relative onset
 frames to Beats and Auto-Warp analysis; it uses bounded windows,
 has no Store side effects and refuses on the callback.
 
+Engine owners can pass `WarpTimingSettings` to `requestWarp` to use shared
+AWTM timing for automatic Beats renders. The worker verifies the original
+source hash and looks up the exact settings before checking prepared PCM.
+It projects cached positions into the original source window before playback
+rate conversion. A matching empty window uses the slice origin and anchor
+positions. Missing or incompatible timing uses the incumbent detector.
+Current ClipPlayback uses `requestWarp(plan)` while the timing rollout is
+gated. The settings overload resolves AWTM for automatic Beats only.
+
+Prepared PCM keys for shared timing include the canonical onset positions.
+A new cache-aware request rechecks timing after the preceding request has
+started that lookup, so a later AWTM publication can refresh a prior fallback.
+Existing task holders retain their completed PCM.
+
 Auto-Warp (audio/auto_warp.hpp) fits an onset grid, optionally follows tempo
 changes and places bar anchors in the supplied meter. From First Beat trims
-the source window to the first detected attack; Sample Start retains its
-original offset. A supplied source BPM provides a straight clock for short
-or non-percussive material. Without enough reliable timing evidence the
-producer refuses with NoTempo. Grid confidence does not resolve half/double
-tempo ambiguity; the captured tempo hint selects between those candidates.
+the source window to the first detected attack on the incumbent path. A
+selected shared grid trims to its first measured downbeat. Sample Start
+retains the original offset. A supplied source BPM provides a straight clock
+for short or non-percussive material. Without enough reliable timing evidence
+the producer refuses with NoTempo. The captured tempo hint selects between
+half-time and double-time candidates when grid confidence leaves ambiguity.
 
 clip_edit::prepareImportAudio connects this analysis to a captured AWRP blob,
 source window and musical clip length. It performs no project writes until
@@ -69,15 +83,20 @@ Copy-in publication allows an identical regular owned file retained by undo;
 it never replaces a different file or removes an existing file on SQL failure.
 Cancellation is checked again at commit, including deduplicated imports.
 
-ClipPlayback prepares enabled Warp clips off the callback and hands their
-private PCM to the ordinary paged reader. engine/warp_projection.hpp projects
+The prepared ClipPlayback path hands private PCM to the ordinary paged reader.
+engine/warp_projection.hpp projects
 source musical ticks through the project tempo integral, adding interior
 tempo junctions. It handles trimmed source clocks before project zero by
 extending the initial tempo. Source offsets, loop bounds and end markers use
-that musical clock; fixed nanosecond pins from earlier unwarped playback do
-not override it. A tempo change requires a new prepared playback generation.
+that musical clock and take precedence over earlier fixed nanosecond pins.
+This path needs a new prepared render for a tempo change.
 The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
-the default is zero. Reverse and channel aliases remain unsupported here.
+the default is zero. Matching Pitch Editor edits are applied in source coordinates
+before Warp. Streaming Re-Pitch reads the corrected native-rate window on the
+same marker and tempo clock as a plain clip, including during A/B comparison.
+Prepared renders use the same directed mapping when the page reader reverses
+the prepared window.
+Channel aliases remain unsupported.
 
 Split, copy and range/Time material edits retain warped fade shapes on the
 unrolled source musical clock (clip_warp_fade_domains, schema 1.13), including
@@ -97,5 +116,60 @@ pitch or trimmed extent, currently refuses this clean-import producer. Use the
 separate material APIs for split/copy; this API does not promise arbitrary
 edited-clip Warp toggling or individual catalogue marker setters.
 
-Import and playback connect all six modes;
-these tests establish generated-signal behavior, not measured Live parity.
+## Streaming warp playback (TM-WT-04)
+
+The Arrangement's native Beats, Texture and Re-Pitch players read the original
+source window through the bounded PCM page cache. The compiled Warp index uses
+the shared TM-TT-01 step, linear and Bézier tempo integral to map each output
+frame to fractional AWRP ticks. Each loop iteration uses the tempo at its own
+position. Tempo edits and Link changes use the existing Session generation
+handover. On an authored tempo edit during playback, the driver carries on with
+the previous graph until the new graph has the compensated R3 pages at its
+current position, including around transport loops. Beats onset analysis stays
+off the callback and is reusable across tempo changes. The native players
+prepare bandlimited sample-rate kernels from the pinned converter off the
+callback.
+
+Supported Tones, Complex and Complex Pro clips use a bounded worker-side R3
+voice at steady tempo and through tempo changes. It supplies
+`getPreferredStartPad()` and discards `getStartDelay()` output frames. The
+worker primes each tile with bounded history. Steady tempo uses 8,192-frame
+tiles on the clip's source clock. Variable tempo uses 16,384-frame tiles on
+the arranged output clock and pads the source with zeros at the placed end.
+The fixed tile origins keep the output identical when a cold seek meets
+cached pages. Stereo R3 uses mid/side to preserve the stereo relationship
+through ratio changes. A 512-frame overlap aligns adjacent waveforms within
+a 64-frame search window. The worker keeps two tiles and bounded source
+pages and reclaims idle scratch.
+
+R3 reset can allocate, so the audio callback reads published PCM pages. The
+track source delays its clips by the declared R3 latency, and the graph
+compensates parallel paths. Export removes that preroll from the requested
+timeline range. The streaming R3 path supports time ratios and effective pitch
+scales from 0.5 to 2. The prepared path still serves unsupported configurations,
+with a clip diagnostic when a ramp falls outside the streaming domain.
+
+`WarpClipPlayer::launchAt` projects a stored Session slot from its quantized
+launch tick and source phase. Resident and paged Beats, Texture and Re-Pitch
+use the effective clock from the persisted slot graph. The scheduler's Legato
+forecast warms the upcoming source pages. A cold page miss emits silence and
+counts an underrun while the worker fills the request.
+
+A scene that mixes native and fixed sources keeps the effective clock for
+native Warp and uses a flat prepared BPM for the fixed sources. Continued
+native audio keeps its run and source phase while the fixed tracks stop or
+launch new material. A mixed scene validates the continued clip and primes
+the full raw source window when it needs all phases of a paged clip.
+
+Supported fixed-clock R3 slots use aligned worker PCM. The track reports the
+maximum source delay across its Arrangement clips and Session media banks.
+The driver delays Session PCM and its Arrangement replacement mask together.
+A scheduled R3 Legato tempo scene can switch when both banks have primed the
+target's full bounded playback window. A larger candidate that cannot supply
+that phase leaves the current scene and clock playing.
+An external tempo update that would drop a running worker R3 slot keeps the
+active graph. The driver rechecks the slot at adoption if a launch settles
+after the owner prepared the candidate.
+
+The stretcher seat report records the measurements for playback, export and
+scheduled scenes, along with the outstanding Live reference readings.

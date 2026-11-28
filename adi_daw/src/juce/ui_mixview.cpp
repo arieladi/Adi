@@ -216,8 +216,9 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
     };
     addChildComponent(analysis);
     addChildComponent(analyzerDock);
-    addAndMakeVisible(analyzerToggle);
+    addChildComponent(analyzerToggle);
     analyzerToggle.setMouseClickGrabsKeyboardFocus(false);
+    analyzerToggle.setTooltip("Show or hide Meters, Phase and Spectrum beside Stack.");
     analyzerToggle.onClick = [this] { setAnalyzerDock(analyzerToggle.getToggleState()); };
     analyzerDock.onChange = [this] { persistAnalyzerSettings(); };
     analyzerDock.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
@@ -467,19 +468,19 @@ void MixViewPanel::resized() {
         content.removeFromRight(look::gap);
         if (!alive) return;
     }
-    const bool beside = tab() == Tab::Stack;
-    const bool fits = content.getWidth() >= kStackMinimumWidth + kDockGap + kDockMinimumWidth &&
-                      content.getHeight() >= kDockMinimumHeight;
-    analyzerDock.setVisible(appliedDock_ && beside && fits);
+    // The switch belongs to the Stack layouts in which it can reveal the dock.
+    const bool canDock = tab() == Tab::Stack &&
+                         content.getWidth() >= kStackMinimumWidth + kDockGap + kDockMinimumWidth &&
+                         content.getHeight() >= kDockMinimumHeight;
+    analyzerToggle.setVisible(canDock);
+    if (!alive) return;
+    analyzerDock.setVisible(appliedDock_ && canDock);
     if (!alive) return;
     if (analyzerDock.isVisible()) {
         const int width = std::min(appliedWidth_, content.getWidth() - kStackMinimumWidth - kDockGap);
         analyzerDock.setBounds(content.removeFromRight(width)); content.removeFromRight(kDockGap);
         if (!alive) return;
     }
-    analyzerToggle.setTooltip(appliedDock_ && beside && !fits ?
-        "Analyzer dock requested. Enlarge this view to retain 320 px for channel tools and 240 by 420 px for analyzers." :
-        "Show or hide Meters, Phase and Spectrum beside Stack.");
     const int navWidth = std::clamp(getWidth() / 6, look::mixChannelMinWidth, look::mixChannelMaxWidth);
     const bool showChannels = content.getWidth() >= kStackMinimumWidth + navWidth + look::gap &&
                               content.getHeight() >= look::mixInfoHeight + 6 * look::mixChannelRowHeight;

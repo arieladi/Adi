@@ -441,8 +441,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        {16, 24, 32}, 24));
     r.push_back(choice("export.dither", ex, "Dither",
                        "The dither the export dialog starts with when the depth is below 32-bit. "
-                       "Triangular is Live's default (Live 12 manual 5.1.3.3).",
-                       {"none", "triangular", "rectangular", "pow-r1", "pow-r2", "pow-r3"}, "triangular"));
+                       "New exports start with no dither (SC-469).",
+                       {"none", "triangular", "rectangular", "pow-r1", "pow-r2", "pow-r3"}, "none"));
     r.push_back(make("export.nameTemplate", Type::Text, ex, "File name template",
                      "How exported files are named; {project} and {track} are filled in.",
                      "{project} - {track}"));
@@ -661,7 +661,10 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("editing.rippleLockedClips", Type::Bool, "Editing", "Ripple moves locked clips",
                      "Ripple editing also moves locked clips (REAPER).", false));
     r.push_back(make("editing.splitAllWithNoSelection", Type::Bool, "Editing", "Split all at the cursor",
-                     "With nothing selected, Split splits every track at the cursor (REAPER).", true));
+                     "With nothing selected, Split splits every track at the cursor (REAPER).", false));
+    r.push_back(choice(kEmptyArrangementTrackKey, "Editing", "Double-click below tracks",
+                       "Choose the track created by a double-click in the empty Arrangement. Ask remembers the answer.",
+                       {"Ask", "MIDI Track", "Audio Track", "FX Channel"}, "Ask"));
 
     // --- Mixing (catalogue III). No default send level and no New track page: a
     // new send starts at -inf and a new track at Live's defaults (fader 0 dB, in
@@ -682,6 +685,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How fast fast-forward and rewind move, in bars per second (Cubase).", 4.0, 0.25, 64));
     r.push_back(make("transport.locateOnClick", Type::Bool, "Transport", "Locate on click in empty space",
                      "A click in empty track space moves the playhead, as in Live.", true));
+    r.push_back(make("transport.loopSwitchTakesSelection", Type::Bool, "Transport", "Loop switch takes time selection",
+                     "Click Loop to use the selected time. With no time selected, Loop toggles the current brace.", false));
     r.push_back(choice("transport.seekOnClick", "Transport", "Seek on click",
                        "Where a click moves the playhead during playback (REAPER).",
                        {"ruler", "rulerAndEmptyArea", "anywhere"}, "rulerAndEmptyArea"));
@@ -716,7 +721,7 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Announcements from anything else are ignored (ADR-0145 d7).",
                      ""));
     r.push_back(make("sync.audioGridderDiscovery", Type::Bool, "Plug-Ins", "Find AudioGridder servers",
-                     "Find remote plug-in servers by mDNS/Bonjour (ADR-0053, ADR-0145 d6).", true));
+                     "Find remote plug-in servers by mDNS/Bonjour (ADR-0053, ADR-0145 d6).", false));
 
     // --- Engine (catalogue IV §1) ------------------------------------------------------------------
     r.push_back(ranged("engine.compensationHeadroomSamples", Type::Int, "Engine", "Compensation headroom",
@@ -883,7 +888,8 @@ std::vector<Setting> build() {
     r.push_back(choice("audio.driverType", "Audio", "Driver Type",
                        "The audio driver. ASIO is opened only through JUCE's wrapper; there is "
                        "no raw bypass (ADR-0145 d5). Empty means the system default.",
-                       {"", "ASIO", "WASAPI", "DirectSound", "CoreAudio", "ALSA", "PipeWire/JACK"},
+                       {"", "ASIO", "WASAPI", "WASAPI Exclusive", "WASAPI Low Latency", "DirectSound",
+                        "CoreAudio", "ALSA", "PipeWire/JACK"},
                        ""));
     r.push_back(choice("audio.bufferSize", "Audio", "Buffer Size",
                        "Samples per block, chosen by hand: 64 to 4096. There is no 32 and no "

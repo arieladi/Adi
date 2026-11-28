@@ -39,6 +39,7 @@
 #include <map>
 #include <sqlite3.h>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -147,7 +148,7 @@ void AppCommands::reload() {
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
-    splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
+    splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", false);
     // Appearance is shared by the windows. Existing "os" profiles resolve to Dark.
     const auto word = [this](const char *key) {
         const auto v = settings_.get(key);
@@ -416,6 +417,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
         {"edit.consolidate", "Edit"}, // ConsolidateMidi
+        {"options.audio-engine", "Options"}, // AudioEngine
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -665,7 +667,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate", "Audio Engine On/Off"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -737,6 +739,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case AudioEngine:
+        // SC-385: Live's Ctrl+Alt+Shift+E (Cmd+Alt+Shift+E): the audio engine off, freeing the interface for
+        // another program or stopping a howl, and on again.
+        info.addDefaultKeypress('e', cmd | alt | shift);
         break;
     case SwitchDetailView:
         info.addDefaultKeypress(juce::KeyPress::tabKey, shift);
@@ -1180,21 +1187,24 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     // The Note Editor's own (manual 10.5.2, 10.5.8, 10.7.1): Invert Selection on Ctrl/Cmd+Shift+A,
     // Quantize on Ctrl/Cmd+U and its settings on Ctrl/Cmd+Shift+U, Crop Clip on Ctrl/Cmd+Shift+J.
-    // They act while the editor has the keyboard; what each reads and whether it can act is the
-    // editor's entry, below.
+    // The editor supplies the note context below. Quantize can also use a selected Arrangement clip.
     case InvertSelection:
         info.addDefaultKeypress('a', cmd | shift);
         info.setActive(false);
         break;
     case Quantize:
-        info.addDefaultKeypress('u', cmd);
-        info.setActive(active_ && active_->state().clipView && active_->clipView.audio() &&
-                       active_->clipView.sample.hasKeyboardFocus(true) && active_->clipView.sample.canQuantize());
+    case QuantizeSettings: {
+        info.addDefaultKeypress('u', id == Quantize ? cmd : cmd | shift);
+        const bool sampleContext = active_ && active_->state().clipView && active_->clipView.audio() &&
+                                   active_->clipView.sample.hasKeyboardFocus(true);
+        const bool enabled = active_ && (id == Quantize && sampleContext ? active_->clipView.sample.canQuantize()
+                                                                        : active_->canQuantizeArrangement());
+        info.setActive(enabled);
+        if (!enabled)
+            info.description = sampleContext && id == Quantize ? "Warp the audio clip before quantizing it."
+                                                               : "Select a MIDI clip or its notes to use Quantize.";
         break;
-    case QuantizeSettings:
-        info.addDefaultKeypress('u', cmd | shift);
-        info.setActive(false);
-        break;
+    }
     case CropClip:
         info.addDefaultKeypress('j', cmd | shift);
         info.setActive(false);
@@ -1311,6 +1321,13 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         return allowComputerMidi && root.pressComputerMidiToggle(physical);
     if (id == PreviewSelected)
         return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
+    if (id == Quantize || id == QuantizeSettings) {
+        const auto *focus = juce::Component::getCurrentlyFocusedComponent();
+        if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
+            return false;
+        if (!root.noteEditorHasContext() && !root.canQuantizeArrangement())
+            return root.command(id);
+    }
     if (id == HotSwap && (!root.devices.hasHotSwapContext() ||
                          (root.transport.keyboard.getToggleState() && key == juce::KeyPress('q'))))
         return false;
@@ -1351,8 +1368,9 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
 void AppCommands::activate(AdiRootComponent &root) {
+    if (active_ == &root)
+        return; // Rebuilding a native menu already queries this root's command state.
     active_ = &root;
-    // Re-read the command infos so the Edit menu names the step it would undo.
     manager.commandStatusChanged();
 }
 void AppCommands::detach(AdiRootComponent &root) {
@@ -1414,6 +1432,21 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
         else
             root_.showPlaybackProblems();
     };
+    addChildComponent(showExportedFile);
+    showExportedFile.setTitle("Show Exported File");
+    showExportedFile.onClick = [this] {
+        if (exportedFile_.empty())
+            return;
+        const juce::File file(juce::String::fromUTF8(media::pathUtf8(exportedFile_).c_str()));
+        if (!file.existsAsFile()) {
+            finishExport("The exported file is no longer on disk.");
+            return;
+        }
+        if (revealExportedFile)
+            revealExportedFile(exportedFile_);
+        else
+            file.revealToUser();
+    };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
     audioDeviceProblem_ = std::move(problem);
@@ -1472,6 +1505,10 @@ void StatusBar::resized() {
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
     auto actions = messageField().withY(11).withHeight(16).reduced(4, 0);
+    if (showExportedFile.isVisible()) {
+        showExportedFile.setBounds(actions.removeFromRight(64));
+        actions.removeFromRight(4);
+    }
     const bool showAudio = audioSettings.isVisible(), showIssues = playbackIssues.isVisible();
     if (showAudio) {
         const int availableWidth = showIssues ? actions.getWidth() / 2 : actions.getWidth();
@@ -1526,10 +1563,31 @@ juce::Rectangle<float> StatusBar::clipViewFrame() const {
             std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
 void StatusBar::setExportProgress(std::optional<int> percent) {
+    if (percent)
+        setExportedFile({});
     if (exportPercent_ == percent)
         return;
     exportPercent_ = percent;
     exportProgressText_ = percent ? "Exporting " + juce::String(*percent) + "%" : juce::String{};
+    repaint();
+}
+void StatusBar::finishExport(std::string message, std::filesystem::path output) {
+    setExportProgress(std::nullopt);
+    setExportedFile(std::move(output));
+    root_.say(std::move(message));
+}
+void StatusBar::setExportedFile(std::filesystem::path output) {
+    if (!output.is_absolute())
+        output.clear();
+    if (output == exportedFile_)
+        return;
+    exportedFile_ = std::move(output);
+    showExportedFile.setVisible(!exportedFile_.empty());
+    if (showExportedFile.isVisible()) {
+        const auto filename = juce::String::fromUTF8(media::pathUtf8(exportedFile_.filename()).c_str());
+        showExportedFile.setTooltip("Show " + filename + " in its folder.");
+    }
+    resized();
     repaint();
 }
 void StatusBar::paint(juce::Graphics &g) {
@@ -1596,7 +1654,8 @@ void StatusBar::paint(juce::Graphics &g) {
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
     const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
-                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0);
+                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0) +
+                             (showExportedFile.isVisible() ? showExportedFile.getWidth() + 4 : 0);
     auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
     if (exportProgressText_.isNotEmpty())
         g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);
@@ -1974,8 +2033,11 @@ void AdiRootComponent::frame() noexcept {
             (void)toggle(Panel::Browser);
         resized();
     }
-    if (!infoArea_.isEmpty())
-        hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
+    if (!infoArea_.isEmpty()) {
+        const auto mouse = juce::Desktop::getInstance().getMainMouseSource();
+        auto *target = mouse.getComponentUnderMouse();
+        hover(target, target ? target->getLocalPoint(nullptr, mouse.getScreenPosition().roundToInt()) : juce::Point<int>{});
+    }
     infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
@@ -2035,22 +2097,26 @@ void AdiRootComponent::frame() noexcept {
     if (lastDrain_ & (DirtySet::Layout | DirtySet::Content))
         repaint();
 }
-void AdiRootComponent::hover(juce::Component *c) {
+void AdiRootComponent::hover(juce::Component *c, juce::Point<int> position) {
     // A boxed analyzer never replaces itself with its own Info tooltip.
     if (c == &infoSpectrum || (c && infoSpectrum.isParentOf(c))) c = nullptr;
-    if (c != nullptr && c != this && !isParentOf(c))
+    if (c != nullptr && (c == this || !isParentOf(c) || !c->getLocalBounds().contains(position)))
         c = nullptr;
     // The nearest element that can describe itself, as Live's Info View does.
-    juce::TooltipClient *client = nullptr;
-    for (auto *p = c; p != nullptr && p != this; p = p->getParentComponent())
-        if ((client = dynamic_cast<juce::TooltipClient *>(p)) != nullptr) {
-            c = p;
-            break;
-        }
-    if (c == hovered_)
+    auto *target = c;
+    while (target && target != this && dynamic_cast<juce::TooltipClient *>(target) == nullptr)
+        target = target->getParentComponent();
+    if (target == this ||
+        (target == &arrangement.canvas && !arrangement.canvas.hasInfoAt(target->getLocalPoint(c, position))) ||
+        (target == &browser && !browser.hasInfoAt(target->getLocalPoint(c, position))))
+        target = nullptr;
+    if (target == hovered_)
         return;
-    hovered_ = c;
-    infoText_ = client ? c->getTitle() + "\n" + client->getTooltip() : juce::String();
+    hovered_ = target;
+    auto *client = dynamic_cast<juce::TooltipClient *>(target);
+    const auto description = client ? client->getTooltip() : juce::String{};
+    infoText_ = description.isNotEmpty() ? target->getTitle() + "\n" + description : juce::String{};
+    infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     dirty_.mark(DirtySet::Content);
 }
 std::int64_t AdiRootComponent::timelineTick() const noexcept {
@@ -2311,6 +2377,8 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     // Live's Info View: a title bar with the element's name, its description below.
     if (!infoArea_.isEmpty()) {
         panel(infoArea_);
+        if (infoText_.isEmpty())
+            return;
         const auto inner = infoArea_.reduced(look::border);
         g.setColour(look::panel);
         g.fillRect(inner);
@@ -2414,6 +2482,11 @@ void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
     }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
+    // SC-377: Esc stops a drop whose files are still being read.
+    if (capturing_ && key == juce::KeyPress(juce::KeyPress::escapeKey) && cancelCapture) {
+        cancelCapture();
+        return true;
+    }
     // With Use Tab Key to Move Focus off, Shift+Tab switches the Detail View.
     // Tab's Arrangement/Session switch waits for Session View.
     const auto mods = key.getModifiers();
@@ -2908,6 +2981,8 @@ ReverseTargets reverseTargets(const engine::Snapshot &current, const Arrangement
     }
     return result;
 }
+// R52 is still to be checked in Live. A focused track title provisionally pastes a device at the chain end.
+constexpr bool kPasteDeviceFromTrackTitle = true;
 bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || isMidiTrack(t); }
 std::string_view clipTrackKind(const engine::TrackNode &t) { return isMidiTrack(t) ? "midi" : std::string_view(t.kind); }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
@@ -2927,6 +3002,16 @@ bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
            (clip == DeviceChainStrip::Clip::Paste && commands_.clipClipboard().empty() &&
             !arrangement.canvas.hasAutomationSelection());
 }
+std::int64_t AdiRootComponent::titleDevicePasteTrack() const {
+    if (!kPasteDeviceFromTrackTitle || !trackClipboardContext() || arrangement.canvas.hasAutomationSelection() ||
+        !devices.paste || !devices.holdsCopy || !devices.holdsCopy())
+        return 0;
+    if (!commands_.clipClipboard().empty() && commands_.latestClipboardSource() != AppCommands::ClipboardSource::Device)
+        return 0;
+    const auto track = arrangement.geometry.selection.track;
+    const auto current = view_.current();
+    return track > 0 && current && current->findTrack(track) ? track : 0;
+}
 bool AdiRootComponent::canClipboard(int id) const {
     using Clip = DeviceChainStrip::Clip;
     const auto clip = id == AppCommands::Cut    ? Clip::Cut
@@ -2937,7 +3022,8 @@ bool AdiRootComponent::canClipboard(int id) const {
                          : id == AppCommands::Copy ? ClipCommand::Copy
                          : id == AppCommands::Paste ? ClipCommand::Paste
                                                     : ClipCommand::Duplicate;
-    return devices.canClipboard(clip) || canClipClipboard(command);
+    return devices.canClipboard(clip) || (clip == Clip::Paste && titleDevicePasteTrack() != 0) ||
+           canClipClipboard(command);
 }
 namespace {
 // The project file a clipboard copy names (`sourceFile`), as the engine reads the store's.
@@ -3078,7 +3164,7 @@ bool AdiRootComponent::trackClipboard(ClipCommand command) {
                     sel.picked.clear();
                     publishSelection();
                 }
-                board.held = std::move(copy);
+                commands_.setArrangementClipboard(std::move(copy));
                 error_.clear();
                 dirty_.mark(DirtySet::Status);
                 commands_.manager.commandStatusChanged();
@@ -3189,7 +3275,7 @@ bool AdiRootComponent::automationClipboard(ClipCommand command) {
         if (!commitEdit(std::move(prepared)))
             return false;
     }
-    board.held = EnvelopeCopy{std::move(copy), projectFile(store)};
+    commands_.setArrangementClipboard(EnvelopeCopy{std::move(copy), projectFile(store)});
     error_.clear();
     dirty_.mark(DirtySet::Status);
     commands_.manager.commandStatusChanged();
@@ -3309,13 +3395,13 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                     return fail(cut.copy.error);
                 if (!commitEdit(std::move(cut.edit)))
                     return false;
-                board.held = std::move(cut.copy);
+                commands_.setArrangementClipboard(std::move(cut.copy));
                 timeSelection(group.tracks.front(), group.tracks.front(), begin, begin);
             } else {
                 auto copy = clip_edit::copySelectedClips(store, group, ids, options);
                 if (!copy.ok)
                     return fail(copy.error);
-                board.held = std::move(copy);
+                commands_.setArrangementClipboard(std::move(copy));
             }
             commands_.manager.commandStatusChanged();
         }
@@ -3328,12 +3414,12 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             auto copy = clip_edit::copyClip(store, chosen.clip->id, options);
             if (!copy.ok)
                 return fail(copy.error);
-            board.held = std::move(copy);
+            commands_.setArrangementClipboard(std::move(copy));
         } else {
             auto copy = clip_edit::copyRange(store, selection, options);
             if (!copy.ok)
                 return fail(copy.error);
-            board.held = std::move(copy);
+            commands_.setArrangementClipboard(std::move(copy));
         }
         // Copy writes nothing, so nothing else clears an earlier refusal from the Status Bar.
         error_.clear();
@@ -3349,7 +3435,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))
                 return false;
-            board.held = std::move(cut.copy);
+            commands_.setArrangementClipboard(std::move(cut.copy));
             timeSelection(chosen.track->id, chosen.track->id, from, from);
         } else {
             auto cut = clip_edit::prepareCutRange(store, selection, options);
@@ -3357,7 +3443,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))
                 return false;
-            board.held = std::move(cut.copy);
+            commands_.setArrangementClipboard(std::move(cut.copy));
         }
         commands_.manager.commandStatusChanged();
         succeeded();
@@ -3616,7 +3702,7 @@ bool AdiRootComponent::timeCommand(int id) {
         auto copy = clip_edit::copyTime(store, from, to, rate);
         if (!copy.ok)
             return fail(copy.error);
-        board.held = std::move(copy);
+        commands_.setArrangementClipboard(std::move(copy));
         return done();
     }
     case AppCommands::CutTime: {
@@ -3626,7 +3712,7 @@ bool AdiRootComponent::timeCommand(int id) {
             return fail(cut.copy.error);
         if (!commitEdit(std::move(cut.edit)))
             return false;
-        board.held = std::move(cut.copy);
+        commands_.setArrangementClipboard(std::move(cut.copy));
         select(from, from);
         return done();
     }
@@ -3792,6 +3878,7 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
     arrangement.followPaused = true; // an edit pauses Follow (§6.2)
     if (afterEdit)
         afterEdit();
+    commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
     return true;
@@ -3967,7 +4054,7 @@ bool AdiRootComponent::toggle(Panel p) {
     }
     return true;
 }
-bool AdiRootComponent::insertTrack(bool midi) {
+bool AdiRootComponent::insertTrack(bool midi, std::optional<std::int64_t> after) {
     // Live inserts after the selected track and selects the new one. The id is the
     // payload's, never SQLite's (ADR-0021), and it comes from the CURRENT cell: an
     // action lands on the project as it is now, not on this window's last frame. In the selected
@@ -3977,7 +4064,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
         return fail("Inserting a track needs an open project.");
     // The new id from one `RowIds` (DF-E16): past every track and every id a remark still holds.
     RowIds ids(submitter_.store().db());
-    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
+    auto edit = ::adi::ui::insertTrack(current->tracks, after.value_or(arrangement.geometry.selection.track), midi,
                                        &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
@@ -3995,6 +4082,10 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.geometry.selection.clearMaterial();
     publishSelection();
     focusIfShowing(arrangement.headers);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    resized();
     return true;
 }
 bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
@@ -4232,6 +4323,41 @@ std::int64_t AdiRootComponent::midiClipForExport() const noexcept {
             return selection.clip;
     return 0;
 }
+bool AdiRootComponent::canQuantizeArrangement() const noexcept {
+    const auto snapshot = view_.current();
+    if (!snapshot)
+        return false;
+    const auto selectedMidi = [&](const auto &clip) {
+        return clip && !clip->audio && arrangement.geometry.clipSelected(clip->id);
+    };
+    return std::ranges::any_of(snapshot->tracks, [&](const auto &track) {
+        return track && isMidiTrack(*track) &&
+               (std::ranges::any_of(track->clips, selectedMidi) || std::ranges::any_of(track->takeClips, selectedMidi));
+    });
+}
+bool AdiRootComponent::quantizeArrangement() {
+    if (!canQuantizeArrangement())
+        return fail("Select a MIDI clip or its notes to use Quantize.");
+    const auto settings = clipView.quantizeSettings();
+    const auto grid = clipView.quantizeGrid(true);
+    std::vector<OpRequest> batch;
+    for (const auto id : arrangement.geometry.selectedClips()) {
+        const auto read = engine::readClipDetails(editStore(), id);
+        if (!read.clip) {
+            if (!read.error.empty())
+                return fail(read.error);
+            continue;
+        }
+        if (read.clip->kind != "midi")
+            continue;
+        auto edit = quantizeNotes(*read.clip, {}, grid, ClipWindow::of(*read.clip).toSource(0), settings);
+        if (!edit.refusal.empty())
+            return fail(std::move(edit.refusal));
+        for (auto &operation : edit.ops)
+            batch.push_back(std::move(operation));
+    }
+    return batch.empty() || submitEdits(std::move(batch));
+}
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
     return dropAudioFiles({{utf8Path, name}}, track, pos, false);
@@ -4258,7 +4384,7 @@ bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
 bool AdiRootComponent::loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &path) {
     if (!sampleInstrumentTarget(track))
         return fail("Choose a MIDI track to load the sample as an instrument.");
-    if (importing_ || importPrompt_)
+    if (importing_ || importPrompt_ || capturing_)
         return fail("Finish the current import before loading another sample.");
     if (!loadSampleInstrument)
         return fail("Loading a sample as an instrument needs the application.");
@@ -4281,7 +4407,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     }
     if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
         return fail(std::move(refusal));
-    if (importing_)
+    if (importing_ || capturing_)
         return fail("The last drop is still being imported.");
     if (importPrompt_)
         return fail("Answer the import prompt first.");
@@ -4382,39 +4508,136 @@ void AdiRootComponent::finishImport(std::int64_t first, std::int64_t onTrack, co
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {
     // The batch is built from the CURRENT cell.
+    if (captureAudio) {
+        // SC-377: the files are read (hashed, decoded) on the app's worker; the window stays alive, says
+        // what it reads, and Esc cancels. The batch lands as before, one undo step, when they are read --
+        // unless the project changed meanwhile, when the ids captured may be another row's.
+        std::vector<std::string> unique;
+        for (const auto &[path, name] : files)
+            if (std::find(unique.begin(), unique.end(), path) == unique.end())
+                unique.push_back(path);
+        const auto generation = view_.generation();
+        const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
+        const bool started = captureAudio(unique, [safe, files, track, pos, separate, unique, generation](
+                                                      std::vector<CapturedFile> captured, const std::string &why) {
+            if (!safe)
+                return;
+            safe->capturing_ = false;
+            if (!why.empty()) {
+                safe->say(why == "Cancelled." ? std::string("Nothing imported.") : why);
+                return;
+            }
+            if (safe->view_.generation() != generation || captured.size() != unique.size()) {
+                safe->fail("The project changed while the files were read: drop them again.");
+                return;
+            }
+            std::vector<DroppedAudio> dropped;
+            std::vector<std::pair<std::string, std::string>> failed;
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                const auto at = static_cast<std::size_t>(
+                    std::find(unique.begin(), unique.end(), files[i].first) - unique.begin());
+                const bool again = std::find_if(files.begin(), files.begin() + static_cast<std::ptrdiff_t>(i),
+                                                [&](const auto &f) { return f.first == files[i].first; }) !=
+                                   files.begin() + static_cast<std::ptrdiff_t>(i);
+                if (!captured[at].import) {
+                    if (!again)
+                        failed.emplace_back(files[i].second, captured[at].why);
+                    continue; // SC-389: the others still come in
+                }
+                DroppedAudio file{files[i].second, *captured[at].import};
+                if (again)
+                    file.import.media = {}; // a file dropped twice is captured, and imported, once
+                dropped.push_back(std::move(file));
+            }
+            (void)safe->landWhatRead(files, track, pos, separate, std::move(dropped), failed);
+        });
+        if (!started)
+            return fail("The last drop is still being read.");
+        capturing_ = true;
+        return true;
+    }
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
     // Capture each path once. Uncommitted pool rows are shared by content across the batch.
     std::vector<DroppedAudio> dropped;
-    std::map<std::string, std::int64_t> pendingMedia;
+    std::vector<std::pair<std::string, std::string>> failed;
+    std::unordered_map<std::string_view, std::optional<std::size_t>> captures;
     std::int64_t nextId = 0;
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        const auto &[path, name] = files[i];
+    for (const auto &[path, name] : files) {
+        const auto [capture, first] = captures.try_emplace(path);
         DroppedAudio file{name, {}};
-        std::size_t seen = 0;
-        while (seen < i && files[seen].first != path)
-            ++seen;
-        if (seen < i) {
-            file.import = dropped[seen].import;
-            file.import.media = {};
-        } else {
+        if (first) {
             file.import.firstFreeId = nextId;
             std::string why;
-            if (!importAudio(path, file.import, why))
-                return fail(why.empty() ? "The file could not be imported." : why);
-            if (file.import.media.opType == "media.import") {
-                const auto &hash = file.import.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
-                const auto [entry, inserted] = pendingMedia.try_emplace(hash, file.import.mediaId);
-                if (!inserted) {
-                    file.import.mediaId = entry->second;
-                    file.import.media = {};
-                }
+            if (!importAudio(path, file.import, why)) {
+                // SC-389: one bad file never stops the others; it is named when they have landed.
+                failed.emplace_back(name, why.empty() ? std::string("it could not be read") : why);
+                continue;
             }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
+            capture->second = dropped.size();
+        } else if (const auto previous = capture->second) {
+            file.import = dropped[*previous].import;
+            file.import.media = {};
+        } else {
+            continue; // A bad file dropped twice is named once.
         }
         dropped.push_back(std::move(file));
     }
+    return landWhatRead(files, track, pos, separate, std::move(dropped), failed);
+}
+bool AdiRootComponent::landWhatRead(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                                    std::int64_t pos, bool separate, std::vector<DroppedAudio> dropped,
+                                    const std::vector<std::pair<std::string, std::string>> &failed) {
+    // SC-389: what was read lands, one undo step; what was not is named, with why.
+    const auto said = [&failed](std::size_t landed) {
+        std::string line;
+        if (failed.size() == 1)
+            line = "\u201c" + failed[0].first + "\u201d could not be imported: " + failed[0].second;
+        else {
+            line = std::to_string(failed.size()) + " files could not be imported:";
+            for (std::size_t i = 0; i < failed.size(); ++i)
+                line += (i ? "; " : " ") + ("\u201c" + failed[i].first + "\u201d (" + failed[i].second + ")");
+        }
+        if (landed > 0)
+            line += landed == 1 ? std::string(". The other file came in.")
+                                : ". The other " + std::to_string(landed) + " came in.";
+        return line;
+    };
+    if (dropped.empty())
+        return failed.empty() ? fail("Drop an audio file.") : fail(said(0));
+    const auto landed = dropped.size();
+    if (!landPlainDrop(files, track, pos, separate, std::move(dropped)))
+        return false;
+    if (!failed.empty())
+        say(said(landed));
+    return true;
+}
+bool AdiRootComponent::landPlainDrop(const std::vector<std::pair<std::string, std::string>> &files,
+                                     std::int64_t track, std::int64_t pos, bool separate,
+                                     std::vector<DroppedAudio> dropped) {
+    (void)files;
+    if (!view_.current())
+        return fail("Dropping audio needs an open project.");
+    // Distinct paths may carry the same bytes, including captures that were made
+    // before any pool row existed. Repeated paths also reuse their captured ID.
+    std::map<std::string, std::int64_t> pendingMedia;
+    std::map<std::int64_t, std::int64_t> duplicateMedia;
+    for (auto &file : dropped) {
+        auto &captured = file.import;
+        if (captured.media.opType != "media.import")
+            continue;
+        const auto &hash = captured.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
+        const auto [entry, inserted] = pendingMedia.try_emplace(hash, captured.mediaId);
+        if (!inserted) {
+            duplicateMedia.try_emplace(captured.mediaId, entry->second);
+            captured.media = {};
+        }
+    }
+    for (auto &file : dropped)
+        if (const auto original = duplicateMedia.find(file.import.mediaId); original != duplicateMedia.end())
+            file.import.mediaId = original->second;
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
                                    &commands_.recordingDefaults(), &submitter_.store(), editRate());
     if (!edit.refusal.empty())
@@ -4942,6 +5165,15 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
     say("Automation Mode shows " + (selected.ownerKind == "device" ? selected.device + ": " : std::string()) +
         selected.paramName + ".");
     arrangement.repaint();
+}
+void AdiRootComponent::followAutomation(std::int64_t track, const AutomationTarget &target) {
+    if (automationMode_ && (state_.hiddenAutomationOverlays.contains(track) || automationTarget(track) != target))
+        showAutomation(track, target);
+}
+void AdiRootComponent::followDeviceAutomation(std::int64_t device, const std::string &parameter) {
+    if (automationMode_)
+        if (const auto target = deviceAutomationTarget(device, parameter))
+            followAutomation(target->first, target->second);
 }
 namespace {
 bool sameAutomationLaneStructure(const engine::Snapshot *a, const engine::Snapshot *b) {
@@ -5719,6 +5951,7 @@ bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &re
     arrangement.followPaused = true; // as an undo pauses it
     if (afterEdit)
         afterEdit();
+    commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
     return true;
@@ -5779,6 +6012,13 @@ bool AdiRootComponent::togglePunch(bool start) {
         return fail("Punch-In and Punch-Out need an open project.");
     const auto &t = current->transport;
     return submitTransport(setPunch(t, start ? !t.punchIn : t.punchIn, start ? t.punchOut : !t.punchOut));
+}
+bool AdiRootComponent::clickLoopSwitch() {
+    const auto &selection = arrangement.geometry.selection;
+    if (selection.start != selection.end && selection.clip == 0 && selection.pickedClips.empty() &&
+        flag(commands_.settings(), "transport.loopSwitchTakesSelection", false))
+        return loopSelection();
+    return toggleLoop();
 }
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();
@@ -6351,6 +6591,15 @@ bool AdiRootComponent::command(int id) {
         }
         if (clipView.sample.command(id))
             return true;
+        if (id == AppCommands::Quantize)
+            return fail("Warp the audio clip before quantizing it.");
+    }
+    if (id == AppCommands::Quantize)
+        return quantizeArrangement();
+    if (id == AppCommands::QuantizeSettings) {
+        if (!canQuantizeArrangement())
+            return fail("Select a MIDI clip or its notes to use Quantize.");
+        return clipView.showQuantizeSettings([this] { return quantizeArrangement(); });
     }
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
@@ -6383,7 +6632,7 @@ bool AdiRootComponent::command(int id) {
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
         (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About ||
-        id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
+        id == AppCommands::AudioEngine || id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -6517,6 +6766,7 @@ bool AdiRootComponent::command(int id) {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
+        commands_.manager.commandStatusChanged();
         arrangement.followPaused = true;
         // Undo puts back what was selected before the undone step (ADR-0021).
         if (id == AppCommands::Undo && result.selBefore) {
@@ -6717,7 +6967,7 @@ bool AdiRootComponent::command(int id) {
             return fail("Select an audio track to import a file.");
         if (importPrompt_)
             return fail("Answer the import prompt first.");
-        if (importing_)
+        if (importing_ || capturing_)
             return fail("The last file is still being imported.");
         if (!chooseAudioFile)
             return fail("The audio file chooser is unavailable.");
@@ -6732,9 +6982,7 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
-        if (!insertTrack(id == AppCommands::InsertMidiTrack))
-            return false;
-        break;
+        return insertTrack(id == AppCommands::InsertMidiTrack);
     case AppCommands::DeleteTrack:
         if (devices.focusedDevice())
             return devices.deleteDevices();
@@ -6809,6 +7057,9 @@ bool AdiRootComponent::command(int id) {
                                                      : Clip::Duplicate;
         if (deviceClipboardFirst(clip))
             return devices.clipboard(clip);
+        if (clip == Clip::Paste)
+            if (const auto track = titleDevicePasteTrack())
+                return devices.pasteAt(track, std::nullopt);
         const auto command = id == AppCommands::Cut    ? ClipCommand::Cut
                              : id == AppCommands::Copy ? ClipCommand::Copy
                              : id == AppCommands::Paste ? ClipCommand::Paste
@@ -7021,7 +7272,11 @@ const std::vector<MenuEntries> &menuBar() {
 } // namespace
 class ShellMenu final : public juce::MenuBarModel {
   public:
-    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
+    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {
+        // AppKit validates key equivalents against the menu's captured enabled flags.
+        // Undo can make Redo available before the user opens Edit again.
+        setApplicationCommandManagerToWatch(&commands.manager);
+    }
     juce::StringArray getMenuBarNames() override {
         juce::StringArray names;
         for (const auto &m : menuBar())
@@ -7065,6 +7320,12 @@ class ShellMenu final : public juce::MenuBarModel {
     }
 
   private:
+    void applicationCommandInvoked(const juce::ApplicationCommandTarget::InvocationInfo &info) override {
+        // Watching state must not make the menu bar flash on every application shortcut.
+        auto notification = info;
+        notification.commandFlags |= juce::ApplicationCommandInfo::dontTriggerVisualFeedback;
+        juce::MenuBarModel::applicationCommandInvoked(notification);
+    }
     AdiRootComponent &root;
     AppCommands &commands;
     std::vector<juce::File> recentItems_;

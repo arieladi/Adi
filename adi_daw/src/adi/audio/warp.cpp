@@ -4,6 +4,7 @@
 #include "adi/audio/transients.hpp"
 #include <numbers>
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
@@ -349,7 +350,8 @@ PreparedWarp::~PreparedWarp() {
         std::error_code error;std::filesystem::remove_all(directory_,error);
     }
 }
-WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
+namespace {
+WarpResult prepareWarpWithTiming(const WarpRenderPlan& plan,const WarpTimingAnalysis* timing,std::stop_token stop) {
     WarpResult result;
     if(onAudioThread){result.error=WarpError::Realtime;return result;}
     try {
@@ -359,11 +361,18 @@ WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
         auto reader=std::make_unique<WavReader>(decoded.file);validate(plan,*reader);
         auto working=plan;
         if(working.mode==WarpMode::Beats && working.transients.empty()) {
-            const auto detected=detectTransients(*reader,working.sourceStart,working.sourceFrames,50,stop);
-            cancelled(stop);if(!detected)throw Failure{WarpError::Process,"cannot read the source onset map"};
-            working.transients=detected.frames;
-            // Detect on the original file grid. Resampling first would let
-            // sinc pre-ringing move the detected attack ahead of its source.
+            if(timing) {
+                working.transients=warpOnsetsInWindow(*timing,reader->sampleRate(),working.sourceStart,working.sourceFrames);
+                cancelled(stop);
+            } else {
+                // Detect on the file grid to avoid shifting attacks with the
+                // pre-ringing of the native renderer's resampling stage.
+                auto detected=detectTransients(*reader,working.sourceStart,working.sourceFrames,50,stop);
+                cancelled(stop);if(!detected)throw Failure{WarpError::Process,"cannot read the source onset map"};
+                working.transients=std::move(detected.frames);
+            }
+            // A known empty map still supplies the slice origin and does not
+            // trigger a second analysis after sample-rate conversion.
             if(working.transients.empty() || working.transients.front()!=0)working.transients.insert(working.transients.begin(),0);
         }
         if((plan.mode==WarpMode::Beats || plan.mode==WarpMode::Texture) && reader->sampleRate()!=plan.outputRate) {
@@ -400,18 +409,13 @@ WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
     return result;
 }
 
-namespace {
-struct WarpSourceStamp {
-    media::FileIdentity identity;
-    std::uintmax_t bytes;
-    fs::file_time_type modified;
-    bool operator==(const WarpSourceStamp&) const = default;
-};
-WarpSourceStamp warpSourceStamp(const fs::path& source) {
+media::FileRevision warpSourceStamp(const fs::path& source) {
     std::error_code error;
-    const auto identity = media::readFileIdentity(source, error);
-    if (!identity) throw std::runtime_error("cannot identify the Warp source");
-    return {*identity, fs::file_size(source), fs::last_write_time(source)};
+    // Playback follows links. Read the native revision of that regular file.
+    const auto path = fs::canonical(source,error);
+    const auto revision = error ? std::nullopt : media::readFileRevision(path,error);
+    if (!revision) throw std::runtime_error("cannot read the Warp source revision");
+    return *revision;
 }
 std::vector<std::uint8_t> warpRecipe(const WarpRenderPlan& plan) {
     nlohmann::json anchors = nlohmann::json::array();
@@ -423,17 +427,47 @@ std::vector<std::uint8_t> warpRecipe(const WarpRenderPlan& plan) {
         plan.transientEnvelope, plan.transientLoop, plan.seed, plan.transients, std::move(anchors)
     }));
 }
+
+media::HashResult requestRecipeHash(const std::vector<std::uint8_t>& recipe,
+                                    const std::optional<WarpTimingSettings>& settings) {
+    if (!settings) return media::blake3Bytes(std::as_bytes(std::span(recipe)));
+    const auto configuration = nlohmann::json::to_cbor(nlohmann::json::array({
+        settings->numerator, settings->denominator, settings->sensitivity, settings->quarterBpm.value_or(0)
+    }));
+    auto keyed = recipe;
+    keyed.insert(keyed.end(), configuration.begin(), configuration.end());
+    return media::blake3Bytes(std::as_bytes(std::span(keyed)));
+}
+
+void appendTimingRecipe(std::vector<std::uint8_t>& recipe, const WarpTimingAnalysis& timing, std::stop_token stop) {
+    constexpr std::string_view tag = "adi-beats-awtm-v1";
+    recipe.reserve(recipe.size() + tag.size() + timing.onsets.size() * sizeof(std::uint64_t));
+    recipe.insert(recipe.end(), tag.begin(), tag.end());
+    // Beats uses positions only. Encoding the canonical clock explicitly
+    // keeps this recipe portable and separates even a known empty AWTM map
+    // from a legacy detection made by the renderer.
+    for (const auto& onset : timing.onsets) {
+        cancelled(stop);
+        for (unsigned shift = 0; shift < 64; shift += 8)
+            recipe.push_back(static_cast<std::uint8_t>(onset.analysisFrame >> shift));
+    }
+}
+}
+
+WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
+    return prepareWarpWithTiming(plan, nullptr, stop);
 }
 
 class WarpRenderCache {
 public:
-    explicit WarpRenderCache(DecodeCache& cache)
-        : cache_(cache), worker_([this](std::stop_token stop) { work(stop); }) {}
+    WarpRenderCache(DecodeCache& cache, media::AnalysisCache& analysis)
+        : cache_(cache), analysis_(analysis), worker_([this](std::stop_token stop) { work(stop); }) {}
 
-    std::shared_ptr<const WarpTask> request(WarpRenderPlan plan) {
+    std::shared_ptr<const WarpTask> request(WarpRenderPlan plan, std::optional<WarpTimingSettings> settings = {}) {
+        if (plan.mode != WarpMode::Beats || !plan.transients.empty()) settings.reset();
         auto recipe = warpRecipe(plan);
         const auto stamp = warpSourceStamp(plan.source);
-        const auto recipeHash = media::blake3Bytes(std::as_bytes(std::span(recipe)));
+        const auto recipeHash = requestRecipeHash(recipe, settings);
         if (!recipeHash) throw std::runtime_error("cannot hash the Warp recipe");
         const auto key = std::pair{plan.source, recipeHash.hex};
 
@@ -446,12 +480,12 @@ public:
         if (recent.stamp == stamp) {
             if (const auto task = recent.task.lock()) {
                 const auto result = task->result();
-                if (!result || *result) return task;
+                if ((!settings || !task->timingLookupStarted_) && (!result || *result)) return task;
             }
         }
         std::erase_if(queue_, [](const Queued& entry) { return entry.task.use_count() == 1; });
         auto task = std::make_shared<WarpTask>();
-        queue_.push_back({std::move(plan), std::move(recipe), stamp, task});
+        queue_.push_back({std::move(plan), std::move(recipe), stamp, task, settings});
         recent = {stamp, task};
         wake_.notify_one();
         return task;
@@ -459,14 +493,15 @@ public:
 
 private:
     struct Recent {
-        std::optional<WarpSourceStamp> stamp;
+        std::optional<media::FileRevision> stamp;
         std::weak_ptr<WarpTask> task;
     };
     struct Queued {
         WarpRenderPlan plan;
         std::vector<std::uint8_t> recipe;
-        WarpSourceStamp stamp;
+        media::FileRevision stamp;
         std::shared_ptr<WarpTask> task;
+        std::optional<WarpTimingSettings> settings;
     };
 
     std::shared_ptr<const PreparedWarp> pinLocked(const std::string& key, const WarpRenderPlan& plan,
@@ -499,6 +534,21 @@ private:
         cancelled(stop);
         if (!hash || warpSourceStamp(plan.source) != job.stamp) throw std::runtime_error("cannot hash the current Warp source");
         job.recipe.insert(job.recipe.end(), hash.hex.begin(), hash.hex.end());
+        std::optional<WarpTimingAnalysis> timing;
+        if (job.settings) {
+            {
+                std::lock_guard lock(mutex_);
+                job.task->timingLookupStarted_ = true;
+            }
+            try {
+                timing = readWarpTimingByHash(analysis_, hash.hex, *job.settings, stop);
+            } catch (const std::exception&) {
+                // A derived-cache problem leaves the legacy render usable.
+            }
+            cancelled(stop);
+            if (timing) appendTimingRecipe(job.recipe, *timing, stop);
+            if (warpSourceStamp(plan.source) != job.stamp) throw std::runtime_error("Warp source changed during timing lookup");
+        }
         const auto key = media::blake3Bytes(std::as_bytes(std::span(job.recipe)));
         if (!key) throw std::runtime_error("cannot hash the current Warp render key");
         if (!plan.anchors.empty()) {
@@ -511,7 +561,7 @@ private:
             }
         }
 
-        auto result = prepareWarp(plan, stop);
+        auto result = prepareWarpWithTiming(plan, timing ? &*timing : nullptr, stop);
         if (!result) return result;
         const auto after = media::blake3File(plan.source, stop);
         cancelled(stop);
@@ -558,6 +608,7 @@ private:
     }
 
     DecodeCache& cache_;
+    media::AnalysisCache& analysis_;
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::deque<Queued> queue_;
@@ -570,9 +621,19 @@ std::shared_ptr<const WarpResult> WarpTask::result() const noexcept {
     if (!ready_.load(std::memory_order_acquire)) return {};
     return result_;
 }
+namespace {
+WarpRenderCache& defaultWarpRenderCache() {
+    // Both dependencies outlive the worker during process shutdown.
+    static WarpRenderCache cache(defaultDecodeCache(), media::defaultAnalysisCache());
+    return cache;
+}
+}
 std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan) {
     if (onAudioThread) return {};
-    static WarpRenderCache cache(defaultDecodeCache());
-    return cache.request(std::move(plan));
+    return defaultWarpRenderCache().request(std::move(plan));
+}
+std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan, WarpTimingSettings settings) {
+    if (onAudioThread) return {};
+    return defaultWarpRenderCache().request(std::move(plan), settings);
 }
 } // namespace adi::audio

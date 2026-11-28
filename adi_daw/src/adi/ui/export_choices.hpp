@@ -43,7 +43,7 @@ struct ExportChoices {
     bool encodePcm = true;
     std::string fileType = "WAV";            // WAV, AIFF, FLAC
     int bitDepth = 24;                       // 16, 24, 32 (float)
-    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, Shaped 1, 2, 3
+    std::string dither = "No Dither";        // No Dither, Rectangular, Triangular, Shaped 1, 2, 3
     bool encodeMp3 = false;
     bool video = false;
     render::Normalization normalization{render::NormalizeMode::Peak, -14, 0};

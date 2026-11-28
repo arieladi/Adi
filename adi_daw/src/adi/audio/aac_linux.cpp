@@ -15,6 +15,12 @@ void ffmpeg61DecodePcm(const AacTrack &, const AacPcmSink &, CodecCheckpoint);
 bool aacCodecAvailable() noexcept {
     return ffmpeg61Available() || ffmpeg60Available();
 }
+bool aacEncoderAvailable() noexcept { return aacCodecAvailable(); }
+std::string aacUnavailableReason() {
+    return aacCodecAvailable() ? std::string() : "libavcodec 60/61 with matching libavutil 58/59 is not installed";
+}
+// Linux has no AAC decoder of its own: a machine without libavcodec is not expected to have one.
+bool aacPlatformDecoderPresent() noexcept { return aacCodecAvailable(); }
 AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path &packets, std::uint32_t rate,
                    CodecCheckpoint checkpoint) {
     if (ffmpeg61Available())

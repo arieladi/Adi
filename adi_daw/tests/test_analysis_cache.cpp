@@ -170,6 +170,46 @@ void trimming() {
     writer.join();reader.join();trimmer.join();
     check(bad==0,"concurrent owner reads, updates and trims return complete payloads or explicit cache misses");
 }
+void automaticTrimming() {
+    test::TempDirectory temp{"analysis", "automatic"};
+    auto first = sample(), second = sample(), third = sample();
+    second.identity.hash = std::string(64, 'b');
+    third.identity.hash = std::string(64, 'c');
+    const auto folder = temp.path() / "analysed";
+    const auto path = [&](const SampleAnalysis& value) { return folder / (value.identity.hash + ".adia"); };
+    const auto minimumFree = 4096;
+    bool forceLowSpace = false;
+    AnalysisCache cache(folder, [&](const fs::path& inspected) -> std::uint64_t {
+        if (inspected != folder) throw std::runtime_error("unexpected space probe");
+        return forceLowSpace && fs::exists(path(first)) ? 0 : minimumFree;
+    });
+    std::string error;
+    const auto write = [&](const SampleAnalysis& value) {
+        return cache.update(value.identity, "APKS", value.sections.at("APKS"), error) == AnalysisCacheProblem::None;
+    };
+    check(write(first), "first real ADIA publication establishes its byte size");
+    const auto oneFile = fs::file_size(path(first));
+    cache.setAutomaticLimits({2 * oneFile, minimumFree});
+    check(write(second), "automatic budget admits a second analysis at the limit");
+    const auto old = fs::file_time_type::clock::now() - std::chrono::hours(2);
+    fs::last_write_time(path(first), old);
+    fs::last_write_time(path(second), old + std::chrono::hours(1));
+    { std::ofstream foreign(folder / "keep.txt"); foreign << "keep"; }
+    const auto reclaimed = cache.read(first.identity);
+    check(reclaimed && write(third) && fs::exists(path(first)) && !fs::exists(path(second)) && fs::exists(path(third)),
+          "a real write past the limit evicts the least recently used analysis automatically");
+    const auto beforePolicy = allocations.load();
+    { audio::CallbackScope callback; cache.setAutomaticLimits({0, 0}); }
+    check(allocations.load() == beforePolicy && cache.read(third.identity) && fs::exists(path(third)),
+          "the callback refuses a cache preference change without allocation or eviction");
+    forceLowSpace = true;
+    check(write(third) && !fs::exists(path(first)) && fs::exists(path(third)),
+          "disk headroom can evict an eligible file even when the cache is within its byte limit");
+    cache.setAutomaticLimits({0, 0});
+    const auto held = cache.read(third.identity);
+    check(held && !fs::exists(path(third)) && fs::exists(folder / "keep.txt"),
+          "a budget change applies on a warm read, retaining its already-returned payload and unowned files");
+}
 void waveform() {
     test::TempDirectory temp{"analysis","waveform"};AnalysisCache analysis(temp.path()/"analysed");audio::DecodeCache decode(temp.path()/"decoded",{1ULL<<30,0});StoreError error{};auto store=Store::createEmpty(temp.path()/"project.adi",error);if(!store)throw std::runtime_error("create project");
     const auto source=temp.path()/"source.wav";{audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);std::array<float,8> samples{-.5f,.5f,-.25f,.75f,0,1,-1,0};writer.write(samples.data(),8);writer.close();}
@@ -193,6 +233,10 @@ void waveform() {
     {audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);const std::array<float,8> samples{-.5f,.5f,-.25f,.75f,0,1,-1,0};writer.write(samples.data(),8);writer.close();}
     const auto defaultBuilt=buildMediaPeaks(*store,1,4,{},&decode);
     check(defaultBuilt && *defaultBuilt.data==*built.data && defaultAnalysisCache().folder()==appdata::pathsFor(appdata::App::Daw).cache/"analysed" && fs::exists(defaultAnalysisCache().folder()/(hash+".adia")),"unchanged waveform API actually persists through the process analysed folder under portable app data");
+    setDefaultAnalysisCacheLimits({0,0});
+    const auto evicted=buildMediaPeaks(*store,1,4,{},&decode);
+    check(evicted && *evicted.data==*built.data && !fs::exists(defaultAnalysisCache().folder()/(hash+".adia")),
+          "a normal waveform request survives automatic eviction of its persisted ADIA");
 
 }
 }
@@ -202,4 +246,4 @@ int main(){try{adi::test::TempDirectory home{"analysis","portable"};
 #else
     setenv("ADI_HOME",home.path().c_str(),1);
 #endif
-    codec();files();trimming();waveform();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+    codec();files();trimming();automaticTrimming();waveform();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

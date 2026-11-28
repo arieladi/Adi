@@ -158,8 +158,16 @@ void noteIndependenceAndClockErrors() {
     check(!broken.context && !broken.error.empty(),"malformed relational tuning never falls back silently to a twelve-bit scale");
     Fixture linear;linear.store->db().exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(12,1,'midi',1,500000000,500000000)");
     const auto placed=readClipScaleContext(*linear.store,12);check(placed.context && placed.context->scale()->tuningId==5,"linear placement inherits its key through N32's existing step-tempo converter");
-    linear.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,1)");const auto ramp=readClipScaleContext(*linear.store,12);
-    check(!ramp.context && !ramp.error.empty(),"ambiguous inherited linear/ramp context is named rather than guessed");
+    // TM-TT-01: ramps play, so a linear clip's inherited key follows the
+    // integrated tempo. 120 to 60 BPM over four quarters reaches the key
+    // change at quarter 1 after 4*ln(120/105) = 0.534 s, so the clip at
+    // 0.5 s still sits in the first key; a step tempo would put it on the change.
+    linear.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,1),(2,23063040,60,0)");
+    const auto ramp=readClipScaleContext(*linear.store,12);
+    check(ramp.context && ramp.context->scale()->tuningId==4,"linear placement inherits its key through the integrated tempo ramp");
+    linear.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,1)");
+    const auto held=readClipScaleContext(*linear.store,12);
+    check(held.context && held.context->scale()->tuningId==5,"a ramp shape with no following tempo point holds its tempo");
 }
 }
 int main(){const auto refusalCost=emptyResultCost<adi::engine::ScaleGrid>()+emptyResultCost<adi::engine::ScaleContextRead>();const auto baseline=allocations.load();

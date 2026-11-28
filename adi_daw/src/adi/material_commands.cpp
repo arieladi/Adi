@@ -4,7 +4,9 @@
 #include "adi/library/index.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
@@ -111,13 +113,12 @@ struct ImportedPlacement {
     std::int64_t endTicks = 0;
 };
 MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double referenceRate,
-                          library::Index* index, ImportedHashes* hashes = nullptr,
+                          const library::Index* index, ImportedHashes* hashes = nullptr,
                           ImportedPlacement* placement = nullptr) {
     // The callback refusal is a prvalue built in the caller's slot: guaranteed
     // elision, not optional NRVO, so it costs exactly one empty result.
     if(audio::onAudioThread)return {};
     MaterialEdit result;
-    if(audio::onAudioThread)return result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
@@ -140,25 +141,43 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
+        const auto capturedHash=(mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):
+            media::mediaRow(store.db(),imported.mediaId).at("hash_blake3")).get<std::string>();
+        if(!index && options.shortSamplePolicy) index=options.shortSamplePolicy->library;
         const auto saved=index?loadSampleDefaults(store,*index,imported,mediaRequest):std::nullopt;
         std::optional<audio::AutoWarpResult> warped;
         std::optional<audio::WarpMapWrite> markers;
-        if(options.warp && !saved) {
+        using WarpAction=audio::ShortSampleWarpAction;
+        audio::ShortSampleWarpPlan shortWarp{WarpAction::UseAutoWarp,{},{}};
+        auto warpSettings=options.warpAnalysis;
+        if(options.shortSamplePolicy) warpSettings.transientSensitivity=options.shortSamplePolicy->transientSensitivity;
+        if(options.warp && !saved && info.frames>0)
+            shortWarp=library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::ImportWarp,
+                options.shortSample,options.shortSamplePolicy,source,capturedHash,
+                static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),
+                warpSettings,options.stop);
+        if(options.warp && !saved && shortWarp.action!=WarpAction::KeepUnwarped) {
             if(referenceRate<44100 || referenceRate!=std::floor(referenceRate) || info.sampleRate<8000 ||
                info.sampleRate>768000 || info.channels<1 || info.channels>64 || info.frames<=0 || info.frames>0x7fffffff ||
                !audio::warpModeName(options.warpMode))throw std::runtime_error("audio source is outside supported warp bounds");
-            struct Decoded {
-                std::filesystem::path file;bool pinned=false;
-                explicit Decoded(const std::filesystem::path& input):file(audio::playableFile(input)),pinned(file!=input){}
-                ~Decoded(){if(pinned)try{audio::defaultDecodeCache().release(file);}catch(...){}}
-            } decoded(source);
-            audio::WavReader reader(decoded.file);
-            if(reader.frames()!=static_cast<std::uint64_t>(info.frames) || reader.sampleRate()!=static_cast<std::uint32_t>(info.sampleRate) || reader.channels()!=static_cast<std::uint16_t>(info.channels))
-                throw std::runtime_error("source dimensions changed during import");
-            const auto onsets=audio::detectTransients(reader,0,static_cast<std::uint64_t>(info.frames),50,options.stop);
-            if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
-            if(!onsets)throw std::runtime_error("cannot analyze the source audio");
-            warped=audio::autoWarpFromOnsets(onsets.frames,static_cast<std::uint64_t>(info.frames),static_cast<std::uint32_t>(info.sampleRate),options.warpAnalysis,options.stop);
+            if(shortWarp.loopMarkers) {
+                warped.emplace();
+                warped->markers.assign(shortWarp.loopMarkers->begin(),shortWarp.loopMarkers->end());
+            } else if(shortWarp.action==WarpAction::WarpedOneShot) {
+                warpSettings.sourceBpm=shortWarp.sourceBpm;warpSettings.fromFirstBeat=false;
+                warped=audio::autoWarpFromOnsets({},static_cast<std::uint64_t>(info.frames),
+                    static_cast<std::uint32_t>(info.sampleRate),warpSettings,options.stop);
+            } else {
+                struct Decoded {
+                    std::filesystem::path file;bool pinned=false;
+                    explicit Decoded(const std::filesystem::path& input):file(audio::playableFile(input)),pinned(file!=input){}
+                    ~Decoded(){if(pinned)try{audio::defaultDecodeCache().release(file);}catch(...){}}
+                } decoded(source);
+                audio::WavReader reader(decoded.file);
+                if(reader.frames()!=static_cast<std::uint64_t>(info.frames) || reader.sampleRate()!=static_cast<std::uint32_t>(info.sampleRate) || reader.channels()!=static_cast<std::uint16_t>(info.channels))
+                    throw std::runtime_error("source dimensions changed during import");
+                warped=audio::analyzeWarpSource(reader,capturedHash,0,static_cast<std::uint64_t>(info.frames),warpSettings,options.stop);
+            }
             if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
             if(!*warped) {
                 if(warped->error==audio::AutoWarpError::NoTempo)throw std::runtime_error("Warp needs a detected beat or an explicit source tempo");
@@ -170,7 +189,6 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
             if(!*markers)throw std::runtime_error("cannot capture the detected warp map");
         }
         const auto sourceHash=media::blake3File(source,options.stop);
-        const auto capturedHash=mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),imported.mediaId).at("hash_blake3");
         if(!sourceHash || capturedHash!=sourceHash.hex)throw std::runtime_error("source changed during material capture");
         files->staged=source;files->hash=sourceHash.hex;
         auto mediaId = imported.mediaId;
@@ -206,8 +224,8 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
         const int base=warped?0:options.at.base;
         if(warped) {
             engine::TempoMap tempo;
-            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
             if(tempo.events.empty())tempo.events.push_back({0,120,0});
             const auto projected=engine::projectWarpAnchors(warped->markers,tempo,beginTicks,referenceRate);
             if(projected.back().outputFrame>0x7fffffffULL)throw std::runtime_error("warped clip exceeds supported render duration");
@@ -216,6 +234,7 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
                         {"name",media::pathUtf8(options.source.stem())},{"time_base",base}};
         if(base==0){values["pos_ticks"]=beginTicks;values["length_ticks"]=tickSpan;}
         else {values["pos_ns"]=beginNs;values["length_ns"]=duration;}
+        if(shortWarp.loopMarkers){values["loop_enabled"]=1;values["loop_len_ticks"]=tickSpan;}
         if(options.edgeFades) {
             const auto placedDuration=warped?time.duration(beginTicks,tickSpan):duration;
             const auto fade=std::min(tickSpan/2,time.ticks(edit::addTime(beginNs,std::min<std::int64_t>(placedDuration/2,5000000)))-beginTicks);
@@ -277,7 +296,7 @@ PreparedEdit prepareBatchReplacement(Store& store, std::span<const edit_plan::Cl
     std::set<edit_plan::PlacementLane> tracks;
     SQLite::Statement clips(store.db(),
         "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
-        "FROM clips WHERE track_id=? AND lane_id IS NULL");
+        "FROM clips WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
     for (const auto& range : ranges) {
         if (range.span.begin >= range.span.end)
             continue;
@@ -321,11 +340,11 @@ PreparedEdit prepareBatchReplacement(Store& store, std::span<const edit_plan::Cl
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
     return prepareImportAudio(store,options,referenceRate,nullptr);
 }
-MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,const library::Index* index) {
     return prepareAudio(store, options, referenceRate, index);
 }
 MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, double referenceRate,
-                                     library::Index* sampleDefaults) {
+                                     const library::Index* sampleDefaults) {
     if (audio::onAudioThread) return {};
     MaterialEdit material;
     try {
@@ -374,6 +393,52 @@ MaterialEdit prepareImportAudioBatch(Store& store, const ImportBatch& batch, dou
         material.edit.error = error.what();
     }
     return material;
+}
+media::MediaResult stageRenderedAudio(Store& store,MaterialEdit& material,const fs::path& rendered,
+                                     std::int64_t mediaId,std::int64_t importedUtc,std::stop_token stop) {
+    if(audio::onAudioThread)return {};
+    try {
+        if(!material.files.empty() || mediaId<=0 || stop.stop_requested())
+            throw std::runtime_error("invalid or cancelled rendered material capture");
+        material.files.reserve(1);
+        auto files=stage(media::projectFolder(store));files->stop=stop;
+        files->staged=files->directory/"rendered.wav";
+        copyImport(rendered,files->staged,stop);
+        OpRequest request;
+        auto imported=media::prepareImport(store,files->staged,mediaId,importedUtc,request,nullptr,stop);
+        if(!imported.ok)return imported;
+        if(!imported.audio)throw std::runtime_error("rendered material is not audio");
+        if(imported.existing) {
+            if(!request.opType.empty())throw std::runtime_error("identical rendered media is unavailable; relink it first");
+            const auto row=media::mediaRow(store.db(),imported.mediaId);
+            files->hash=row.at("hash_blake3").get<std::string>();
+            std::string error;
+            const auto path=media::resolveMedia(media::projectFolder(store),row,error,stop);
+            if(path.empty())throw std::runtime_error(error.empty()?"identical rendered media is unavailable":error);
+            const auto previous=material.edit.options.beforeCommit;
+            material.edit.options.beforeCommit=[previous,row,path,hash=files->hash,id=imported.mediaId,stop]
+                (SQLite::Database& db,std::int64_t transaction,std::string& why) {
+                if(previous && !previous(db,transaction,why))return false;
+                if(media::mediaRow(db,id)!=row){why="identical rendered media changed after capture";return false;}
+                const auto actual=media::blake3File(path,stop);
+                if(!actual || actual.hex!=hash){why="identical rendered media changed after capture";return false;}
+                return true;
+            };
+        } else {
+            SQLite::Statement occupied(store.db(),"SELECT 1 FROM media_files WHERE id=?");
+            occupied.bind(1,imported.mediaId);
+            if(occupied.executeStep())throw std::runtime_error("rendered media id is already in use");
+            files->hash=request.payload.at("row").at("hash_blake3").get<std::string>();
+            const auto folder=media::projectFolder(store)/"audio";
+            if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("audio directory must not be a symlink");
+            fs::create_directories(folder);
+            files->target=folder/("render-"+std::to_string(imported.mediaId)+"-"+files->hash.substr(0,16)+".wav");
+            paths(request,store,files->target);
+            material.edit.requests.push_back(std::move(request));
+        }
+        material.files.push_back(std::move(files));
+        return imported;
+    } catch(const std::exception& error){return {false,error.what()};}
 }
 MaterialEdit prepareBounce(Store& store,const BounceOptions& options,engine::DeviceLoader loader,render::Control control) {
     MaterialEdit result;

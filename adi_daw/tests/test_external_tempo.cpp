@@ -80,6 +80,35 @@ std::vector<double> render(Project& project,Session& session,double rate,Precisi
     const auto a=allocations.load(),f=frees.load(),io=audio::callbackFileIo.load();for(std::size_t first=0;first<frames;first+=256){const auto count=static_cast<std::int32_t>(std::min<std::size_t>(256,frames-first));if(!session.clips()->prime(std::chrono::seconds(10)))throw std::runtime_error("prime");project.recorder->clock=static_cast<std::int64_t>(first);AudioIo block;block.frames=count;block.numOut=2;if(width==Precision::Float64)block.out64=channels64;else block.out=channels;{audio::CallbackScope scope;session.process(block);}for(std::size_t i=0;i<static_cast<std::size_t>(count);++i){pcm[(first+i)*2]=width==Precision::Float64?wide[i]:narrow[i];pcm[(first+i)*2+1]=width==Precision::Float64?wide[256+i]:narrow[256+i];}}
     check(a==allocations.load() && f==frees.load() && io==audio::callbackFileIo.load() && session.clips()->readErrors()==0 && session.clips()->underrunSamples()==0,"coherent external/reference Session callbacks have zero allocation/free/file I/O and ready PCM");return pcm;
 }
+void preservesLateFirstTempo() {
+    Project project;
+    auto& db = project.store->db();
+    db.exec("DELETE FROM tempo_map");
+    SQLite::Statement tempo(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(?,90,0)");
+    tempo.bind(1, 8*q);
+    tempo.exec();
+
+    Session session;
+    constexpr double rate = 48000;
+    constexpr auto width = Precision::Float32;
+    load(project, session, {2,rate,256});
+    (void)render(project, session, rate, width, 1);
+    session.transport().locate(0);
+    check(session.setExternalTempoAt(*project.store, 140, 4*q),
+          "perform a new tempo before the first stored tempo point");
+    (void)render(project, session, rate, width, 128000);
+    const auto& noteOn = project.recorder->heard[0];
+    const auto& noteOff = project.recorder->heard[1];
+    std::printf("Late first tempo: note on %lld, note off %lld, prefix %.0f BPM\n",
+                static_cast<long long>(noteOn.sample), static_cast<long long>(noteOff.sample),
+                project.recorder->last.bpm);
+    check(project.recorder->count == 2 && noteOn.sample == 40000 && noteOff.sample == 56000 &&
+          project.recorder->last.bpm == 90,
+          "a performed tempo leaves the 90 BPM authored prefix and both MIDI edges in place");
+    (void)render(project, session, rate, width, 1);
+    check(project.recorder->last.timelineSample == 128000 && project.recorder->last.bpm == 140,
+          "the tempo change is heard at the original 90 BPM bar boundary");
+}
 void coherent() {
     for(double rate:{44100.,48000.})for(auto width:{Precision::Float32,Precision::Float64}){
         Project project,reference;reference.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,60,0)");const auto original=digestProject(*project.store).text;const auto changes=sqlite3_total_changes(project.store->db().getHandle());
@@ -111,4 +140,4 @@ void frozen() {
     const auto original=digestProject(*project.store).text;Session candidate;SessionSpec external;external.externalTempoBpm=60;check(!candidate.load(*project.store,project.loader(),external) && candidate.error().find("unfreeze")!=std::string::npos && digestProject(*project.store).text==original,"external tempo refuses existing absolute-time frozen material without silently changing its timing or source");
 }
 }
-int main(){try{coherent();refusal();frozen();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{coherent();preservesLateFirstTempo();refusal();frozen();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

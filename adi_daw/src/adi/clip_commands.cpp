@@ -8,6 +8,7 @@
 #include "adi/automation_clipboard.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/note_stream_detail.hpp"
 #include "adi/row_capture.hpp"
@@ -292,7 +293,7 @@ void keepRight(Payload& image,const ImageCut& cut) {
 Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint point,
                    const edit::TimeMap& time,double referenceRate,CopyIds& ids) {
     const auto cut=prepareImageCut(store,image,point,time,referenceRate);
-    auto right=cloneImage(image,rightId,ids);
+    auto right=cloneImage(image,rightId,ids,ClonePurpose::SplitPiece);
     keepLeft(image,cut);keepRight(right,cut);
     return right;
 }
@@ -428,22 +429,27 @@ void validRange(const RangeSelection& range) {
     for(const auto id:range.tracks)if(!tracks.insert(id).second)throw std::runtime_error("range has duplicate tracks");
 }
 enum class ClipLaneScope { MainLane, AllLanes, OneTake };
-const char* clipRangeQuery(ClipLaneScope scope) {
+std::string clipRangeQuery(const SQLite::Database& db, ClipLaneScope scope) {
+    std::string select = "SELECT id FROM clips WHERE track_id=?";
     switch (scope) {
     case ClipLaneScope::MainLane:
-        return "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id";
+        select += " AND lane_id IS NULL";
+        break;
     case ClipLaneScope::OneTake:
-        return "SELECT id FROM clips WHERE track_id=? AND lane_id=? ORDER BY id";
+        select += " AND lane_id=?";
+        break;
     case ClipLaneScope::AllLanes:
-        return "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+        break;
+    default:
+        throw std::logic_error("unknown clip lane scope");
     }
-    throw std::logic_error("unknown clip lane scope");
+    return select + engine::excludeSlotClips(db, "clips.id") + " ORDER BY id";
 }
 void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelection& range,
                 const edit::TimeMap& time,double rate,ClipLaneScope scope) {
     OpContext context{store,store.db()};
     for(const auto track:range.tracks) {
-        SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,track);
+        SQLite::Statement clips(store.db(),clipRangeQuery(store.db(), scope));clips.bind(1,track);
         while(clips.executeStep()) {
             const auto id=clips.getColumn(0).getInt64();auto image=captureDeleted(context,id);
             const auto& core=image.at("row");const int base=static_cast<int>(detail::signedInteger(core.at("time_base")));
@@ -472,6 +478,56 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
     }
 }
 void expectedHead(Store& store,PreparedEdit& result) {result.options.expectHead.emplace(OpJournal(store).headSeq());}
+}
+std::optional<TimePoint> audioResizeLimit(Store& store,std::int64_t clipId,const edit::TimeMap& time) {
+    SQLite::Statement query(store.db(),
+        "SELECT c.time_base,c.pos_ticks,c.pos_ns,c.length_ticks,c.length_ns,c.content_offset_ticks,"
+        "d.content_offset_ns,d.source_end_ns,p.end_marker_ticks,a.src_len_frames,"
+        "a.warp_enabled,a.warp_markers,a.transpose_semis,a.media_id "
+        "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+        "LEFT JOIN clip_playback_details d ON d.clip_id=c.id "
+        "LEFT JOIN clip_properties p ON p.clip_id=c.id "
+        "WHERE c.id=? AND c.kind='audio' AND c.loop_enabled=0");
+    query.bind(1,clipId);
+    if(!query.executeStep())return std::nullopt;
+    const auto row=detail::captureQueryRow(query);
+    const auto frames=detail::signedInteger(row.at("src_len_frames"));
+    if(frames<=0)return std::nullopt;
+    const bool linear=row.at("time_base")==1;
+    const auto first=detail::signedInteger(row.at(linear?"pos_ns":"pos_ticks"));
+    const auto length=detail::signedInteger(row.at(linear?"length_ns":"length_ticks"));
+    const auto origin=originTicks(row,time);
+    const auto offsetTicks=detail::signedInteger(row.at("content_offset_ticks"));
+    const auto& endMarker=row.at("end_marker_ticks");
+    auto end=first;
+    if(row.at("warp_enabled")!=0) {
+        const auto& map=row.at("warp_markers");
+        if(!map.is_binary())return std::nullopt;
+        const auto markers=audio::readWarpMap(std::as_bytes(std::span(map.get_binary())),static_cast<std::uint64_t>(frames));
+        if(!markers)return std::nullopt;
+        auto terminal=markers.markers.back().tick;
+        if(!endMarker.is_null())terminal=std::min(terminal,detail::signedInteger(endMarker));
+        const auto tick=edit::addTime(origin,std::max<std::int64_t>(0,terminal-offsetTicks));
+        end=linear?time.nanos(tick):tick;
+    } else {
+        double rate;
+        try {
+            rate=audio::pitchedSampleRate(static_cast<double>(sourceSampleRate(store,detail::signedInteger(row.at("media_id")))),
+                                         row.at("transpose_semis").get<double>());
+        } catch(const std::exception&) {
+            return std::nullopt; // An offline legacy source may have no stored sample rate.
+        }
+        if(rate<=0)return std::nullopt;
+        auto terminal=edit::nanosFromSeconds(static_cast<double>(frames)/rate);
+        const auto& pinnedEnd=row.at("source_end_ns");
+        if(!pinnedEnd.is_null())terminal=std::min(terminal,detail::signedInteger(pinnedEnd));
+        else if(!endMarker.is_null())terminal=std::min(terminal,time.duration(origin,detail::signedInteger(endMarker)));
+        const auto& pinnedOffset=row.at("content_offset_ns");
+        const auto offset=pinnedOffset.is_null()?time.duration(origin,offsetTicks):detail::signedInteger(pinnedOffset);
+        const auto endNs=edit::addTime(linear?first:time.nanos(first),std::max<std::int64_t>(0,terminal-offset));
+        end=linear?endNs:time.ticks(endNs);
+    }
+    return TimePoint{linear?1:0,std::max(edit::addTime(first,length),end)};
 }
 PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t mediaId,
                               std::int64_t frames,std::int64_t sampleRate,OpRequest capturedMedia) {
@@ -571,7 +627,8 @@ ClipCopy copyClip(Store& store,std::int64_t id,const edit_plan::Options& options
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
-        result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
+        result.sourceFile=filename(store);result.image=captureDeleted(context,id);
+        detachPitchExtraction(result.image);captureMediaKeys(store,result.image);
         edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);
         const auto& row=result.image.at("row");
         if(options.policy.automationFollowsClips && row.at("lane_id").is_null()) {
@@ -836,7 +893,8 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
         const auto atNs=time.nanos(atTicks);
         const auto gapNs=exactNanos?*exactNanos:edit::nanosFromSeconds(static_cast<double>(ticks)/textproj::kPPQ*60/time.bpmBefore(atTicks));
         if(gapNs<=0)throw std::runtime_error("Insert Silence is shorter than a nanosecond");
-        SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
+        SQLite::Statement clips(db,"SELECT id FROM clips WHERE 1" +
+            engine::excludeSlotClips(db, "clips.id") + " ORDER BY id");
         while(clips.executeStep()) {
             const auto id=clips.getColumn(0).getInt64();auto core=*plan.current("clips",id);
             const int base=static_cast<int>(detail::signedInteger(core.at("time_base")));
@@ -940,7 +998,8 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
         // created right pieces. No intermediate edit is committed.
         if(!tracks.empty())eraseRange(store,plan,ids,{tracks,{0,beginTicks},{0,endTicks}},time,referenceRate,ClipLaneScope::AllLanes);
         std::set<std::int64_t> candidates;
-        SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
+        SQLite::Statement clips(db,"SELECT id FROM clips WHERE 1" +
+            engine::excludeSlotClips(db, "clips.id") + " ORDER BY id");
         while(clips.executeStep())candidates.insert(clips.getColumn(0).getInt64());
         for(const auto& change:plan.changes())if(change.at("table")=="clips" && !change.at("after").is_null())
             candidates.insert(detail::signedInteger(change.at("id")));
@@ -1053,15 +1112,17 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 }
 
 namespace {
+enum class RangeCapture { Clipboard, Move };
+
 RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
                         std::optional<std::int64_t> lane={},std::span<const std::int64_t> selectedClips={},
-                        bool copyClipEnvelopes=false,bool rejectLinked=false) {
+                        bool copyClipEnvelopes=false,RangeCapture purpose=RangeCapture::Clipboard) {
     RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
-            SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
+            SQLite::Statement clips(store.db(),clipRangeQuery(store.db(), scope));clips.bind(1,selection.tracks[track]);
             if (lane)
                 clips.bind(2, *lane);
             while(clips.executeStep()) {
@@ -1078,8 +1139,12 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(result.clearsRange && last<=begin)continue;
                 auto image=captureDeleted(context,id);
-                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
-                    throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                if (purpose == RangeCapture::Move) {
+                    if (!root.at("alias_of").is_null() || !image.at("alias_links").empty())
+                        throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                } else {
+                    detachPitchExtraction(image);
+                }
                 captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
                 if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
@@ -1353,7 +1418,7 @@ PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoi
             const auto first=coordinate(begin,1,time),last=coordinate(end,1,time);
             SQLite::Statement clips(store.db(),
                 "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
-                "FROM clips WHERE track_id=? AND lane_id IS NULL");
+                "FROM clips WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
             clips.bind(1,track);
             while(clips.executeStep()) {
                 const auto base=clips.getColumn(0).getInt();
@@ -1463,7 +1528,9 @@ PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std:
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
         for(std::size_t imageIndex=0;imageIndex<copy.images.size();++imageIndex) {
             const auto& original=copy.images[imageIndex];
-            verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
+            verifyMediaKeys(store,original);
+            auto image=cloneImage(original,ids.next("clips"),ids,
+                                  move ? ClonePurpose::SplitPiece : ClonePurpose::Independent);
             const auto index=original.at("trackIndex").get<std::size_t>();
             if(index>=tracks.size())throw std::runtime_error("clipboard track offset is invalid");
             auto& row=image["row"];const auto native=static_cast<int>(detail::signedInteger(row.at("time_base")));
@@ -1501,7 +1568,7 @@ PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimeP
         const edit::TimeMap time(store.db());
         if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
             auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{}, {},
-                                    false,/*rejectLinked=*/true);
+                                    false,RangeCapture::Move);
             if(!copy.ok)throw std::runtime_error(copy.error);
             if(!copy.images.empty()) {
                 if(options.policy.automationFollowsClips)

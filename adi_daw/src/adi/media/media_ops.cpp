@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "media_ops.hpp"
 #include "blake3.hpp"
+#include "publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
@@ -11,8 +12,10 @@
 #include <array>
 #include <algorithm>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 namespace adi::media {
 namespace fs = std::filesystem;
 namespace {
@@ -181,21 +184,53 @@ MediaPaths mediaPaths(const fs::path& folder, const fs::path& relative, const fs
         paths.candidates.push_back(hint.is_absolute() ? hint : fs::path{});
     return paths;
 }
-} // namespace
-fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
-    const auto path = [&](const char* column) {
-        const auto& value = row.at(column);
-        return value.is_null() ? fs::path{} : pathFromUtf8(value.get<std::string>());
+
+class PlaybackDigests {
+  public:
+    HashResult operator()(const fs::path& path, std::stop_token stop) {
+        std::error_code error;
+        const auto revision = readFileRevision(path, error);
+        if (!revision)
+            return blake3File(path, stop);
+        {
+            const std::lock_guard lock(mutex_);
+            const auto found = entries_.find(path);
+            if (found != entries_.end() && found->second.revision == *revision) {
+                found->second.lastUse = ++use_;
+                return {found->second.hash};
+            }
+        }
+        auto verified = blake3FileWithRevision(path, stop);
+        if (!verified.revision)
+            return std::move(verified.hash);
+
+        const std::lock_guard lock(mutex_);
+        entries_.insert_or_assign(path, Entry{*verified.revision, verified.hash.hex, ++use_});
+        if (entries_.size() > capacity) {
+            const auto oldest = std::min_element(entries_.begin(), entries_.end(), [](const auto& a, const auto& b) {
+                return a.second.lastUse < b.second.lastUse;
+            });
+            entries_.erase(oldest);
+        }
+        return std::move(verified.hash);
+    }
+
+  private:
+    struct Entry {
+        FileRevision revision;
+        std::string hash;
+        std::uint64_t lastUse;
     };
-    const auto name = row.at("orig_name").get<std::string>();
-    const auto resolved = resolveMedia(folder, path("rel_path"), path("abs_path_hint"),
-                                       name, row.at("hash_blake3").get<std::string>(), error);
-    if (resolved.empty() && error.empty()) error = "missing media: " + name;
-    return resolved;
-}
-fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
-                      const std::string& originalName, const std::string& expectedHash,
-                      std::string& error, std::stop_token stop) {
+    static constexpr std::size_t capacity = 4096;
+    std::mutex mutex_;
+    std::unordered_map<fs::path, Entry> entries_;
+    std::uint64_t use_ = 0;
+};
+
+template<class ReadDigest>
+fs::path resolveMediaPaths(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                           const std::string& originalName, const std::string& expectedHash,
+                           std::string& error, std::stop_token stop, ReadDigest&& readDigest) {
     error.clear();
     const auto paths = mediaPaths(folder, relative, hint, originalName, error);
     for (const auto& path : paths.candidates) {
@@ -209,7 +244,7 @@ fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs
         };
         if (ec) fail("cannot inspect " + pathUtf8(path));
         else {
-            const auto hash = blake3File(path, stop);
+            const auto hash = readDigest(path, stop);
             if (hash.error == HashError::cancelled) return {};
             if (hash && hash.hex == expectedHash) { error.clear(); return path; }
             fail((hash ? "hash mismatch: " : "cannot hash ") + pathUtf8(path));
@@ -217,6 +252,35 @@ fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs
         if (!paths.distinctHint) return {};
     }
     return {};
+}
+} // namespace
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+    return resolveMedia(folder, row, error, {});
+}
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error,
+                      std::stop_token stop) {
+    error.clear();
+    if (stop.stop_requested()) return {};
+    const auto path = [&](const char* column) {
+        const auto& value = row.at(column);
+        return value.is_null() ? fs::path{} : pathFromUtf8(value.get<std::string>());
+    };
+    const auto name = row.at("orig_name").get<std::string>();
+    const auto resolved = resolveMedia(folder, path("rel_path"), path("abs_path_hint"),
+                                       name, row.at("hash_blake3").get<std::string>(), error, stop);
+    if (resolved.empty() && error.empty() && !stop.stop_requested()) error = "missing media: " + name;
+    return resolved;
+}
+fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                      const std::string& originalName, const std::string& expectedHash,
+                      std::string& error, std::stop_token stop) {
+    return resolveMediaPaths(folder, relative, hint, originalName, expectedHash, error, stop,
+                             [](const fs::path& path, std::stop_token token) { return blake3File(path, token); });
+}
+fs::path resolvePlaybackMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                              const std::string& originalName, const std::string& expectedHash, std::string& error) {
+    static PlaybackDigests digests;
+    return resolveMediaPaths(folder, relative, hint, originalName, expectedHash, error, {}, digests);
 }
 fs::path mediaPathForBrowser(const Store& store, std::int64_t id, std::string& error) {
     error.clear();
@@ -315,22 +379,60 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
                           audio::DecodeCache* cache) {return prepareImport(store,path,id,time,request,cache,{});}
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
                           audio::DecodeCache* cache,std::stop_token stop) {return prepareImport(store,path,id,time,request,cache,stop,false);}
+namespace {
+// SC-390: why a file cannot be imported, in plain words and by its name, never the engine's words after its
+// full path (a decoder's error number, "unsupported audio dimensions", "cannot hash" for a folder).
+std::string plainly(const std::string& name, audio::DecodeProblem problem) {
+    const auto quoted = "\u201c" + name + "\u201d";
+    switch (problem) {
+    case audio::DecodeProblem::Unreadable:
+        return quoted + " could not be read: it is a folder, it is gone, or another program holds it.";
+    case audio::DecodeProblem::UnknownFormat:
+        return quoted + " is not an audio file ADI reads (WAV, AIFF, FLAC, MP3, Ogg Vorbis, AAC or M4A).";
+    case audio::DecodeProblem::Corrupt:
+        return quoted + " is damaged or cut short: its audio does not decode.";
+    case audio::DecodeProblem::Unsupported:
+        return quoted + " has a sample rate or channel count ADI cannot play.";
+    case audio::DecodeProblem::NoSpace:
+        return quoted + " is too large for the decoding cache: free disk space, or raise the cache's limit in Settings.";
+    case audio::DecodeProblem::CacheWrite:
+        return quoted + " could not be prepared: the decoding cache's folder cannot be written.";
+    case audio::DecodeProblem::CodecUnavailable:
+        return quoted + " needs a codec this computer cannot use.";
+    case audio::DecodeProblem::NoAudio:
+        return quoted + " holds no audio.";
+    case audio::DecodeProblem::Cancelled:
+        return "Cancelled.";
+    case audio::DecodeProblem::AudioThread:
+        break;
+    }
+    return quoted + " could not be imported.";
+}
+} // namespace
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
                           audio::DecodeCache* cache,std::stop_token stop,bool headerOnly) {
     if(audio::onAudioThread)return {};
     request = {};
+    const auto name = pathUtf8(path.filename());
     try {
         if (store.readOnly()) return {false, "project is read-only"};
         const auto source = path.is_absolute() ? path : projectFolder(store) / path;
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
         const auto hash = blake3File(source,stop);
-        if (!hash) return {false, "cannot hash " + pathUtf8(source)};
+        if (!hash)
+            return {false, stop.stop_requested() ? std::string("Cancelled.") : plainly(name, audio::DecodeProblem::Unreadable)};
         Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
         row["format"]="";
         const auto info=captureAudio(source,row,cache,stop,headerOnly);
+        // SC-387: a file of more than two channels (5.1, a multitrack recording) is refused in plain words, not
+        // imported to play its first two channels without a word.
+        if (info && info->channels > 2)
+            return {false, pathUtf8(source.filename()) + " has " + std::to_string(info->channels) +
+                               " channels: ADI plays mono and stereo files. Split it into mono or stereo files to "
+                               "import it."};
         const auto verified=blake3File(source,stop);
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
-        if (!verified || hash.hex!=verified.hex) return {false,"media changed during import capture"};
+        if (!verified || hash.hex!=verified.hex) return {false,"\u201c" + name + "\u201d changed while it was read: drop it again."};
         SQLite::Statement existing(store.db(), "SELECT id FROM media_files WHERE hash_blake3=?"); existing.bind(1, hash.hex);
         if (existing.executeStep()) {
             const auto found = existing.getColumn(0).getInt64(); std::string error;
@@ -349,7 +451,18 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
         row["size_bytes"] = static_cast<std::int64_t>(size); row["imported_utc"] = time;
         request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}};
         return {true, {}, id, false, info};
-    } catch (const std::exception& e) { return {false, e.what()}; }
+    } catch (const audio::DecodeError& e) {
+        return {false, plainly(name, e.problem())};
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        if (what == "unsupported audio dimensions")
+            return {false, plainly(name, audio::DecodeProblem::Unsupported)};
+        if (what == "media import cancelled")
+            return {false, "Cancelled."};
+        if (what == "media changed during import capture")
+            return {false, "\u201c" + name + "\u201d changed while it was read: drop it again."};
+        return {false, what};
+    }
 }
 MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
     OpRequest request;

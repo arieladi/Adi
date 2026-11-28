@@ -35,13 +35,13 @@ FadeTarget target(OpContext& context,const Payload& payload,bool needSpan) {
         const auto begin=st.getColumn(2).getInt64(),length=st.getColumn(4).getInt64();
         if(begin<0 || length<0 || begin>std::numeric_limits<std::int64_t>::max()-length)throw std::runtime_error("linear fade time is outside range");
         engine::TempoMap tempo;
-        SQLite::Statement points(context.db,"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+        SQLite::Statement points(context.db,"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
         double fastest=120;
         while(points.executeStep()) {
             const auto position=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
             if(position<0 || !std::isfinite(bpm) || bpm<=0)throw std::runtime_error("fade tempo map is invalid");
             fastest=std::max(fastest,bpm);
-            tempo.events.push_back({position,bpm,points.getColumn(2).getInt()});
+            tempo.events.push_back({position,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
         }
         const long double bound=static_cast<long double>(begin+length)/1e9L*fastest*textproj::kPPQ/60;
         if(!std::isfinite(bound) || bound>static_cast<long double>(std::numeric_limits<std::int64_t>::max())-4096)
@@ -177,18 +177,26 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }
-const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains"};
+constexpr char pitchExtractions[]="clip_pitch_extractions";
+const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains","clip_pitch_edits",pitchExtractions};
 void validDuplicate(const Payload& payload) {
     const auto id=detail::signedInteger(payload.at("id"));std::size_t roots=0;
+    bool midi=false,extraction=false;
     for(const auto& change:payload.at("changes")) {
         const auto table=change.at("table").get<std::string>();
         if(!clipTables.contains(table) || !change.at("before").is_null() || !change.at("after").is_object())
             throw std::runtime_error("duplicate can only create captured clip rows");
         const auto& row=change.at("after");
-        if(table=="clips"){if(detail::signedInteger(row.at("id"))!=id)throw std::runtime_error("duplicate clip id differs");++roots;}
-        else if(detail::signedInteger(row.at("clip_id"))!=id)throw std::runtime_error("duplicate child belongs to another clip");
+        if(table=="clips") {
+            if(detail::signedInteger(row.at("id"))!=id)throw std::runtime_error("duplicate clip id differs");
+            ++roots;midi=row.at("kind")=="midi";
+        } else {
+            if(detail::signedInteger(row.at("clip_id"))!=id)throw std::runtime_error("duplicate child belongs to another clip");
+            extraction|=table==pitchExtractions;
+        }
     }
     if(roots!=1)throw std::runtime_error("duplicate needs one new clip");
+    if(extraction && !midi)throw std::runtime_error("pitch extraction ownership requires a MIDI clip");
 }
 bool duplicateApply(OpContext& context,const Payload& payload,std::string& error) {
     try{validDuplicate(payload);return edit::applyRows(context,payload,error);}
@@ -238,6 +246,8 @@ void validSplit(const Payload& payload,bool joining) {
     for(const auto& change:payload.at("changes")) {
         const auto table=change.at("table").get<std::string>();
         if(!clipTables.contains(table))throw std::runtime_error("split cannot change unrelated tables");
+        if(table==pitchExtractions && sourceBefore->at("kind")!="midi")
+            throw std::runtime_error("pitch extraction ownership requires a MIDI clip");
         if(table=="clips")continue;
         for(const auto* row:{&change.at("before"),&change.at("after")})if(!row->is_null()) {
             const auto owner=detail::signedInteger(row->at("clip_id"));

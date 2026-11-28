@@ -34,7 +34,7 @@ endif()
 #   build dir      the only files written to ctest's working directory are the
 #                  per-suite *-render.wav artifacts, one name per suite
 #                  (checked by listing the build dir before and after a run).
-#   ports          no test binds a socket; remote hosts are database rows.
+#   ports          server fixtures bind only loopback sockets on OS-assigned ports.
 #   scanner        child processes, registries and quarantine rows all live in
 #                  each suite's own TempDirectory; the CLAP fixtures are copied
 #                  there before a probe, so their .pids logs are private.
@@ -282,6 +282,16 @@ add_custom_command(
     COMMENT "Embedding schema.sql"
     VERBATIM)
 
+set(ADI_SESSION_SCHEMA_SQL "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/schema-session-1.26.sql")
+set(ADI_SESSION_SCHEMA_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/adi/session_schema_sql.hpp")
+add_custom_command(
+    OUTPUT "${ADI_SESSION_SCHEMA_HPP}"
+    COMMAND "${CMAKE_COMMAND}" -DIN=${ADI_SESSION_SCHEMA_SQL} -DOUT=${ADI_SESSION_SCHEMA_HPP}
+            -DSYMBOL=kSessionSchemaSql -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    DEPENDS "${ADI_SESSION_SCHEMA_SQL}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    COMMENT "Embedding reserved Session schema"
+    VERBATIM)
+
 add_library(adi_core STATIC
     src/adi/applied_batches.cpp
     src/adi/appdata.cpp
@@ -312,6 +322,13 @@ add_library(adi_core STATIC
     # missing-plugin placeholder and the node wrapper are tested on every ABI
     # rather than only where a plugin SDK exists. See src/juce/device_model.hpp.
     src/juce/device_model.cpp
+    src/juce/remote_device.cpp
+    src/juce/audiogridder_transport.cpp
+    src/juce/native_plugin_transport.cpp
+    src/juce/net_native_plugin_parameters.cpp
+    src/juce/net_plugin_admission.cpp
+    src/juce/net_plugin_routing.cpp
+    src/juce/net_plugin_server.cpp
     # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
     # with no dependencies, so the host side lives in adi_core and its tests
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
@@ -393,6 +410,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/engine/tempo_map.cpp
     src/adi/engine/automation_snapshot.cpp
     src/adi/engine/clip_details.cpp
     src/adi/engine/clip_details.cpp
@@ -430,6 +448,8 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/remote_devices.cpp
+    src/adi/engine/clap_block_wire.cpp
     src/adi/engine/live_midi_input.cpp
     src/adi/engine/midi_input_capture.cpp
     src/adi/engine/session_runtime.cpp
@@ -457,6 +477,7 @@ add_library(adi_core STATIC
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
+    "${ADI_SESSION_SCHEMA_HPP}"
 )
 target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp src/adi/device_key_routes.cpp src/adi/device_key_edit.cpp)
 include(cmake/mix_cores.cmake)
@@ -465,6 +486,8 @@ target_link_libraries(adi_device_key_routes_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_key_routes_tests COMMAND adi_device_key_routes_tests)
 
 target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp src/adi/audio/auto_warp.cpp src/adi/engine/warp_projection.cpp)
+target_sources(adi_core PRIVATE src/adi/audio/streaming_warp.cpp src/adi/audio/realtime_warp_r3.cpp)
+target_sources(adi_core PRIVATE src/adi/engine/warp_r3_pages.cpp)
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/take_lane_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/row_ids.cpp src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/automation_splice.cpp src/adi/automation_splice_store.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
@@ -1176,6 +1199,91 @@ add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 
+add_executable(adi_remote_device_tests tests/test_remote_device.cpp)
+target_link_libraries(adi_remote_device_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_remote_device_tests COMMAND adi_remote_device_tests)
+
+add_executable(adi_plugin_admission_tests tests/test_plugin_admission.cpp)
+target_link_libraries(adi_plugin_admission_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_plugin_admission_tests COMMAND adi_plugin_admission_tests)
+
+add_executable(adi_clap_block_wire_tests tests/test_clap_block_wire.cpp)
+target_link_libraries(adi_clap_block_wire_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clap_block_wire_tests COMMAND adi_clap_block_wire_tests)
+
+add_executable(adi_plugin_server_catalogue_tests tests/test_plugin_server_catalogue.cpp)
+target_link_libraries(adi_plugin_server_catalogue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_plugin_server_catalogue_tests COMMAND adi_plugin_server_catalogue_tests)
+
+if(WIN32 AND NOT ADI_WITH_PD)
+    target_link_libraries(adi_core PRIVATE Ws2_32)
+endif()
+add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
+target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
+set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME adi_plugin_server_latency_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_plugin_server_latency.py")
+
+    add_executable(adi_audiogridder_transport_tests tests/test_audiogridder_transport.cpp)
+    target_link_libraries(adi_audiogridder_transport_tests PRIVATE adi_core adi_warnings)
+    # These binaries need the Python fixture. The standalone shell runner
+    # discovers only self-contained binaries in the build root.
+    set_target_properties(adi_audiogridder_transport_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_audiogridder_transport_tests COMMAND "${Python3_EXECUTABLE}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/audiogridder_fixture.py" "$<TARGET_FILE:adi_audiogridder_transport_tests>")
+
+    add_executable(adi_remote_session_tests tests/test_remote_session.cpp)
+    target_link_libraries(adi_remote_session_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_remote_session_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_dependencies(adi_remote_session_tests adi_catalogue_clap_fixture)
+    add_test(NAME adi_remote_session_tests COMMAND "${Python3_EXECUTABLE}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_remote_session.py"
+        "$<TARGET_FILE:adi_remote_session_tests>" "$<TARGET_FILE:adi_catalogue_clap_fixture>")
+
+    add_executable(adi_remote_tcp_playback_tests tests/test_remote_tcp_playback.cpp)
+    target_link_libraries(adi_remote_tcp_playback_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_remote_tcp_playback_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_remote_tcp_playback_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_tcp_playback.py"
+        "$<TARGET_FILE:adi_remote_tcp_playback_tests>")
+    set_tests_properties(adi_remote_tcp_playback_tests PROPERTIES TIMEOUT 40)
+
+    add_executable(adi_native_plugin_transport_tests tests/test_native_plugin_transport.cpp)
+    target_link_libraries(adi_native_plugin_transport_tests PRIVATE adi_core adi_warnings)
+    set_target_properties(adi_native_plugin_transport_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_native_plugin_transport_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_plugin_fixture.py"
+        "$<TARGET_FILE:adi_native_plugin_transport_tests>")
+
+    add_library(adi_native_host_clap_fixture MODULE tests/fixtures/native_host_clap.cpp)
+    target_include_directories(adi_native_host_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+    target_link_libraries(adi_native_host_clap_fixture PRIVATE adi_warnings)
+    set_target_properties(adi_native_host_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+
+    add_executable(adi_native_plugin_host_tests tests/test_native_plugin_host.cpp)
+    target_link_libraries(adi_native_plugin_host_tests PRIVATE adi_core adi_warnings)
+    add_dependencies(adi_native_plugin_host_tests adi_native_host_clap_fixture)
+    set_target_properties(adi_native_plugin_host_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support")
+    add_test(NAME adi_native_plugin_host_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_native_plugin_host.py"
+        "$<TARGET_FILE:adi_native_plugin_host_tests>" "$<TARGET_FILE:adi_native_host_clap_fixture>")
+    set_tests_properties(adi_native_plugin_host_tests PROPERTIES TIMEOUT 40)
+
+    add_test(NAME adi_plugin_server_discovery_tests COMMAND "${Python3_EXECUTABLE}" -B -W error
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_plugin_server_discovery.py"
+        "$<TARGET_FILE:adi_plugin_server_catalogue_tests>")
+    set_tests_properties(adi_plugin_server_discovery_tests PROPERTIES TIMEOUT 15)
+endif()
+
 add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)
 target_link_libraries(adi_delay_compensation_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_delay_compensation_tests COMMAND adi_delay_compensation_tests)
@@ -1874,10 +1982,6 @@ if(ADI_WITH_JUCE)
             ADI_CATALOGUE_FIXTURE="${_adi_fixture}"
             ADI_DISCOVERY_TEST_HELPER="$<TARGET_FILE:adi_scan_cache_tests>"
             ADI_CATALOGUE_SCANNER="$<TARGET_FILE:adi_plugin_scanner>")
-        add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
-        target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
-        target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
-        set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
         add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
         target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
     endif()
@@ -1936,6 +2040,75 @@ add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
 target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
 
+target_sources(adi_core PRIVATE src/adi/engine/launch_data.cpp)
+add_executable(adi_launch_data_tests tests/test_launch_data.cpp)
+target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
+
+target_sources(adi_core PRIVATE
+    src/adi/recording_slot_commands.cpp
+    src/adi/session_ops.cpp
+    src/adi/session_performance_capture.cpp
+    src/adi/engine/capture_scene.cpp
+    src/adi/engine/clip_update_rate.cpp
+    src/adi/engine/launch_ops.cpp
+    src/adi/engine/launch_store.cpp
+    src/adi/engine/launch_quantize.cpp
+    src/adi/engine/launcher.cpp
+    src/adi/engine/launch_audio.cpp
+    src/adi/engine/launch_audio_runtime.cpp
+    src/adi/engine/launch_gain_edits.cpp
+    src/adi/engine/launch_paged_audio.cpp
+    src/adi/engine/launch_follow_playback.cpp
+    src/adi/engine/launch_capture.cpp
+    src/adi/engine/launch_midi.cpp
+    src/adi/engine/slot_recording.cpp)
+foreach(_adi_launch_suite IN ITEMS
+        launch_ops launch_store launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
+        launch_follow_playback launch_capture launch_gain_runtime launch_midi
+        slot_recording slot_recording_commit clip_update_rate)
+    add_executable(adi_${_adi_launch_suite}_tests tests/test_${_adi_launch_suite}.cpp)
+    target_link_libraries(adi_${_adi_launch_suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${_adi_launch_suite}_tests COMMAND adi_${_adi_launch_suite}_tests)
+endforeach()
+target_link_libraries(adi_clip_update_rate_tests PRIVATE adi_settings)
+target_link_libraries(adi_launcher_tests PRIVATE Threads::Threads)
+add_executable(adi_session_arrangement_isolation_tests tests/test_session_arrangement_isolation.cpp)
+target_link_libraries(adi_session_arrangement_isolation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_arrangement_isolation_tests COMMAND adi_session_arrangement_isolation_tests)
+add_executable(adi_session_ops_tests tests/test_session_ops.cpp)
+target_link_libraries(adi_session_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_ops_tests COMMAND adi_session_ops_tests)
+add_executable(adi_session_launch_persisted_tests tests/test_session_launch_persisted.cpp)
+target_link_libraries(adi_session_launch_persisted_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_launch_persisted_tests COMMAND adi_session_launch_persisted_tests)
+add_executable(adi_session_performance_graph_tests tests/test_session_performance_graph.cpp)
+target_link_libraries(adi_session_performance_graph_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_graph_tests COMMAND adi_session_performance_graph_tests)
+add_executable(adi_capture_scene_tests tests/test_capture_scene.cpp)
+target_link_libraries(adi_capture_scene_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_capture_scene_tests COMMAND adi_capture_scene_tests)
+add_executable(adi_session_performance_capture_tests tests/test_session_performance_capture.cpp)
+target_link_libraries(adi_session_performance_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_capture_tests COMMAND adi_session_performance_capture_tests)
+add_executable(adi_session_scene_clock_tests tests/test_session_scene_clock.cpp)
+target_link_libraries(adi_session_scene_clock_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_tests)
+add_executable(adi_session_warp_integration_tests tests/test_session_warp_integration.cpp)
+target_link_libraries(adi_session_warp_integration_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_warp_integration_tests COMMAND adi_session_warp_integration_tests)
+add_executable(adi_session_r3_worker_tests tests/test_session_r3_worker.cpp)
+target_link_libraries(adi_session_r3_worker_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_r3_worker_tests COMMAND adi_session_r3_worker_tests)
+add_executable(adi_session_warp_overlay_delay_tests tests/test_session_warp_overlay_delay.cpp)
+target_link_libraries(adi_session_warp_overlay_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_warp_overlay_delay_tests COMMAND adi_session_warp_overlay_delay_tests)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
+    target_link_options(adi_launch_audio_tests PRIVATE
+        -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
+
 add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
 target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)
 target_compile_definitions(adi_media_hash_tests PRIVATE
@@ -1955,10 +2128,97 @@ add_executable(adi_analysis_cache_trim_tests tests/test_analysis_cache_trim.cpp)
 target_link_libraries(adi_analysis_cache_trim_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analysis_cache_trim_tests COMMAND adi_analysis_cache_trim_tests)
 
+target_sources(adi_core PRIVATE
+    src/adi/audio/pitch_analysis.cpp src/adi/audio/pitch_edit.cpp
+    src/adi/audio/pitch_render.cpp src/adi/audio/pitch_audition.cpp
+    src/adi/audio/pitch_compare.cpp
+    src/adi/audio/pitch_segments.cpp src/adi/audio/pitch_commands.cpp
+    src/adi/media/clip_pitch.cpp src/adi/media/clip_pitch_render.cpp
+    src/adi/pitch_edit_store.cpp src/adi/pitch_midi.cpp src/adi/pitch_midi_smf.cpp src/adi/pitch_clip_scale.cpp
+    src/adi/pitch_geometry_commands.cpp src/adi/pitch_scale_timeline.cpp src/adi/pitch_flatten.cpp
+    src/adi/pitch_reanalysis.cpp)
+if(WIN32)
+    target_link_libraries(adi_core PRIVATE advapi32)
+endif()
+add_executable(adi_pitch_analysis_tests tests/test_pitch_analysis.cpp)
+target_link_libraries(adi_pitch_analysis_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_analysis_tests COMMAND adi_pitch_analysis_tests)
+add_executable(adi_clip_pitch_tests tests/test_clip_pitch.cpp)
+target_link_libraries(adi_clip_pitch_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clip_pitch_tests COMMAND adi_clip_pitch_tests)
+add_executable(adi_pitch_edit_tests tests/test_pitch_edit.cpp)
+target_link_libraries(adi_pitch_edit_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_edit_tests COMMAND adi_pitch_edit_tests)
+add_executable(adi_pitch_render_tests tests/test_pitch_render.cpp)
+target_link_libraries(adi_pitch_render_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_render_tests COMMAND adi_pitch_render_tests)
+
+set(ADI_PITCH_STAGED_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/pending/clip-pitch-edits-1.27.sql")
+target_compile_definitions(adi_textproj_store_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_executable(adi_pitch_edit_store_tests tests/test_pitch_edit_store.cpp)
+target_link_libraries(adi_pitch_edit_store_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_edit_store_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_edit_store_tests COMMAND adi_pitch_edit_store_tests)
+add_executable(adi_pitch_clip_image_tests tests/test_pitch_clip_image.cpp)
+target_link_libraries(adi_pitch_clip_image_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_clip_image_tests PRIVATE ADI_PITCH_STAGED_SCHEMA="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_clip_image_tests COMMAND adi_pitch_clip_image_tests)
+add_executable(adi_clip_pitch_render_tests tests/test_clip_pitch_render.cpp)
+target_link_libraries(adi_clip_pitch_render_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clip_pitch_render_tests COMMAND adi_clip_pitch_render_tests)
+add_executable(adi_pitch_playback_tests tests/test_pitch_playback.cpp)
+target_link_libraries(adi_pitch_playback_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_playback_tests PRIVATE ADI_PITCH_STAGED_SCHEMA="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_playback_tests COMMAND adi_pitch_playback_tests)
+add_executable(adi_pitch_compare_tests tests/test_pitch_compare.cpp)
+target_link_libraries(adi_pitch_compare_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_compare_tests COMMAND adi_pitch_compare_tests)
+add_executable(adi_pitch_midi_tests tests/test_pitch_midi.cpp)
+target_link_libraries(adi_pitch_midi_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_midi_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_midi_tests COMMAND adi_pitch_midi_tests)
+add_executable(adi_pitch_native_bend_tests tests/test_pitch_native_bend.cpp)
+target_link_libraries(adi_pitch_native_bend_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_native_bend_tests COMMAND adi_pitch_native_bend_tests)
+add_executable(adi_pitch_midi_smf_tests tests/test_pitch_midi_smf.cpp)
+target_link_libraries(adi_pitch_midi_smf_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_midi_smf_tests COMMAND adi_pitch_midi_smf_tests)
+add_executable(adi_pitch_segments_tests tests/test_pitch_segments.cpp)
+target_link_libraries(adi_pitch_segments_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_segments_tests COMMAND adi_pitch_segments_tests)
+add_executable(adi_pitch_commands_tests tests/test_pitch_commands.cpp)
+target_link_libraries(adi_pitch_commands_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_commands_tests COMMAND adi_pitch_commands_tests)
+add_executable(adi_pitch_geometry_commands_tests tests/test_pitch_geometry_commands.cpp)
+target_link_libraries(adi_pitch_geometry_commands_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_geometry_commands_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_geometry_commands_tests COMMAND adi_pitch_geometry_commands_tests)
+add_executable(adi_pitch_flatten_tests tests/test_pitch_flatten.cpp)
+target_link_libraries(adi_pitch_flatten_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_flatten_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_flatten_tests COMMAND adi_pitch_flatten_tests)
+add_executable(adi_pitch_clip_scale_tests tests/test_pitch_clip_scale.cpp)
+target_link_libraries(adi_pitch_clip_scale_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_clip_scale_tests COMMAND adi_pitch_clip_scale_tests)
+add_executable(adi_pitch_scale_timeline_tests tests/test_pitch_scale_timeline.cpp)
+target_link_libraries(adi_pitch_scale_timeline_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_scale_timeline_tests COMMAND adi_pitch_scale_timeline_tests)
+add_executable(adi_pitch_audition_tests tests/test_pitch_audition.cpp)
+target_link_libraries(adi_pitch_audition_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pitch_audition_tests COMMAND adi_pitch_audition_tests)
+add_executable(adi_pitch_reanalysis_tests tests/test_pitch_reanalysis.cpp)
+target_link_libraries(adi_pitch_reanalysis_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pitch_reanalysis_tests PRIVATE ADI_PITCH_SCHEMA_PATH="${ADI_PITCH_STAGED_SCHEMA}")
+add_test(NAME adi_pitch_reanalysis_tests COMMAND adi_pitch_reanalysis_tests)
+
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 target_link_libraries(adi_media_ops_tests PRIVATE adi_core adi_warnings)
+if(WIN32)
+    # SC-388: the suite proves a long path imports, so it carries the program's long-path mark too.
+    target_sources(adi_media_ops_tests PRIVATE src/juce/long_paths.manifest)
+endif()
 add_test(NAME adi_media_ops_tests COMMAND adi_media_ops_tests)
 add_executable(adi_collect_export_tests tests/test_collect_export.cpp)
 target_link_libraries(adi_collect_export_tests PRIVATE adi_core adi_warnings adi_miniz)
@@ -1976,6 +2236,64 @@ endif()
 add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
+
+# TM-MD-04: static read-only sample tag parser, with its pinned header-only
+# dependency. ADI already builds miniz, including the inflate calls used for
+# compressed ID3 frames, so the metadata parser needs no system zlib.
+set(_adi_taglib "${ADI_THIRD_PARTY}/taglib")
+if(NOT EXISTS "${_adi_taglib}/CMakeLists.txt" OR
+   NOT EXISTS "${_adi_taglib}/3rdparty/utfcpp/source/utf8.h")
+    message(FATAL_ERROR "Missing TagLib or its UTF8-CPP submodule; run tools/fetch_external.sh --build-only")
+endif()
+function(adi_add_taglib)
+    set(BUILD_SHARED_LIBS OFF)
+    set(BUILD_TESTING OFF)
+    set(BUILD_BINDINGS OFF)
+    set(BUILD_EXAMPLES OFF)
+    set(BUILD_FRAMEWORK OFF)
+    set(WITH_APE ON)
+    set(WITH_ASF OFF)
+    set(WITH_DSF OFF)
+    set(WITH_MATROSKA ON)
+    set(WITH_MOD OFF)
+    set(WITH_MP4 ON)
+    set(WITH_RIFF ON)
+    set(WITH_SHORTEN OFF)
+    set(WITH_TRUEAUDIO OFF)
+    set(WITH_VORBIS ON)
+    set(WITH_ZLIB OFF)
+    set(CMAKE_DISABLE_FIND_PACKAGE_utf8cpp TRUE)
+    set(utf8cpp_INCLUDE_DIR "${_adi_taglib}/3rdparty/utfcpp/source")
+    add_subdirectory("${_adi_taglib}" "${CMAKE_BINARY_DIR}/third_party/taglib" EXCLUDE_FROM_ALL SYSTEM)
+endfunction()
+adi_add_taglib()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(tag PUBLIC _FILE_OFFSET_BITS=64)
+endif()
+set(_adi_taglib_zlib "${CMAKE_CURRENT_BINARY_DIR}/generated/taglib_zlib")
+file(MAKE_DIRECTORY "${_adi_taglib_zlib}")
+file(WRITE "${_adi_taglib_zlib}/zlib.h"
+    "#pragma once\n#undef MINIZ_NO_ZLIB_COMPATIBLE_NAMES\n#include <miniz.h>\n")
+set_property(SOURCE "${_adi_taglib}/taglib/toolkit/tzlib.cpp" TARGET_DIRECTORY tag
+    APPEND PROPERTY COMPILE_DEFINITIONS HAVE_ZLIB)
+target_include_directories(tag SYSTEM PRIVATE "${_adi_taglib_zlib}")
+target_link_libraries(tag PRIVATE "$<BUILD_INTERFACE:adi_miniz>")
+add_library(adi_sample_tags STATIC src/adi/library/sample_file_tags.cpp)
+target_include_directories(adi_sample_tags PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(adi_sample_tags SYSTEM PRIVATE "${_adi_taglib}/taglib"
+    "${_adi_taglib}/taglib/toolkit" "${_adi_taglib}/taglib/mp4"
+    "${_adi_taglib}/taglib/mpeg" "${_adi_taglib}/taglib/mpeg/id3v1"
+    "${_adi_taglib}/taglib/mpeg/id3v2" "${_adi_taglib}/taglib/ape"
+    "${_adi_taglib}/taglib/riff" "${_adi_taglib}/taglib/riff/wav")
+target_link_libraries(adi_sample_tags PRIVATE tag adi_utf8proc adi_warnings)
+target_link_libraries(adi_core PRIVATE adi_sample_tags)
+add_executable(adi_sample_file_tags_tests tests/test_sample_file_tags.cpp)
+target_include_directories(adi_sample_file_tags_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(adi_sample_file_tags_tests PRIVATE
+    ADI_METADATA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+target_link_libraries(adi_sample_file_tags_tests PRIVATE adi_sample_tags adi_warnings)
+add_test(NAME adi_sample_file_tags_tests COMMAND adi_sample_file_tags_tests)
+
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
 target_sources(adi_core PRIVATE src/adi/ui/library_query.cpp src/adi/ui/project_library.cpp)
 add_executable(adi_library_query_tests tests/test_library_query.cpp)
@@ -1998,6 +2316,42 @@ add_test(NAME adi_library_tests COMMAND adi_library_tests)
 # THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
 # took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
 set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+
+# ADR-0226's fixed-rate worker. Only the selected upstream sources build.
+include(cmake/warp_tracker.cmake)
+adi_add_qmdsp("${ADI_THIRD_PARTY}/qm-dsp" "${ADI_THIRD_PARTY}/mixxx-warp/lib/qm-dsp")
+target_link_libraries(adi_core PRIVATE adi_qmdsp)
+target_sources(adi_core PRIVATE
+    src/adi/audio/sample_classification.cpp
+    src/adi/audio/short_sample_warp.cpp
+    src/adi/audio/spectral_onsets.cpp
+    src/adi/audio/warp_analysis_pcm.cpp
+    src/adi/audio/warp_beat_candidate.cpp
+    src/adi/audio/warp_source_analysis.cpp
+    src/adi/audio/warp_timing_cache.cpp
+    src/adi/audio/warp_timing_map.cpp
+    src/adi/library/analysis_worker.cpp
+    src/adi/library/sample_analysis.cpp
+    src/adi/library/sample_analysis_catalog.cpp
+    src/adi/library/sample_descriptors.cpp
+    src/adi/library/sample_query.cpp
+    src/adi/library/sample_swap.cpp
+    src/adi/library/sample_tonality.cpp
+    src/adi/library/sample_warp_policy.cpp)
+foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
+                       sample_analysis sample_descriptors sample_query browser_sample_query sample_tonality
+                       spectral_onsets warp_timing_map warp_timing_cache warp_source_analysis)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
+target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings Threads::Threads)
+add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
+# RUN_SERIAL for the reason adi_library_tests has it: the fixture scans and
+# hashes through the same background-priority index worker, which a parallel
+# Windows ctest starved past the 600 s timeout (alone it takes seconds).
+set_tests_properties(adi_sample_swap_tests PROPERTIES RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.
@@ -2049,6 +2403,18 @@ add_test(NAME adi_warp_actions_tests COMMAND adi_warp_actions_tests)
 add_executable(adi_warp_playback_tests tests/test_warp_playback.cpp)
 target_link_libraries(adi_warp_playback_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_warp_playback_tests COMMAND adi_warp_playback_tests)
+
+foreach(suite streaming_warp_playback streaming_warp_rates realtime_warp_r3 realtime_warp_alignment warp_launch)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_streaming_warp_playback_tests PRIVATE ADI_TEST_WARP_WRAP_CALLBACK=1)
+    target_link_options(adi_streaming_warp_playback_tests PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=free
+        -Wl,--wrap=posix_memalign -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
 
 add_executable(adi_auto_warp_tests tests/test_auto_warp.cpp)
 target_link_libraries(adi_auto_warp_tests PRIVATE adi_core adi_warnings)

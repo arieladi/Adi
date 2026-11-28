@@ -7,14 +7,17 @@
 #include <limits>
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/publish_file.hpp"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <numbers>
 #include <stop_token>
+#include <thread>
 #include <type_traits>
 static_assert(!std::is_default_constructible_v<adi::audio::PreparedWarp> && !std::is_copy_constructible_v<adi::audio::PreparedWarp>);
 namespace {std::atomic<unsigned> callbackAllocations{0};}
@@ -233,6 +236,65 @@ double bandPower(const std::vector<float>& samples,double low) {
     }
     return power;
 }
+
+void renderTempoPitchMatrix() {
+    test::TempDirectory temp{"warp","tempo_pitch_matrix"};
+    constexpr std::uint32_t rate=48000,frames=rate/2;
+    const auto source=temp.path()/"tone.wav";
+    std::vector<float> tone(static_cast<std::size_t>(frames)*2);
+    for(std::uint32_t frame=0;frame<frames;++frame) {
+        const auto value=static_cast<float>(0.25*std::sin(2*std::numbers::pi*440*frame/rate));
+        tone[static_cast<std::size_t>(frame)*2]=value;
+        tone[static_cast<std::size_t>(frame)*2+1]=value*0.5f;
+    }
+    {
+        audio::WavWriter writer(source,rate,2,audio::WavFormat::Float32);
+        writer.write(tone.data(),frames);writer.close();
+    }
+    double minimumRms=1,maximumTapeError=0,maximumR3Error=0;
+    for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,
+                         audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
+        for(const double speed:{0.75,1.5}) for(const double semitones:{-7.,7.}) {
+            audio::WarpRenderPlan plan;
+            plan.source=source;plan.workFolder=temp.path()/"work";plan.sourceFrames=frames;
+            plan.mode=mode;plan.fluctuation=0;plan.transients={0,frames/2};
+            const auto outputFrames=static_cast<std::uint64_t>(std::llround(frames/speed));
+            plan.anchors={{0,0},{frames,outputFrames}};
+            const double pitch=std::exp2(semitones/12);
+            plan.transposeSemis=semitones;
+            if(mode==audio::WarpMode::ComplexPro)plan.formantScale=pitch;
+            if(mode==audio::WarpMode::RePitch) {
+                check(audio::prepareWarp(plan).error==audio::WarpError::InvalidPlan,
+                      "Re-Pitch rejects independent semitones for either speed");
+                plan.transposeSemis=0;
+            }
+            const auto output=audio::prepareWarp(plan);
+            if(!output)std::printf("matrix mode %d, speed %.2f, shift %.1f: %s\n",
+                static_cast<int>(mode),speed,semitones,output.detail.c_str());
+            check(output && output.prepared->frames==outputFrames,
+                  "each supported matrix render reaches the exact endpoint");
+            if(!output)continue;
+            const auto pcm=read(*output.prepared);
+            double energy=0;
+            bool finite=true;
+            for(const auto point:pcm) {finite=finite && std::isfinite(point);energy+=static_cast<double>(point)*point;}
+            const auto rms=std::sqrt(energy/static_cast<double>(pcm.size()));
+            minimumRms=std::min(minimumRms,rms);
+            check(finite && rms>0.01,"matrix output is finite and audible");
+            if(mode==audio::WarpMode::RePitch) {
+                const auto error=std::abs(frequency(pcm,rate,0)-440*speed);
+                maximumTapeError=std::max(maximumTapeError,error);
+                check(error<2,"Re-Pitch frequency follows tape speed");
+            } else if(mode==audio::WarpMode::Tones || mode==audio::WarpMode::Complex || mode==audio::WarpMode::ComplexPro) {
+                const auto error=std::abs(frequency(pcm,rate,0)-440*pitch);
+                maximumR3Error=std::max(maximumR3Error,error);
+                check(error<8,"the R3 modes honor each requested semitone shift independently of speed");
+            }
+        }
+    }
+    std::printf("tempo/pitch matrix min RMS %.4f, max Re-Pitch/R3 error %.3f/%.3f Hz\n",
+                minimumRms,maximumTapeError,maximumR3Error);
+}
 void formants() {
     for(const std::uint32_t sourceRate:{44100u,48000u}) {
         test::TempDirectory temporary{"warp","formants"};const auto file=temporary.path()/"vowel.wav";const auto frames=sourceRate/2;
@@ -288,5 +350,71 @@ void guardsAndLifetime() {
     check(result.error==audio::WarpError::Realtime && callbackAllocations.load()==allocations+cost &&
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
+
+void restoredMtimeKeepsDistinctWarpResults() {
+    namespace fs = std::filesystem;
+    using namespace std::chrono_literals;
+    test::TempDirectory temporary{"warp", "source_revision"};
+    const auto source = temporary.path() / "source.wav";
+    constexpr std::uint32_t frames = 4096;
+    const auto write = [&](float sample) {
+        const std::vector<float> pcm(frames,sample);
+        audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);
+        writer.write(pcm.data(),frames);
+        writer.close();
+    };
+    write(0.25f);
+    const auto modified = fs::last_write_time(source);
+    std::error_code error;
+    const auto before = media::readFileRevision(source,error);
+    audio::WarpRenderPlan plan;
+    plan.source = source;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceFrames = frames;
+    plan.anchors = {{0,0},{frames,frames}};
+    plan.mode = audio::WarpMode::RePitch;
+    const auto wait = [](const std::shared_ptr<const audio::WarpTask>& task) {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (task && std::chrono::steady_clock::now() < deadline) {
+            if (const auto ready = task->result()) return ready;
+            std::this_thread::sleep_for(1ms);
+        }
+        return std::shared_ptr<const audio::WarpResult>{};
+    };
+    const auto originalTask = audio::requestWarp(plan);
+    const auto original = wait(originalTask);
+    check(original && *original,"prepare and retain the original Warp task");
+    if (!original || !*original) return;
+    check(audio::requestWarp(plan) == originalTask,"unchanged source requests share the retained task");
+    const auto originalPcm = read(*original->prepared);
+
+    std::this_thread::sleep_for(2ms);
+    write(-0.375f);
+    fs::last_write_time(source,modified);
+    const auto after = media::readFileRevision(source,error);
+    check(before && after && before->identity == after->identity && before->size == after->size &&
+        before->modified == after->modified && before->changed != after->changed,
+        "in-place WAV rewrite preserves file identity, length and mtime while advancing its revision");
+    const auto replacementTask = audio::requestWarp(plan);
+    check(replacementTask && replacementTask != originalTask,"changed native revision starts a distinct Warp task");
+    const auto replacement = wait(replacementTask);
+    check(replacement && *replacement,"prepare the rewritten Warp source");
+    if (!replacement || !*replacement) return;
+    check(std::abs(originalPcm.at(frames/2) - 0.25f) < 1e-6f &&
+        std::abs(read(*replacement->prepared).at(frames/2) + 0.375f) < 1e-6f,
+        "the old and new tasks return the audio from their respective source revisions");
+    const auto retained = originalTask->result();
+    check(retained == original && read(*retained->prepared) == originalPcm,
+        "the original task still exposes its pinned PCM to the earlier consumer");
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main() {
+    try {
+        markerCodec();renderModes();rePitch();nativeModesAndOnsets();renderTempoPitchMatrix();formants();
+        guardsAndLifetime();restoredMtimeKeepsDistinctWarpResults();
+    } catch(const std::exception& error) {
+        check(false,error.what());
+    }
+    std::printf("%d checks, %d failures\n",checks,failures);
+    return failures?1:0;
+}

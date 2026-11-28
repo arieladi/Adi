@@ -27,14 +27,15 @@ std::int64_t defaultEnd(OpContext& context, const Payload& row) {
     auto length = row.at("length_ticks").is_null() ? std::int64_t{0} : signedInteger(row.at("length_ticks"));
     if (row.at("time_base") == 1) {
         engine::TempoMap tempo;
-        SQLite::Statement query(context.db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks");
+        SQLite::Statement query(context.db, "SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks");
         double maxBpm = 0;
         while (query.executeStep()) {
             const auto bpm = query.getColumn(1).getDouble();
-            if (!std::isfinite(bpm) || bpm <= 0 || query.getColumn(2).getInt() != 0)
-                throw std::runtime_error("clip property conversion needs a supported step tempo map");
+            if (!std::isfinite(bpm) || bpm <= 0)
+                throw std::runtime_error("clip property conversion needs a valid tempo map");
             maxBpm = std::max(maxBpm, bpm);
-            tempo.events.push_back({query.getColumn(0).getInt64(),bpm,0});
+            tempo.events.push_back({query.getColumn(0).getInt64(),bpm,query.getColumn(2).getInt(),
+                                    query.getColumn(3).getDouble()});
         }
         if (tempo.events.empty()) { tempo.events.push_back({0,120,0}); maxBpm = 120; }
         const auto pos = signedInteger(row.at("pos_ns"));

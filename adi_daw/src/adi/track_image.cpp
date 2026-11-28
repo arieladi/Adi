@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/track_image.hpp"
+#include "adi/session_schema.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -54,8 +56,16 @@ struct Catalog {
                 if(columns.getColumn(2).getInt()!=0)table.generated=true;
             }
             for(const auto& [order,name]:keys){(void)order;table.keys.push_back(name);}
-            SQLite::Statement triggers(db,"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name=?)");triggers.bind(1,table.name);
-            table.triggers=triggers.executeStep() && triggers.getColumn(0).getInt()!=0;
+            SQLite::Statement triggers(db, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?");
+            triggers.bind(1,table.name);
+            while (triggers.executeStep()) {
+                const auto name = triggers.getColumn(0).getString();
+                if ((table.name != "clips" && table.name != "clip_slots") ||
+                    !isKnownSessionTrigger(name, triggers.getColumn(1).getString())) {
+                    table.triggers = true;
+                    break;
+                }
+            }
             tables.emplace(lower(table.name),std::move(table));
         }
         for(const auto& [name,table]:tables) {
@@ -106,7 +116,8 @@ public:
       : db(database), catalog(schema), sourceRead(source) {}
   bool ignored(const std::string &name) const {
       return sourceRead && (name == "frozen_renders" || name == "frozen_groups" || name == "device_panels" ||
-                            name == "device_panel_params" || name == "controller_maps");
+                            name == "device_panel_params" || name == "controller_maps" ||
+                            name == "clip_slots" || name == "clip_launch");
   }
     std::map<Identity,Row> rows;
     void remove(const std::string& name,const Payload& before) {
@@ -168,6 +179,8 @@ public:
                         values.push_back(value);
                 }
                 if(null)continue;
+                if (sourceRead && foreign.child == "clips")
+                    where += engine::excludeSlotClips(db, "clips.id");
                 SQLite::Statement children(db,"SELECT * FROM "+quoted(catalog.get(foreign.child).name)+" WHERE "+where);int index=0;
                 for(const auto& value:values)bind(children,++index,value);
                 while(children.executeStep()) {
@@ -306,6 +319,10 @@ using ForeignByChild = std::map<std::string, std::vector<const ForeignKey *>>;
 // R12 will settle whether a copied track starts armed.
 constexpr bool kCopyArmState = false;
 
+bool pitchExtractionRow(const Payload &entry) {
+    return entry.at("table") == "clip_pitch_extractions";
+}
+
 Payload pooledKeys(SQLite::Database &db, const Catalog &catalog, const Payload &capture) {
     Payload keys = Payload::object();
     for (const auto &[table, columns] : {std::pair{"media_files", "hash_blake3"},
@@ -355,6 +372,8 @@ class TrackCopyImage {
         for (const auto &entry : capture.at("rows")) {
             if (!entry.at("after").is_null())
                 continue; // The deletion image can contain changes to surviving tracks.
+            if (pitchExtractionRow(entry))
+                continue;
             const auto name = entry.at("table").get<std::string>();
             const auto &source = entry.at("before");
             const auto &table = catalog.get(name);
@@ -507,6 +526,8 @@ Payload captureTrackForCopy(SQLite::Database &db, std::int64_t root) {
     Image image(db, catalog);
     image.collect("tracks", root);
     auto capture = image.encode(root);
+    auto &rows = capture.at("rows");
+    rows.erase(std::remove_if(rows.begin(), rows.end(), pitchExtractionRow), rows.end());
     capture["assets"] = pooledKeys(db, catalog, capture);
     return capture;
 }

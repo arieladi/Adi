@@ -6,6 +6,7 @@
 #include "adi/controller_data.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/freeze_commands.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
@@ -370,7 +371,7 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
         )
         SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips
             WHERE lane_id IS NULL AND track_id IN subtree
-    )sql");
+    )sql" + engine::excludeSlotClips(store.db(), "clips.id"));
     ends.bind(1, track.id);
     long double end = 0;
     while (ends.executeStep()) {
@@ -2131,7 +2132,15 @@ std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const
 
 bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t slot,
                                     const std::filesystem::path &file, std::int64_t nowUtc) {
-    return hotSwapTarget(target).has_value() && assignSample(target.id, slot, file, nowUtc);
+    return hotSwapIndexedSample(target, slot, file, nowUtc, {}) == SampleAssignmentResult::Applied;
+}
+
+ProjectDocument::SampleAssignmentResult ProjectDocument::hotSwapIndexedSample(
+    const DevicePanelData &target, std::int32_t slot, const std::filesystem::path &file,
+    std::int64_t nowUtc, std::string_view expectedHash) {
+    if (audio::onAudioThread || !hotSwapTarget(target))
+        return SampleAssignmentResult::Failed;
+    return assignSampleWithIdentity(target.id, slot, file, nowUtc, expectedHash);
 }
 
 std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, preset::Preset presetValue,
@@ -2474,16 +2483,26 @@ bool ProjectDocument::loadSampleInstrument(std::int64_t track, const std::filesy
     // state when it creates the runtime, before that runtime can play a note.
     if (!result.ok || !synchronise())
         return false;
+    // The receipt was enqueued before this runtime existed. Acknowledge it
+    // against the insertion's realised sequence before another edit advances it.
+    (void)parameterOps_.retryApplied(captureNowMs());
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
                                    std::int64_t nowUtc) {
+    return assignSampleWithIdentity(device, slot, file, nowUtc, {}) == SampleAssignmentResult::Applied;
+}
+
+ProjectDocument::SampleAssignmentResult ProjectDocument::assignSampleWithIdentity(
+    std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc,
+    std::string_view expectedHash) {
     // The decode cache takes every format the browser lists (AIFF, FLAC, MP3...), not WAV alone.
-    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc, &audio::defaultDecodeCache());
+    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc,
+                                            &audio::defaultDecodeCache(), expectedHash);
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The sample could not be prepared." : prepared.error;
-        return false;
+        return prepared.sourceChanged ? SampleAssignmentResult::SourceChanged : SampleAssignmentResult::Failed;
     }
     const auto states = loadStates(prepared);
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {
@@ -2491,13 +2510,13 @@ bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const
     });
     error_ = result.error;
     if (!result.ok)
-        return false;
+        return SampleAssignmentResult::Failed;
     for (const auto &state : states)
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
-        return false;
+        return SampleAssignmentResult::Failed;
     feed_.publish(session_, realisedGeneration_);
-    return true;
+    return SampleAssignmentResult::Applied;
 }
 bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
     auto prepared = prepareSampleClear(*store_, device, slot);
@@ -2649,43 +2668,65 @@ bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesyste
     error_ = "Sample relinked. Playback could not refresh: " + error_;
     return false;
 }
-bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
-                                    const std::filesystem::path &defaultsIndex) {
-    // A new pool row takes the next id; a file already in the pool keeps its own (the capture
-    // reuses it by content).
-    // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
-    // One `RowIds` for the prepared row (DF-E16), past what the drop's earlier files took.
-    RowIds rows(store_->db());
+namespace {
+bool prepareDroppedAudio(Store &store, const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                         std::string &why, const std::filesystem::path &defaultsIndex, std::stop_token stop = {}) {
+    // Reserve past earlier files in the same drop. A file already in the pool keeps its id.
+    RowIds rows(store.db());
     if (out.firstFreeId > 1)
         rows.reserve("media_files", out.firstFreeId - 1);
-    const auto id = rows.next("media_files");
     OpRequest captured;
-    const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
+    const auto result = media::prepareImport(store, pathFromUtf8(utf8Path), rows.next("media_files"), nowUtc,
+                                             captured, nullptr, stop);
+    if (stop.stop_requested()) {
+        why = "Cancelled.";
+        return false;
+    }
     if (!result.ok) {
-        error_ = result.error.empty() ? "The file could not be read." : result.error;
+        why = result.error.empty() ? "The file could not be read." : result.error;
         return false;
     }
     if (!result.audio || result.audio->frames <= 0 || result.audio->sampleRate <= 0) {
-        error_ = "That file holds no audio ADI can play.";
+        why = "That file holds no audio ADI can play.";
         return false;
     }
     out.savedDefaults.reset();
     try {
         if (auto index = openSampleDefaults(defaultsIndex)) {
-            if (auto saved = clip_edit::loadSampleDefaults(*store_, *index, result, captured))
+            if (auto saved = clip_edit::loadSampleDefaults(store, *index, result, captured))
                 out.savedDefaults = std::make_shared<library::SampleSettings>(std::move(*saved));
         }
     } catch (const std::exception &e) {
-        error_ = utf8Path + " was not imported: " + e.what();
+        why = utf8Path + " was not imported: " + e.what();
         return false;
     }
     out.mediaId = result.mediaId;
     out.sampleRate = result.audio->sampleRate;
     out.frames = result.audio->frames;
     out.media = std::move(captured);
-    error_.clear();
+    why.clear();
     return true;
 }
+} // namespace
+
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                                    const std::filesystem::path &defaultsIndex) {
+    return prepareDroppedAudio(*store_, utf8Path, nowUtc, out, error_, defaultsIndex);
+}
+
+bool ProjectDocument::captureImport(const std::filesystem::path &project, const std::string &utf8Path,
+                                    std::int64_t nowUtc, AudioImport &out, std::string &why, std::stop_token stop,
+                                    const std::filesystem::path &defaultsIndex) {
+    // The worker owns its connection (SPEC 3.8). Media capture requires a writable store.
+    StoreError error{};
+    auto store = Store::open(project, error, false);
+    if (!store) {
+        why = "The project could not be read for the import: " + std::string(toString(error));
+        return false;
+    }
+    return prepareDroppedAudio(*store, utf8Path, nowUtc, out, why, defaultsIndex, stop);
+}
+
 bool ProjectDocument::saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex) {
     auto index = library::Index::open(defaultsIndex, error_, false);
     if (!index) {
@@ -2733,6 +2774,7 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.warp = job.choices.warp;
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
+    options.shortSamplePolicy = job.shortSamplePolicy;
     options.stop = stop;
     options.arrangementPlacement = job.placementPolicy;
     try {
@@ -3093,9 +3135,30 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
         session_.prepareWithGraphWorkers(rate, frames, graphWorkerCount_(frames), graphWorkerMinimumFrames_);
     else
         session_.prepare(rate, frames);
+    // SC-384: the engine refuses a format outside 44.1 to 768 kHz or above 4096 frames (ADR-0157), and the
+    // reason stayed inside the session while the window showed nothing. It is said in plain words.
+    std::string problem;
+    const auto hz = static_cast<long long>(std::llround(rate));
+    if (!(rate >= 44100.0) || rate > 768000.0)
+        problem = "ADI cannot run at " + std::to_string(hz) + " Hz: it needs 44.1 kHz to 768 kHz. Choose another "
+                  "sample rate in Settings > Audio.";
+    else if (frames > 4096)
+        problem = "ADI cannot run with a buffer of " + std::to_string(frames) + " samples: 4096 at most. Choose a "
+                  "smaller Buffer Size in Settings > Audio.";
+    {
+        const std::lock_guard lock(formatMutex_);
+        if (problem != formatProblem_) {
+            formatProblem_ = problem;
+            formatPending_ = problem;
+        }
+    }
     mailbox_.setSampleRate(rate);
     refreshLimiterReductionSources();
     analysis_->refreshSources(true);
+}
+std::optional<std::string> ProjectDocument::takeFormatProblem() {
+    const std::lock_guard lock(formatMutex_);
+    return std::exchange(formatPending_, std::nullopt);
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
@@ -4031,7 +4094,8 @@ void ProjectDocument::landTake() {
                                    "JOIN clips c ON c.track_id=p.track_id AND c.lane_id IS NULL "
                                    "AND c.pos_ticks=p.pos_ticks AND c.length_ticks=p.length_ticks "
                                    "JOIN audio_clips a ON a.clip_id=c.id AND a.media_id=pa.media_id "
-                                   "AND a.src_start_frames=pa.src_start_frames WHERE p.id=?");
+                                   "AND a.src_start_frames=pa.src_start_frames WHERE p.id=?" +
+                                   engine::excludeSlotClips(store_->db(), "c.id"));
             for (const auto id : lastPassClips) {
                 main.bind(1, id);
                 if (main.executeStep())

@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet 5</title>
+<style>html,body{margin:0;background:#0c0c0e}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script><script src="../src/devlib.js"></script>
+<script>
+// ADI, the built-in devices' panels, sheet 5 (28 November 2026). SC-455. The agreed look on the five
+// remaining effects that mirror Live's: Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators, Vocoder.
+// Every control is one the device declares (pd/devices/*.pd).
+const W=1920,H=1080;let s='';
+const Y0=70,H0=392,Y1=494;
+// ---- Chorus-Ensemble: every control on the card ----
+{const x=20,y=Y0,w=560;s+=card(x,y,w,H0,'Chorus-Ensemble',{open:false});
+ s+=meter(x+18,y+62,140,0.6,0.58);
+ s+=kb(x+124,y+146,56,0.5,O,'AMOUNT','50 %');
+ s+=kb(x+246,y+138,33,0.3,B,'RATE','0.90 Hz',{vz:10})+kb(x+332,y+138,28,0.0,O,'FEEDBACK','0 %',{vz:10});
+ s+=kb(x+412,y+138,22,0.5,O,'WIDTH','100 %')+kb(x+496,y+138,30,0.5,O,'DRY / WET','50 %');
+ s+=pills(x+200,y+214,344,26,['Chorus','Ensemble','Vibrato'],0);
+ s+=kb(x+52,y+312,17,0.0,B,'SHAPE','0 %')+kb(x+122,y+312,17,0.5,B,'OFFSET','90°')+kb(x+192,y+312,17,0.45,O,'TIME','20.0 ms')+kb(x+262,y+312,17,0.2,O,'HIGH PASS','120 Hz',{lz:9})+kb(x+332,y+312,17,0.0,O,'WARMTH','0 %')+kb(x+402,y+312,17,0.75,O,'OUTPUT','0.0 dB');
+ s+=tog(x+446,y+268,98,24,'High pass',true,{z:10})+tog(x+446,y+298,98,24,'Auto delay',true,{z:10})+tog(x+446,y+328,98,24,'Invert',false,{z:10});
+ s+=pills(x+446,y+358,98,22,['1 tap','2 taps'],0,{z:9});}
+// ---- Phaser-Flanger ----
+{const x=595,y=Y0,w=680;s+=card(x,y,w,H0,'Phaser-Flanger');
+ s+=meter(x+18,y+62,140,0.62,0.6);
+ s+=kb(x+124,y+146,56,0.6,O,'CENTER','1.00 kHz',{mod:[0.45,0.75]});
+ s+=kb(x+248,y+138,31,0.5,B,'AMOUNT','50 %',{vz:10})+kb(x+334,y+138,31,0.3,B,'RATE','0.50 Hz',{vz:10})+kb(x+420,y+138,28,0.3,O,'FEEDBACK','30 %',{vz:10});
+ s+=kb(x+506,y+138,22,0.45,O,'NOTCHES','4')+kb(x+604,y+138,30,0.5,O,'DRY / WET','50 %');
+ s+=pills(x+200,y+214,300,26,['Phaser','Flanger','Doubler'],0)+pills(x+512,y+214,152,26,['Phase','Spin'],0,{c:B});
+ const gx=x+16,gy=y+252,gw=404,gh=124;
+ s+=screen(gx,gy,gw,gh,()=>{let g=grid(gx,gy,gw,gh,{db:['0','-12','-24']})+spectrum(gx,gy+gh*0.25,gw,gh*0.75,19,'url(#fS)',0.35);
+  const d=plot(gx,gy,gw,gh,u=>{let v=0.74;[0.42,0.52,0.62,0.72].forEach(f=>{v-=0.5*Math.exp(-Math.pow((u-f)/0.014,2))});return v},300);
+  g+=curve(d,O,null,gx,gy,gw,gh);return g});
+ s+=pills(x+432,y+252,232,24,['Sine','Tri','Saw','Rect','More'],0,{c:B,z:9.5});
+ s+=kb(x+458,y+326,15,0.5,O,'SPREAD','50 %')+kb(x+520,y+326,15,0.5,B,'PHASE','180°')+kb(x+582,y+326,15,0.5,B,'ENV','0 %',{bi:1})+kb(x+644,y+326,15,0.0,O,'WARMTH','0 %');}
+// ---- Shifter ----
+{const x=1290,y=Y0,w=610;s+=card(x,y,w,H0,'Shifter');
+ s+=meter(x+18,y+62,140,0.6,0.57);
+ s+=kb(x+124,y+146,56,0.57,O,'COARSE','+7 st',{bi:1,min:'-48',max:'+48'});
+ s+=kb(x+246,y+138,30,0.5,O,'FINE','0 ct',{bi:1,vz:10})+kb(x+326,y+138,24,0.25,O,'WINDOW','80 ms')+kb(x+396,y+138,24,1.0,O,'TONE','20.0 kHz')+kb(x+466,y+138,22,0.0,O,'SPREAD','0')+kb(x+546,y+138,30,1.0,O,'DRY / WET','100 %');
+ s+=pills(x+200,y+214,270,26,['Pitch','Frequency','Ring'],0)+tog(x+482,y+214,112,26,'Wide',false);
+ s+=L(x+16,y+252,x+w-16,y+252,'#34353b')+vline(x+164,y+262,y+380)+vline(x+330,y+262,y+380)+vline(x+500,y+262,y+380);
+ s+=cap(x+16,y+276,'DELAY')+tog(x+104,y+262,52,22,'On',false,{z:10});
+ s+=kb(x+52,y+326,16,0.3,O,'TIME','1 / 8',{dis:1})+kb(x+120,y+326,16,0.0,O,'FEEDBACK','0 %',{dis:1,lz:9});
+ s+=cap(x+176,y+276,'LFO')+pills(x+212,y+262,108,22,['Sine','Tri','More'],0,{c:B,z:9});
+ s+=kb(x+212,y+326,16,0.3,B,'RATE','0.50 Hz')+kb(x+284,y+326,16,0.0,B,'AMOUNT','0 st');
+ s+=cap(x+342,y+276,'ENVELOPE')+tog(x+438,y+262,52,22,'On',false,{c:B,z:10});
+ s+=kb(x+368,y+326,14,0.5,B,'AMOUNT','0 st',{bi:1,dis:1,lz:9})+kb(x+418,y+326,14,0.2,B,'ATTACK','10 ms',{dis:1,lz:9})+kb(x+468,y+326,14,0.4,B,'RELEASE','200 ms',{dis:1,lz:9});
+ s+=cap(x+512,y+276,'DRIVE')+tog(x+558,y+262,36,22,'On',false,{z:10});
+ s+=kb(x+553,y+326,16,0.3,O,'DRIVE','0.0 dB',{dis:1});}
+// ---- Resonators: every control on the card ----
+{const x=20,y=Y1,w=860;s+=card(x,y,w,H0,'Resonators',{open:false});
+ s+=meter(x+18,y+62,130,0.55,0.6);
+ s+=kb(x+124,y+142,54,0.5,O,'NOTE','C 3');
+ s+=kb(x+246,y+136,32,0.45,O,'DECAY','5.00 s',{vz:10})+kb(x+332,y+136,27,0.5,O,'COLOR','50 %',{vz:10});
+ s+=cap(x+392,y+66,'INPUT FILTER')+tog(x+500,y+52,52,22,'On',true,{z:10});
+ s+=pills(x+392,y+82,196,24,['LP','BP','HP','Notch'],0,{z:10})+kb(x+420,y+156,18,0.6,O,'FREQ','2.00 kHz');
+ s+=cap(x+476,y+134,'MODE')+pills(x+476,y+142,72,24,['A','B'],0)+tog(x+556,y+142,62,24,'Const',false,{z:10});
+ s+=kb(x+676,y+136,22,0.5,O,'WIDTH','100 %')+kb(x+744,y+136,22,0.6,O,'GAIN','0.0 dB')+kb(x+812,y+136,30,0.5,O,'DRY / WET','50 %');
+ ['I','II','III','IV','V'].forEach((n,k)=>{const cx=x+16+k*166,on=k<3;
+  s+=R(cx,y+214,158,162,'#141518',{r:9,s:'#34353b'});
+  s+=(on?`<g filter="url(#glow2)">`+R(cx+8,y+222,30,24,O,{r:7})+`</g>`:R(cx+8,y+222,30,24,'#26272c',{r:7,s:'#45464d'}))+T(cx+23,y+239,n,{z:11.5,w:700,a:'middle',f:on?INK:'#8b8e97'});
+  s+=vbox(cx+46,y+222,104,24,'Fine',k===0?'0 ct':'0 ct');
+  s+=kb(cx+46,y+316,20,[0.5,0.64,0.75,0.5,0.5][k],O,k===0?'NOTE':'PITCH',['C 3','+7 st','+12 st','0 st','0 st'][k],{bi:k>0,dis:!on})+kb(cx+114,y+316,20,0.8,O,'GAIN','0.0 dB',{dis:!on});});}
+// ---- Vocoder ----
+{const x=895,y=Y1,w=760;s+=card(x,y,w,H0,'Vocoder');
+ s+=meter(x+18,y+62,140,0.6,0.6);
+ s+=kb(x+124,y+146,56,0.5,O,'FORMANT','0 st',{bi:1,min:'-24',max:'+24'});
+ s+=kb(x+246,y+138,31,0.5,O,'DEPTH','100 %',{vz:10})+kb(x+330,y+138,27,0.5,O,'WIDTH','100 %',{vz:10})+kb(x+414,y+138,30,1.0,O,'DRY / WET','100 %');
+ s+=pills(x+200,y+214,264,26,['Noise','External','Modulator','Pitch'],0,{z:10});
+ const gx=x+478,gy=y+52,gw=266,gh=150;
+ s+=screen(gx,gy,gw,gh,()=>{let g='';for(let k=1;k<4;k++)g+=L(gx,gy+gh*k/4,gx+gw,gy+gh*k/4,'#ffffff',1,{op:0.05});
+  const r=rng(12);for(let k=0;k<20;k++){const bw=gw/20,sig=0.25+0.6*Math.exp(-Math.pow((k-6)/5,2))*(0.6+0.4*r()),lv=0.72+0.2*Math.sin(k*0.7);
+   g+=R(gx+k*bw+2,gy+gh-sig*gh*0.9,bw-4,sig*gh*0.9,B,{r:1.5,op:0.35});g+=`<rect x="${(gx+k*bw+2).toFixed(1)}" y="${(gy+gh-lv*gh*0.9-2).toFixed(1)}" width="${(bw-4).toFixed(1)}" height="4" rx="2" fill="${O}" filter="url(#glow2)"/>`}
+  g+=T(gx+8,gy+15,'band levels',{z:9.5,f:'#8b8e97'});return g});
+ s+=cap(x+478,y+226,'BANDS')+pills(x+534,y+214,210,26,['4','8','12','16','20'],4);
+ s+=L(x+16,y+252,x+w-16,y+252,'#34353b');
+ [['ATTACK','1.0 ms',B,0.1],['RELEASE','150 ms',B,0.35],['LOW','80 Hz',O,0.15],['HIGH','18.0 kHz',O,0.95],['GATE','-60 dB',O,0.5],['LEVEL','0.0 dB',O,0.7],['UNVOICED','0 %',O,0.0],['SENS.','50 %',O,0.5]].forEach((a,k)=>{s+=kb(x+56+k*92,y+312,16,a[3],a[2],a[0],a[1])});
+ s+=tog(x+16,y+354,80,24,'Enhance',false,{z:10})+tog(x+102,y+354,64,24,'Retro',false,{z:10})+tog(x+172,y+354,58,24,'Fast',true,{z:10})+pills(x+544,y+354,200,24,['Mono','Stereo','L / R'],1,{z:9.5});}
+// ---- notes ----
+{const x=1670,y=Y1,w=230;s+=R(x,y,w,H0,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+16,y+30,'Sheet 5',{z:14,w:700});
+ s+=para(x+16,y+54,['The five remaining effects','that mirror Live\'s.'],{z:11.5,lh:15.5});
+ s+=para(x+16,y+104,['Chorus-Ensemble and','Resonators fit whole on','their cards: no arrow.','','Phaser-Flanger, Shifter','and Vocoder show what is','reached for; the arrow','opens the rest (the second','LFO, the envelope\'s times,','the carrier\'s own settings).','','A section that is switched','off is drawn dim, as','Shifter\'s delay here.','','Resonator I sets the note;','II to V are pitched from it.'],{z:11.5,lh:15.5});}
+{const x=20,y=900,w=1880,h=160;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+20,y+32,'What comes after these sheets',{z:14,w:700});
+ s+=para(x+20,y+58,['ADI\'s own devices get sheets of their own: ADI-Shaper has more than four hundred controls and needs its own design; Chord Comb and Color Cab are small.','So do the two instruments, OneShot and Sampler, whose main picture is the sample.','The devices session builds one card at a time from these sheets, and each built card is shown to you in the window beside its sheet before the next is started.','The rules are the same on every card: orange for the device\'s own controls and what is on, blue for what moves them and for pictures of the signal, a value with its unit on every knob, no control drawn twice.'],{z:12,lh:19});}
+sheet(W,H,s,'ADI  ·  the built-in devices, sheet 5','Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators and Vocoder as they stand in the Device View. Every control drawn is one the device has today.','DEVICES SHEET  ·  5');
+</script></body></html>

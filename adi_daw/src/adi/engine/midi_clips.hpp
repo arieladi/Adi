@@ -17,6 +17,7 @@ namespace adi::engine {
 // not release/retrigger them. Missing/ambiguous identities use release/chase.
 struct MidiClipState;
 struct NoteExpressionsRead;
+class LaunchAudioRuntime;
 struct MidiNoteActivity {
     std::uint32_t onsets = 0;
     bool held = false;
@@ -38,6 +39,8 @@ public:
               const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,
               const MidiClips* previous, const std::set<std::int64_t>& changedTracks);
     ~MidiClips();
+    /// Owner-side wiring on an unpublished source generation.
+    void attachLaunchPlayback(std::shared_ptr<const LaunchAudioRuntime>);
     std::vector<Node*> sourcesFor(std::int64_t track);
     // Owned by this generation. Includes empty clips and uses the same sample
     // boundaries as the note scheduler. Overlapping or touching spans merge.

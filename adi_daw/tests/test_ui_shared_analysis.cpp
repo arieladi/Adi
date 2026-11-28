@@ -72,7 +72,11 @@ struct Fixture {
 };
 juce::Image softwarePicture(SharedSpectrumView &view) {
     juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
-    juce::Graphics graphics(image); view.paint(graphics); return image;
+    {
+        juce::Graphics graphics(image);
+        view.paint(graphics);
+    }
+    return image;
 }
 adi::uitest::ComparisonPicture comparisonPicture(SharedSpectrumView &view) {
     return adi::uitest::pictureForComparison(juce::Image::RGB, view.getWidth(), view.getHeight(),
@@ -1875,14 +1879,22 @@ void spectrogramHistoryMotion() {
 
     Fixture f;
     Root root; root.setSize(340, 340); root.setVisible(true); root.addToDesktop(0);
-    SharedSpectrumView view, sibling;
+    SharedSpectrumView view, sibling, boxed{true};
     view.setBounds(0, 0, 156, 311); sibling.setBounds(170, 0, 156, 311);
-    for (auto *consumer : {&view, &sibling}) {
+    boxed.setBounds(0, 0, width, height);
+    for (auto *consumer : {&view, &sibling, &boxed}) {
         consumer->setMode(Mode::Spectrogram);
         root.addAndMakeVisible(*consumer);
         consumer->present(f.broker, 1);
     }
-    f.write(); f.broker->pump(); view.frame(); sibling.frame();
+    f.write(); f.broker->pump(); view.frame(); sibling.frame(); boxed.frame();
+    const auto standard = softwarePicture(view), docked = softwarePicture(boxed);
+    bool sameRaster = boxed.snapshot() && boxed.snapshot() == view.snapshot();
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            sameRaster = sameRaster && docked.getPixelAt(x, y) == standard.getPixelAt(x + left, y + top);
+    check(sameRaster, "SC-462: the boxed spectrogram paints the entire raster flush with the display edges");
+    boxed.setVisible(false);
     const auto initial = view.snapshot();
     const auto stat = f.broker->stats();
     view.setHistoryMotion(Motion::Sweep);

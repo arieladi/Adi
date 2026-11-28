@@ -470,6 +470,9 @@ public:
     [[nodiscard]] virtual std::vector<std::uint8_t> saveState(const std::string&) const {
         return {};
     }
+    /// Owner-side diagnostic after an unavailable state capture. A device
+    /// that reports this may keep the last persisted state when saving.
+    [[nodiscard]] virtual std::string_view stateCaptureIssue() const noexcept { return {}; }
     virtual bool loadState(const std::string&, const std::vector<std::uint8_t>&) {
         return false;
     }

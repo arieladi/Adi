@@ -25,6 +25,18 @@ struct MidiPortSwitches {
     bool track = false, sync = false, remote = false, mpe = false;
     friend bool operator==(const MidiPortSwitches &, const MidiPortSwitches &) = default;
 };
+// SC-405: explain switches that are unavailable. Track feeds the tracks on input and enables
+// hardware routing on output (SC-404). Input MPE parses per-note expression.
+inline std::string midiPortSwitchInert(bool input, const char *field) {
+    const std::string f = field;
+    if (f == "sync")
+        return "MIDI sync (clock) is not built yet.";
+    if (f == "remote")
+        return "Control surfaces (Remote) are not built yet.";
+    if (!input && f == "mpe")
+        return "The MPE switch applies to MIDI input.";
+    return {};
+}
 // A switch's default: the registry's `midi.port.<field>` row (false where the row is missing).
 inline bool midiPortDefault(const char *field) {
     const auto *row = settings::find(std::string("midi.port.") + field);

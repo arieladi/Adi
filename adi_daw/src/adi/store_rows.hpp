@@ -28,6 +28,7 @@
 #include <array>
 
 #include "adi/track_recording.hpp"
+#include "adi/tempo_ramp.hpp"
 #include "adi/return_send_tap.hpp"
 
 #include "adi/controller_data.hpp"
@@ -42,6 +43,7 @@
 
 namespace adi {
 class Store;
+namespace clip_edit { struct ProjectPitchEditsRead; }
 }
 
 namespace adi::rows {
@@ -63,6 +65,7 @@ struct TempoEvent {
     double bpm = 120.0;
     std::int64_t curve = 0;
     double tension = 0.0;
+    std::optional<TempoRampSpan> rampSpan = std::nullopt;
 };
 
 struct TimeSignature {
@@ -180,6 +183,7 @@ struct Clip {
     std::optional<std::int64_t> signatureNumerator = {}, signatureDenominator = {};
     std::optional<std::int64_t> scaleRoot = {}, scaleMask = {};
     std::optional<std::string> scaleId = {};
+    bool operator==(const Clip&) const = default;
 };
 
 struct AudioClip {
@@ -194,6 +198,7 @@ struct AudioClip {
     bool reverse = false;
     std::int64_t channelMode = 0;
     std::optional<std::vector<std::byte>> warpMarkers{};
+    bool operator==(const AudioClip&) const = default;
 };
 
 /// A note, already decoded out of its clip's `ANOT` blob. The projection never
@@ -240,6 +245,7 @@ struct Media {
     std::optional<std::int64_t> bitDepth;
     bool embedded = false;
     bool missing = false;
+    bool operator==(const Media&) const = default;
 };
 
 struct Routing {
@@ -418,9 +424,12 @@ struct Model {
     std::vector<Track> tracks;
     std::vector<MixerStrip> strips;
     std::vector<Lane> lanes;
-    std::vector<Clip> clips;
+    std::vector<Clip> clips; // Arrangement main and take lanes
+    std::vector<Clip> slotClips;
     std::vector<AudioClip> audioClips;
     std::vector<Note> notes;
+    std::vector<Note> slotNotes;
+    std::vector<std::string> slotProblems;
     std::vector<controllers::Lane> controllers;
     std::vector<Marker> markers;
     std::vector<Media> media;
@@ -456,5 +465,13 @@ void readClipNotes(Model&, const Store&, std::int64_t clipId);
 /// that vocabulary. A table that cannot be read leaves its vector empty and
 /// appends to `problems`.
 [[nodiscard]] Model readModel(const Store&);
+
+struct PitchExtractionRows {
+    std::vector<std::int64_t> clipIds; ///< sorted owner IDs for containment
+    bool unreadable = false;
+};
+
+/// Text projection requests pitch edits and extraction markers on the same snapshot.
+[[nodiscard]] Model readModel(const Store&, clip_edit::ProjectPitchEditsRead&, PitchExtractionRows&);
 
 }  // namespace adi::rows

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/library/sample_settings.hpp"
 #include "adi/library/index.hpp"
+#include "adi/library/sample_analysis.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -136,5 +137,77 @@ void futureAndFailures() {
     std::string deep(40,'[');deep+="0";deep.append(40,']');check(!index->importJson(deep,error) && index->exportJson()==saved,"excessively nested exchange refuses in the bounded preflight before DOM parsing");
     check(index->saveSampleSettings("../outside",s,error)==SampleSettingsProblem::Invalid && index->sampleSettings("../outside").problem==SampleSettingsProblem::Invalid && index->exportJson()==saved,"path-shaped settings keys never reach persistent row writes");
 }
+
+void analysisExchange() {
+    using Source = audio::SampleKindSource;
+    test::TempDirectory temp{"sample_settings", "analysis_exchange"};
+    std::string error;
+    auto sender = Index::open(temp.path() / "sender.sqlite", error, false);
+    auto receiver = Index::open(temp.path() / "receiver.sqlite", error, false);
+    if (!sender || !receiver) throw std::runtime_error(error);
+
+    const Json authored{{"version", 3}, {"media", {{hash, {{"bpm", 127.25},
+        {"key", {{"tonic", 10}, {"minor", true}}}, {"tags", {"favorite"}}}}}}};
+    check(sender->importJson(authored.dump(), error), "version three accepts authored B-flat minor and BPM");
+    check(sender->saveSampleSettings(hash, sample(), error) == SampleSettingsProblem::None,
+          "the same content can retain authored Warp and clip settings");
+
+    SampleAnalysis measured;
+    measured.contentHash = hash;
+    measured.tempoBpm = 119.5;
+    measured.tempoSource = Source::Acid;
+    measured.key = SampleKey{2, false};
+    measured.keySource = Source::FileTag;
+    measured.keyStrength = 1;
+    auto tags = portableSampleMetadata(measured);
+    auto detection = tags;
+    detection.contentHash = other;
+    detection.tempoSource = Source::Detection;
+    detection.keySource = Source::Detection;
+    detection.keyStrength = 0.25f;
+    const std::array samples{tags, detection};
+    const auto exchange = sender->exportJson(samples);
+    std::vector<SampleAnalysisMetadata> received;
+    check(receiver->importJson(exchange, error, &received) && received == std::vector(samples.begin(), samples.end()),
+          "ACID and detected BPM, tagged and detected key, and key strength round-trip by content hash");
+    check(receiver->exportJson(received) == exchange && receiver->sampleSettings(hash).data == std::optional(sample()),
+          "the complete exchange round-trips with authored Warp and clip settings");
+    const auto durable = Json::parse(receiver->exportJson());
+    check(durable.at("media").size() == 1 && !durable.at("media").at(hash).contains("analysis_metadata"),
+          "received read-only analysis lives with the caller and remains evictable independently of ADIL");
+
+    auto local = measured;
+    local.tempoBpm = 104;
+    local.tempoSource = Source::Detection;
+    local.key = SampleKey{5, true};
+    local.keySource = Source::Detection;
+    applySampleMetadata(local, tags);
+    check(local.tempoBpm == 119.5 && local.tempoSource == Source::Acid && local.key == tags.key &&
+          local.keySource == Source::FileTag, "exchanged file and ACID metadata outrank local detection");
+    local.tempoSource = Source::FileTag;
+    local.tempoBpm = 130;
+    applySampleMetadata(local, tags);
+    check(local.tempoBpm == 130, "local file tags outrank exchanged ACID metadata");
+    local = applySampleOverrides(std::move(local), receiver->analysisOverrides(hash));
+    applySampleMetadata(local, tags);
+    check(local.tempoBpm == 127.25 && local.tempoSource == Source::User && local.key == SampleKey{10, true} &&
+          local.keySource == Source::User && local.tags == std::vector<std::string>{"favorite"},
+          "authored key and tempo win over every observed source");
+    check(!portableSampleMetadata(local).key && !portableSampleMetadata(local).tempoBpm,
+          "authored results never travel as read-only observations");
+
+    auto invalid = Json::parse(exchange);
+    invalid["media"][hash]["bpm"] = 101;
+    invalid["media"][other]["analysis_metadata"]["tempo"]["source"] = "user";
+    check(!receiver->importJson(invalid.dump(), error, &received) && received == std::vector(samples.begin(), samples.end()) &&
+          receiver->exportJson(received) == exchange, "a malformed later source rolls back authored and observed imports");
+    invalid = Json::parse(exchange);
+    invalid["version"] = 2;
+    check(!receiver->importJson(invalid.dump(), error, &received), "legacy exchange versions refuse new metadata fields");
+    const Json clear{{"version", 3}, {"media", {{hash, {{"key", nullptr}}}}}};
+    check(receiver->importJson(clear.dump(), error) && !receiver->analysisOverrides(hash).key &&
+          Json::parse(receiver->exportJson()).at("version") == 2,
+          "explicitly clearing the last authored key restores version two exchange");
 }
-int main(){try{codec();persistence();futureAndFailures();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(){try{codec();persistence();futureAndFailures();analysisExchange();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

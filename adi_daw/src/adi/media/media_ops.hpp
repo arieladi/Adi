@@ -58,12 +58,21 @@ std::filesystem::path pathFromUtf8(const std::string&);
 // location can recover a link when moving the project changes the relative base.
 std::filesystem::path resolveMedia(const std::filesystem::path& folder,
                                   const Payload& row, std::string& error);
+std::filesystem::path resolveMedia(const std::filesystem::path& folder,
+                                  const Payload& row, std::string& error, std::stop_token);
 // An empty result without an error means no candidate exists or stop fired.
 std::filesystem::path resolveMedia(const std::filesystem::path& folder,
                                   const std::filesystem::path& relative,
                                   const std::filesystem::path& hint,
                                   const std::string& originalName, const std::string& hash,
                                   std::string& error, std::stop_token stop = {});
+// Playback repeats candidate lookup across graph generations. Reuse a candidate's
+// verified digest while its native identity and revision are unchanged.
+std::filesystem::path resolvePlaybackMedia(const std::filesystem::path& folder,
+                                          const std::filesystem::path& relative,
+                                          const std::filesystem::path& hint,
+                                          const std::string& originalName, const std::string& hash,
+                                          std::string& error);
 // A Browser reveal uses the pool's existing file path without reading audio bytes.
 std::filesystem::path mediaPathForBrowser(const Store&, std::int64_t id, std::string& error);
 Payload mediaRow(SQLite::Database&, std::int64_t id);

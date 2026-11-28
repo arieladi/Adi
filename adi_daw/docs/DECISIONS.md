@@ -7772,6 +7772,14 @@ position or a slot reference, never both, and `clips.track_id` stays `NOT NULL`.
 The launch settings are columns on `clips`, nullable, present only on slot
 clips.
 
+**Amended by TM-SV-02, 27 November 2026.** The reserved Session format 1.26
+introduces the `scenes`, `clip_slots` and `clip_launch` side tables. A slot
+clip keeps its track, has zero timeline origin and has no take lane.
+The slot reference establishes its ownership. Arrangement readers exclude
+those clips. The `org.adidaw.session` essential extension marks a project
+when it contains occupied slots. Older supported readers need to check that
+marker before they enumerate Arrangement clips.
+
 ### 3. Tuning systems (closes ADR-0103's open item)
 
 **Relational child tables, for the agent's sake.** `tuning_systems` (id, name,
@@ -21093,3 +21101,141 @@ C a, D a (and also give bouton to open in explorer.. ), E a."
 | `docs/SANITY-CHECK.md` | SC-447 to SC-479; notes on SC-157, SC-347, SC-398 |
 | `collab/README.md` | ADR 0266 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0267 |
+
+## ADR-0267 — The built-in devices' look, the name EQ, one Auto Filter for lows and highs, and where a device's presets are found — `DECIDED` (2026-11-28) — **DIRECTOR'S WORD ON EIGHT SHEETS OF 28 NOVEMBER; ADDS TO ADR-0243, ADR-0261 AND ADR-0266 d5**
+
+**What this records.** In his second test the director found the built-in devices' panels poor (SC-454,
+SC-455). ADR-0243 settles a look from pictures before it is built, so win drew the devices on eight
+sheets the same day (`collab/window/design/proposals/devices-1` to `devices-8`), and he answered each.
+He also showed the sheets to his outside panel and brought its answers back; win sorted those against
+the code before recording anything.
+
+### Decisions
+
+1. **The devices' look is the third sheet's.** The first sheet laid seven devices out as Live lays its
+   own ("F a": agreed as the guide). He then brought pictures he liked better, and asked "chance we are
+   taking it to the gemini level desing ?". The third sheet is drawn to that level on ADI's own controls,
+   and his word for it is "agreed, draw the rest of the devices". What it fixes:
+   - a card shows the controls that are reached for, and an arrow opens the whole device;
+   - the main control is large, with its value inside it;
+   - the signal is drawn behind a curve, where a device has a curve;
+   - a short list of choices is a row of joined buttons, a long one a menu;
+   - every card has its meter;
+   - orange is the device's own controls and what is on, blue is a modulator and a picture of the signal,
+     and a band editor uses the band's colour.
+2. **Every control a device has stays.** The pictures he liked show a few controls for each device;
+   ADI's devices have many more (its Hybrid Reverb has thirty-one). The opened view holds all of them. A
+   sheet draws only what a device has today.
+3. **The other sheets.** Sheet 4 (EQ, Utility, Overdrive, Redux, Echo opened, Hybrid Reverb), 5
+   (Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators, Vocoder), 6 (ADI-Shaper), 7 (OneShot and
+   Sampler) and 8 (Chord Comb and Color Cab) follow the third. His word for sheet 8: "looks perfect to
+   me". Still to draw: OneShot in its Slice mode, and the opened views of Phaser-Flanger, Shifter and
+   Vocoder. What is built from a sheet is shown to him against it.
+4. **The EQ device is named EQ.** His words: "for the EQ8 we can just call it EQ from now since its our
+   only one (except the more advanced build in the mixview.. )". It stays Live's eight-band equaliser,
+   laid out as Live's (ADR-0266 d5); only the name changes.
+5. **Multiband Dynamics keeps the strip across its top** where the two band edges are dragged ("G a").
+   An addition he asked for: Live gives two number boxes there.
+6. **One Auto Filter cuts the lows and the highs at once.** His words: "in Ableton autofitted i always
+   put two so i can control low and hi cutoff at the same time on 2 different parameters, can we make it
+   so our autofilter can handle this already with one instance ?". A choice "Low + High" beside the
+   filter's kinds, with a cutoff for each, each automated on its own. An addition (SC-480).
+7. **A device's presets are found at the device, and they are the Browser's.** Win asked whether presets
+   and templates live in ADI's Browser or in a browser inside the device. His answer: "In ADI's Browser
+   but have a button in the device to bring you to the browser in the relevant place, also shaper is a
+   heavy tool and so we might do want a floating \ in device browser .. or if we can think of a floating
+   preset browser leaving in all devices \ relating it in a very user friendly way into the existing
+   regular browser like you wanted but again if im in shaper and want now something for it i shouldn't go
+   look for preset in other places". So:
+   - **one store:** a preset is a file in the library, as ADR-0258 d18 rules, and the Browser shows it.
+     No device keeps a store of its own;
+   - **found at the device:** every device's card carries its preset's name and a way to open, at the
+     device, a floating list of that device's presets. Nobody leaves a device to look for its presets;
+   - **a button to the Browser:** from the card or from that list, one button shows the same place in
+     the Browser.
+
+   **Win's readings, his to strike.** The floating list is the floating search of ADR-0261, opened already
+   narrowed to that device, so there is one list to learn and not two. The card also has previous and
+   next. For a heavy device, ADI-Shaper first, the list has a part for whole presets and a part for the
+   shapes of the shaper that is open. Its sheet comes before it is built (ADR-0243 d1).
+8. **Three devices are measured against their models before more is drawn or built.** His panel said,
+   rightly, that ADI-Shaper, OneShot and Sampler do less than the tools they are measured against. His
+   word on ADI-Shaper: "it needs a browser, presets, and lots of templates , need to make sure it dident
+   miss any quality or ability". One list for each device, feature by feature (SC-481, grade A; SC-482;
+   SC-483). ADI's presets, shapes and templates are made for ADI; none of a model's own are taken.
+9. **Chord Comb and Color Cab keep their layout.** The small things missing are SC-484; what his panel
+   proposed beyond them waits for his ruling, one addition at a time (DF-W66).
+
+**What is not settled here.** The sheet of the floating preset list and of the card's preset row; what a
+template is beside a preset; which of ADI-Shaper's missing parts are built and in what order, which the
+list of SC-481 decides.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0243 | the devices' panels are settled: sheets 3 to 8 (d1, d3) |
+| ADR-0266 d5 | the device is named EQ (d4) |
+| ADR-0261 | the floating search also opens from a device, narrowed to its presets (d7, win's reading) |
+| ADR-0258 d18 | stands: a preset is a file; no device keeps a store of its own (d7) |
+| `docs/SANITY-CHECK.md` | SC-454, SC-455, SC-480 to SC-484 |
+| `docs/DEFERRED.md` | DF-W66 |
+| `collab/window/design/README.md` | the devices' sheets are listed |
+| `collab/README.md` | ADR 0267 used |
+
+## ADR-0268 — Instruments built from the material at hand, a goal: what his panel proposed beyond Live, and the rules that already bind it — `DECIDED (direction)` (2026-11-28) — **DIRECTOR'S WORD ("I = A"); A GOAL, NOT NEAR WORK; ADDS TO ADR-0261 AND ADR-0264**
+
+**What this records.** While the devices' sheets were drawn (ADR-0267), the director's outside panel went
+past matching Live: make it much faster to turn sounds into instruments that can be played and edited.
+Its members did not agree on the order, and two of the facts they argued from were wrong. Win checked the
+facts, sorted the ideas, and asked whether to record them as a goal, like the Tip Zone (ADR-0264), with
+no seat starting them, or to leave them in the conversation. His answer: record them.
+
+### Decisions
+
+1. **A goal, not near work.** It waits behind the basics (ADR-0257) and behind the three lists of
+   ADR-0267 d8. No seat starts it, and nothing here is a promise of a feature.
+2. **Its first step is already in the plan.** A sample dropped on a MIDI track becomes an instrument that
+   plays it (SC-474). The step after it is a preview before anything is kept, then what Sampler lacks
+   (SC-483), then a kit made from separated stems. That order is the one the panel's members came
+   nearest to agreeing on.
+3. **What the goal holds.** Each is an idea to weigh when its turn comes, and none is decided:
+   - an instrument built from a folder of samples, a recording, a clip or stems, with the proposed
+     slices, keys and loop points shown before they are kept and a sign of how sure each one is;
+   - sounds found by what they measure, from an index kept on the user's own computer (the Browser's
+     filters by measured properties, ADR-0261, are its beginning);
+   - a check of a sample or a loop for clicks at the loop point, jumps in tuning, clipping and levels
+     that do not match, each fix heard on its own before it is taken;
+   - other playable forms of one sound (a kit of slices, a tuned instrument), and the recipe that made a
+     result saved with it, so one part can be made again without the rest;
+   - a quick way to keep, set aside or pass over each of many proposed sounds.
+4. **Rules that already bind it.** They are not new, and the panel's proposals are read under them:
+   - whatever an agent proposes is heard and then applied or dropped by the user, and applying is one
+     step of Undo (ADR-0261 d7);
+   - one request may carry up to 6000 operations (ADR-0203 d20). A member of the panel argued from a
+     limit of 256; the record and the code say 6000, so large changes are not split for that reason;
+   - a change that was prepared against an older state of the project is refused, never quietly remade;
+   - analysis done by ordinary signal processing is recorded as that, and only a model's work is
+     recorded as a model's;
+   - lining up the phase of layers is offered, with the correlation shown, and never promised;
+   - the stem separator runs on the user's computer, away from the playing engine; ADI makes no audio
+     with a service of its own and holds nobody's files (ADR-0263 d8);
+   - nothing the user made or was given is kept or deleted unless the user asks.
+5. **The Undo History already has branches** as an addition to Live's (they are shown in its list). The
+   panel's "branching for variants" is read against what exists before anything is added to it.
+
+**What is not settled here.** How a sample's root key is found, since no pitch tracker is chosen, so that
+is not promised; whether starting playback makes an open proposal stale, which is not tested; what
+becomes of proposed sounds nobody kept; the director's idea of generating into several hundred channels,
+which has no entry of its own; where any of this sits in the window (its sheet first, ADR-0243 d1).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0261 | the filters by measured properties are named as the beginning of d3's second idea |
+| ADR-0264 | a second goal recorded in the same way; neither is near work |
+| ADR-0203 d20 | stands: 6000 operations for one request (d4) |
+| `docs/SANITY-CHECK.md` | SC-474 and SC-483 are the goal's first steps and stay in their queues |
+| `collab/README.md` | ADR 0268 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0269 |

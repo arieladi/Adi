@@ -50,6 +50,7 @@
 #include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
@@ -86,7 +87,23 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
+class LaunchAudioClip;
+class LaunchAudioProject;
+class LaunchAudioRuntime;
+class LaunchAudioDriver;
 struct AudioRecordingSpec;
+struct LaunchBlock;
+struct LaunchClipGainEdit;
+struct LaunchClipRegionEdit;
+struct LaunchClipSourceEdit;
+struct LaunchRequest;
+struct LaunchSceneTransition;
+struct LaunchStatusHeader;
+struct LaunchTrackStatus;
+struct LaunchTempoBank;
+struct LaunchTransition;
+class LaunchCaptureBuffer;
+struct PreparedSceneLaunch;
 class MidiInputCapture;
 struct RecordingTarget;
 
@@ -116,6 +133,9 @@ struct SessionSpec {
     bool offline = false;
     /// An offline driver prepares clip pages itself between process calls.
     bool synchronousClipReads = false;
+    /// Owner-prepared fixed-tempo Session audio. Each Session owns its driver
+    /// state. Isolated renders bypass this optional performance input.
+    std::shared_ptr<const LaunchAudioProject> launchAudio = {};
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -128,6 +148,8 @@ struct DeviceRequest {
     std::int32_t maxFrames = 512;
     std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
     bool exporting = false; ///< known before prepare, so the first block uses the intended bank
+    bool offline = false; ///< an isolated render requires the device at its authored location
+    const Store* project = nullptr; ///< owner-only, valid for the synchronous loader call
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
@@ -174,6 +196,7 @@ public:
         /// Identity used to resolve this instance, independent of newer rows
         /// reusing the same device ID. Runtime receipts must match this too.
         std::optional<std::int64_t> resolvedPluginRef;
+        std::optional<std::int64_t> resolvedRemoteHost;
         std::string resolvedFormat, resolvedUid;
         std::shared_ptr<const void> runtimeIdentity;
         std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
@@ -356,6 +379,21 @@ public:
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
         [[nodiscard]] CountInPosition countInPosition() const noexcept;
+        /// Driver-only observer, valid within this pinned callback. Receives
+        /// performed edges in per-track order with a logical slice offset and
+        /// absolute stream sample. The observer must be safe on the callback.
+        void observeLaunchTransitions(void* context,
+            void (*observe)(void*, const LaunchTransition&, std::int64_t) noexcept) noexcept {
+            launchObserverContext_ = context;
+            launchObserver_ = observe;
+        }
+        void observeSceneLaunches(void* context,
+            void (*observe)(void*, const LaunchSceneTransition&, std::int64_t) noexcept) noexcept {
+            sceneObserverContext_ = context;
+            sceneObserver_ = observe;
+        }
+        /// Driver-only capture of performed edges and run-local source edits.
+        void observeLaunchCapture(LaunchCaptureBuffer& capture) noexcept { launchCapture_ = &capture; }
         bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
@@ -364,6 +402,11 @@ public:
         audio::CallbackScope callback_;
         Session& session_;
         GraphHost::RenderBlock graph_;
+        void* launchObserverContext_ = nullptr;
+        void (*launchObserver_)(void*, const LaunchTransition&, std::int64_t) noexcept = nullptr;
+        void* sceneObserverContext_ = nullptr;
+        void (*sceneObserver_)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr;
+        LaunchCaptureBuffer* launchCapture_ = nullptr;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
 
@@ -377,12 +420,18 @@ public:
     /// future. Up to 4096 boundaries are retained in memory, never in the file.
     bool setExternalTempoAt(const Store&, std::optional<double> bpm, std::int64_t tick,
                             const std::function<bool()>& publishGuard = {});
+    /// Owner-only committed launch at a future Global grid boundary. Stages
+    /// the scene and its private meter/tempo on one prepared graph. The
+    /// committed boundary cannot be canceled by an ordinary launch gesture.
+    bool prepareSceneLaunch(const Store&, std::int64_t scene, std::int64_t boundaryTick, float velocity = 1.0f);
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     /// Configure device-owned workers as part of the same graph preparation as the device format.
     void prepareWithGraphWorkers(double sampleRate, std::int32_t maxFrames,
                                  std::uint32_t workers, std::int32_t minimumFrames);
     void process(const AudioIo& io) noexcept override;
+    /// Isolated render driver. May wait for remote DSP and returns a named failure.
+    [[nodiscard]] std::string renderOfflineBlock(const AudioIo&);
     void release() override;
 
     /// Track input from one serialized MIDI producer. Submit in ascending
@@ -470,8 +519,9 @@ public:
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept {
         return problems_;
     }
-    /// Problems that still invalidate a render when missing clips play
-    /// silently and unavailable plug-ins are bypassed as in live playback.
+    /// Problems that invalidate export before staging. Missing clips play
+    /// silently and unavailable local plug-ins are bypassed. An enabled
+    /// server device must be ready even for a range made of leading silence.
     [[nodiscard]] std::vector<std::string> exportBlockingProblems();
 
     /// ADR-0174: the group summing this graph plays. Message thread.
@@ -522,6 +572,21 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Single owner to driver. Launches are consumed while transport rolls.
+    [[nodiscard]] bool postLaunchGesture(std::span<const LaunchRequest>) noexcept;
+    /// Owner-only launch admission including clock preparation for one scene.
+    [[nodiscard]] bool submitLaunchGesture(std::span<const LaunchRequest>);
+    /// Single owner to driver. A prepared multiplier changes the addressed active audio run.
+    [[nodiscard]] bool postLaunchClipGainEdit(const LaunchClipGainEdit&) noexcept;
+    /// Schedule a run's start/end and loop against already prepared material.
+    [[nodiscard]] bool postLaunchClipRegionEdit(const LaunchClipRegionEdit&) noexcept;
+    /// Owner only. Replace this run's PCM on the Clip Update Rate grid.
+    [[nodiscard]] bool postLaunchClipSourceEdit(const LaunchClipSourceEdit&,
+                                               std::unique_ptr<LaunchAudioClip>&) noexcept;
+    [[nodiscard]] bool launchSourceEditReserved() const noexcept;
+    /// An owner may stamp a launch op with this published project identity.
+    [[nodiscard]] std::uint64_t launchIncarnation() const noexcept;
+    [[nodiscard]] bool readLaunchStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
@@ -572,21 +637,32 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
+    struct LaunchAudit;
+    void observeLaunchAudits(bool readOnly);
+    bool cancelPreparedScene(const Store&, std::int64_t);
     friend struct GestureRuntime;
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
     struct TimingView;
     struct PendingLoad;
     bool prepareLoad(const Store&, DeviceLoader, SessionSpec, bool staged);
+    [[nodiscard]] std::string offlineRemoteIssue();
     bool checkLoadRevision(const Store&);
     SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
+    [[nodiscard]] bool sceneTempoBanksFit(const TempoMap&) const noexcept;
+    std::vector<LaunchTempoBank> prepareSceneTempoBanks(const TimingView&, const rows::Model&);
+    void prepareLaunchAudio(TimingView&, const rows::Model&, ClipPlayback&);
+    [[nodiscard]] bool sceneClockPending() const noexcept;
+    bool applyPerformedTempoAt(const Store&, std::optional<double>, std::int64_t,
+                               const std::function<bool()>& publishGuard);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
+    [[nodiscard]] const std::vector<rows::TimeSignature>& playbackSignatures(const rows::Model&) const noexcept;
     // Every node a track's events reach, which is MIDI's controller route identity.
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&, const TimingView&);
     [[nodiscard]] std::vector<Node*> graphTrackChain(std::int64_t, const TimingView&);
@@ -612,6 +688,8 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<LaunchAudioDriver> launchAudioDriver_;
+    std::shared_ptr<LaunchAudit> launchAudit_;
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
@@ -653,13 +731,23 @@ private:
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
         std::uint64_t midiHardwareRouting = 0;
-        std::vector<PlayTempoPoint> playQuantizeTempo;
-        std::uint32_t playQuantizeRate = 0;
+        std::optional<WarpArrangementClock> playQuantizeClock;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
+        ClipPlayback::Readiness delayedSourceReadiness;
+        std::uint64_t tempoRevision=0;
+        bool authoredPerformanceTempo=false;
+        bool protectExternalSessionAudio=false;
+        bool protectCompatiblePinnedPages = false;
+        bool preparedPinnedRestart = false;
+        mutable std::optional<std::uint64_t> comparedPausedTempo;
+        mutable bool matchesComparedPausedTempo = false;
         std::shared_ptr<InputMonitors> inputMonitors;
+        std::shared_ptr<LaunchAudioRuntime> launchAudio;
+        std::shared_ptr<const ClipProject> launchSource;
+        std::shared_ptr<const PreparedSceneLaunch> preparedScene;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
         SessionSpec spec;
@@ -667,12 +755,18 @@ private:
         void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
+        [[nodiscard]] bool projectLoop(Transport&) const noexcept;
+        [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;
+        void collectRetiredSources() const noexcept override;
+        [[nodiscard]] bool samePausedTempo(const TimingView&) const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
+        [[nodiscard]] LaunchBlock launchBlock(std::int32_t frames) const noexcept;
     };
+    void prepareSourceReadiness(TimingView&, const ClipPlayback&);
     void prepareMidiHardware(TimingView&, const rows::Model&, const TimingView* previous);
     void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     void prepareMidiPreview(TimingView&, const rows::Model&);
@@ -682,7 +776,38 @@ private:
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
+    std::uint64_t storedLaunchIncarnation_ = 0;
+    std::shared_ptr<const ClipProject> storedLaunchSource_;
+    std::shared_ptr<const LaunchAudioProject> storedLaunchProject_;
+    std::vector<TempoEvent> storedLaunchTempo_;
+    std::optional<double> storedLaunchPreparedBpm_;
+    std::vector<std::int64_t> storedLaunchWarmWarpClips_;
+    std::vector<std::string> launchProblems_;
+    std::uint32_t storedLaunchRate_ = 0;
+    std::uint16_t storedLaunchChannels_ = 0;
+    std::int32_t storedLaunchBlockFrames_ = 0;
     std::vector<rows::TempoEvent> performedTempo_; // owner-only performance history
+    std::vector<rows::TimeSignature> performedSignatures_;
+    std::shared_ptr<const PreparedSceneLaunch> preparedScene_;
+    std::uint64_t preparedSceneToken_ = 0;
+    struct SceneTempoBanks {
+        // Phase-continuous scenes retain a prepared outgoing bank. For
+        // ordinary resident audio, retain the authored sequence of clocks.
+        std::shared_ptr<const LaunchAudioProject> before;
+        std::int64_t tick;
+        double bpm;
+        std::vector<std::int64_t> warmWarpClips;
+        std::vector<TempoEvent> periods;
+    };
+    std::optional<SceneTempoBanks> sceneTempoBanks_;
+    struct SceneClockRollback {
+        std::vector<rows::TempoEvent> tempo;
+        std::vector<rows::TimeSignature> signatures;
+        std::optional<SceneTempoBanks> banks;
+        std::optional<double> externalBpm;
+        std::optional<std::int64_t> authoredResume;
+    };
+    std::optional<SceneClockRollback> sceneClockRollback_;
     std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;

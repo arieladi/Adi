@@ -201,6 +201,20 @@ void themeAndDensityTables() {
 
 // WIN-02: the one placement rule, headless (adi/ui/window_place.hpp). The laptop is 1366 by 768 at
 // 125 %: 1093 by 614 units, a 32-unit task bar at the foot.
+// SC-428: a plug-in's window, at its kept place but at the plug-in's size, is moved onto the screen, not cut.
+void whollyOnScreen() {
+    const std::vector<window_place::Monitor> one{{"main", {0, 0, 1920, 1080}, {0, 0, 1920, 1040}, 96, true}};
+    check(window_place::wholly({700, 250, 1442, 936}, one) == window_place::Rect{478, 104, 1442, 936},
+          "SC-428: a window running past the right and bottom edges moves back onto the screen, its size kept");
+    check(window_place::wholly({100, 100, 800, 600}, one) == window_place::Rect{100, 100, 800, 600},
+          "SC-428: a window already on the screen stays where it is");
+    check(window_place::wholly({300, -40, 2400, 1200}, one) == window_place::Rect{0, 0, 2400, 1200},
+          "SC-428: a window larger than the screen starts at its top left corner");
+    const std::vector<window_place::Monitor> two{{"left", {0, 0, 1920, 1080}, {0, 0, 1920, 1040}, 96, true},
+                                                 {"right", {1920, 0, 1280, 1024}, {1920, 0, 1280, 984}, 96, false}};
+    check(window_place::wholly({2400, 100, 1000, 500}, two) == window_place::Rect{2200, 100, 1000, 500},
+          "SC-428: on the second monitor it stays on the second monitor");
+}
 void placementRule() {
     using namespace window_place;
     const Monitor laptop{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true};
@@ -522,6 +536,7 @@ int main() {
     midiPortsCore();
     computerMidiFeed();
     placementRule();
+    whollyOnScreen();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);

@@ -3,6 +3,7 @@
 #include "adi/automation_lanes.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/blob.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
@@ -87,6 +88,31 @@ class WorkerTone final : public engine::Node {
     }
     const char *name() const noexcept override { return "device graph worker tone"; }
 };
+// SC-384: a rate or buffer the engine cannot use is said in plain words, once, and cleared when a usable
+// format runs again.
+void unusableFormatSaid(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "unusable-format.adi", true, {}, error);
+    check(document != nullptr, "SC-384: a project for the device's formats");
+    if (!document) return;
+    document->prepare(48000.0, 512);
+    check(!document->takeFormatProblem().has_value(), "SC-384: a usable format says nothing");
+    document->prepare(32000.0, 512);
+    const auto low = document->takeFormatProblem();
+    check(low && low->find("32000 Hz") != std::string::npos && low->find("44.1 kHz") != std::string::npos &&
+              low->find("Settings > Audio") != std::string::npos,
+          "SC-384: 32 kHz is said: ADI needs 44.1 kHz or more, and where to choose");
+    check(!document->takeFormatProblem().has_value(), "SC-384: said once");
+    document->prepare(48000.0, 8192);
+    const auto big = document->takeFormatProblem();
+    check(big && big->find("8192") != std::string::npos && big->find("4096") != std::string::npos,
+          "SC-384: a buffer of 8192 is said: 4096 at most");
+    document->prepare(48000.0, 512);
+    const auto cleared = document->takeFormatProblem();
+    check(cleared && cleared->empty(), "SC-384: a usable format again clears the line");
+    document->release();
+}
+
 void deviceGraphWorkers(const std::filesystem::path &dir) {
     std::array<WorkerTone, 4> sources;
     std::vector<std::int64_t> tracks;
@@ -1758,6 +1784,70 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime && renderNote(*recall) == expectedAudio,
           "SC-285: Redo restores the same instrument's recalled sound");
     recall->release();
+}
+
+void builtinDeviceControls(const std::filesystem::path &dir) {
+#if ADI_WITH_PD
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "builtin-controls.adi", true, device::withBuiltinDevices(), error);
+    check(document != nullptr, "SC-454: open a project with the built-in loader");
+    if (!document) return;
+
+    constexpr std::int64_t audioTrack = 4;
+    for (const auto &builtin : builtinCatalog()) {
+        const auto message = "SC-454: insert " + std::string(builtin.name);
+        check(document->insertBuiltin(std::string(builtin.uid), builtin.instrument ? 0 : audioTrack, {}), message.c_str());
+    }
+    constexpr std::string_view eqUid = "org.adidaw.builtin.eq-eight";
+    constexpr std::string_view shaperUid = "org.adidaw.builtin.adi-shaper";
+    std::vector<std::int64_t> ids;
+    std::int64_t eqId = 0;
+    const auto identity = document->parameterFeed().current();
+    for (const auto &device : *identity) {
+        if (device.format != "internal" || !findBuiltin(device.uid)) continue;
+        ids.push_back(device.id);
+        if (device.uid == eqUid) eqId = device.id;
+    }
+    check(ids.size() == builtinCatalog().size() && eqId != 0, "SC-454: every catalog device has a Device View identity");
+
+    document->setParameterDemand(document.get(), ids);
+    document->tick(0);
+    const auto initial = document->parameterFeed().current();
+    for (const auto &device : *initial) {
+        if (std::find(ids.begin(), ids.end(), device.id) == ids.end()) continue;
+        const auto &declarations = device.declarations();
+        const auto &records = device.parameters();
+        const auto &entries = device.resolved.entries;
+        const auto message = "SC-454: " + device.name + " shows its own controls in declaration order";
+        check(device.available && !device.plugin && !device.resolved.configured && !device.resolved.showsConfigureHint &&
+                  !declarations.empty() && records.size() == declarations.size() &&
+                  std::equal(entries.begin(), entries.end(), records.begin(), records.end(),
+                             [](const auto &entry, const auto &record) { return !entry.missing && entry.id == record.id; }) &&
+                  std::equal(declarations.begin(), declarations.end(), records.begin(),
+                             [](const auto &declaration, const auto &record) { return declaration.id == record.id; }),
+              message.c_str());
+        if (device.uid == eqUid || device.uid == shaperUid)
+            check(entries.size() > panel::kDefaultLimit, "SC-454: the hosted parameter ceiling leaves built-ins intact");
+        if (device.uid == eqUid) {
+            const auto type = std::find_if(records.begin(), records.end(), [](const auto &record) { return record.id == "2"; });
+            check(type != records.end() && type->shape == panel::Shape::Menu && type->choiceLabels.size() == 8 &&
+                      type->choiceLabels[2] == "LowShelf" && type->choiceLabels[3] == "Peak",
+                  "SC-454: EQ Eight's filter menu uses the device's named choices");
+        }
+    }
+    if (eqId == 0) return;
+
+    check(document->deviceAction("device.setPanel", {{"dev", eqId}, {"params", Payload::array()}}),
+          "SC-454: save a legacy empty Configure list on EQ Eight");
+    document->tick(0);
+    const auto after = document->parameterFeed().current();
+    const auto eq = std::find_if(after->begin(), after->end(), [eqId](const auto &device) { return device.id == eqId; });
+    check(eq != after->end() && !eq->resolved.configured && !eq->resolved.showsConfigureHint &&
+              eq->resolved.entries.size() > panel::kDefaultLimit,
+          "SC-454: a saved Configure list cannot hide EQ Eight's controls");
+#else
+    (void)dir;
+#endif
 }
 
 void deviceDefaultPresets(const std::filesystem::path &dir) {
@@ -6929,6 +7019,7 @@ int main(int argc, char **argv) {
         }
     }
     deviceGraphWorkers(temp.path());
+    unusableFormatSaid(temp.path());
     refusedBeginOwnership(temp.path());
     playbackProblemProjection();
     heldOffAfterACrash(temp.path());
@@ -6944,6 +7035,7 @@ int main(int argc, char **argv) {
         test::TempDirectory hotSwapStateDir("ui_document", "hot-swap-state");
         hotSwapLiveState(hotSwapStateDir.path());
     }
+    builtinDeviceControls(temp.path());
     deviceDefaultPresets(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     capturedPluginState(temp.path());

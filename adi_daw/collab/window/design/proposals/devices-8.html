@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet 8: Chord Comb and Color Cab</title>
+<style>html,body{margin:0;background:#0c0c0e}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script><script src="../src/devlib.js"></script>
+<script>
+// ADI, the built-in devices' panels, sheet 8 (28 November 2026). SC-455. ADI's two small devices of its own:
+// Chord Comb (pd/devices/Chord Comb.pd: State, Mode, Decay, Color, Mix, Output, and eight stored chords of
+// six notes) and Color Cab (pd/devices/Color Cab.pd: one sample slot, Mix, and four design settings the
+// host rebuilds off the audio thread: Size, Gamma, Smoothing, Pitch).
+const W=1920,H=1080;let s='';
+function keys(x,y,w,h,oct,lit){let g='';const n=oct*7,kw=w/n;for(let k=0;k<n;k++)g+=R(x+k*kw,y,kw-1,h,lit&&lit.includes(k)?O:'#d9dbe0',{r:1.5});
+  for(let k=0;k<n;k++){const j=k%7;if(j!==2&&j!==6)g+=R(x+k*kw+kw*0.65,y,kw*0.7,h*0.6,'#16171a',{r:1.2})}
+  for(let o=0;o<=oct;o++)g+=T(x+o*7*kw+2,y+h+12,'C'+(o+1),{z:9,f:'#70737c'});return g}
+function wavef(x,y,w,h,seed){const r=rng(seed);let up='',dn='';const n=Math.floor(w/1.6);for(let k=0;k<=n;k++){const u=k/n,e=(0.05+0.9*Math.exp(-u*3.2))*(0.6+0.4*r());up+=(k?'L':'M')+(x+w*u).toFixed(1)+' '+(y+h/2-e*h*0.44).toFixed(1);dn=`L${(x+w*u).toFixed(1)} ${(y+h/2+e*h*0.44).toFixed(1)}`+dn}
+  return `<path d="${up}${dn}Z" fill="${B}" opacity=".55"/>`}
+const Y0=70,HC=480;
+// ================= Chord Comb =================
+{const x=20,y=Y0,w=925;s+=card(x,y,w,HC,'Chord Comb',{open:false});
+ const chords=['Cm9','Fm7','A♭maj7','B♭6','Gm7','E♭maj9','D7sus','C5'];
+ s+=cap(x+16,y+62,'CHORD');
+ chords.forEach((c,k)=>{const px=x+16+(k%4)*112,py=y+72+Math.floor(k/4)*62,sel=k===2;
+  s+=(sel?`<g filter="url(#glow2)">`+R(px,py,104,54,O,{r:9})+`</g>`:R(px,py,104,54,'#1f2024',{r:9,s:'#3c3d43'}));
+  s+=T(px+10,py+19,String(k+1),{z:10.5,w:700,f:sel?INK:'#8b8e97'})+T(px+52,py+35,c,{z:15,w:700,a:'middle',f:sel?INK:'#eceef2'});});
+ s+=cap(x+16,y+218,'ITS SIX NOTES')+T(x+450,y+218,'A♭2   E♭3   G3   C4   E♭4   G4',{z:11,f:'#eceef2',a:'end',w:600});
+ s+=keys(x+16,y+228,434,40,4,[5,9,11,14,16,18]);
+ const gx=x+476,gy=y+52,gw=w-492,gh=232;
+ s+=screen(gx,gy,gw,gh,()=>{let g=grid(gx,gy,gw,gh,{db:['0','-12','-24','-36']})+spectrum(gx,gy+gh*0.3,gw,gh*0.7,33,'url(#fS)',0.35);
+  const fs=[0.3,0.4,0.455,0.52,0.565,0.62],d=plot(gx,gy,gw,gh,u=>{let v=0.1;fs.forEach(f=>{v+=0.72*Math.exp(-Math.pow((u-f)/0.008,2))+0.3*Math.exp(-Math.pow((u-f-0.14)/0.008,2))});return Math.min(0.92,v)},400);
+  g+=curve(d,O,'url(#fO)',gx,gy,gw,gh)+T(gx+10,gy+18,'the comb rings on the chord\'s notes',{z:10.5,f:'#c4c6cc'});return g});
+ s+=L(x+16,y+300,x+w-16,y+300,'#34353b');
+ s+=meter(x+18,y+322,130,0.6,0.58);
+ s+=kb(x+124,y+392,54,0.5,O,'DECAY','2.50 s',{min:'0.05',max:'20 s'});
+ s+=kb(x+258,y+386,34,0.5,O,'COLOR','50 %',{vz:11})+kb(x+356,y+386,34,0.5,O,'DRY / WET','50 %',{vz:11})+kb(x+446,y+386,27,0.75,O,'OUTPUT','0.0 dB',{vz:9.5});
+ s+=cap(x+520,y+344,'WAVE')+pills(x+520,y+352,200,28,['Saw','Square'],0);
+ s+=T(x+520,y+408,'A chord is changed by typing or playing its six notes;',{z:11,f:'#8b8e97'})+T(x+520,y+424,'moving between chords crossfades over 10 ms.',{z:11,f:'#8b8e97'});}
+// ================= Color Cab =================
+{const x=960,y=Y0,w=940;s+=card(x,y,w,HC,'Color Cab',{open:false});
+ const gx=x+16,gy=y+52,gw=450,gh=170;
+ s+=cap(gx,gy+12,'');
+ s+=screen(gx,gy,gw,gh,()=>wavef(gx,gy,gw,gh,14)+T(gx+10,gy+18,'Its sample',{z:10.5,f:'#c4c6cc'})+T(gx+10,gy+gh-10,'Room tone.wav   ·   drop a sample here to replace it',{z:10,f:'#8b8e97'}));
+ const px=x+482,pw=w-498;
+ s+=screen(px,gy,pw,gh,()=>{let g=grid(px,gy,pw,gh,{db:['0','-12','-24']});const d=plot(px,gy,pw,gh,u=>0.35+0.3*Math.exp(-Math.pow((u-0.3)/0.12,2))+0.22*Math.exp(-Math.pow((u-0.62)/0.07,2))-0.3*Math.max(0,u-0.75),220);
+  g+=curve(d,O,'url(#fO)',px,gy,pw,gh)+T(px+10,gy+18,'The colour taken from it',{z:10.5,f:'#c4c6cc'});return g});
+ s+=L(x+16,y+240,x+w-16,y+240,'#34353b');
+ s+=meter(x+18,y+270,150,0.6,0.6);
+ s+=kb(x+124,y+352,56,1.0,O,'DRY / WET','100 %');
+ s+=vline(x+214,y+262,y+450);
+ s+=cap(x+234,y+276,'HOW THE COLOUR IS MADE')+T(x+w-16,y+276,'changing one of these rebuilds the colour; it takes a moment and is heard when ready',{z:10.5,f:'#8b8e97',a:'end'});
+ s+=cap(x+234,y+312,'SIZE')+pills(x+234,y+320,300,28,['64','128','256','512','1024'],3);
+ s+=kb(x+610,y+366,34,0.5,O,'GAMMA','0.50',{vz:11})+kb(x+716,y+366,34,0.25,O,'SMOOTHING','0.5 oct',{vz:10})+kb(x+822,y+366,34,0.5,O,'PITCH','0 st',{bi:1,vz:11});
+ s+=T(x+234,y+384,'A longer size follows the sample more closely',{z:11,f:'#8b8e97'})+T(x+234,y+400,'and costs more.',{z:11,f:'#8b8e97'});}
+// ================= notes =================
+{const x=20,y=570,w=925,h=490;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+20,y+34,'The two small devices',{z:14,w:700});
+ s+=para(x+20,y+62,['Chord Comb makes any sound ring on a chord. Its eight chords are eight pads, as on a pad controller: the lit one is','playing, and its six notes show on the keyboard under them. The picture at the right shows where the comb rings.','Decay is its main knob.','','Color Cab gives a sound the colour of a sample: a room, a cabinet, a voice. The sample is at the left and the','colour taken from it at the right, so you see what you are putting on the sound. Dry/Wet is its main knob; the','four settings that shape the colour stand apart, because they rebuild it and cannot be swept while it plays.','','Both fit whole on their cards, so neither has an arrow.'],{z:12.5,lh:21});
+ s+=L(x+20,y+270,x+w-20,y+270,'#34353b');
+ s+=T(x+20,y+304,'Where the sheets stand',{z:14,w:700});
+ s+=para(x+20,y+332,['Sheets 3 to 8 now cover every built-in device: the eleven effects that mirror Live\'s, EQ and Utility,','ADI-Shaper, the two instruments, and these two.','Still to draw: OneShot in Slice mode, and the opened views of Phaser-Flanger, Shifter and Vocoder.'],{z:12.5,lh:21});}
+{const x=960,y=570,w=940,h=490;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+20,y+34,'A sheet shows the look, not what a device can do',{z:14,w:700});
+ s+=para(x+20,y+62,['Every control on these sheets is one the device has today. That is also their limit: a sheet cannot show','what a device is still missing, and drawing a control does not build it.','','Your outside panel is right that ADI-Shaper, OneShot and Sampler do less today than the tools they are','measured against: ADI-Shaper draws eight fixed points and has no triggers or stored shapes; OneShot has','no Warp and no glide; Sampler has one envelope and one LFO where its model has several, and its zones','cannot yet be edited as drawn.','','Those are gaps in the devices, not in the look. Each gets a list, feature by feature, against its model:','what the model does, what ADI does, where it would sit on the card, and a test. The lists are registered','and go to a session; what they find becomes plan rows, and the cards gain controls as they are built.'],{z:12.5,lh:21});}
+sheet(W,H,s,'ADI  ·  the built-in devices, sheet 8: Chord Comb and Color Cab','ADI\'s two small devices of its own, as they stand in the Device View. Every control drawn is one the device has today.','DEVICES SHEET  ·  8');
+</script></body></html>

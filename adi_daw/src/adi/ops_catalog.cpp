@@ -16,6 +16,11 @@
 
 #include "adi/split_pan_ops.hpp"
 #include "adi/device_key_routes.hpp"
+#include "adi/clip_commands.hpp"
+#include "adi/engine/launch_ops.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
+#include "adi/session_ops.hpp"
+#include "adi/session_performance_capture.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
@@ -41,6 +46,7 @@
 #include "adi/track_recording.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/clip_property_ops.hpp"
+#include "adi/pitch_edit_store.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
 #include "adi/tuning_ops.hpp"
@@ -584,6 +590,13 @@ bool clipCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& 
 bool clipDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         auto image=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));
+        if (const auto slot = image.find("session_slot"); slot != image.end()) {
+            if (image.contains("session_launch"))
+                (void)detail::eraseRowKey(c.db, "clip_launch", {{"clip_id", p.at("id")}});
+            const Payload key{{"track_id", slot->at("track_id")}, {"scene_id", slot->at("scene_id")}};
+            (*slot)["clip_id"] = nullptr;
+            detail::updateRowKey(c.db, "clip_slots", *slot, key);
+        }
         edit::RowEdits deletion(c.db);clip_edit::deleteImage(deletion,image);
         return edit::applyRows(c,{{"changes",deletion.changes()}},err);
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -631,24 +644,23 @@ Payload captureClipPlacement(SQLite::Database& db, std::int64_t id) {
     if (!st.executeStep()) throw std::runtime_error("no such clip");
     return detail::captureQueryRow(st);
 }
-bool legacyClipPlacement(const OpContext& c) {
-    if (!c.replay) return false;
-    if (!c.replay->hasInverse || c.replay->asInverse) return true;
+std::optional<Payload> replayedClipPlacement(const OpContext& c) {
+    if (!c.replay || !c.replay->hasInverse || c.replay->asInverse) return std::nullopt;
     std::string error;
-    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    auto inverse = decodeFromLog(c.replay->inverse, error);
     if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
-    return !inverse->contains("_placement");
+    return inverse;
 }
-// A resize journalled before fades were clamped recorded a placement image
-// without fade columns, so its Undo could not restore them. Its Redo keeps the
-// row effects that build recorded, as the legacy placement guard above does.
-bool placementClampsFades(const OpContext& c) {
-    if (!c.replay) return true;
-    std::string error;
-    const auto inverse = decodeFromLog(c.replay->inverse, error);
-    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
-    const auto placement = inverse->find("_placement");
-    return placement != inverse->end() && placement->is_object() && placement->contains("fade_in_ticks");
+std::optional<std::int64_t> captureResizeEnd(OpContext& c, const Payload& request, const Payload& before,
+                                             const edit::TimeMap& time) {
+    const bool linear = before.at("time_base") == 1;
+    const auto start = detail::signedInteger(request.at("pos"));
+    const auto position = detail::signedInteger(before.at(linear ? "pos_ns" : "pos_ticks"));
+    if (start != (linear ? time.ticks(position) : position)) return std::nullopt;
+    const auto limit = clip_edit::audioResizeLimit(c.store, detail::signedInteger(request.at("id")), time);
+    if (!limit) return std::nullopt;
+    const auto end = edit::addTime(start, detail::signedInteger(request.at("length")));
+    return std::min(linear ? time.nanos(end) : end, limit->value);
 }
 bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
     try {
@@ -672,7 +684,8 @@ bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool m
             if (laneOwner.executeStep())
                 throw std::runtime_error("detach a take-lane clip before moving it to another track");
         }
-        if (legacyClipPlacement(c)) {
+        const auto recorded = replayedClipPlacement(c);
+        if (c.replay && (!recorded || !recorded->contains("_placement"))) {
             // Old logs deliberately reproduce the row effects they recorded.
             values["pos_ticks"] = start;
             values[move ? "track_id" : "length_ticks"] = p.at(move ? "track" : "length");
@@ -682,8 +695,8 @@ bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool m
         const auto before = captureClipPlacement(c.db, id);
         const bool linear = before.at("time_base") == 1;
         std::optional<edit::TimeMap> time;
-        if (linear) time.emplace(c.db);
-        const auto position = time ? time->nanos(start) : start;
+        if (linear || (!move && !c.replay)) time.emplace(c.db);
+        auto position = linear ? time->nanos(start) : start;
         const auto* lengthKey = linear ? "length_ns" : "length_ticks";
         values[linear ? "pos_ns" : "pos_ticks"] = position;
         if (move) {
@@ -694,12 +707,21 @@ bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool m
         } else {
             const auto ticks = detail::signedInteger(p.at("length"));
             if (ticks < 0) throw std::runtime_error("clip length must be nonnegative");
-            const auto end = edit::addTime(start, ticks);
-            values[lengthKey] = time ? time->nanos(end) - position : ticks;
-            if (placementClampsFades(c)) {
-                // Fades are stored in ticks. Fit both inside the new visible
-                // span, measured as the Warp freeze and end resize measure it.
-                const auto span = time ? time->ticks(time->nanos(end)) - time->ticks(position) : ticks;
+            const auto endTick = edit::addTime(start, ticks);
+            auto end = linear ? time->nanos(endTick) : endTick;
+            std::optional<std::int64_t> capturedEnd;
+            if (!c.replay) capturedEnd = captureResizeEnd(c, p, before, *time);
+            else if (recorded->contains("_resize_end")) capturedEnd = detail::signedInteger(recorded->at("_resize_end"));
+            if (capturedEnd) {
+                // Keep the precise start of a linear clip while its right edge moves.
+                position = detail::signedInteger(before.at(linear ? "pos_ns" : "pos_ticks"));
+                values[linear ? "pos_ns" : "pos_ticks"] = position;
+                end = std::max(position, *capturedEnd);
+            }
+            values[lengthKey] = end - position;
+            // A legacy inverse without the fade columns cannot restore them on Undo.
+            if (!recorded || recorded->at("_placement").contains("fade_in_ticks")) {
+                const auto span = linear ? time->ticks(end) - time->ticks(position) : end - position;
                 if (span < 0) throw std::runtime_error("clip resize has an invalid musical span");
                 for (const char* fade : {"fade_in_ticks", "fade_out_ticks"}) {
                     const auto value = detail::signedInteger(before.at(fade));
@@ -725,6 +747,15 @@ bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::str
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
+bool clipResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    if (!clipPlacementInverse(c, p, inv, err)) return false;
+    try {
+        // Redo uses the exact new endpoint even if the source goes offline later.
+        if (const auto end = captureResizeEnd(c, p, inv.at("_placement"), edit::TimeMap(c.db)))
+            inv["_resize_end"] = *end;
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
 
 // The five historical note entry points delegate to the checked full-stride
 // note-diff kernel. Their descriptor names and inverse pairs below remain stable
@@ -732,14 +763,13 @@ bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- tempo and signature ------------------------------------------------------
 
-// A musical start follows the tempo map, while Warp-off material retains its
-// authored duration. Reproject its visible length rather than expanding it
-// to the source window: that window can contain audio beyond a split or trim.
+// A musical Arrangement start follows the tempo map, while Warp-off material
+// retains its authored duration. The source window can extend beyond a trim.
 Payload captureUnwarpedTempoLengths(SQLite::Database& db, const Payload& p, bool insert) {
     SQLite::Statement clips(db, "SELECT c.id,c.pos_ticks,c.length_ticks FROM clips c "
         "JOIN audio_clips a ON a.clip_id=c.id "
         "WHERE c.time_base=0 AND c.loop_enabled=0 AND a.warp_enabled=0 "
-        "AND c.pos_ticks>=0 AND c.length_ticks>0 ORDER BY c.id");
+        "AND c.pos_ticks>=0 AND c.length_ticks>0" + engine::excludeSlotClips(db, "c.id") + " ORDER BY c.id");
     Payload lengths = Payload::array();
     if (!clips.executeStep()) return lengths;
 
@@ -1235,6 +1265,26 @@ bool transportSongStart(OpContext &c, const Payload &p, std::string &error) {
     set.exec();
     return true;
 }
+bool transportLaunchQuantization(OpContext& c, const Payload& p, std::string& error) {
+    const auto& code = p.at("code");
+    if (!code.is_number_integer() || code < 0 ||
+        code > static_cast<std::int32_t>(LaunchQuantization::ThirtySecond)) {
+        error = "launch quantization needs a code between 0 and 13";
+        return false;
+    }
+    SQLite::Statement set(c.db,
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.launchQuantization',?)");
+    set.bind(1, code.dump());
+    set.exec();
+    return true;
+}
+bool sessionFollowActions(OpContext& c, const Payload& p, std::string&) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) "
+                                "VALUES('session.followActionsEnabled',?)");
+    set.bind(1, p.at("on").dump());
+    set.exec();
+    return true;
+}
 bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
 bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
@@ -1408,6 +1458,7 @@ constexpr Field kFMetronomeOptions[] = {{"recordingOnly", FieldType::Bool, false
                                         {"eighthNotes", FieldType::Bool, false},
                                         {"sound", FieldType::Int, false}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportQuantization[] = {{"code", FieldType::Int, true}};
 constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
@@ -2418,7 +2469,7 @@ const OpDescriptor kHandWritten[] = {
     {"clip.move", "Move a clip in time, and optionally to another track", Scope::Edit, EngineImpact::Snapshot,
      kFClipMove, false, false, clipMoveApply, clipPlacementInverse, ""},
     {"clip.resize", "Change a clip's start and length", Scope::Edit, EngineImpact::Snapshot, kFClipResize,
-     false, false, clipResizeApply, clipPlacementInverse, ""},
+     false, false, clipResizeApply, clipResizeInverse, ""},
 
     {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
      notes::noteInsertApply, notes::noteInsertInverse, "note.delete"},
@@ -2526,6 +2577,10 @@ const OpDescriptor kHandWritten[] = {
      kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setCountIn", "Set the recording count-in", Scope::Transport, EngineImpact::Snapshot,
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
+    {"transport.setLaunchQuantization", "Set Global Quantization", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportQuantization, false, true, transportLaunchQuantization, nullptr, ""},
+    {"session.setFollowActionsEnabled", "Enable Session Follow Actions", Scope::Session, EngineImpact::Snapshot,
+     kFTransportFlag, false, true, sessionFollowActions, nullptr, ""},
     {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
      kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
@@ -2556,12 +2611,19 @@ std::span<const OpDescriptor> builtinOps() {
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
+        const auto pitchEdits=pitchEditStoreOps();v.insert(v.end(),pitchEdits.begin(),pitchEdits.end());
         const auto takeLanes=takeLaneOps();v.insert(v.end(),takeLanes.begin(),takeLanes.end());
         const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
         const auto recording=trackRecordingOps();
         v.insert(v.end(),recording.begin(),recording.end());
         const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
         const auto keys=deviceKeyRouteOps();v.insert(v.end(),keys.begin(),keys.end());
+        const auto launch = engine::launchOperationDescriptors();
+        v.insert(v.end(), launch.begin(), launch.end());
+        const auto session = sessionEditOps();
+        v.insert(v.end(), session.begin(), session.end());
+        const auto performance = sessionPerformanceOps();
+        v.insert(v.end(), performance.begin(), performance.end());
         const auto automation = automation::descriptors();
         v.insert(v.end(), automation.begin(), automation.end());
         const auto lanes = automation::laneDescriptors();

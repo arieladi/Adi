@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/warp_commands.hpp"
 #include "adi/audio/decode.hpp"
-#include "adi/audio/transients.hpp"
+#include "adi/audio/warp_source_analysis.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -213,20 +213,34 @@ PreparedEdit prepareWarpChange(Store& store,std::int64_t clipId,const WarpOption
                 throw std::runtime_error("Warp needs a nonempty source interval");
 
             std::int64_t trimmed=0;
+            bool enableLoop=false;
             if(source.at("warp_markers").is_null()) {
-                std::vector<std::uint64_t> onsets;
-                if(!requested) {
-                    auto detected=audio::detectTransients(*reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
-                    cancelled(options.stop);
-                    if(!detected)throw std::runtime_error("cannot analyze Warp source transients");
-                    onsets=std::move(detected.frames);
-                }
                 auto analysisOptions=options.analysis;
-                // A manual tempo pins frame zero. Only a whole Auto-Warped
-                // clip may adopt its detected first beat as the origin.
-                if(requested || firstFrame!=0 || lastFrame!=static_cast<std::int64_t>(frames) || hasEnd)
+                if(options.shortSamplePolicy)
+                    analysisOptions.transientSensitivity=options.shortSamplePolicy->transientSensitivity;
+                const bool wholeInterval=firstFrame==0 && lastFrame==static_cast<std::int64_t>(frames) &&
+                    offsetNs==0 && sourceEndNs>=physicalNs && !hasEnd;
+                if(requested || !wholeInterval)analysisOptions.fromFirstBeat=false;
+                using Action=audio::ShortSampleWarpAction;
+                audio::ShortSampleWarpPlan shortPlan{Action::UseAutoWarp,{},{}};
+                if(!requested && wholeInterval && start==0 && frames==reader->frames())
+                    shortPlan=library::resolveSampleWarpPlan(audio::ShortSampleWarpTrigger::WarpPress,
+                        options.shortSample,options.shortSamplePolicy,file,expectedHash,frames,reader->sampleRate(),
+                        analysisOptions,options.stop);
+                cancelled(options.stop);
+                if(shortPlan.action==Action::KeepUnwarped){result.ok=true;return result;}
+                audio::AutoWarpResult analysis;
+                if(shortPlan.loopMarkers) {
+                    analysis.markers.assign(shortPlan.loopMarkers->begin(),shortPlan.loopMarkers->end());
+                    enableLoop=true;
+                } else if(requested || shortPlan.action==Action::WarpedOneShot) {
+                    if(!requested)analysisOptions.sourceBpm=shortPlan.sourceBpm;
                     analysisOptions.fromFirstBeat=false;
-                auto analysis=audio::autoWarpFromOnsets(onsets,frames,reader->sampleRate(),analysisOptions,options.stop);
+                    analysis=audio::autoWarpFromOnsets({},frames,reader->sampleRate(),analysisOptions,options.stop);
+                } else {
+                    analysis=audio::analyzeWarpSource(*reader,expectedHash,static_cast<std::uint64_t>(start),
+                        frames,analysisOptions,options.stop);
+                }
                 cancelled(options.stop);
                 if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?
                     "Warp needs a detected beat. Enter the source BPM in the Clip View.":"source timing cannot be analyzed with these Warp options");
@@ -250,6 +264,7 @@ PreparedEdit prepareWarpChange(Store& store,std::int64_t clipId,const WarpOption
 
             root["content_offset_ticks"]=first;
             root["length_ticks"]=last-first;
+            if(enableLoop){root["loop_enabled"]=1;root["loop_len_ticks"]=root["length_ticks"];}
             if(hasEnd || sourceEndNs<physicalNs) {
                 if(properties.is_null())properties=edit::defaultRow(store.db(),"clip_properties",{{"clip_id",clipId}});
                 properties["end_marker_ticks"]=tickAt(frameAtNanos(sourceEndNs));
@@ -293,8 +308,11 @@ PreparedEdit prepareWarpChange(Store& store,std::int64_t clipId,const WarpOption
             details["source_end_ns"]=endNs;
         }
         if(options.enabled) {
-            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            engine::TempoMap tempo;
+            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())
+                tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                       points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
             if(tempo.events.empty())tempo.events.push_back({0,120,0});
             if(engine::projectWarpAnchors(markers,tempo,origin-integer(root,"content_offset_ticks"),rate).back().outputFrame>0x7fffffffULL)
                 throw std::runtime_error("warped clip exceeds supported duration");
@@ -400,9 +418,10 @@ PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenc
         transform(map.markers,source,image,plan);
         source["warp_markers"]=capturedWarpMap(map.markers,static_cast<std::uint64_t>(frames));
         engine::TempoMap tempo;
-        SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+        SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
         while(points.executeStep())
-            tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                   points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
         if(tempo.events.empty() || tempo.events.front().posTicks!=0)tempo.events.insert(tempo.events.begin(),{0,120,0});
         const auto origin=integer(root,"time_base")==0?integer(root,"pos_ticks"):
             tempo.storedNanosecondsToTicks(integer(root,"pos_ns"));

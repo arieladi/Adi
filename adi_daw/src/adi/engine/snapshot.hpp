@@ -31,6 +31,7 @@
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
+#include "adi/tempo_ramp.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/track_recording.hpp"
 #include "adi/cue_settings.hpp"
@@ -39,12 +40,14 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 #include "adi/return_send_tap.hpp"
 
 namespace adi {
 class Store;
+namespace rows { struct TempoEvent; }
 }
 
 namespace adi::engine {
@@ -54,6 +57,8 @@ struct TempoEvent {
     std::int64_t posTicks = 0;
     double bpm = 120.0;
     int curve = 0;
+    double tension = 0.0;
+    std::optional<TempoRampSpan> rampSpan = std::nullopt;
 
     // Compared by value so a rebuilt tempo map that happens to be identical can
     // be shared with the previous snapshot rather than replacing it.
@@ -64,11 +69,15 @@ struct TempoEvent {
 /// is almost always, since tempo edits are rare and fader moves are not.
 struct TempoMap {
     std::vector<TempoEvent> events;   // sorted by posTicks, always has one at 0
+    [[nodiscard]] static TempoMap fromRows(std::span<const rows::TempoEvent>);
 
     /// Ticks to seconds, integrating the map. Pure and allocation-free, so the
     /// audio thread may call it.
     [[nodiscard]] double ticksToSeconds(std::int64_t ticks) const noexcept;
     [[nodiscard]] std::int64_t secondsToTicks(double seconds) const noexcept;
+    /// Continuous projection for fractional positions between the stored ticks.
+    [[nodiscard]] long double secondsAtPosition(long double ticks) const noexcept;
+    [[nodiscard]] long double positionAtSeconds(long double seconds) const noexcept;
     /// Project an integer nanosecond, preserving an exact tick rounded to those bytes.
     [[nodiscard]] std::int64_t storedNanosecondsToTicks(std::int64_t nanos) const noexcept;
     [[nodiscard]] double bpmAt(std::int64_t ticks) const noexcept;

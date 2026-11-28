@@ -3,11 +3,13 @@
 #include "adi/engine/snapshot.hpp"
 namespace SQLite {class Database;}
 namespace adi::edit {
-/// The renderer's step tempo map, with checked integer conversions for edits.
+/// The renderer's tempo map, with checked integer conversions for edits.
 /// Construct on the Store owner thread, under the edit's read transaction.
 class TimeMap {
 public:
     explicit TimeMap(SQLite::Database&);
+    /// Plan an edit against an exact, not-yet-committed tempo row image.
+    explicit TimeMap(engine::TempoMap);
     [[nodiscard]] double seconds(std::int64_t ticks)const;
     [[nodiscard]] double durationSeconds(std::int64_t origin,std::int64_t ticks)const;
     [[nodiscard]] std::int64_t nanos(std::int64_t ticks)const;

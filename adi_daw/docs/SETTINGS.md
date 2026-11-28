@@ -42,6 +42,11 @@ saved name when the identifier changes.
 `record.autoArmOnSelect` defaults to `none`. Saved choices still apply when a
 user has selected `instrumentAndMidi` or `all`.
 
+`editing.emptyArrangementTrack` is **Double-click below tracks** on the Editing
+page (DF-W64). It starts at **Ask**. Choosing MIDI Track, Audio Track or FX
+Channel adds the track and remembers that choice. Set it back to Ask to choose
+again on the next double-click below the Arrangement tracks.
+
 ### Graph worker admission (DEV-23)
 
 `audio.graphWorkers` is an internal app preference. Its `auto` value
@@ -207,7 +212,7 @@ servers, appear in two sections each, so the section is part of the name.
 | AI | 6 | |
 | Export | 7 | the export dialog's defaults (A7-03 c, ADR-0203) |
 | Mixing | 4 | |
-| Transport | 5 | |
+| Transport | 6 | Loop switch takes time selection is off by default (DF-W65). |
 | Sync | 3 | the sync source and tempo responsiveness (Bitwig); Link's own settings are on Link |
 | Engine | 1 | |
 | Windows | 3 | |
@@ -284,8 +289,8 @@ folder. Finished takes are published into `Samples/Recorded` in the song folder.
 (on), `audio.reducedLatencyWhenMonitoring` (off), `audio.recordPdcThresholdEnabled`
 (off, as Live: nothing is bypassed while recording; the 10 ms threshold applies
 only when it is on), `settings.logChanges` (on, §3), and the Export page:
-`export.fileType` (wav), `export.bitDepth` (24), `export.dither` (triangular,
-Live's default), `export.nameTemplate`, `export.normalize` (off; peak is Live's
+`export.fileType` (wav), `export.bitDepth` (24), `export.dither` (none, SC-469),
+`export.nameTemplate`, `export.normalize` (off; peak is Live's
 Normalize, loudness aims at `export.loudnessTargetLufs`, -14, under
 `export.truePeakCeilingDb`, -1; D-04 a). The destination stays
 `files.renderFolder`; freeze render settings stay on Devices.

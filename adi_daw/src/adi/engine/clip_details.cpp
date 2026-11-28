@@ -188,8 +188,11 @@ ClipDetailsRead readClipDetails(const Store& store,std::int64_t clipId,bool incl
             clip.pitchEnabled = query.getColumn(23).getInt() == 0 || query.getColumn(24).getString() != "re-pitch";
         }
         TempoMap tempo;
-        SQLite::Statement tempoQuery(db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks");
-        while (tempoQuery.executeStep()) tempo.events.push_back({tempoQuery.getColumn(0).getInt64(), tempoQuery.getColumn(1).getDouble(), tempoQuery.getColumn(2).getInt()});
+        SQLite::Statement tempoQuery(db, "SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks");
+        while (tempoQuery.executeStep()) {
+            tempo.events.push_back({tempoQuery.getColumn(0).getInt64(), tempoQuery.getColumn(1).getDouble(),
+                                    tempoQuery.getColumn(2).getInt(), tempoQuery.getColumn(3).getDouble()});
+        }
         if (tempo.events.empty()) tempo.events.push_back({0,120,0});
         std::optional<std::int64_t> origin = clip.posTicks, duration = clip.lengthTicks;
         if (clip.timeBase == 1) {
@@ -201,8 +204,6 @@ ClipDetailsRead readClipDetails(const Store& store,std::int64_t clipId,bool incl
         }
         if (duration) clip.endMarkerTicks = add(clip.startMarkerTicks, *duration);
         if (!origin || !clip.endMarkerTicks) clip.propertiesProblem = "musical marker/context cannot be derived from stored time";
-        if (std::any_of(tempo.events.begin(), tempo.events.end(), [](const TempoEvent& event) { return event.curve != 0; }))
-            clip.propertiesProblem = "tempo ramps unsupported; musical context uses step tempos";
         if (origin) {
             SQLite::Statement signature(db, "SELECT numerator,denominator FROM time_signature_map WHERE pos_ticks<=? ORDER BY pos_ticks DESC LIMIT 1");
             signature.bind(1, *origin);

@@ -240,10 +240,10 @@ Fingerprint fingerprint(Store &store, const FingerprintSpec &spec) {
             add(raw, store.db(), entry.at("table").get<std::string>(), entry.at("before"));
     }
     std::set<std::int64_t> clips, devices, chains, lanes, routes, automation;
+    for (const auto& clip : model.clips)
+        if (selected.contains(clip.trackId)) clips.insert(clip.id);
     for (const auto &[identity, row] : raw) {
         (void)identity;
-        if (row.table == "clips" && selected.contains(id(row.value, "track_id")))
-            clips.insert(id(row.value, "id"));
         if (row.table == "device_chains" && selected.contains(id(row.value, "track_id")))
             chains.insert(id(row.value, "id"));
         if (row.table == "lanes" && selected.contains(id(row.value, "track_id")))
@@ -305,6 +305,8 @@ Fingerprint fingerprint(Store &store, const FingerprintSpec &spec) {
     for (const auto &[identity, row] : raw) {
         (void)identity;
         const auto &value = row.value;
+        if (row.table == "clip_slots" || row.table == "clip_launch" || row.table == "scenes")
+            continue;
         if (row.table == "tracks" && !selected.contains(id(value, "id")))
             continue;
         if (row.table == "clips" && !clips.contains(id(value, "id")))

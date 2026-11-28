@@ -6,14 +6,17 @@
 #include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/published_rollback.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/store.hpp"
+#include "adi/store_rows.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_rows.hpp"
@@ -92,6 +95,7 @@ struct RecordingEdit::Files {
     std::shared_ptr<media::detail::PublishedRollback> publications;
     ~Files(){if(!publicationDirectory.empty()){std::error_code ignored;fs::remove_all(publicationDirectory,ignored);}}
     bool committed=false,keepPrivate=false;
+    bool slotPlacement = false;
 };
 struct RecordingEdit::PreparedSource {
     std::int64_t mediaId;
@@ -266,15 +270,16 @@ fs::path reservePublication(const fs::path& parent) {
     throw std::runtime_error("cannot reserve recording publication staging");
 }
 engine::TempoMap tempoOf(Store& store, bool addDefaultLeadIn = true) {
-    engine::TempoMap result;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    std::vector<rows::TempoEvent> events;
+    SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
     while(points.executeStep()) {
         const auto at=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
         if(at<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000)throw std::runtime_error("recording placement needs a valid tempo map");
-        result.events.push_back({at,bpm,points.getColumn(2).getInt()});
+        events.push_back({at,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
     }
-    if(result.events.empty() || (addDefaultLeadIn && result.events.front().posTicks!=0))
-        result.events.insert(result.events.begin(),{0,120,0});
-    return result;
+    if(addDefaultLeadIn && !events.empty() && events.front().posTicks!=0)
+        events.insert(events.begin(),{0,120,0,0});
+    return engine::TempoMap::fromRows(events);
 }
 std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint32_t rate) {
     if(sample<0 || sample>(std::int64_t{1}<<50))throw std::runtime_error("recording exceeds supported timeline sample precision");
@@ -534,7 +539,8 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
         "SELECT id,time_base,alias_of,muted,EXISTS(SELECT 1 FROM clips AS linked WHERE linked.alias_of=clip.id) "
         "FROM clips AS clip WHERE track_id=? AND lane_id IS NULL AND "
         "((time_base=0 AND pos_ticks<? AND pos_ticks+length_ticks>?) OR "
-        "(time_base=1 AND pos_ns<? AND pos_ns+length_ns>?)) ORDER BY id");
+        "(time_base=1 AND pos_ns<? AND pos_ns+length_ns>?))" +
+        engine::excludeSlotClips(store.db(), "clip.id") + " ORDER BY id");
     overlaps.bind(1, take.track);
     overlaps.bind(2, end);
     overlaps.bind(3, take.start);
@@ -970,6 +976,56 @@ RecordingEdit prepareCommit(Store& store, const engine::AudioRecordingResult& re
 
 RecordingEdit prepareMidiLinearCommit(Store& store, std::span<const MidiLinearTake> midi, double sampleRate) {
     return RecordingEdit::prepareLinear(store, nullptr, {}, midi, sampleRate, 0);
+}
+
+std::vector<std::int64_t> RecordingEdit::prepareSlotFiles(Store& store, std::string_view sourceProject,
+    const engine::AudioRecordingResult* audio, std::span<const ClipIds> ids, RecordingEdit& result,
+    const StagedTake* staged) {
+    const auto project = identity(store);
+    if (sourceProject.empty() || sourceProject != project)
+        throw std::runtime_error("slot recording belongs to a different project");
+    std::vector<std::int64_t> media;
+    if (audio) {
+        if (staged && (!staged->ok || !staged->data_ || staged->data_->recorded.directory() != audio->directory()))
+            throw std::runtime_error("staged audio does not belong to this recorded slot take");
+        auto sources = prepareSources(store, *audio, ids, result, {}, staged);
+        media.reserve(sources.size());
+        for (auto& source : sources) {
+            media.push_back(source.mediaId);
+            if (source.mediaEdit) result.requests.push_back(std::move(*source.mediaEdit));
+        }
+    } else {
+        if (staged) throw std::runtime_error("MIDI-only slot recording has no staged media");
+        result.sourceProject = project;
+        result.owner_ = &store;
+        result.client_ = store.clientId();
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        result.files_ = std::make_shared<Files>();
+    }
+    result.files_->slotPlacement = true;
+    return media;
+}
+
+std::int64_t RecordingEdit::slotTickAt(const engine::TempoMap& clock, std::int64_t sample, std::uint32_t rate) {
+    return tickAt(clock, sample, rate);
+}
+
+Payload RecordingEdit::slotAudioImage(Store& store, const engine::TempoMap& clock, const ClipIds& ids,
+    std::int64_t track, std::int64_t media, std::int64_t frames, std::int64_t ticks, std::uint32_t rate) {
+    const RecordedPiece piece{ids.clip, 0, frames, 0, ids.name.empty() ? "Recording" : ids.name,
+                              std::pair<std::int64_t, std::int64_t>{0, ticks}};
+    auto image = recordedImage(store, clock, piece, track, media, rate);
+    if (image.at("children").at("audio_clips").front().at("warp_enabled") == 1) {
+        auto& row = image.at("row");
+        row["loop_enabled"] = 1;
+        row["loop_start_ticks"] = 0;
+        row["loop_len_ticks"] = ticks;
+    }
+    return image;
+}
+
+Payload RecordingEdit::slotMidiImage(Store& store, const MidiLinearTake& take, clip_edit::CopyIds& allocated) {
+    return recordedMidiImage(store, take, allocated);
 }
 
 RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioRecordingResult* audioTake,
@@ -1541,6 +1597,8 @@ StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,Recordin
         if (edit.owner_ != &store || edit.client_ != store.clientId() || identity(store) != edit.sourceProject)
             throw std::runtime_error("recording project changed during publication");
         if (edit.options.expectHead && *edit.options.expectHead == OpJournal(store).headSeq()) return StagedRefresh::ready;
+        if (published->slotPlacement)
+            return refuse(StagedRefresh::refused, "Session slot recording needs fresh preparation after a project edit during publication");
         auto current = prepareStagedCommit(store, staged, ids, midi, placementOffsetSamples);
         if (!current.ok) {
             edit.audioOutsidePunch = current.audioOutsidePunch;

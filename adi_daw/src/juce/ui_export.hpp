@@ -7,12 +7,19 @@
 #pragma once
 #include "adi/ui/export_choices.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 namespace adi::ui {
+struct ExportCompletion {
+    std::string message;
+    std::filesystem::path output;
+};
+ExportCompletion exportCompletion(const std::vector<render::Entry> &, bool cancelled);
+
 class ExportPage final : public juce::Component {
   public:
     // `tracks`: the project's track choices, including Main with ID zero.

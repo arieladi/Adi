@@ -80,19 +80,55 @@ later trim removes the disk copy. A later read may instead report Missing and
 rebuild. Native refusal to delete an open file is reported rather than counted
 as reclaimed bytes. Size/type/stamp rechecks detect ordinary intervening changes,
 but are not a cross-process compare-and-delete; applications sharing the folder
-must coordinate maintenance separately. This endpoint does not wire the global
-`cache.maxSizeMb` / `cache.minFreeSpaceMb` settings, divide a combined decoded and
-analysed budget, schedule automatic cleanup, or guarantee minimum free space.
-Those settings integration and cross-process ownership steps remain open.
+must coordinate maintenance separately.
+
+The application analyses use the existing `cache.maxSizeMb` and
+`cache.minFreeSpaceMb` preferences for automatic maintenance. The app settings
+store publishes validated preferences on startup and after a successful save.
+A saved absolute `cache.folder` selects the common root before the process first
+opens its default `decoded` and `analysed` subfolders. An empty or invalid setting
+selects the usual application data cache. A later folder change takes effect
+on the next launch so running decoders and their active leases keep valid paths.
+A successful cache access applies preference changes while the cache is open.
+With the preference already loaded at startup, the first new publication
+establishes the byte inventory, so ordinary warm reads can serve cached rows
+immediately. A zero maximum clears valid records even on a read. Publication
+checks byte growth and free space. The setting change itself performs no disk
+scan. Explicitly constructed caches opt in through `setAutomaticLimits`.
+
+Under a known byte limit, complete publications count conservatively until an
+inventory is needed. Automatic trimming under a budget of at least 16 MiB leaves
+5% headroom, capped at 8 MiB, after an overflow. The validated inventory and
+eviction order are the same as for manual trimming. A low-space trim queries
+available disk space again after each successful deletion. Maintenance is best
+effort because other writers share the disk and some entries may be unavailable.
+The default decoded admission and ADIA publication share the byte budget and
+disk headroom. Under pressure they inventory both stores and evict the least
+recently used eligible file in either folder. Admission accounts for the planned
+decoded output and checks physical headroom after reclamation. App-local PCM
+leases protect files from eviction. ADIA work releases its I/O lock before
+coordinated maintenance acquires the decoder lock followed by the ADIA lock.
+
+`cleanupMediaCache` accepts the current project's content hashes. It retains
+those hashes and active decoded leases in both stores, and returns the total
+owned bytes, removals and retained entries. The owner-worker call leaves
+unrelated files and authored `library.sqlite` data intact. On Windows a native
+sharing refusal keeps that file and is accounted as unavailable.
 
 `adi_analysis_cache_tests` exercises exact/zero budgets, read promotion and ties,
 ignored/unowned files, cancellation and callback refusal, retained returned data,
-concurrent reads/updates/trim, Windows non-delete-sharing reads, and actual
-persistent library defaults surviving eviction. `adi_analysis_cache_trim_tests`
+concurrent reads/updates/trim, Windows non-delete-sharing reads, actual
+persistent library defaults surviving eviction, and automatic trimming on
+publication, disk pressure and preference changes. `adi_settings_tests`
+exercises startup, committed preference changes and failed saves using a
+temporary application cache. `adi_analysis_cache_trim_tests`
 adds owned Windows read/delete sharing refusals, continuation to healthy siblings,
 unreadable/retained byte accounting, cancellation inside the third file read and
 an actual timestamp change before inventory completes. Symlink checks run when
 the platform permits creation; they report a skip otherwise.
+`adi_decode_tests` drives shared automatic eviction in both directions with real
+PCM plus ADIA, and verifies that Cleanup retains current and playing files and
+their analyses until the last lease and current-project protection are released.
 
 Persisted Warp maps and clip settings are the user's data. They belong in
 `data/library.sqlite` or another explicit persistent library store, outside
