@@ -2294,6 +2294,10 @@ add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
 add_executable(adi_compound_file_tests tests/test_compound_file.cpp)
 target_link_libraries(adi_compound_file_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_compound_file_tests COMMAND adi_compound_file_tests)
+add_executable(adi_mcu_fader_tests tests/test_mcu_faders.cpp)
+target_include_directories(adi_mcu_fader_tests PRIVATE src)
+target_link_libraries(adi_mcu_fader_tests PRIVATE adi_warnings)
+add_test(NAME adi_mcu_fader_tests COMMAND adi_mcu_fader_tests)
 
 
 
