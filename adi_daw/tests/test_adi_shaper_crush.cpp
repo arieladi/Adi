@@ -337,6 +337,110 @@ void quantizerBias() {
     }
 }
 
+struct TrebleTap { int frame; double left, right; };
+void trebleSteps() {
+    // Signed stereo steps captured with full-speed hold and minimum resolution.
+    constexpr std::array<std::array<TrebleTap, 3>, 2> taps{{
+        {{{16, -.003092475, .005335633}, {24, -.221224740, .224369004}, {32, -.366270751, .370653480}}},
+        {{{16, -.043584999, .075199805}, {24, -.377605557, .379767567}, {32, -.293384731, .326458722}}}
+    }};
+    Crush band;
+    check(band.prepare(48000), "prepare treble steps");
+    for (std::size_t setting = 0; setting < taps.size(); ++setting) {
+        band.setTreble(setting == 0 ? 0.f : .3f);
+        band.reset();
+        std::size_t next = 0;
+        for (int i = 0; next < taps[setting].size(); ++i) {
+            float l = i >= 16 && i < 32 ? -.71f : .43f;
+            float r = i >= 16 && i < 32 ? .91f : -.38f;
+            band.processStereo(l, r, 0.f, 1.f);
+            const auto& tap = taps[setting][next];
+            if (i == tap.frame) {
+                near(l, tap.left, 2e-6, "treble step left");
+                near(r, tap.right, 2e-6, "treble step right");
+                ++next;
+            }
+        }
+    }
+    // The eighth impulse-tail sample distinguishes the 350 Hz split at each rate.
+    struct Tail { double rate, left, right; };
+    constexpr Tail tails[] {{44100, .009381539, -.004573001}, {96000, .005349674, -.002607681}};
+    for (const auto& tap : tails) {
+        check(band.prepare(tap.rate), "prepare treble impulse");
+        band.setTreble(.25f);
+        float l = .6f, r = -.31f;
+        for (int i = 0; i <= 8; ++i) {
+            if (i != 0) l = r = 0.f;
+            band.processStereo(l, r, .3f, 1.f);
+        }
+        near(l, tap.left, 2e-6, "treble impulse tail left");
+        near(r, tap.right, 2e-6, "treble impulse tail right");
+    }
+}
+void trebleContours() {
+    // Resolution and hold change at distinct sample positions. These source
+    // readings include the existing DC filter after the time-varying shelf.
+    constexpr TrebleTap taps[] {
+        {24, -.166701570, .328490376}, {56, -.356131196, .408803135},
+        {79, .150631368, -.468152434}, {94, .208758622, -.565110445}
+    };
+    constexpr std::array<int, 2> inputSteps{23, 65};
+    constexpr std::array<float, 3> left{.61f, -.73f, .29f};
+    constexpr std::array<float, 3> right{-.35f, .82f, -.65f};
+    Crush band;
+    check(band.prepare(49152), "prepare moving treble");
+    band.setTreble(.37f);
+    std::size_t step = 0, next = 0;
+    for (int i = 0; i <= 94; ++i) {
+        if (step < inputSteps.size() && i == inputSteps[step]) ++step;
+        float l = left[step], r = right[step];
+        if (i == 54 || i == 55) l = r = 0.f;
+        const float bits = i < 55 ? .25f : .75f;
+        const float hold = i < 71 ? 1.f : .65f;
+        band.processStereo(l, r, bits, hold);
+        if (i == taps[next].frame) {
+            near(l, taps[next].left, 2e-5, "moving treble left");
+            near(r, taps[next].right, 2e-5, "moving treble right");
+            ++next;
+        }
+    }
+}
+void trebleTransfer() {
+    // Reconstruct the input to the shelf from a neutral device. Independent
+    // measurements at 48 kHz give this one-pole impulse response. The gain
+    // follows the product of the two contours even at fractional hold rates.
+    Crush neutral, toned;
+    check(neutral.prepare(48000) && toned.prepare(48000), "prepare treble transfer");
+    toned.setTreble(.37f);
+    UndoHighPass neutralMeter(48000), tonedMeter(48000);
+    double previous = 0, filtered = 0;
+    for (int i = 0; i < 4096; ++i) {
+        const float bits = .1f + .8f * static_cast<float>(i % 37) / 36.f;
+        const float hold = .2f + .7f * static_cast<float>(i % 61) / 60.f;
+        const float input = static_cast<float>(.53 * std::sin(.13 * i) + .34 * std::cos(.379 * i));
+        const double source = neutralMeter.decode(mono(neutral, input, bits, hold));
+        filtered = .022398277 * (source + previous) + .955203446 * filtered;
+        previous = source;
+        const double gain = .37 + .63 * bits * hold;
+        const double expected = filtered + gain * (source - filtered);
+        near(tonedMeter.decode(mono(toned, input, bits, hold)), expected, 2e-6,
+             "treble transfer before DC removal");
+    }
+}
+void trebleHistory() {
+    Crush neutral, active;
+    check(neutral.prepare(48000) && active.prepare(48000), "prepare treble automation");
+    active.setTreble(0.f);
+    UndoHighPass neutralMeter(48000), activeMeter(48000);
+    for (int i = 0; i < 32; ++i) {
+        neutralMeter.decode(mono(neutral, .75f, 0.f, 1.f));
+        activeMeter.decode(mono(active, .75f, 0.f, 1.f));
+    }
+    neutral.setTreble(0.f);
+    near(neutralMeter.decode(mono(neutral, -.65f, 0.f, 1.f)),
+         activeMeter.decode(mono(active, -.65f, 0.f, 1.f)), 2e-6, "neutral treble retains filter memory");
+}
+
 std::array<float, 2> endpointMarker(int offset) {
     constexpr std::array<std::array<float, 2>, 3> markers{{
         {.8f, -.1f}, {-.25f, .6f}, {.16f, -.42f}}};
@@ -415,6 +519,7 @@ int main() try {
     }
     band.reset();
     quantizer(band);movingResolution();clock(band);longClock(band);sustainedStereoClock();combined(band);dither(band);quantizerBias();
+    trebleSteps();trebleContours();trebleTransfer();trebleHistory();
     fullRatePlateau(); flatOrCappedHold();
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");

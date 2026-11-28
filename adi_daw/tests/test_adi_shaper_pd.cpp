@@ -497,6 +497,48 @@ void quantizerBiasPd(const std::string& directory, bool crossed) {
     }
 }
 
+void quantizerTreblePd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error), "open Crush treble");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    check(path.sendParameter(Shaper::CrushOn + 1, 1), "enable Crush");
+    for (int n = 0; n < 8; ++n) {
+        const auto point = static_cast<Shaper::ModControl>(Shaper::Primary1 + n);
+        const int id = Shaper::modParam(Shaper::Stage::Crush, Shaper::Band::Mid, point) + 1;
+        check(path.sendParameter(id, 0), "select lowest resolution");
+    }
+    check(path.sendParameter(869, 30), "select 30 percent treble");
+    std::array<float, 64> inL{}, inR{}, outL{}, outR{};
+    const float* in[]{inL.data(), inR.data()};
+    float* out[]{outL.data(), outR.data()};
+    adi::engine::NodeIo io;
+    io.in = in; io.out = out; io.channels = 2; io.frames = 64;
+    path.process(io);
+    inL.fill(.43f); inR.fill(-.38f);
+    std::fill(inL.begin() + 16, inL.begin() + 32, -.71f);
+    std::fill(inR.begin() + 16, inR.begin() + 32, .91f);
+    path.process(io);
+    struct Tap { int frame; double left, right; };
+    constexpr std::array taps{Tap{16, -0.0435849987, 0.0751998052},
+        Tap{17, -0.2407797277, 0.2438084483},
+        Tap{24, -0.3776055574, 0.3797675669},
+        Tap{31, -0.4750296772, 0.4765632749},
+        Tap{32, -0.2933847308, 0.3264587224},
+        Tap{39, -0.1803784072, 0.1836717725}};
+    for (const auto& t : taps) {
+        const auto frame = static_cast<std::size_t>(t.frame);
+        check(std::abs(outL[frame] - (crossed ? t.right : t.left)) < 3e-6 &&
+              std::abs(outR[frame] - (crossed ? t.left : t.right)) < 3e-6,
+              "Crush treble reaches both channels in native and editable Pd");
+    }
+}
+
 void stereoSweepPd(const std::string& directory, bool crossed) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
@@ -1724,7 +1766,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 763, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 766, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -1801,6 +1843,22 @@ int main() try {
           && device->getParam("866").real == 75 && device->getParam("867").real == 100,
           "each band's quantizer bias round-trips independently");
     device = open();
+    for (int band = 0; band < 3; ++band) {
+        const auto id = std::to_string(868 + band);
+        check(device->paramAt(763 + band) && device->paramAt(763 + band)->id == id
+              && device->getParam(id).real == 100, "three stable treble controls default to full level");
+    }
+    const auto savedTreble = [&] {
+        auto source = open();
+        set(*source, 868, 0.);
+        set(*source, 869, .25);
+        set(*source, 870, 1.);
+        return source->saveState("state");
+    }();
+    check(device->loadState("state", savedTreble) && device->getParam("868").real == 0
+          && device->getParam("869").real == 25 && device->getParam("870").real == 100,
+          "each band's Crush treble round-trips independently");
+    device = open();
     for (int i = 0; i < 3; ++i)
         check(device->paramAt(715 + i) && device->paramAt(715 + i)->id == std::to_string(913 + i),
               "append the peak switches after the legacy parameters");
@@ -1844,7 +1902,7 @@ int main() try {
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
     for (const auto* group : {"params", "real", "units"})
-        for (int id : {850, 851, 852, 853, 854, 855, 865, 866, 867, 913, 914, 915, 916, 917, 918}) state.at(group).erase(std::to_string(id));
+        for (int id : {850, 851, 852, 853, 854, 855, 865, 866, 867, 868, 869, 870, 913, 914, 915, 916, 917, 918}) state.at(group).erase(std::to_string(id));
     for (const auto* group : {"params", "real"})
         for (int id = 134; id <= 463; ++id) state.at(group).erase(std::to_string(id));
     device = open();
@@ -1853,9 +1911,11 @@ int main() try {
     set(*device, 851, 1.);
     set(*device, 854, 1.);
     set(*device, 866, 1.);
+    set(*device, 869, 0.);
     check(device->loadState("state", adi::Payload::to_cbor(state)) && device->getParam("851").real == 0
-          && device->getParam("854").real == 0 && device->getParam("866").real == 0,
-          "restore earlier curve, width, centered Filter and Sweep and unbiased Crush");
+          && device->getParam("854").real == 0 && device->getParam("866").real == 0
+          && device->getParam("869").real == 100,
+          "restore earlier curve, width, centered Filter and Sweep and unbiased, full-treble Crush");
     check(device->getParam("416").real == 0. && device->getParam("423").real == 100.,
           "older sessions reset Time enable and band mix on a running device");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -2059,6 +2119,8 @@ int main() try {
     stereoSweepPd(editedDir, true);
     quantizerBiasPd(ADI_SHAPER_PATCH_DIR, false);
     quantizerBiasPd(editedDir, true);
+    quantizerTreblePd(ADI_SHAPER_PATCH_DIR, false);
+    quantizerTreblePd(editedDir, true);
     holdFollowerRecall();
     {
         auto recalled = open();

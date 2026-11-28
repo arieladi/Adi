@@ -61,6 +61,8 @@ bool AdiShaperCrush::prepare(double sampleRate) noexcept {
     if (rate_ > 0) {
         highpassAmount_ = -std::expm1(-2.0 * std::numbers::pi * 10.0 / rate_);
         highpassGain_ = 1.0 - .5 * highpassAmount_;
+        const double g = std::tan(std::numbers::pi * std::min(350.0 / rate_, .49));
+        treblePole_ = g / (1.0 + g);
     }
     reset();
     return rate_ > 0;
@@ -71,7 +73,11 @@ void AdiShaperCrush::reset() noexcept {
     phase_ = 0;
     seed_ = 0x297a04b3u;
     previousPerturbation_ = 0.;
-    previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = {};
+    previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = trebleState_ = {};
+}
+
+void AdiShaperCrush::setTreble(float normalized) noexcept {
+    if (std::isfinite(normalized)) treble_ = std::clamp(normalized, 0.f, 1.f);
 }
 
 void AdiShaperCrush::setBias(float normalized) noexcept {
@@ -224,7 +230,15 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
     Stereo sample{left, right};
     quantize(sample, previousLevels, codeScale);
     hold(sample, flatHold);
+    // The treble shelf follows the product of the bit and hold contours.
+    const double highGain = treble_ + (1.0 - treble_) * u * r;
     for (unsigned ch = 0; ch < 2; ++ch) {
+        // Keep the split warm at unity so a live edit uses the preceding audio.
+        const double delta = treblePole_ * (sample[ch] - trebleState_[ch]);
+        const double low = trebleState_[ch] + delta;
+        trebleState_[ch] += 2.0 * delta;
+        if (std::abs(trebleState_[ch]) < 1.e-28) trebleState_[ch] = 0.;
+        if (highGain != 1.) sample[ch] = low + highGain * (sample[ch] - low);
         const double difference = sample[ch] - low_[ch];
         low_[ch] += highpassAmount_ * difference;
         if (std::abs(low_[ch]) < 1.0e-28) low_[ch] = 0;
@@ -237,9 +251,10 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
 bool AdiShaperCrush::finishBlock() noexcept {
     bool repaired = false;
     for (std::size_t ch = 0; ch < low_.size(); ++ch) {
-        if (!std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
+        if (!std::isfinite(trebleState_[ch]) || !std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
             !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
-            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = previousCode_[ch] = 0.0;
+            trebleState_[ch] = low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] =
+                previousCode_[ch] = 0.0;
             repaired = true;
         }
     }

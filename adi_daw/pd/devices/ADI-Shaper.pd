@@ -1534,6 +1534,12 @@
 #X msg 8535 111 p 865 \$1;
 #X obj 8535 148 adi.param \$0 867 0 100 0 % lin Crush_High_Bias;
 #X msg 8535 175 p 866 \$1;
+#X obj 8810 20 adi.param \$0 868 0 100 100 % lin Crush_Low_Treble;
+#X msg 8810 47 p 867 \$1;
+#X obj 8810 84 adi.param \$0 869 0 100 100 % lin Crush_Mid_Treble;
+#X msg 8810 111 p 868 \$1;
+#X obj 8810 148 adi.param \$0 870 0 100 100 % lin Crush_High_Treble;
+#X msg 8810 175 p 869 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -3070,3 +3076,9 @@
 #X connect 1532 0 1 0;
 #X connect 1533 0 1534 0;
 #X connect 1534 0 1 0;
+#X connect 1535 0 1536 0;
+#X connect 1536 0 1 0;
+#X connect 1537 0 1538 0;
+#X connect 1538 0 1 0;
+#X connect 1539 0 1540 0;
+#X connect 1540 0 1 0;
