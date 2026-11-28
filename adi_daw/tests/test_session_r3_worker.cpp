@@ -75,9 +75,11 @@ void writeSource(Store& store, int id, std::uint32_t frames, std::size_t channel
 }
 
 void addSlot(Store& store, int clip, int scene, float level, std::int64_t duration,
-             std::int64_t pulseOffset, bool legato) {
+             std::int64_t pulseOffset, bool legato, std::span<const Pulse> extra = {}) {
     const auto frames = static_cast<std::uint32_t>(duration * (rate / 2) / quarter);
-    writeSource(store,clip,frames,0,std::array{Pulse{pulseOffset,level}});
+    std::vector<Pulse> pulses{{pulseOffset,level}};
+    pulses.insert(pulses.end(),extra.begin(),extra.end());
+    writeSource(store,clip,frames,0,pulses);
     auto& db = store.db();
     SQLite::Statement placement(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_len_ticks) "
                                     "VALUES(?,1,'audio',0,?,1,?)");
@@ -471,23 +473,34 @@ void preparedWarpToRawScene(bool loop) {
     (void)render(true,true,true);
 }
 
-enum class WorkerCueCase { Warm, ColdCue, WarmWrap, ColdWrap, ColdDistantHead };
+enum class WorkerCueCase {
+    Warm, ColdCue, WarmWrap, ColdWrap, ColdDistantHead, RepeatWrap,
+    ColdRepeatStart, ColdLaterStart, ReleasedBeforeCut,
+};
 
 void scheduledWorkerLegato(WorkerCueCase testCase) {
+    const auto coldStart = testCase == WorkerCueCase::ColdRepeatStart || testCase == WorkerCueCase::ColdLaterStart ||
+        testCase == WorkerCueCase::ReleasedBeforeCut;
+    const auto repeat = testCase == WorkerCueCase::RepeatWrap || coldStart;
+    const auto restarted = testCase == WorkerCueCase::RepeatWrap;
+    const auto laterRestart = testCase == WorkerCueCase::ColdLaterStart;
     const auto loop = testCase == WorkerCueCase::WarmWrap || testCase == WorkerCueCase::ColdWrap ||
-        testCase == WorkerCueCase::ColdDistantHead;
+        testCase == WorkerCueCase::ColdDistantHead || restarted;
     const auto coldHead = testCase == WorkerCueCase::ColdWrap || testCase == WorkerCueCase::ColdDistantHead;
-    const auto refused = testCase == WorkerCueCase::ColdCue || testCase == WorkerCueCase::ColdWrap;
+    const auto refused = testCase == WorkerCueCase::ColdCue || testCase == WorkerCueCase::ColdWrap ||
+        testCase == WorkerCueCase::ColdRepeatStart;
     const auto immediateWrap = loop && testCase != WorkerCueCase::ColdDistantHead;
     constexpr auto due = 144000;
-    constexpr auto savedStart = 3455;
-    constexpr auto cue = savedStart + due;
+    constexpr auto repeatPeriod = static_cast<int>(rate) / 16, maxFrames = 4096;
     constexpr auto onset = due + 140;
-    constexpr auto loopHead = 8192 - 1, nearTail = 37;
-    constexpr auto firstSlice = blockFrames - 17;
+    constexpr auto page = 8192, nearTail = 37, prefix = 17;
+    const auto blockSize = repeat ? maxFrames : blockFrames;
+    const auto firstSlice = (laterRestart ? blockFrames : blockSize) - prefix;
+    const auto savedStart = repeat ? 8*page-1 : 3455;
+    const auto cue = savedStart + due;
+    const auto loopHead = repeat ? 4*page-1 : page-1;
     constexpr auto extent = 10 * quarter;
     constexpr std::uint64_t incarnation = 111;
-    static_assert(cue == 18 * 8192 - 1);
     test::TempDirectory folder{"scheduled_r3_legato",refused ? "cold" : "warm"};
     StoreError error{};
     auto store = Store::createEmpty(folder.path()/"song.adi",error);
@@ -499,11 +512,15 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
             "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
             "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1)");
     addSlot(*store,101,10,.55f,extent,onset,false);
-    addSlot(*store,102,20,-.8f,extent,cue+(immediateWrap ? 20 : 40),true);
+    const std::array restartAttack{Pulse{savedStart+120,-.65f},Pulse{loopHead+300,.7f},
+                                   Pulse{savedStart+repeatPeriod+120,.7f}};
+    addSlot(*store,102,20,-.8f,extent,cue+(immediateWrap ? 20 : 40),true,
+            repeat ? std::span<const Pulse>{restartAttack} : std::span<const Pulse>{});
     db.exec("UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL;"
             "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101;"
             "UPDATE clip_launch SET ram_mode=1,launch_quant=1 WHERE clip_id=101;"
             "UPDATE clip_launch SET launch_quant=8 WHERE clip_id=102");
+    if (repeat) db.exec("UPDATE clip_launch SET launch_mode=3,launch_quant=14 WHERE clip_id=102");
     const auto frameToTick = [](int frame) {
         return static_cast<std::int64_t>(std::llround(static_cast<double>(frame)*quarter/(rate/2)));
     };
@@ -526,10 +543,10 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
     store = Store::open(folder.path()/"song.adi",error);
     require(static_cast<bool>(store),"reopen the saved long worker slot");
     struct Gate {
-        std::int64_t heldPage;
+        std::int64_t heldPage, cueMarkerPage;
         std::atomic<bool> armed{false}, blocked{false}, resume{false};
-        std::atomic<bool> cueReady{false}, headEvicted{false}, headReady{false};
-    } gate{coldHead ? 0 : 18};
+        std::atomic<bool> cueReady{false}, evicted{false}, headReady{false};
+    } gate{coldStart ? 8 : coldHead ? 0 : 18, repeat ? 27 : 19};
     const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
         .beforePageClaim=[](void* opaque,std::int64_t,std::int64_t number) noexcept {
             auto& state = *static_cast<Gate*>(opaque);
@@ -537,20 +554,20 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
                 state.blocked.store(true,std::memory_order_release);
                 while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
             }
-            if (number == 19) state.cueReady.store(true,std::memory_order_release);
+            if (number == state.cueMarkerPage) state.cueReady.store(true,std::memory_order_release);
             if (number == 1 && state.blocked.load(std::memory_order_acquire))
                 state.headReady.store(true,std::memory_order_release);
         },
         .afterPageClaimAttempt=[](void* opaque,std::int64_t previous,std::int64_t number,bool claimed) noexcept {
             auto& state = *static_cast<Gate*>(opaque);
-            if (claimed && previous == 0 && number >= 17)
-                state.headEvicted.store(true,std::memory_order_release);
+            if (claimed && previous == state.heldPage && number >= 17)
+                state.evicted.store(true,std::memory_order_release);
         }};
     const auto project = readClipProject(*store,rows::readModel(*store),true);
     TempoMap clock;
     clock.events.push_back({0,120,0});
     std::vector<std::string> problems;
-    const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,incarnation,problems);
+    const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems);
     const auto* target = bank ? bank->clip(102) : nullptr;
     require(target && target->pageReader() && target->latencySamples() == 2048 &&
             !target->allWorkerPhasesPrimed() && problems.empty(),"prepare the long aligned worker bank");
@@ -560,22 +577,23 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
         ~ResumeOnExit() { gate.resume.store(true,std::memory_order_release); }
     } resume{gate};
     pages.setRequestSnapshotProbeForTest(&probe);
-    auto runtime = std::make_shared<LaunchAudioRuntime>(bank,std::vector<std::int64_t>{1},blockFrames);
+    auto runtime = std::make_shared<LaunchAudioRuntime>(bank,std::vector<std::int64_t>{1},blockSize);
     LaunchAudioDriver driver(1);
     Transport transport;
-    ClipPlayback track(project,transport,rate,2,blockFrames);
+    ClipPlayback track(project,transport,rate,2,blockSize);
     track.attachLaunchAudio(1,runtime);
     auto* source = track.sourcesFor(1).front();
     const auto delay = source->latencySamples();
     require(delay == 2048,"the actual track source declares worker latency");
     transport.play();
     const auto heardAttack = static_cast<std::size_t>(onset+delay);
-    std::vector<float> pcm(heardAttack+blockFrames);
-    struct Events { std::array<LaunchTransition,3> edges{}; std::size_t count = 0; } events;
+    const auto finish = repeat ? due+2*repeatPeriod+delay+blockFrames : onset+delay+blockFrames;
+    std::vector<float> pcm(static_cast<std::size_t>(finish));
+    struct Events { std::array<LaunchTransition,5> edges{}; std::size_t count = 0; } events;
     const auto through = [&](std::int64_t end) {
         while (transport.position() < end) {
             LaunchBlock block;
-            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockFrames,end-transport.position()));
+            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockSize,end-transport.position()));
             block.clock = &clock;
             block.tickAtSample = [](const void* raw,std::int64_t frame) noexcept {
                 return static_cast<const TempoMap*>(raw)->secondsToTicks(static_cast<double>(frame)/rate);
@@ -583,7 +601,7 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
             block.sampleAtTick = [](const void* raw,std::int64_t tick) noexcept -> std::int64_t {
                 return std::llround(static_cast<const TempoMap*>(raw)->ticksToSeconds(tick)*rate);
             };
-            std::array<float,blockFrames> right{};
+            std::array<float,maxFrames> right{};
             float* channels[]{pcm.data()+transport.position(),right.data()};
             NodeIo io;
             io.out = channels;
@@ -603,39 +621,60 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
             transport.advance(block.frames);
         }
     };
-    const auto waitFor = [](const std::atomic<bool>& reached) {
+    const auto waitUntil = [](auto ready) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!reached.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        do {
+            if (ready()) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        return reached.load(std::memory_order_acquire);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
     };
-    if (coldHead) {
-        // Seek directly in the idle reader to evict the two loop-head pages
-        // while preparing the far cue. This is outside the observed launch.
+    const auto waitFor = [&](const std::atomic<bool>& reached) {
+        return waitUntil([&]{ return reached.load(std::memory_order_acquire); });
+    };
+    const auto readReady = [&](LaunchPagedAudio& reader,int frame,std::span<float> destination) {
+        {
+            const audio::CallbackScope callback;
+            reader.prefetch(102,frame);
+        }
+        const auto count = static_cast<std::int32_t>(destination.size());
+        return waitUntil([&] {
+            const audio::CallbackScope callback;
+            if (!reader.reserveWorkerCue(102,frame,count,false)) return false;
+            const auto ready = reader.read(102,frame,count,false);
+            if (ready) std::ranges::copy(reader.channel(0),destination.begin());
+            reader.releaseCue(102);
+            return ready;
+        });
+    };
+    if (coldHead || coldStart) {
+        // A disjoint idle read evicts Start or Loop Begin while warming the cue.
         {
             const audio::CallbackScope callback;
             (void)pages.read(102,cue,1,false);
         }
-        require(waitFor(gate.cueReady) && gate.headEvicted.load(std::memory_order_acquire),
-                "prepare the cue while evicting its disjoint loop head");
+        require(waitFor(gate.cueReady) && gate.evicted.load(std::memory_order_acquire),
+                "prepare the cue while evicting its disjoint alternate phase");
     }
     const auto underrunsBefore = pages.underrunSamples();
-    if (coldHead || refused) gate.armed.store(true,std::memory_order_release);
+    if (coldHead || coldStart || refused) gate.armed.store(true,std::memory_order_release);
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the saved dry slot");
-    through(due-12000);
+    const auto pressAt = due - (repeat ? 2000 : 12000);
+    through(pressAt);
     std::array<LaunchTrackStatus,1> rows{};
     LaunchStatusHeader status{};
     require(driver.readStatus(rows,status) && rows[0].clip == 101,"read the outgoing run");
     const auto run = rows[0].run;
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue the far worker Legato cue");
-    through(due-12000+blockFrames);
+    through(pressAt+blockFrames);
     const auto phase = startTick+6*quarter;
     require(driver.readStatus(rows,status) && rows[0].queued.legatoSourceTick == phase &&
             !rows[0].queued.legatoSourceFrame && target->frameForTick(phase,120) == cue,
             "forecast the same exact aligned PCM cue across the page boundary");
-    require(waitFor(coldHead || refused ? gate.blocked : gate.cueReady),
-            "the forecast requested the aligned cue or its disjoint loop head");
-    std::array<float,firstSlice> expected{};
+    require(waitFor(coldHead || coldStart || refused ? gate.blocked : gate.cueReady),
+            "the forecast requested the cue or its disjoint alternate phase");
+    std::vector<float> expected(static_cast<std::size_t>(firstSlice));
+    std::array<float,blockFrames> expectedLater{};
     if (!refused) {
         const auto readReference = [&](int frame,std::span<float> destination) {
             const audio::CallbackScope callback;
@@ -644,24 +683,68 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
             return true;
         };
         std::span<float> oracle{expected};
-        if (immediateWrap) {
-            require(readReference(loopHead,oracle.subspan(nearTail)),"read the ready wrap head");
-            oracle = oracle.first(nearTail);
+        if (repeat) {
+            const auto reference = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems);
+            const auto* referenceClip = reference ? reference->clip(102) : nullptr;
+            require(referenceClip && referenceClip->pageReader(),"prepare the separate aligned PCM reference");
+            auto& reader = *referenceClip->pageReader();
+            if (laterRestart) require(readReady(reader,savedStart,expectedLater),"read the separate later-grid Start");
+            if (restarted) {
+                auto restart = oracle.subspan(repeatPeriod);
+                require(readReady(reader,savedStart,restart) && *std::min_element(restart.begin(),restart.end()) < -.5f,
+                        "the saved page-crossing Start is audibly distinct");
+                oracle = oracle.first(repeatPeriod);
+            }
+            if (immediateWrap) {
+                auto head = oracle.subspan(nearTail);
+                require(readReady(reader,loopHead,head) && *std::max_element(head.begin(),head.end()) > .5f,
+                        "the disjoint loop head supplies the rest of the first lap");
+                oracle = oracle.first(nearTail);
+            }
+            require(readReady(reader,cue,oracle),"read the independently prepared worker cue");
+        } else {
+            if (immediateWrap) {
+                require(readReference(loopHead,oracle.subspan(nearTail)),"read the ready wrap head");
+                oracle = oracle.first(nearTail);
+            }
+            require(readReference(cue,oracle),"read the ready worker cue");
         }
-        require(readReference(cue,oracle) && *std::min_element(oracle.begin(),oracle.end()) < -.5f,
-                "the independently rendered cue starts with audible aligned worker PCM");
+        require(*std::min_element(oracle.begin(),oracle.end()) < -.5f,"the inherited cue has audible worker PCM");
     }
-    through(due-17);
+    const auto release = [&] {
+        require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotRelease,1,20,102,incarnation}}),
+                "release the held Repeat");
+    };
+    through(due-prefix);
+    if (testCase == WorkerCueCase::ReleasedBeforeCut) release();
     through(due+firstSlice);
     require(driver.readStatus(rows,status),"read the post-grid state");
     gate.resume.store(true,std::memory_order_release);
-    if (refused) require(waitFor(coldHead ? gate.headReady : gate.cueReady),
+    if (testCase == WorkerCueCase::ColdRepeatStart) {
+        std::array<float,blockFrames> recovered{};
+        require(readReady(pages,savedStart,recovered),"the stalled saved Start completes after the refused grid");
+    } else if (refused) require(waitFor(coldHead ? gate.headReady : gate.cueReady),
             "the previously missing page completed after the refused grid");
-    through(onset+delay+blockFrames);
+    if (laterRestart) {
+        require(waitUntil([&] {
+            const audio::CallbackScope callback;
+            if (!pages.reserveWorkerCue(102,savedStart,blockFrames,false)) return false;
+            pages.releaseCue(102);
+            return true;
+        }),"the active aligned reader fills its deferred Start from normal read-ahead");
+        through(due+repeatPeriod+blockFrames);
+    }
+    if (restarted || laterRestart) release();
+    through(finish);
+    const auto repeated = restarted || laterRestart;
+    const auto heardAfterRelease = static_cast<std::size_t>(due+2*repeatPeriod+delay+120);
     const auto pass = refused ? (events.count == 1 && rows[0].run == run && pcm[heardAttack] == .55f)
-        : (events.count == 2 && rows[0].clip == 102 && events.edges[1].sample == due &&
-           events.edges[1].sourceTick == phase && rows[0].completedLoops == (immediateWrap ? 1u : 0u) &&
-           std::equal(expected.begin(),expected.end(),pcm.begin()+due+delay));
+        : (events.count == (repeated ? 3u : 2u) && rows[0].clip == 102 && events.edges[1].sample == due &&
+           events.edges[1].sourceTick == phase && rows[0].completedLoops == (immediateWrap && !restarted ? 1u : 0u) &&
+           (!repeated || (events.edges[2].sample == due+repeatPeriod && events.edges[2].sourceTick == startTick &&
+                          pcm[heardAfterRelease] > .5f)) &&
+           std::equal(expected.begin(),expected.end(),pcm.begin()+due+delay) &&
+           (!laterRestart || std::equal(expectedLater.begin(),expectedLater.end(),pcm.begin()+due+repeatPeriod+delay)));
     const auto lost = pages.underrunSamples() - underrunsBefore;
     std::printf("Scheduled worker Legato case %d: cue %d, delay %d, clip %lld, events %zu, old attack %.6f, missing %u\n",
         static_cast<int>(testCase),cue,delay,static_cast<long long>(rows[0].clip),events.count,
@@ -675,7 +758,8 @@ void scheduledWorkerLegato(WorkerCueCase testCase) {
 int main() {
     try {
         for (const auto testCase : {WorkerCueCase::Warm,WorkerCueCase::ColdCue,WorkerCueCase::WarmWrap,
-                                    WorkerCueCase::ColdWrap,WorkerCueCase::ColdDistantHead})
+                                    WorkerCueCase::ColdWrap,WorkerCueCase::ColdDistantHead,WorkerCueCase::RepeatWrap,
+                                    WorkerCueCase::ColdRepeatStart,WorkerCueCase::ColdLaterStart,WorkerCueCase::ReleasedBeforeCut})
             scheduledWorkerLegato(testCase);
         workerTempoScene(SceneCase::Restart);
         workerTempoScene(SceneCase::Legato);

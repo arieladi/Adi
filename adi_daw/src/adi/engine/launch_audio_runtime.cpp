@@ -614,10 +614,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!call.media->stored()) return true;
         const auto physical = target.physicalFrames > 0;
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
-                     : cueAdmission != LaunchCueAdmission::Scheduled || target.mode == LaunchMode::Repeat) return true;
+                     : cueAdmission != LaunchCueAdmission::Scheduled) return true;
         const auto* pcm = call.media->clip(target.clip);
         auto* nativePages = pcm ? pcm->warpPageReader() : nullptr;
-        if (nativePages && !nativePages->wholeSourceFitsPageCache() && target.loopEndTick <= target.loopStartTick) {
+        if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache() &&
+            target.loopEndTick <= target.loopStartTick) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
             // launches keep the usual reader path.
@@ -664,15 +665,27 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             if (!pages->reserveCue(target.clip,frame,remaining,requestAhead,
                                    cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
         } else {
-            auto wrap = false;
-            if (target.loopEndTick > target.loopStartTick) {
-                const auto lap = std::min(target.loopEndTick - cue.tick,std::numeric_limits<std::int64_t>::max() - tick);
-                const auto end = call.block.sampleAtTick(call.block.clock,tick + lap);
-                // The next outer-callback slice can cross a transport or clock
-                // boundary. Keep its loop head ready, including roundoff at End.
-                wrap = remaining > call.block.frames - offset || end - (call.block.sample + offset) <= remaining + 1;
+            const auto sample = call.block.sample + offset;
+            const auto sliced = remaining > call.block.frames - offset;
+            const auto wrapsInBlock = [&](std::int64_t at, std::int64_t phase) noexcept {
+                if (target.loopEndTick <= target.loopStartTick) return false;
+                const auto lap = std::min(target.loopEndTick - phase,std::numeric_limits<std::int64_t>::max() - at);
+                const auto end = call.block.sampleAtTick(call.block.clock,at + lap);
+                // Keep the loop head ready across a driver slice boundary
+                // and when fixed-clock rounding lands a frame early at End.
+                return sliced || end - sample <= remaining + 1;
+            };
+            auto wrap = wrapsInBlock(tick,cue.tick);
+            std::optional<std::int64_t> restart;
+            auto restartInBlock = false;
+            if (cue.repeat) {
+                restart = pcm->frameForTick(cue.repeat->sourceTick,call.media->bpm());
+                const auto due = call.block.sampleAtTick(call.block.clock,cue.repeat->tick);
+                // A later slice can rebase the pending deadline at an Arrangement wrap.
+                restartInBlock = sliced || std::max(sample + 1,due) - sample < remaining;
+                if (restartInBlock) wrap |= wrapsInBlock(cue.repeat->tick,cue.repeat->sourceTick);
             }
-            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap)) return false;
+            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap,restart,restartInBlock)) return false;
         }
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;

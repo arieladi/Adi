@@ -122,7 +122,9 @@ struct LaunchPhysicalRegion {
 };
 
 struct LaunchSourceCue {
+    struct ScheduledRepeat { std::int64_t tick, sourceTick; };
     std::int64_t tick = 0, physicalFrame = -1;
+    std::optional<ScheduledRepeat> repeat{};
 };
 
 struct LaunchQueuedStatus {

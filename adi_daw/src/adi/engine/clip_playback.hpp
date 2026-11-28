@@ -64,10 +64,10 @@ public:
     /// Driver only. One private source, reserving every page read by the first
     /// render window. Releases partial admission on refusal.
     [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames, bool requestAhead,
-                                            const Transport* alternate = nullptr) noexcept;
+                                            std::span<const Transport> alternates = {}) noexcept;
     static void releaseSource(Node&) noexcept;
-    /// Owner only, before publication. Keep a private physical slot's
-    /// Start in the same bounded request as the running reader.
+    /// Before publication or on the driver of a published private reader.
+    /// Keep its saved Start in the same bounded request as current PCM.
     static void keepSourceStartWarm(Node&, std::int64_t firstFrame) noexcept;
     /// Owner-side R3 delay for a private source bank whose PCM is aligned.
     [[nodiscard]] std::int32_t warpLatencyFor(std::int64_t trackId) const noexcept;

@@ -145,21 +145,27 @@ bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int3
     // instead of this held Restart. The source reserves both possibilities.
     auto restart = next;
     restart.loop(source.firstFrame,end,true);
-    return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead,&restart);
+    return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead,{&restart,1});
 }
 
 bool LaunchPagedAudio::reserveWorkerCue(std::int64_t id, std::int64_t frame, std::int32_t frames,
-                                       bool includeLoopHead) noexcept {
+                                       bool includeLoopHead, std::optional<std::int64_t> restartFrame,
+                                       bool restartInBlock) noexcept {
     const auto* found = find(id);
     if (!found || found->latency <= 0 || frame < 0 || frame >= found->source.endFrame) return false;
     Transport next;
     next.locate(frame);
     next.play();
-    // Musical laps and fades are rendered as linear reads. Preserve the
-    // forecast's request while pinning both anchors needed for this callback.
-    auto head = next;
-    head.locate(found->source.loopBeginFrame);
-    return ClipPlayback::reserveSource(*found->playback,next,frames,false,includeLoopHead ? &head : nullptr);
+    // Unrolled worker reads are linear, even for a lap, restart or fade.
+    // Three windows of maxFrames touch at most six output-rate pages.
+    std::array<Transport,2> alternates{next,next};
+    auto count = std::size_t{0};
+    if (includeLoopHead) alternates[count++].locate(found->source.loopBeginFrame);
+    if (restartFrame && (*restartFrame < 0 || *restartFrame >= found->source.endFrame)) return false;
+    if (restartInBlock && restartFrame) alternates[count++].locate(*restartFrame);
+    if (!ClipPlayback::reserveSource(*found->playback,next,frames,false,{alternates.data(),count})) return false;
+    if (restartFrame) ClipPlayback::keepSourceStartWarm(*found->playback,*restartFrame);
+    return true;
 }
 
 void LaunchPagedAudio::releaseCue(std::int64_t id) noexcept {

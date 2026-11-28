@@ -2011,15 +2011,15 @@ void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candida
     }
 }
 bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::int32_t frames,
-                                 bool requestAhead, const Transport* alternate) noexcept {
+                                 bool requestAhead, std::span<const Transport> alternates) noexcept {
     auto* source = dynamic_cast<TrackSource*>(&node);
     if (!source || source->clips.size() != 1 || frames < 1 || frames > source->maxFrames) return false;
     auto& clip = *source->clips.data()[0];
     if (clip.cueAdmitted) return false;
     auto required = clip.wanted(transport,frames,false);
-    if (alternate) {
-        const auto extra = clip.wanted(*alternate,frames,false);
-        const auto end = required.data() + required.size();
+    const auto end = required.data() + required.size();
+    for (const auto& alternate : alternates) {
+        const auto extra = clip.wanted(alternate,frames,false);
         for (const auto page : extra) {
             if (page < 0 || std::find(required.data(),end,page) != end) continue;
             const auto empty = std::find(required.data(),end,-1);

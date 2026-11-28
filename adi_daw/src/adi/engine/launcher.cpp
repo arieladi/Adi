@@ -617,12 +617,21 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     const auto oldLap = cuedPhysicalLap(oldSlot,previous.completedLoops,previous.physicalCueFrame);
     const auto elapsed = previous.frames - previous.pcmAnchorFrame;
     LaunchSourceCue cue;
+    const auto repeatAtSourceEnd = pending.repeat && pending.grid == LaunchQuantization::None &&
+        repeatWithoutQuantizationRestartsAtClipEnd;
+    auto repeatTick = lastTick;
     if (pending.action == Action::Start) {
         const auto oldFrame = oldLap.startFrame < 0 ? -1 :
             oldSlot->physicalLoopEndFrame && elapsed == oldLap.length() ? oldSlot->physicalLoopBeginFrame :
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        if (pending.repeat) {
+            repeatTick = repeatAtSourceEnd ? add(tick,sourceEnd(*target) - cue.tick)
+                : launch_quantize::nextGridTick(add(tick,1),pending.grid,block.meters).value_or(lastTick);
+            if (pending.grid != LaunchQuantization::None && repeatTick > tick && repeatTick != lastTick)
+                cue.repeat = LaunchSourceCue::ScheduledRepeat{repeatTick,launchSourceTick(*target,nullptr,0)};
+        }
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
             !sink.admitLegatoCue(sink.context,*target,cue,tick,offset,cueAdmission)) return false;
     }
@@ -637,17 +646,11 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
         track.run.physicalCueFrame = cue.physicalFrame;
-        if (pending.repeat) {
-            const bool repeatAtSourceEnd = pending.grid == LaunchQuantization::None && repeatWithoutQuantizationRestartsAtClipEnd;
-            const auto next = repeatAtSourceEnd
-                ? add(tick,sourceEnd(*target) - position)
-                : launch_quantize::nextGridTick(add(tick,1),pending.grid,block.meters).value_or(lastTick);
-            if (next > tick) {
-                track.repeat = pending;
-                track.repeat->tick = next;
-                track.repeat->earliestSample = block.sample + offset + 1;
-                track.repeat->physicalLaps = repeatAtSourceEnd && target->physicalFrames > 0 ? 1 : 0;
-            }
+        if (pending.repeat && repeatTick > tick) {
+            track.repeat = pending;
+            track.repeat->tick = repeatTick;
+            track.repeat->earliestSample = block.sample + offset + 1;
+            track.repeat->physicalLaps = repeatAtSourceEnd && target->physicalFrames > 0 ? 1 : 0;
         }
     }
     if (previous.arrangement == track.run.arrangement && previous.serial == track.run.serial) return true;

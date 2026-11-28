@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -52,9 +53,11 @@ public:
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                   bool requestAhead = true, bool repeatAtEnd = false) noexcept;
     /// Driver only. Pin the already requested aligned PCM and, if this
-    /// callback can wrap, the loop head. Release through the same cue lease.
+    /// callback can wrap, the loop head. Prepare a held Repeat's saved Start
+    /// as read-ahead, and lease it too if the retrigger is in this callback.
     [[nodiscard]] bool reserveWorkerCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
-                                        bool includeLoopHead) noexcept;
+                                        bool includeLoopHead, std::optional<std::int64_t> restartFrame = {},
+                                        bool restartInBlock = false) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader
