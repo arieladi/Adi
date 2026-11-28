@@ -1149,14 +1149,16 @@ void reversedUnityPreparedParity(std::uint32_t rate,audio::WarpMode mode) {
     std::printf("reversed Complex clock edit: bit-exact legacy prepared PCM\n");
 }
 
-void reversedComplexProKeepsPreparedAt96k() {
+void reversedComplexModesKeepPreparedAt96k() {
     audio::WarpRenderPlan plan;
-    plan.mode = audio::WarpMode::ComplexPro;
     plan.outputRate = 96000;
     plan.sourceFrames = 131109;
     plan.anchors = {{0,0},{plan.sourceFrames,plan.sourceFrames}};
-    requireUnity(!audio::reversedUnityR3PageFrames(plan,96000,2),
-                 "96 kHz reversed Complex Pro uses the prepared PCM path");
+    for (const auto mode : {audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
+        plan.mode = mode;
+        requireUnity(!audio::reversedUnityR3PageFrames(plan,96000,2),
+                     "96 kHz reversed Complex and Complex Pro use the prepared PCM path");
+    }
 }
 }
 
@@ -1187,7 +1189,7 @@ int main() {
         reversedUnityPreparedParity(44100,audio::WarpMode::ComplexPro);
         reversedUnityPreparedParity(48000,audio::WarpMode::Complex);
         reversedUnityPreparedParity(96000,audio::WarpMode::Tones);
-        reversedComplexProKeepsPreparedAt96k();
+        reversedComplexModesKeepPreparedAt96k();
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.

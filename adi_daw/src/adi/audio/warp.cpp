@@ -360,9 +360,9 @@ bool validUnityR3Source(std::uint64_t start,std::uint64_t frames,std::uint16_t c
 
 std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan& plan,
     std::uint32_t sourceRate,std::uint16_t channels) noexcept {
-    // Independent 96 kHz Complex Pro crops can take longer than one page
-    // of audio, even with optimized DSP. Keep the whole prepared render.
-    if (sourceRate == 96000 && plan.mode == WarpMode::ComplexPro) return {};
+    // The multi-window 96 kHz modes can exhaust read-ahead even with
+    // optimized DSP. Keep their whole prepared render.
+    if (sourceRate == 96000 && (plan.mode == WarpMode::Complex || plan.mode == WarpMode::ComplexPro)) return {};
     const auto shape = unityR3PageShape(sourceRate,plan.mode);
     if (!shape || sourceRate != plan.outputRate ||
         !validUnityR3Source(plan.sourceStart,plan.sourceFrames,channels,*shape) ||
