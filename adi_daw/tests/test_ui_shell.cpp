@@ -20179,6 +20179,121 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "Automation Arm remains unavailable without a session");
     document->release();
 }
+void deviceAutomationPlayback(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr auto utilityUid = "org.adidaw.builtin.utility";
+    constexpr auto gain = "11";
+    constexpr std::int64_t track = 4;
+    constexpr double storedGain = .5;
+    const auto *utility = findBuiltin(utilityUid);
+    if (!utility || !utility->available)
+        return;
+
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-automation-playback.adi", true,
+                                          device::withBuiltinDevices(), error);
+    const bool inserted = document && document->insertBuiltin(utilityUid, track, {});
+    check(inserted, "SC-459: insert Utility on 3 Audio");
+    if (!inserted)
+        return;
+    const auto devices = document->parameterFeed().current();
+    const auto utilityPanel = std::ranges::find(*devices, utilityUid, &DevicePanelData::uid);
+    check(utilityPanel != devices->end() && utilityPanel->available, "SC-459: Utility is loaded");
+    if (utilityPanel == devices->end() || !utilityPanel->available)
+        return;
+    const auto device = utilityPanel->id;
+
+    using engine::ParamEventKind;
+    const auto *runtime = document->session().instanceFor(device);
+    const bool stored = runtime && document->parameterGesture(device, gain, ParamEventKind::Begin,
+                                                             runtime->getParam(gain).normalized) &&
+                        document->parameterGesture(device, gain, ParamEventKind::Value, storedGain) &&
+                        document->parameterGesture(device, gain, ParamEventKind::End, storedGain);
+    automation::LaneSpec lane;
+    lane.id = 1;
+    lane.ownerKind = "device";
+    lane.ownerId = device;
+    lane.paramRef = gain;
+    lane.paramName = "Gain";
+    lane.defaultValue = storedGain;
+    const bool authored = stored && document->ops().submit({automation::createLane(lane),
+        automation::writePoints(1, lane.id, nullptr, Payload::array({
+            {{"id", 1}, {"time", 0}, {"value", .25}, {"curve", 0}, {"tension", 0.}},
+            {{"id", 2}, {"time", textproj::kPPQ / 16}, {"value", .75}, {"curve", 0}, {"tension", 0.}}
+        }))}).ok && document->synchronise();
+    check(authored, "SC-459: author two Gain levels over a stored manual value");
+    if (!authored)
+        return;
+    document->session().graph().setFadeFrames(0);
+    document->prepare(48000., 64);
+
+    Selection selection;
+    selection.track = track;
+    check(document->sessionState().select(selection, error), "SC-459: select Utility's track");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "device automation playback");
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    // Subscribe explicitly to present Device View without a desktop peer.
+    document->setParameterDemand(&root.devices, {device});
+    root.setSize(1440, 900);
+    root.setDetailViews(false, true);
+    document->tick(0);
+    root.frame();
+
+    const auto knob = [&]() -> const ParameterControl * {
+        if (root.devices.panels.size() != 1)
+            return nullptr;
+        const auto &controls = root.devices.panels.front()->controls;
+        const auto match = std::ranges::find_if(controls, [](const auto &control) { return control->parameter == gain; });
+        return match == controls.end() ? nullptr : match->get();
+    };
+    const auto *before = knob();
+    check(before && before->slider.isVisible() && before->slider.getValue() == storedGain,
+          "SC-459: Device View starts with Gain at the stored value");
+    if (!before) {
+        document->release();
+        return;
+    }
+    const auto dialBounds = before->slider.getBounds();
+    const auto journal = OpJournal(document->store()).headSeq();
+    const auto renderTo = [&](engine::AudioIo &io, std::int64_t sample) {
+        while (io.streamTimeSamples < sample) {
+            document->process(io);
+            io.streamTimeSamples += io.frames;
+        }
+        document->tick(io.streamTimeSamples / 48);
+        root.frame();
+    };
+    const auto follows = [&](double level) {
+        const auto *control = knob();
+        const auto publication = document->parameterFeed().current();
+        const auto panel = std::ranges::find(*publication, device, &DevicePanelData::id);
+        if (!control || panel == publication->end())
+            return false;
+        const auto &records = panel->parameters();
+        const auto value = std::ranges::find(records, gain, &panel::Record::id);
+        return value != records.end() && value->automated && value->driven && !value->overridden &&
+               value->playing == level && value->stored == storedGain && control->slider.getValue() == level &&
+               control->slider.getBounds() == dialBounds;
+    };
+    std::array<float, 64> left{}, right{};
+    float *out[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.out = out;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto started = document->mailbox().post(TransportMailbox::Command::Play);
+    renderTo(io, 64);
+    check(started && document->mailbox().playing() && follows(.25),
+          "SC-459: playing Gain and its dial reach 0.25 in the first block");
+    renderTo(io, 4096);
+    check(document->mailbox().playing() && follows(.75),
+          "SC-459: playing Gain and its dial reach 0.75 across the second breakpoint");
+    const auto *after = document->session().instanceFor(device);
+    check(after && after->getParam(gain).normalized == storedGain && OpJournal(document->store()).headSeq() == journal,
+          "SC-459: playback leaves the stored Gain and the edit history alone");
+    document->setParameterDemand(&root.devices, {});
+    document->release();
+}
 void armFollowsSelection(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "arm-selection.adi", true, {}, error);
@@ -32435,6 +32550,7 @@ int main(int argc, char **argv) {
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("deviceAutomationPlayback", [&] { deviceAutomationPlayback(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("routingChooserMenus", [&] { routingChooserMenus(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });

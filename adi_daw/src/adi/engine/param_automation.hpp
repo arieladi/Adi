@@ -67,6 +67,8 @@ public:
     bool selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept override;
     /// Audio observation for this binding. Empty until a graph renders it.
     [[nodiscard]] std::optional<bool> playingEnabled() const noexcept;
+    /// Last normalized value accepted by the graph's event list for this lane.
+    [[nodiscard]] std::optional<double> playingValue(std::int64_t laneId) const noexcept;
 
     void emit(EventList& out, std::int32_t frames) noexcept override;
     void emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept override;
@@ -81,6 +83,7 @@ private:
         const AutomationLaneProgram* program = nullptr;
         std::uint32_t paramId = 0;
         DeviceParameterSteps steps;
+        std::atomic<double>* playing = nullptr;
         double last = 0.0;       ///< audio thread
         bool sent = false;       ///< audio thread: nothing sent yet, so the first value goes (the chase)
     };
@@ -94,6 +97,7 @@ private:
     bool bypassForBlock_ = false;
     std::atomic<int> playingEnabled_{-1};
     std::atomic<std::uint64_t> dropped_{0};
+    std::map<std::int64_t, std::atomic<double>> playingValues_; ///< owner lookup, audio writes stable slots
 };
 
 /// One compiled program's device lanes, bound per device. Immutable once built;

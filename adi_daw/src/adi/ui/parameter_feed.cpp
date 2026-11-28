@@ -213,7 +213,6 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 const auto saved = saved_.find({row.id, descriptor.id});
                 record.stored = saved == saved_.end() ? record.playing : saved->second;
                 if (record.missing) record.playing = record.stored;
-                record.driven = !record.missing && std::abs(record.playing - record.stored) > 1e-9;
                 record.automated = record.overridden = false;
                 const auto *lanes = session.deviceAutomation();
                 if (descriptor.automatable && lanes && ref) {
@@ -221,8 +220,14 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                     if (lane != lanes->laneFor.end()) {
                         record.automated = true;
                         record.overridden = session.overriddenLanes().contains(lane->second);
+                        if (!record.missing && !record.overridden) {
+                            const auto deviceSource = lanes->byDevice.find(row.id);
+                            if (deviceSource != lanes->byDevice.end())
+                                record.playing = deviceSource->second->playingValue(lane->second).value_or(record.playing);
+                        }
                     }
                 }
+                record.driven = !record.missing && std::abs(record.playing - record.stored) > 1e-9;
                 const auto source = touched_.find({row.id, descriptor.id});
                 record.lastTouchedBy = source == touched_.end() ? panel::Source::None : source->second;
                 if (record.automated && !record.overridden) record.lastTouchedBy = panel::Source::Automation;
