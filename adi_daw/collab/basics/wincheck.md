@@ -12,6 +12,7 @@ A fix for a branch is one commit on `wincheck/<branch>`, made from that branch's
 
 | When (UTC) | Branch and head | Built | Headless suites | Errors (file:line) and the smallest fix |
 |---|---|---|---|---|
+| 2026-11-28 10:55 | `seats/server-chain` `dd1f3bac607f39f347b06f805e75b8e8489a9a89` | Yes, both builds | 293 of 293 | None: the author merged `wincheck/seats/server-chain` (`321ea3fb2`); nothing new |
 | 2026-11-28 10:15 | `basics/midi-chain` `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Yes, both builds | 280 of 280 | None |
 | 2026-11-28 09:40 | `basics/plugins-chain` `1e5f0c78cd1cb6325f68bfa43725eaa88cfdd42e` | Yes, both builds | 279 of 279 | None |
 | 2026-11-28 09:00 | `basics/tracks-chain` `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb` | Yes, both builds | 279 of 279 | None |
