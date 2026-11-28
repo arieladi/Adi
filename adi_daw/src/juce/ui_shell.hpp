@@ -362,7 +362,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
-    bool splitAll_ = true;
+    bool splitAll_ = false;
     ClipClipboard clipClipboard_;
 };
 // WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
@@ -855,7 +855,7 @@ class AdiRootComponent final : public juce::Component,
     // Live's Split (Ctrl/Cmd+E, the Edit menu, a clip's menu; manual 6.9, 41.5): a time selection
     // cuts the clips on its tracks at its edges (inside one clip, at both); else the chosen clip at
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
-    // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
+    // when editing.splitAllWithNoSelection is on. All splits are one undo step.
     bool splitAtMarker();
     bool canReverseAudio() const;
     bool reverseAudio();

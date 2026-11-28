@@ -661,7 +661,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("editing.rippleLockedClips", Type::Bool, "Editing", "Ripple moves locked clips",
                      "Ripple editing also moves locked clips (REAPER).", false));
     r.push_back(make("editing.splitAllWithNoSelection", Type::Bool, "Editing", "Split all at the cursor",
-                     "With nothing selected, Split splits every track at the cursor (REAPER).", true));
+                     "With nothing selected, Split splits every track at the cursor (REAPER).", false));
 
     // --- Mixing (catalogue III). No default send level and no New track page: a
     // new send starts at -inf and a new track at Live's defaults (fader 0 dB, in

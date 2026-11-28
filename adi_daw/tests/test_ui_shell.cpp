@@ -5238,18 +5238,24 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
         std::sort(out.begin(), out.end());
         return out;
     };
-    auto &sel = root.arrangement.geometry.selection;
-    // Ctrl/Cmd+E inside a clip, editing.splitAllWithNoSelection off: the selected track's clip, two
-    // clips, one undo step.
-    std::string why;
-    check(settings.set("editing.splitAllWithNoSelection", false, {}, why) && (commands.reload(), !commands.splitAllWithNoSelection()),
-          "editing.splitAllWithNoSelection off");
-    sel = {};
-    sel.track = 2;
-    sel.insert = bar;
-    sel.marked = true;
+    auto &geo = root.arrangement.geometry;
+    auto &sel = geo.selection;
+    auto &canvas = root.arrangement.canvas;
+    auto &headers = root.arrangement.headers;
+    const auto savedGrid = geo.grid;
+    geo.grid.snap = geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    const auto leftButton = juce::ModifierKeys::leftButtonModifier;
+    const auto bodyY = static_cast<float>(laneTop(root, 2) + ArrangementCanvas::kClipBarHeight + 4);
+    const juce::Point<float> marker{static_cast<float>(geo.x(bar) + 1), bodyY};
+    // SC-475: a click in the clip body places the marker without selecting the clip.
+    check(!commands.splitAllWithNoSelection(), "SC-475: Split all at the cursor is off by default");
+    canvas.mouseDown(pressAt(canvas, marker, leftButton));
+    canvas.mouseUp(pressAt(canvas, marker));
+    check(sel.track == 2 && sel.insert == bar && sel.marked && sel.clip == 0 && sel.start == sel.end,
+          "SC-475: the lane click leaves a marker on 1 MIDI");
     const juce::KeyPress split('e', juce::ModifierKeys::commandModifier, 0);
-    check(root.keyPressed(split), "Ctrl/Cmd+E");
+    check(canvas.keyPressed(split), "Ctrl/Cmd+E in the Arrangement with only a marker");
     root.frame();
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1 &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Split Clip",
@@ -5284,8 +5290,63 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo both time-selection splits");
     root.frame();
     check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1, "one Undo restores both original spans");
-    check(settings.set("editing.splitAllWithNoSelection", true, {}, why) && (commands.reload(), commands.splitAllWithNoSelection()),
-          "editing.splitAllWithNoSelection back on (its default)");
+    // Pick another track at the marker, then extend the range within the first lane.
+    const juce::Point<float> rangeStart{static_cast<float>(geo.x(bar / 2) + 1), bodyY};
+    const juce::Point<float> rangeEnd{static_cast<float>(geo.x(bar) - 1), bodyY};
+    const juce::Point<float> secondHeader{42.f, static_cast<float>(laneTop(root, 3) + 9)};
+    canvas.mouseDown(pressAt(canvas, rangeStart, leftButton));
+    canvas.mouseUp(pressAt(canvas, rangeStart));
+    headers.mouseDown(pressAt(headers, secondHeader, leftButton | juce::ModifierKeys::commandModifier));
+    headers.mouseUp(pressAt(headers, secondHeader));
+    canvas.mouseDown(pressAt(canvas, rangeEnd, leftButton | juce::ModifierKeys::shiftModifier));
+    canvas.mouseUp(pressAt(canvas, rangeEnd));
+    const Selection pickedRange = sel;
+    check(pickedRange.track == 2 && pickedRange.toTrack == 0 && pickedRange.picked == std::vector<std::int64_t>{3} &&
+              pickedRange.clip == 0 && pickedRange.start == bar / 2 && pickedRange.end == bar,
+          "Ctrl/Cmd picking a header and Shift extending time selects the range across both tracks");
+    check(root.keyPressed(split), "Ctrl/Cmd+E over the range on both picked tracks");
+    root.frame();
+    const std::vector<std::pair<std::int64_t, std::int64_t>> pickedSpans{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}};
+    check(clipsOf(2) == pickedSpans && clipsOf(3) == pickedSpans && sel == pickedRange,
+          "SC-184: Split cuts both picked tracks and keeps the multi-track range selected");
+    check(root.command(AppCommands::Undo), "undo the picked-track split");
+    root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1 && sel == pickedRange,
+          "SC-184: one Undo restores both originals and their range selection");
+    check(root.command(AppCommands::Redo), "redo the picked-track split");
+    root.frame();
+    check(clipsOf(2) == pickedSpans && clipsOf(3) == pickedSpans && sel == pickedRange,
+          "SC-184: one Redo restores both tracks' cuts and keeps the range selected");
+    check(root.command(AppCommands::Undo), "reset the picked-track split fixture");
+    geo.grid = savedGrid;
+    root.arrangement.changed();
+    root.frame();
+    const auto clickClipTitle = [&](std::int64_t track, juce::ModifierKeys mods) {
+        const juce::Point<float> title{static_cast<float>(geo.x(bar) + 1), static_cast<float>(laneTop(root, track) + 6)};
+        canvas.mouseDown(pressAt(canvas, title, mods.withFlags(leftButton)));
+        canvas.mouseUp(pressAt(canvas, title, mods));
+    };
+    clickClipTitle(2, {});
+    clickClipTitle(3, juce::ModifierKeys::commandModifier);
+    const Selection pickedClips = sel;
+    check(sel.clip == 50 && sel.pickedClips == std::vector<std::int64_t>{51} && sel.insert == bar,
+          "Ctrl/Cmd picking a clip keeps the earlier clip and its marker");
+    check(root.keyPressed(split), "Ctrl/Cmd+E at the marker in both picked clips");
+    root.frame();
+    const std::vector<std::pair<std::int64_t, std::int64_t>> markerSpans{{0, bar}, {bar, bar}};
+    check(clipsOf(2) == markerSpans && clipsOf(3) == markerSpans &&
+              sel.clip == 50 && sel.pickedClips == pickedClips.pickedClips && sel.end == bar,
+          "SC-184: both picked clips split and their left parts stay selected");
+    check(root.command(AppCommands::Undo), "undo both picked clips");
+    root.frame();
+    check(clipsOf(2).size() == 1 && clipsOf(3).size() == 1 && sel == pickedClips,
+          "SC-184: one Undo restores both picked clips and their selection");
+    check(root.command(AppCommands::Redo), "redo both picked clips");
+    root.frame();
+    check(clipsOf(2) == markerSpans && clipsOf(3) == markerSpans,
+          "SC-184: one Redo restores both picked clips' cuts");
+    check(root.command(AppCommands::Undo), "reset the picked-clip split fixture");
+    root.frame();
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
     const auto picture = [&](const char *name) {
         const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
@@ -5318,14 +5379,37 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1,
           "a clicked clip splits at the marker, not refused as a time selection; the other track's clip stays whole");
     check(sel.clip == 50 && sel.start == 0 && sel.end == bar, "the chosen clip stays chosen as the left piece");
+    // The marker can be on the anchor's boundary and inside a picked clip.
+    std::int64_t rightClip = 0;
+    if (const auto *track = root.reader().findTrack(2))
+        for (const auto &clip : track->clips)
+            if (clip && clip->posTicks == bar)
+                rightClip = clip->id;
+    check(rightClip != 0, "the anchor has a right piece at the marker");
+    if (rightClip != 0) {
+        root.arrangement.selectClip(2, rightClip);
+        clickClipTitle(3, juce::ModifierKeys::commandModifier);
+        const Selection boundary = sel;
+        const bool cut = root.command(AppCommands::Split);
+        root.frame();
+        check(cut && clipsOf(2) == markerSpans && clipsOf(3) == markerSpans && sel == boundary,
+              "SC-184: the picked clip splits while the anchor touching the marker keeps its full span");
+        if (cut) {
+            check(root.command(AppCommands::Undo), "undo the split of the picked clip at the anchor boundary");
+            root.frame();
+        }
+        root.arrangement.selectClip(2, 50);
+    }
     sel.insert = bar / 2;
     check(root.keyPressed(split), "Ctrl/Cmd+E again, the marker in the left piece");
     root.frame();
     check(clipsOf(2).size() == 3, "the left piece splits again");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
     root.frame();
-    // No clip chosen, the setting on (its default): every track's clip under the marker, though a
-    // lane click chose a track.
+    // Explicitly opt in to REAPER's split across tracks with no clip chosen.
+    std::string why;
+    check(settings.set("editing.splitAllWithNoSelection", true, {}, why) && (commands.reload(), commands.splitAllWithNoSelection()),
+          "the Split all at the cursor setting can still be enabled");
     sel = {};
     sel.track = 2;
     sel.insert = bar;
@@ -5347,6 +5431,8 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2).size() == 2 && clipsOf(3).size() == 1, "only the shown track's clip splits");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+    check(settings.reset("editing.splitAllWithNoSelection", {}, why) && (commands.reload(), !commands.splitAllWithNoSelection()),
+          "restore Split all at the cursor to its default");
     // Split on a time selection cuts at its edges: inside one clip, the two-point split, one step.
     sel = {};
     sel.track = 2;
@@ -5384,7 +5470,6 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(!root.command(AppCommands::Split) && root.error().find("inside a clip") != std::string::npos,
           "a marker outside the clips says to place it inside one");
     // Delete over the clip's second half on 1 MIDI trims it there.
-    auto &canvas = root.arrangement.canvas;
     sel = {};
     sel.track = 2;
     sel.start = bar;
@@ -5507,7 +5592,6 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     root.frame();
     check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
 
-    auto &geo = root.arrangement.geometry;
     geo.hidden.clear();
     geo.grid.fixed = true;
     geo.grid.fixedQuarters = 1.;
