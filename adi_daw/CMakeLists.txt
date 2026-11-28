@@ -901,7 +901,9 @@ add_library(adi_control STATIC
     src/adi/control/methods.cpp
     src/adi/control/mcp.cpp
     src/adi/control/stdio_server.cpp
-    src/juce/app_control.cpp)
+    src/juce/app_control.cpp
+    # DEV-27: the consent ledger issues the plug-in server's hosting lease.
+    src/juce/net_plugin_hosting.cpp)
 if(NOT EXISTS "${ADI_THIRD_PARTY}/cpp-httplib/httplib.h")
     message(FATAL_ERROR "Run adi_daw/tools/fetch_external.sh --build-only for cpp-httplib")
 endif()
@@ -925,6 +927,10 @@ add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
 add_executable(adi_consent_tests tests/test_consent.cpp)
 target_link_libraries(adi_consent_tests PRIVATE adi_control adi_warnings)
 add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
+
+add_executable(adi_plugin_hosting_tests tests/test_plugin_hosting.cpp)
+target_link_libraries(adi_plugin_hosting_tests PRIVATE adi_control adi_core adi_warnings)
+add_test(NAME adi_plugin_hosting_tests COMMAND adi_plugin_hosting_tests)
 
 add_executable(adi_jobs_tests tests/test_jobs.cpp)
 target_link_libraries(adi_jobs_tests PRIVATE adi_control adi_warnings)

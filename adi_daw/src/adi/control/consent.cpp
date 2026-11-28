@@ -231,4 +231,33 @@ bool ConsentLedger::revoke(const ConsentRequest& request) {
     return checked && saved;
 }
 
+ConsentStanding ConsentLedger::standing(const ConsentRequest& request, std::int64_t now) {
+    constexpr auto kForever = std::numeric_limits<std::int64_t>::max();
+    if (audio::onAudioThread || !validItems(request.data) || now < 0) return {};
+    if (local(request)) return {ConsentDecision::Allowed, kForever};
+    const auto scope = scopeKey(request);
+    if (scope.empty()) return {};
+    ConsentStanding result;
+    const auto checked = detail::withConsentFileLock(file_, [&] {
+        const auto rows = load(file_);
+        if (!rows) return;
+        auto earliest = kForever;
+        for (const auto& item : request.data) {
+            std::optional<std::int64_t> latest;
+            for (const auto& row : *rows) {
+                if (!matches(row, scope, item.kind) || !row.at("once").is_null() || expired(row, now)) continue;
+                const auto end = row.at("expires").is_null() ? kForever : row.at("expires").get<std::int64_t>();
+                latest = latest ? std::max(*latest, end) : end;
+            }
+            if (!latest) {
+                result.decision = ConsentDecision::ConsentRequired;
+                return;
+            }
+            earliest = std::min(earliest, *latest);
+        }
+        result = {ConsentDecision::Allowed, earliest};
+    });
+    return checked ? result : ConsentStanding{};
+}
+
 }  // namespace adi::control
