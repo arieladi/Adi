@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 02:26 IST — main `a9c19691752bfdbec6027db98751b82d03da5aa7`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered CTest suites passed.
+
+All 22 registered ADI translation units mentioning `long double` passed strict syntax checks with `-mlong-double-64`. The landing includes Win's two explicit sample-rate casts in `adi_daw/src/adi/clip_commands.cpp`. [Landed fix](https://github.com/arieladi/Adi/commit/7c59f39e536edfe980b6df584edf44cf1646fb59)
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 01:42 IST — libcxx/seats/pitch-chain `0ef9c557e1736315c12ede28346c1393e5e32ff0`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 298 registered CTest suites passed.
