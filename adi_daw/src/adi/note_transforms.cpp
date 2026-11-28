@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/note_transforms.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/blob.hpp"
+#include "adi/engine/scale_context.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -276,6 +279,53 @@ const OpDescriptor descriptors[] = {
      transposeFields, false, false, transposeApply, transposeInverse, ""},
     {"note.restoreNotes", "Restore an exact notes stream with the same note identities", Scope::Edit,
      EngineImpact::Snapshot, restoreFields, false, false, restoreApply, captureStream, ""}};
+
+double scaleTonic(const engine::ScaleContext &context, std::optional<double> tonic) {
+    const auto *scale = context.scale();
+    if (!scale || (!tonic && scale->tuningId))
+        throw std::runtime_error("pitch utility needs a scale and an absolute tonic for a custom tuning");
+    const auto root = tonic.value_or(static_cast<double>(scale->root) * 100.0);
+    if (!std::isfinite(root))
+        throw std::runtime_error("scale tonic must be finite");
+    return root;
+}
+
+template <class Destination>
+PreparedDiff preparePitches(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                             std::string_view label, Destination destination) {
+    std::set<std::uint64_t> remaining(ids.begin(), ids.end());
+    if (remaining.contains(0) || remaining.size() != ids.size())
+        throw std::runtime_error("pitch utility needs unique assigned note IDs");
+    Diff diff;
+    std::string error;
+    for (const auto &record : snapshot.records()) {
+        if (remaining.empty())
+            break;
+        auto note = values(record, error);
+        if (!note)
+            throw std::runtime_error(error);
+        if (!remaining.erase(note->id))
+            continue;
+        const auto cents = static_cast<double>(note->key) * 100.0 + note->cents;
+        const auto encoded = engine::encodeMidiPitch(destination(cents));
+        if (!encoded)
+            throw std::runtime_error("target is outside the native pitch range or precision");
+        if (cents == static_cast<double>(encoded->key) * 100.0 + encoded->tuningCents)
+            continue;
+        note->key = encoded->key;
+        note->cents = encoded->tuningCents;
+        auto changed = withValues(record, *note, error);
+        if (!changed)
+            throw std::runtime_error(error);
+        diff.changed.push_back({record, std::move(*changed)});
+    }
+    if (!remaining.empty())
+        throw std::runtime_error("pitch utility selection contains an unknown note ID");
+    auto result = prepareDiff(snapshot, diff);
+    for (auto &request : result.requests)
+        request.label = label;
+    return result;
+}
 } // namespace
 OpRequest quantizeRequest(std::int64_t clip, std::span<const std::uint64_t> ids,
                           const QuantizeSettings &settings) {
@@ -301,6 +351,89 @@ OpRequest transposeRequest(std::int64_t clip, std::span<const std::uint64_t> ids
                       {"semitones", semitones}};
     return result;
 }
+
+PreparedDiff prepareFitToScale(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                                const engine::ScaleContext &context, std::optional<double> tonic) {
+    if (!snapshot.ok || ids.empty())
+        return prepareDiff(snapshot, {});
+    try {
+        const auto rootCents = scaleTonic(context, tonic);
+        return preparePitches(snapshot, ids, "Fit to Scale", [&](double cents) {
+            const auto target = context.nearest(cents, rootCents, true);
+            if (!target)
+                throw std::runtime_error("Fit to Scale cannot resolve a selected pitch");
+            return target->cents;
+        });
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
+PreparedDiff prepareClipFitToScale(Store &store, std::int64_t clip,
+                                    std::span<const std::uint64_t> ids, std::optional<double> tonic) {
+    try {
+        if (audio::onAudioThread)
+            throw std::runtime_error("Fit to Scale belongs off the audio callback");
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto snapshot = captureNotes(store, clip);
+        if (!snapshot.ok || ids.empty())
+            return prepareDiff(snapshot, {});
+        const auto scale = engine::readClipScaleContext(store, clip);
+        if (!scale.context)
+            throw std::runtime_error(scale.error);
+        return prepareFitToScale(snapshot, ids, *scale.context, tonic);
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
+PreparedDiff prepareInvertPitches(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                                  double axisCents) {
+    if (!snapshot.ok || ids.empty())
+        return prepareDiff(snapshot, {});
+    try {
+        if (!std::isfinite(axisCents))
+            throw std::runtime_error("pitch inversion axis must be finite");
+        return preparePitches(snapshot, ids, "Invert Pitches",
+                              [=](double cents) { return axisCents + (axisCents - cents); });
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
+PreparedDiff prepareTransposeDegrees(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                                      const engine::ScaleContext &context, std::int64_t steps,
+                                      std::optional<double> tonic) {
+    if (!snapshot.ok || ids.empty() || steps == 0)
+        return prepareDiff(snapshot, {});
+    try {
+        const auto root = scaleTonic(context, tonic);
+        return preparePitches(snapshot, ids, "Transpose Scale Degrees", [&](double cents) {
+            const auto source = context.nearest(cents, root, true);
+            const auto native = source ? engine::encodeMidiPitch(source->cents) : std::nullopt;
+            if (!native || cents != static_cast<double>(native->key) * 100.0 + native->tuningCents)
+                throw std::runtime_error("degree transposition needs an in-scale pitch");
+            const auto destination = context.stepDegree(source->degree, source->period, steps, root);
+            if (!destination)
+                throw std::runtime_error("scale degree transposition exceeds the supported pitch range");
+            return destination->cents;
+        });
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
 std::span<const OpDescriptor> transformOps() {
     return descriptors;
 }

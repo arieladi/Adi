@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/blob.hpp"
 #include "adi/digest.hpp"
+#include "adi/engine/scale_context.hpp"
 #include "adi/history.hpp"
 #include "adi/note_diff.hpp"
+#include "adi/note_transforms.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1146,9 +1148,158 @@ void lateFailures() {
     batch.reopen(true);
     rejectedUnchanged(batch, prepared.requests.front(), "read-only project refuses a valid prepared diff");
 }
+void fitToScale() {
+    Fixture f("fit_scale");
+    f.store->db().exec("INSERT INTO key_map(id,pos_ticks,root,scale_id,scale_mask) "
+                       "VALUES(2,0,2,'custom',5)");
+    auto tied = native(wideId, 0); tied.key = 63; tied.tuning_cents = 0;
+    auto upper = native(2, 10); upper.key = 63; upper.tuning_cents = 70;
+    auto equivalent = native(3, 20); equivalent.key = 61; equivalent.tuning_cents = 100;
+    auto unselected = native(4, 30); unselected.key = 66; unselected.tuning_cents = 32;
+    constexpr std::uint16_t stride = 48;
+    const auto a = rawRecord(tied, stride), b = rawRecord(upper, stride);
+    const auto c = rawRecord(equivalent, stride), d = rawRecord(unselected, stride);
+    const std::vector trailer{std::byte{0xcc}, std::byte{0x07}};
+    const auto beforeBlob = envelope({a, b, c, d}, stride, true, 1, trailer);
+    f.seed(2, beforeBlob);
+    f.expression(2, wideId, 64);
+    const auto before = digestProject(*f.store).text;
+    const std::array<std::uint64_t, 3> selection{3, wideId, 2};
+    const auto prepared = notes::prepareClipFitToScale(*f.store, 2, selection);
+    require(prepared.ok, prepared.error);
+    check(prepared.requests.size() == 1 && prepared.requests.front().label == "Fit to Scale" &&
+              prepared.effects.changed.size() == 2 && prepared.effects.added.empty() &&
+              prepared.effects.removed.empty() && digestProject(*f.store).text == before,
+          "Fit to Scale prepares one literal pitch-only diff using the inherited root");
+    const auto low = changeRecord(a, [](auto &note) { note.key = 62; });
+    const auto high = changeRecord(b, [](auto &note) { note.key = 64; note.tuning_cents = 0; });
+    const auto fitted = envelope({low, high, c, d}, stride, true, 1, trailer);
+    check(notes::commitDiff(*f.store, prepared).ok && f.blob(2) == fitted &&
+              f.expressionCount(2, wideId) == 1,
+          "ties choose the lower degree and preserve opaque tails and note expression");
+    const auto noop = notes::prepareClipFitToScale(*f.store, 2, selection);
+    const auto empty = notes::prepareClipFitToScale(*f.store, 2, {});
+    check(noop.ok && noop.requests.empty() && empty.ok && empty.requests.empty(),
+          "fitting equivalent pitches and an empty explicit selection are no-ops");
+    const auto missing = notes::prepareClipFitToScale(*f.store, 2, std::array<std::uint64_t, 2>{2, 9});
+    const auto duplicate = notes::prepareClipFitToScale(*f.store, 2, std::array<std::uint64_t, 2>{2, 2});
+    check(!missing.ok && missing.requests.empty() && !duplicate.ok && duplicate.requests.empty(),
+          "unknown or duplicate selection IDs refuse the entire utility");
+    const auto after = digestProject(*f.store).text;
+    History history(*f.store);
+    check(history.undo().ok && f.blob(2) == beforeBlob && digestProject(*f.store).text == before &&
+              history.redo().ok && f.blob(2) == fitted && digestProject(*f.store).text == after,
+          "Fit to Scale replays native bytes through undo and redo");
+    check(history.undo().ok, "restore original pitch for custom tuning");
+    f.store->db().exec("CREATE TABLE IF NOT EXISTS clip_properties(clip_id INTEGER PRIMARY KEY,"
+                       "end_marker_ticks INTEGER,signature_numerator INTEGER,"
+                       "signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER);"
+                       "INSERT INTO clip_properties(clip_id,scale_root,scale_id,scale_mask) "
+                       "VALUES(2,3,'custom',1)");
+    const auto local = notes::prepareClipFitToScale(*f.store, 2, std::array{wideId});
+    check(local.ok && local.requests.empty(), "local scale overrides the inherited scale");
+
+    engine::ClipScale scale;
+    scale.tuningId = 7;
+    scale.degrees = {0, 1, 2};
+    const engine::TuningDefinition definition{
+        7, "Custom", "scala", "", 900.0, {{0, 0.0, ""}, {1, 133.333333, ""}, {2, 450.0, ""}}};
+    std::string error;
+    const auto context = engine::compileScaleContext(scale, definition, error);
+    require(context.has_value(), error);
+    const auto snapshot = notes::captureNotes(*f.store, 2);
+    const std::array<std::uint64_t, 1> microSelection{2};
+    const auto unanchored = notes::prepareFitToScale(snapshot, microSelection, *context);
+    const auto micro = notes::prepareFitToScale(snapshot, microSelection, *context, 6240.0);
+    require(micro.ok && micro.effects.changed.size() == 1, micro.error);
+    const auto snapped = readRecord(micro.effects.changed.front().newRecord);
+    check(!unanchored.ok && snapped.note_id == 2 && snapped.key == 64 &&
+              std::abs(static_cast<double>(snapped.tuning_cents) + 26.666667) < 0.0001,
+          "custom non-octave tuning uses an explicit absolute tonic and native cent precision");
+    check(notes::commitDiff(*f.store, micro).ok &&
+              notes::prepareFitToScale(notes::captureNotes(*f.store, 2), microSelection, *context,
+                                       6240.0).requests.empty(),
+          "custom fitted pitches remain stable on repeat even with float note storage");
+}
+void invertPitches() {
+    Fixture f("invert_pitches");
+    auto left = native(wideId, -4); left.key = 60; left.tuning_cents = 12.5f;
+    auto right = native(2, 10); right.key = 65; right.tuning_cents = 50.0f;
+    auto onAxis = native(3, 20); onAxis.key = 62; onAxis.tuning_cents = 50.25f;
+    auto boundary = native(4, 30); boundary.key = 0; boundary.tuning_cents = -1200.0f;
+    constexpr std::uint16_t stride = 48;
+    const auto a = rawRecord(left, stride), b = rawRecord(right, stride);
+    const auto c = rawRecord(onAxis, stride), d = rawRecord(boundary, stride);
+    const std::vector trailer{std::byte{0x8c}, std::byte{0x42}};
+    const auto original = envelope({a, b, c, d}, stride, true, 1, trailer);
+    f.seed(2, original);
+    f.expression(2, 2, 74);
+    const auto snapshot = notes::captureNotes(*f.store, 2);
+    const std::array<std::uint64_t, 3> selected{wideId, 3, 2};
+    const auto prepared = notes::prepareInvertPitches(snapshot, selected, 6250.25);
+    check(prepared.ok && prepared.requests.size() == 1 && prepared.effects.changed.size() == 2 &&
+              prepared.requests.front().label == "Invert Pitches" && f.blob(2) == original,
+          "pitch inversion prepares one literal edit for selected pitches off the supplied axis");
+    const auto invalid = notes::prepareInvertPitches(
+        snapshot, std::array<std::uint64_t, 2>{wideId, 4}, 6500.0);
+    const auto infinite = notes::prepareInvertPitches(
+        snapshot, selected, std::numeric_limits<double>::infinity());
+    check(!invalid.ok && invalid.requests.empty() && !infinite.ok && infinite.requests.empty(),
+          "one unrepresentable reflected pitch or invalid axis refuses the entire selection");
+    auto mirrorLeft = changeRecord(a, [](auto &n) { n.key = 65; n.tuning_cents = -12.0f; });
+    auto mirrorRight = changeRecord(b, [](auto &n) { n.key = 60; n.tuning_cents = -49.5f; });
+    const auto mirrored = envelope({mirrorLeft, mirrorRight, c, d}, stride, true, 1, trailer);
+    check(notes::commitDiff(*f.store, prepared).ok && f.blob(2) == mirrored &&
+              f.expressionCount(2, 2) == 1,
+          "reflection preserves timings, selected axis pitch, expression and unselected records");
+    History history(*f.store);
+    check(history.undo().ok && f.blob(2) == original &&
+              history.redo().ok && f.blob(2) == mirrored,
+          "pitch inversion undoes and redoes exact note bytes");
+    const auto second = notes::prepareInvertPitches(notes::captureNotes(*f.store, 2),
+                                                   selected, 6250.25);
+    require(second.ok && second.effects.changed.size() == 2, second.error);
+    const auto reflected = readRecord(second.effects.changed.back().newRecord);
+    check(100.0 * reflected.key + reflected.tuning_cents == 6550.0,
+          "a second reflection restores the original physical pitch");
+}
+void transposeDegrees() {
+    Fixture f("transpose_degrees");
+    auto root = native(wideId, -5); root.key = 60; root.tuning_cents = 0;
+    auto seventh = native(2, 10); seventh.key = 71; seventh.tuning_cents = 0;
+    auto outside = native(3, 15); outside.key = 61; outside.tuning_cents = 0;
+    const auto a = rawRecord(root), b = rawRecord(seventh), c = rawRecord(outside);
+    const auto original = envelope({a, b, c});
+    f.seed(2, original);
+    f.expression(2, wideId, 64);
+    const auto snapshot = notes::captureNotes(*f.store, 2);
+    std::string error;
+    const auto context = engine::compileScaleContext({}, {}, error);
+    require(context.has_value(), error);
+    const std::array<std::uint64_t, 2> selected{2, wideId};
+    const auto increment = notes::prepareTransposeDegrees(snapshot, selected, *context, 1);
+    require(increment.ok && increment.requests.size() == 1, increment.error);
+    const auto denied = notes::prepareTransposeDegrees(
+        snapshot, std::array<std::uint64_t, 2>{wideId, 3}, *context, -1);
+    const auto noMovement = notes::prepareTransposeDegrees(snapshot, selected, *context, 0);
+    check(!denied.ok && denied.requests.empty() && noMovement.ok && noMovement.requests.empty(),
+          "degree transposition refuses off-scale selection and emits nothing at zero");
+    const auto raised = envelope({changeRecord(a, [](auto &n) { n.key = 62; }),
+                                  changeRecord(b, [](auto &n) { n.key = 72; }), c});
+    check(notes::commitDiff(*f.store, increment).ok && f.blob(2) == raised &&
+              f.expressionCount(2, wideId) == 1,
+          "one degree moves by either a semitone or a tone while retaining the note and expression");
+    const auto decrement = notes::prepareTransposeDegrees(notes::captureNotes(*f.store, 2),
+                                                           selected, *context, -1);
+    check(notes::commitDiff(*f.store, decrement).ok && f.blob(2) == original,
+          "negative transposition returns both pitches through the period boundary");
+    History history(*f.store);
+    check(history.undo().ok && f.blob(2) == raised && history.redo().ok && f.blob(2) == original,
+          "degree transpose retains byte-exact history replay");
+}
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 14> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 17> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
@@ -1158,7 +1309,8 @@ int main() {
         {"ordered note batch", orderedNoteBatch},
         {"ordered note membership", orderedNoteMembership},
         {"large ordered note batch", largeOrderedNoteBatch},
-        {"late failures", lateFailures}}};
+        {"late failures", lateFailures}, {"Fit to Scale", fitToScale},
+        {"pitch inversion", invertPitches}, {"degree transposition", transposeDegrees}}};
     for (const auto& [name, run] : cases) {
         try { run(); }
         catch (const std::exception& error) {
