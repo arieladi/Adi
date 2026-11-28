@@ -11310,6 +11310,11 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
           "SC-236: Legato on notes that already touch carries the last to the end of the clip");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+    {
+        const auto said = "SC-236: undone, the last note is a beat long again: " + std::to_string(note(3).durationTicks) +
+                          ", the next undo " + submitter.nextUndo()->label;
+        check(note(3).durationTicks == beat && submitter.nextUndo()->label == "Stretch Notes", said.c_str());
+    }
     // With the middle note gone, the first lasts until the last begins.
     ed.select({2});
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "the middle note deleted");
