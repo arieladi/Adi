@@ -35,6 +35,7 @@
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/starter_drums.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/settings_availability.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -18978,6 +18979,40 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.frame();
     check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");
     check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");
+
+    constexpr auto selectionKey = "transport.loopSwitchTakesSelection";
+    const auto oldBrace = loopOf(stored());
+    sel.start = 14 * barTicks;
+    sel.end = 15 * barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(settingAvailable(selectionKey) && settings.get(selectionKey) == false &&
+              !stored().loopEnabled && loopOf(stored()) == oldBrace,
+          "DF-W65: the default Loop switch ignores the time selection and toggles the current brace");
+
+    check(settings.set(selectionKey, true, {}, refusal), "enable the Loop switch's time selection setting");
+    const LoopRange chosen{sel.start, sel.end};
+    bar.loop.onClick();
+    root.frame();
+    check(stored().loopEnabled && loopOf(stored()) == chosen && bar.loop.getToggleState(),
+          "the Loop switch moves the brace to the time selection and enables it");
+    bar.loop.onClick();
+    root.frame();
+    check(!stored().loopEnabled && loopOf(stored()) == chosen,
+          "the switch matches Loop Selection when the brace already matches the selected time");
+
+    sel.start = sel.end = 20 * barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(stored().loopEnabled && loopOf(stored()) == chosen,
+          "with only an insert marker, the switch toggles the existing brace");
+    sel.clip = 99;
+    sel.end += barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(!stored().loopEnabled && loopOf(stored()) == chosen && root.undoTitle(false) == undoTitle,
+          "a clip selection's span is not a time selection for the Loop switch");
+    check(settings.set(selectionKey, false, {}, refusal), "restore the standard Loop switch setting");
 
     constexpr auto shortBar = 4 * textproj::kPPQ;
     constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;

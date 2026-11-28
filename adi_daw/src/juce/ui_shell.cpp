@@ -5789,6 +5789,13 @@ bool AdiRootComponent::togglePunch(bool start) {
     const auto &t = current->transport;
     return submitTransport(setPunch(t, start ? !t.punchIn : t.punchIn, start ? t.punchOut : !t.punchOut));
 }
+bool AdiRootComponent::clickLoopSwitch() {
+    const auto &selection = arrangement.geometry.selection;
+    if (selection.start != selection.end && selection.clip == 0 && selection.pickedClips.empty() &&
+        flag(commands_.settings(), "transport.loopSwitchTakesSelection", false))
+        return loopSelection();
+    return toggleLoop();
+}
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();
     if (!current)

@@ -212,7 +212,7 @@ servers, appear in two sections each, so the section is part of the name.
 | AI | 6 | |
 | Export | 7 | the export dialog's defaults (A7-03 c, ADR-0203) |
 | Mixing | 4 | |
-| Transport | 5 | |
+| Transport | 6 | Loop switch takes time selection is off by default (DF-W65). |
 | Sync | 3 | the sync source and tempo responsiveness (Bitwig); Link's own settings are on Link |
 | Engine | 1 | |
 | Windows | 3 | |

@@ -85,6 +85,7 @@ inline bool settingAvailable(std::string_view key) noexcept {
         "settings.logChanges",
         "shortcuts.overrides",
         "shortcuts.preset",
+        "transport.loopSwitchTakesSelection",
         "window.places",
         "window.zoom",
     };

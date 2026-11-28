@@ -685,6 +685,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How fast fast-forward and rewind move, in bars per second (Cubase).", 4.0, 0.25, 64));
     r.push_back(make("transport.locateOnClick", Type::Bool, "Transport", "Locate on click in empty space",
                      "A click in empty track space moves the playhead, as in Live.", true));
+    r.push_back(make("transport.loopSwitchTakesSelection", Type::Bool, "Transport", "Loop switch takes time selection",
+                     "Click Loop to use the selected time. With no time selected, Loop toggles the current brace.", false));
     r.push_back(choice("transport.seekOnClick", "Transport", "Seek on click",
                        "Where a click moves the playhead during playback (REAPER).",
                        {"ruler", "rulerAndEmptyArea", "anywhere"}, "rulerAndEmptyArea"));

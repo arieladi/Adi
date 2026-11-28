@@ -1055,6 +1055,7 @@ class AdiRootComponent final : public juce::Component,
     // the selected clips' span and the loop on, or the loop toggled where the brace is already there
     // or nothing is selected; the brace's keys while it is selected (manual 6.6, §42.8); the Loop
     // Start and Loop Length fields typed, its length or its start kept.
+    bool clickLoopSwitch();
     bool toggleLoop();
     bool setLoopRange(LoopRange range);
     bool loopSelection();
