@@ -696,7 +696,8 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
                 runtime->begin(driver,block,transport,transport.position(),&events,
                     [](void* opaque,const LaunchTransition& edge,std::int64_t) noexcept {
                         auto& report = *static_cast<Events*>(opaque);
-                        if (report.count < report.edges.size()) report.edges[report.count++] = edge;
+                        const auto index = report.count++;
+                        if (index < report.edges.size()) report.edges[index] = edge;
                     });
                 source->process(io);
                 runtime->finish();
