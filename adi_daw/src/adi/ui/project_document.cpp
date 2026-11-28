@@ -356,6 +356,9 @@ struct ProjectDocument::MidiRecording {
         std::vector<std::vector<notes::NoteValues>> takeNotes, mainNotes;
         std::vector<std::map<std::pair<int, int>, std::vector<controllers::Point>>> takePoints, mainPoints;
         std::vector<std::vector<recording::MidiControllerLane>> takeControllers, mainControllers;
+        // Each note's expression, held here so the passes' lanes outlive the recording (SC-27, SC-239).
+        std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
+        std::vector<std::vector<recording::MidiExpressionLane>> takeExpression, mainExpression;
         std::vector<recording::MidiTakePass> passes;
     };
     // Allocate one track's identities after the previous track's passes are committed.
@@ -428,12 +431,28 @@ struct ProjectDocument::MidiRecording {
             };
             lanes(take.takePoints, take.takeControllers);
             lanes(take.mainPoints, take.mainControllers);
+            // Expression points are relative to the note's start, so a pass keeps them as played;
+            // the commit drops what lies past the note's length in each image.
+            take.expression = track.expression;
+            const auto expressionOf = [&take](const std::vector<std::vector<notes::NoteValues>> &images,
+                                              std::vector<std::vector<recording::MidiExpressionLane>> &out) {
+                out.resize(images.size());
+                for (std::size_t pass = 0; pass < images.size(); ++pass)
+                    for (const auto &note : images[pass])
+                        for (auto lane = take.expression.lower_bound({note.id, ExpressionDim::Pitch});
+                             lane != take.expression.end() && lane->first.first == note.id; ++lane)
+                            if (!lane->second.empty())
+                                out[pass].push_back({note.id, lane->first.second, lane->second});
+            };
+            expressionOf(take.takeNotes, take.takeExpression);
+            expressionOf(take.mainNotes, take.mainExpression);
             const auto clipName = take.placement.name;
             take.passes.reserve(count);
             for (std::size_t pass = 0; pass < count; ++pass)
                 take.passes.push_back({{rows.next("lanes"), rows.next("clips"), clipName}, rows.next("event_streams"),
                                        lengthOf(pass), take.takeNotes[pass], take.mainNotes[pass],
-                                       take.takeControllers[pass], take.mainControllers[pass]});
+                                       take.takeControllers[pass], take.mainControllers[pass],
+                                       take.takeExpression[pass], take.mainExpression[pass]});
         }
         return out;
     }

@@ -1382,17 +1382,54 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
                              {"pos",placement.start},{"length",length}};
             append(std::move(request));
         };
-        const auto writeNotes=[&](const notes::Snapshot& snapshot,std::span<const notes::NoteValues> input,
-                                  std::int64_t length,bool closeAtEnd) {
-            notes::Diff diff;diff.added.reserve(input.size());
-            std::string error;
-            for(auto note:input) {
+        clip_edit::CopyIds allocated(store.db());
+        const auto writeNotes=[&](std::int64_t clip,const notes::Snapshot& snapshot,std::span<const notes::NoteValues> input,
+                                  std::span<const MidiExpressionLane> expression,std::int64_t length,bool closeAtEnd) {
+            // Each note's length in this image first: its expression is kept only within it.
+            std::vector<notes::NoteValues> placed(input.begin(),input.end());
+            std::map<std::uint64_t,std::int64_t> lengths;
+            for(auto& note:placed) {
                 if(note.start<0 || note.start>=length || note.duration<=0)
                     throw std::runtime_error("MIDI recorded note starts outside its pass");
                 if(closeAtEnd && note.duration>length-note.start) {
                     note.duration=length-note.start;
                     note.releaseVelocity=0;
                 }
+                if(!expression.empty() && (note.id==0 || !lengths.emplace(note.id,note.duration).second))
+                    throw std::runtime_error("MIDI recorded notes with expression need distinct identities");
+            }
+            edit::RowEdits expressions(store.db());
+            std::set<std::uint64_t> expressed;
+            std::set<std::pair<std::uint64_t,ExpressionDim>> seen;
+            for(const auto& lane:expression) {
+                const auto note=lengths.find(lane.noteId);
+                if(note==lengths.end() || lane.points.empty() ||
+                   lane.points.size()>StreamReader<ExpressionPoint>::kMaxRecordsAtOnce ||
+                   !seen.emplace(lane.noteId,lane.dimension).second)
+                    throw std::runtime_error("invalid MIDI recorded expression lane");
+                std::vector<ExpressionPoint> kept;
+                std::int64_t previous=-1;
+                for(const auto& point:lane.points) {
+                    if(point.time_ticks<=previous || !validExpressionValue(lane.dimension,point.value) ||
+                       !std::isfinite(point.tension) || point.curve>static_cast<std::uint8_t>(Curve::Bezier) ||
+                       std::any_of(std::begin(point.reserved),std::end(point.reserved),[](auto value){return value!=0;}))
+                        throw std::runtime_error("invalid MIDI recorded expression point");
+                    previous=point.time_ticks;
+                    if(point.time_ticks<=note->second)kept.push_back(point);
+                }
+                if(kept.empty())continue;
+                expressed.insert(lane.noteId);
+                const auto id=allocated.next("note_expression");
+                expressions.set("note_expression",id,edit::defaultRow(store.db(),"note_expression",{
+                    {"id",id},{"clip_id",clip},{"note_id",static_cast<std::int64_t>(lane.noteId)},
+                    {"dimension",static_cast<int>(lane.dimension)},
+                    {"data",binary(writeStream<ExpressionPoint>(FourCC::Expression,kept))}}));
+            }
+            notes::Diff diff;diff.added.reserve(placed.size());
+            std::string error;
+            for(auto note:placed) {
+                note.flags&=~static_cast<std::uint32_t>(NoteFlags::HasExpression);
+                if(expressed.contains(note.id))note.flags|=NoteFlags::HasExpression;
                 auto record=notes::makeRecord(note,{},error);
                 if(!record)throw std::runtime_error(error);
                 diff.added.push_back(std::move(*record));
@@ -1400,8 +1437,9 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
             auto edit=notes::prepareDiff(snapshot,diff);
             if(!edit.ok)throw std::runtime_error(edit.error);
             for(auto& request:edit.requests)append(std::move(request));
+            // SC-27: a loop take keeps the per-note expression the linear take keeps (SC-239).
+            if(!expressed.empty())append(recordingRows(expressions,clip,"Record MIDI"));
         };
-        clip_edit::CopyIds allocated(store.db());
         allocated.reserve("event_streams",placement.mainStream);
         for(const auto& pass:passes)allocated.reserve("event_streams",pass.stream);
         const auto writeControllers=[&](std::int64_t clip,std::span<const MidiControllerLane> lanes,std::int64_t length) {
@@ -1438,7 +1476,7 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
             OpRequest lane;lane.opType="clip.setLane";lane.targetKind="clip";lane.targetId=pass.take.clip;
             lane.payload={{"id",pass.take.clip},{"lane",pass.take.lane}};
             append(std::move(lane));
-            writeNotes(take,pass.takeNotes,pass.length,true);
+            writeNotes(pass.take.clip,take,pass.takeNotes,pass.takeExpression,pass.length,true);
             writeControllers(pass.take.clip,pass.takeControllers,pass.length);
             if(index!=0) {
                 // Only replace this capture's previous main image. Keeping the
@@ -1448,7 +1486,7 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
                 append(std::move(previous));
             }
             newClip(placement.mainClip,placement.length,name);
-            writeNotes(main,pass.mainNotes,placement.length,false);
+            writeNotes(placement.mainClip,main,pass.mainNotes,pass.mainExpression,placement.length,false);
             writeControllers(placement.mainClip,pass.mainControllers,placement.length);
             result.groupEnds_.push_back(result.requests.size());
         }

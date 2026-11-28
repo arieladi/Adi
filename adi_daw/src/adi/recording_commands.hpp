@@ -77,6 +77,9 @@ struct MidiTakePass {
     std::span<const notes::NoteValues> takeNotes,mainNotes;
     // Controller and pitch-wheel points, relative to loop start, for the take and the main image.
     std::span<const MidiControllerLane> takeControllers{},mainControllers{};
+    // Per-note expression (MPE) of the notes above, by their recorder identities. Points past a
+    // note's length in that image are not kept (a take closes a held note at the pass end).
+    std::span<const MidiExpressionLane> takeExpression{},mainExpression{};
 };
 enum class RecoveryStatus {Ready, AlreadyPlaced, Refused};
 struct RecoveryTake {

@@ -357,11 +357,16 @@ void midiLoopTakes() {
         later[i][0]={.start=width/8,.duration=width/8,.id=18+i,.key=64,.velocity=90};
     const std::array<controllers::Point,2> pedalPoints{{{1,width/8,1.},{2,width/4,0.}}};
     const std::array<recording::MidiControllerLane,1> pedal{{{0,64,pedalPoints}}};
+    // SC-27, SC-239: the held note bends; the take closes it at a quarter, so its second point is not kept there.
+    std::array<ExpressionPoint,2> bendPoints{};
+    bendPoints[0].time_ticks=0;bendPoints[0].value=1.f;bendPoints[0].curve=static_cast<std::uint8_t>(Curve::Hold);
+    bendPoints[1].time_ticks=width/3;bendPoints[1].value=2.f;bendPoints[1].curve=static_cast<std::uint8_t>(Curve::Hold);
+    const std::array<recording::MidiExpressionLane,1> bend{{{17,ExpressionDim::Pitch,bendPoints}}};
     const std::array<recording::MidiTakePass,4> passes{{
-        {{101,201,"First"},301,width,held,held,{},{}},
-        {{102,202,"Second"},302,width,later[0],held,pedal,{}},
-        {{103,203,"Third"},303,width,later[1],held,{},{}},
-        {{104,204,"Partial"},304,width/2,later[2],held,{},pedal},
+        {{101,201,"First"},301,width,held,held,{},{},bend,bend},
+        {{102,202,"Second"},302,width,later[0],held,pedal,{},{},bend},
+        {{103,203,"Third"},303,width,later[1],held,{},{},{},bend},
+        {{104,204,"Partial"},304,width/2,later[2],held,{},pedal,{},bend},
     }};
     const recording::MidiLoopPlacement placement{23,2*width,width,200,300,"MIDI Take"};
     const auto before=digestProject(store).text;
@@ -389,6 +394,27 @@ void midiLoopTakes() {
         };
         check(pedalKept(take) && pedalKept(main) && plain.ok && plain.lanes.empty(),
               "a pass's sustain pedal lands in its take, and the main image keeps the last pass's controllers");
+    }
+    {
+        const auto pointsOf=[&](std::int64_t clip,std::int64_t note) {
+            SQLite::Statement q(store.db(),"SELECT data FROM note_expression WHERE clip_id=? AND note_id=? AND dimension=0");
+            q.bind(1,clip);q.bind(2,note);
+            if(!q.executeStep())return std::size_t{0};
+            const auto column=q.getColumn(0);
+            const auto* data=static_cast<const std::byte*>(column.getBlob());
+            const std::vector<std::byte> bytes(data,data+column.getBytes());
+            const StreamReader<ExpressionPoint> reader(std::span<const std::byte>(bytes),FourCC::Expression);
+            return reader.ok()?static_cast<std::size_t>(reader.count()):std::size_t{0};
+        };
+        const auto flagged=[&](std::int64_t clip) {
+            const auto snapshot=notes::captureNotes(store,clip);
+            if(!snapshot.ok || snapshot.records().empty())return false;
+            std::string error;
+            const auto decoded=notes::values(snapshot.records().front(),error);
+            return decoded && (decoded->flags & NoteFlags::HasExpression)!=0;
+        };
+        check(pointsOf(201,17)==1 && flagged(201) && pointsOf(200,17)==2 && flagged(200) && pointsOf(202,18)==0 && !flagged(202),
+              "SC-27: a loop pass keeps its note's bend: the take within the closed note, the main image whole");
     }
     const auto readSingle=[&](std::int64_t clip) {
         const auto snapshot=notes::captureNotes(store,clip);

@@ -4157,6 +4157,7 @@ void arrangementMidiLoopRecord(const std::filesystem::path &path, bool overdub) 
     play(9600, {0, EventType::NoteOff, 1, 60, 1, 0, 0});
     play(pass + 12000, {0, EventType::NoteOn, 1, 64, 2, 0, .7});
     play(pass + 13000, {0, EventType::Controller, 1, 0, 0, 64, 0.});
+    play(pass + 14000, {0, EventType::NoteExpression, 1, 0, 2, 0, 1.5}); // an MPE bend on the E3 (SC-27, SC-239)
     play(pass + 16800, {0, EventType::NoteOff, 1, 64, 2, 0, 0});
     while (io.streamTimeSamples < 2 * pass + 2048)
         block();
@@ -4239,6 +4240,19 @@ void arrangementMidiLoopRecord(const std::filesystem::path &path, bool overdub) 
     check(controls.ok && pedal && pedal->points.size() == 1 && pedal->points.front().value == 0. &&
               pedal->points.front().timeTicks == tick(13000),
           "the main lane keeps the pedal of the pass it plays");
+    {
+        // SC-27: with Overdub off the bend is kept as the linear take keeps it: on the main lane and in its pass.
+        const auto bends = [&](std::int64_t clip) {
+            const auto read = engine::readNoteExpressions(doc->store(), clip);
+            return read.problems.empty() && read.curves.size() == 1 && read.curves.front().dimension == 0 &&
+                   !read.curves.front().points.empty() && read.curves.front().points.back().value == 1.5f;
+        };
+        SQLite::Statement bent(doc->store().db(),
+            "SELECT count(*) FROM clips c JOIN lanes l ON l.id=c.lane_id WHERE c.track_id=2 AND l.kind='take' AND "
+            "EXISTS(SELECT 1 FROM note_expression e WHERE e.clip_id=c.id)");
+        check(bends(landed->clips.front()) && bent.executeStep() && bent.getColumn(0).getInt() == 1,
+              "SC-27: the E3's MPE bend is kept on the main lane and in its own take lane");
+    }
     for (int i = 0; i < 3; ++i)
         check(doc->ops().undo().ok, "Undo one recorded pass");
     check(clipCount() == before, "three Undos take back the three passes");
