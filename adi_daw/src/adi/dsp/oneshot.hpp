@@ -82,8 +82,24 @@ class OneShot final : public DeviceInstance {
     /// call's events takes, latched for its voice (DF-E37 e). Gains queue in
     /// order, one per note-on; a note-on with none queued plays at 1. The
     /// Sampler sends each zone's crossfade weight this way, so Vel > Vol acts
-    /// on the played velocity only.
-    void queueNoteGain(double gain) noexcept;
+    /// on the played velocity only. `reverse` (SC-483) plays that note from
+    /// its end to its start.
+    void queueNoteGain(double gain, bool reverse = false) noexcept;
+    /// SC-483, for the Sampler's layers: how a voice travels its sample beyond
+    /// OneShot's own controls. Positions are fractions of the whole sample. A
+    /// fresh Travel is OneShot's own behaviour, bit for bit.
+    struct Travel {
+        double loopEnd = -1;    ///< where the sustain loop ends; below 0, at the region's end
+        bool pingPong = false;  ///< the sustain loop runs forward and back
+        /// After note-off: 0 stay in the sustain loop, 1 play on to the end,
+        /// 2 play on and loop from releaseLoop to the end, 3 that loop forward and back.
+        int release = 0;
+        double releaseLoop = 0; ///< where the release loop starts
+        double releaseFade = 0; ///< its crossfade, 0..1 of half its length, as Fade is the sustain loop's
+        bool linearFade = false; ///< loop crossfades are linear instead of constant-power
+    };
+    /// Audio thread, before process() (as setRootKey).
+    void setTravel(const Travel &travel) noexcept { travel_ = travel; }
     // Audio thread. The caller owns sample for the whole call; no ownership is
     // retained. Use a single publication source per instance until prepare().
     // A changed nonzero generation resets voices. Null or generation zero
@@ -160,11 +176,22 @@ class OneShot final : public DeviceInstance {
         std::uint64_t played = 0;
         // The last pitch's read increment (exp2 is per pitch, not per sample).
         double pitchSeen = std::numeric_limits<double>::quiet_NaN(), increment = 0;
+        // SC-483: the sustain loop's end, the release loop's start, and for a
+        // reversed voice the frame that position 0 reads (position p reads
+        // mirror - p). backward: a forward-and-back loop on its way back.
+        // tail: released, and out of the sustain loop for the rest of the sample.
+        double loopEnd = 0, releaseLoop = 0, mirror = 0;
+        bool backward = false, tail = false, reversed = false;
         Filter filters[2][2];
     };
-    /// Gains for the next note-ons, in order (a zone weight from the Sampler).
-    std::array<double, 256> noteGains_{};
+    /// What the next note-ons take, in order (a zone weight from the Sampler).
+    struct NoteTicket {
+        double gain = 1;
+        bool reverse = false;
+    };
+    std::array<NoteTicket, 256> noteGains_{};
     std::size_t noteGainHead_ = 0, noteGainCount_ = 0;
+    Travel travel_{};
     void event(const engine::Event &, const Sample *, std::array<double, Count> &) noexcept;
     static bool slice(int key, const Sample &s, const std::array<double, Count> &p, double &begin,
                       double &end) noexcept;

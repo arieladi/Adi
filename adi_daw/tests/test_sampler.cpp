@@ -334,6 +334,11 @@ void slotZoneState() {
         table[29].loopStart = .5;
         table[29].crossfade = .25;
         table[29].constantPower = false;
+        table[29].loopEnd = .75;
+        table[29].pingPong = true;
+        table[29].release = 2;
+        table[29].releaseLoop = .625;
+        table[29].releaseFade = .5;
         check(d->publishSlotZones(table), "a shaped table publishes");
         const auto saved = d->saveSlotZones();
         const auto listed = Payload::from_cbor(saved);
@@ -347,6 +352,10 @@ void slotZoneState() {
                   got.select.fadeHigh == 20 && copy->slotZones()[29].loop && copy->slotZones()[29].loopStart == .5 &&
                   !copy->slotZones()[29].constantPower,
               "every saved field comes back");
+        const auto &loops = copy->slotZones()[29];
+        check(loops.loopEnd == .75 && loops.pingPong && loops.release == 2 && loops.releaseLoop == .625 && loops.releaseFade == .5 &&
+                  got.loopEnd == -1 && !got.pingPong && got.release == 0,
+              "the loop end, the loop's direction and the release loop come back too");
         const auto note = std::array{on(0, 65, .8)};
         check(renderSlots(*d, 1024, note, fill) == renderSlots(*copy, 1024, note, fill),
               "the loaded table plays exactly as the saved one");
@@ -385,13 +394,153 @@ void slotZoneState() {
         check(!bank.loadSlotZones(saved), "a bank-mode Sampler takes no slot table");
     }
 }
+// SC-483: Live's Sustain Mode and Release Mode for one sample, the loop fades'
+// law, and Reverse. A ramp again: each frame names the position it read.
+void slotLoops() {
+    using S = device::Sampler;
+    using Table = std::array<S::Zone, S::kSlots>;
+    std::vector<float> ramp(8192), steps(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i) {
+        ramp[i] = static_cast<float>(i) / 8192.f;
+        steps[i] = i < 4096 ? .2f : .6f;
+    }
+    const auto rampSample = device::OneShot::prepareSample(ramp, 1, 48000);
+    const auto stepSample = device::OneShot::prepareSample(steps, 1, 48000);
+    const auto off = [](int frame) { return engine::Event{frame, engine::EventType::NoteOff, 0, 60, 1, 0, 0}; };
+    // The sustain loop of every case: frames 2048 to 4096 of 8192.
+    const auto looped = [] {
+        Table table{};
+        table[2].loop = true;
+        table[2].loopStart = .25;
+        table[2].loopEnd = .5;
+        return table;
+    };
+    const auto about = [](float value, double expected) {
+        return std::abs(static_cast<double>(value) - expected) < 1e-6;
+    };
+    // The level of a voice released at frame 5000 with a one-second release.
+    const auto released = [](int frame) { return 1 - static_cast<double>(frame - 5000 + 1) / 48000; };
+    const auto play = [&](const Table &table, std::span<const engine::Event> events, int count,
+                          const device::OneShot::PreparedSample *sample, bool linear = false, bool reverse = false) {
+        const auto d = plainSlots();
+        set(*d, "release", 1000);
+        set(*d, "loop_fade_power", linear ? 0 : 1);
+        set(*d, "reverse", reverse ? 1 : 0);
+        check(d->publishSlotZones(table), "the looped table publishes");
+        return renderSlots(*d, count, events, [&](int, SlotArray &slots) { slots[2] = {sample, 1}; });
+    };
+    const auto held = std::array{on(0, 60)};
+    const auto letGo = std::array{on(0, 60), off(5000)};
+    {
+        const auto out = play(looped(), held, 6400, rampSample.get());
+        check(out[4095] == 4095.f / 8192 && out[4096] == 2048.f / 8192 && out[6143] == 4095.f / 8192 &&
+                  out[6144] == 2048.f / 8192,
+              "a loop end before the sample's end: a held note repeats the loop and never plays past it");
+        auto table = looped();
+        table[2].pingPong = true;
+        const auto back = play(table, held, 6400, rampSample.get());
+        check(back[4096] == 4096.f / 8192 && back[4097] == 4095.f / 8192 && back[5000] == 3192.f / 8192 &&
+                  back[6144] == 2048.f / 8192 && back[6145] == 2049.f / 8192,
+              "forward and back: the loop turns at its end, runs down to its start and turns again");
+    }
+    {
+        const auto stays = play(looped(), letGo, 6400, rampSample.get());
+        check(about(stays[6200], 2104. / 8192 * released(6200)),
+              "release mode off: after note-off the voice stays in its sustain loop");
+        auto table = looped();
+        table[2].release = 1;
+        const auto past = play(table, letGo, 6400, rampSample.get());
+        check(about(past[4096], 2048. / 8192) && about(past[6200], 4152. / 8192 * released(6200)),
+              "release on: the held note loops, and after note-off the sample plays on past the loop");
+        table[2].release = 2;
+        table[2].releaseLoop = .75;
+        const auto loops = play(table, letGo, 12800, rampSample.get());
+        check(about(loops[10239], 8191. / 8192 * released(10239)) && about(loops[10240], 6144. / 8192 * released(10240)) &&
+                  about(loops[12288], 6144. / 8192 * released(12288)),
+              "release loop: after note-off the sample plays to its end and repeats from the release loop's start");
+        table[2].release = 3;
+        const auto turns = play(table, letGo, 12800, rampSample.get());
+        check(about(turns[10242], 8190. / 8192 * released(10242)) && about(turns[12288], 6144. / 8192 * released(12288)) &&
+                  about(turns[12289], 6145. / 8192 * released(12289)),
+              "release loop forward and back: it turns at the sample's end and at the release loop's start");
+        // The release loop's own crossfade: half of its 2048 frames' half, 512
+        // frames before the end. The sustain loop's join stays hard.
+        table[2].release = 2;
+        table[2].releaseFade = .5;
+        const auto faded = play(table, letGo, 12800, rampSample.get());
+        check(faded[4096] == 2048.f / 8192 &&
+                  about(faded[9984], (7936. + 6400.) / 8192 * std::sqrt(.5) * released(9984)),
+              "the release loop's crossfade blends its own join and leaves the sustain loop's alone");
+    }
+    {
+        // Two levels at the join (0.6 before the loop's end, 0.2 after its
+        // start), a crossfade over the last quarter: its midpoint by each law.
+        Table table{};
+        table[2].loop = true;
+        table[2].loopStart = .25;
+        table[2].loopEnd = .75;
+        table[2].crossfade = .5;
+        const double low = static_cast<double>(.2f), high = static_cast<double>(.6f);
+        check(about(play(table, held, 6400, stepSample.get())[5632], (low + high) * std::sqrt(.5)),
+              "loop crossfade, constant power: the midpoint carries both sides at 0.707");
+        check(about(play(table, held, 6400, stepSample.get(), true)[5632], (low + high) / 2),
+              "loop crossfade, linear: the midpoint carries both sides at a half");
+    }
+    {
+        const Table fresh{};
+        const auto whole = play(fresh, held, 8256, rampSample.get(), false, true);
+        check(whole[100] == 8091.f / 8192 && whole[8190] == 1.f / 8192 && whole[8192] == 0,
+              "Reverse: the sample plays from its end back to its start, and stops there");
+        auto table = fresh;
+        table[2].start = table[2].loopStart = .25;
+        table[2].end = .5;
+        const auto part = play(table, held, 2304, rampSample.get(), false, true);
+        check(part[100] == 3995.f / 8192 && part[2047] == 2048.f / 8192 && part[2048] == 0,
+              "Reverse keeps to the sample's start and end points");
+        const auto through = play(looped(), held, 6400, rampSample.get(), false, true);
+        check(through[100] == 8091.f / 8192 && through[6143] == 2048.f / 8192 && through[6144] == 4095.f / 8192,
+              "Reverse runs back through the sustain loop: down to its start, then from its end again");
+        // A note keeps the direction it started with.
+        const auto d = plainSlots();
+        set(*d, "reverse", 1);
+        const std::array<engine::Event, 3> events{
+            on(0, 60),
+            engine::Event{200, engine::EventType::ParamValue, 0, 0, 0, static_cast<std::uint32_t>(param(*d, "reverse")), 0},
+            on(320, 72)};
+        const auto mixed = renderSlots(*d, 512, events, [&](int, SlotArray &slots) { slots[2] = {rampSample.get(), 1}; });
+        check(about(mixed[300], 7891. / 8192) && about(mixed[400], (7791. + 160.) / 8192),
+              "Reverse is taken at note-on: a held note keeps its direction, the next note plays forward");
+    }
+    {
+        // What a loop may not be.
+        const auto d = plainSlots();
+        const auto refused = [&](const std::function<void(S::Zone &)> &change) {
+            auto table = looped();
+            change(table[2]);
+            return !d->publishSlotZones(table);
+        };
+        check(refused([](S::Zone &z) { z.loopEnd = .25; }) && refused([](S::Zone &z) { z.loopEnd = .2; }),
+              "a loop that ends at or before its start is refused");
+        check(refused([](S::Zone &z) { z.end = .4; }), "a loop that ends after the sample's end is refused");
+        check(refused([](S::Zone &z) { z.release = 4; }) && refused([](S::Zone &z) { z.release = -1; }),
+              "an unknown release mode is refused");
+        check(refused([](S::Zone &z) { z.release = 2; z.releaseLoop = 1; }) && refused([](S::Zone &z) { z.releaseFade = 1.5; }),
+              "a release loop that starts at the sample's end, or a fade above 1, is refused");
+        check(d->publishSlotZones(looped()), "and the plain looped table is taken");
+    }
+}
 // The declaration text the host reads agrees with the core it hosts.
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
     device::Sampler d(device::Sampler::slotBacked);
-    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 24 &&
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 26 &&
               static_cast<int>(parsed.params.size()) == d.paramCount(),
-          "the Sampler's declarations parse: 24 parameters");
+          "the Sampler's declarations parse: 26 parameters");
+    // SC-483: ids are fixed. The 24 of 28 November keep their places; what was
+    // added since follows them.
+    check(parsed.params.size() == 26 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
+              parsed.params[24].name == "Reverse" && parsed.params[24].def == 0 && parsed.params[25].def == 1,
+          "Volume is still 1 and Sample select 24; Reverse is 25, off; the loop fades' law 26, constant power");
     bool same = true;
     for (std::size_t i = 0; i < parsed.params.size(); ++i) {
         const auto &decl = parsed.params[i];
@@ -425,6 +574,7 @@ int main(int argc, char **argv) {
     }
     slotMode();
     slotZoneState();
+    slotLoops();
     midiControllers();
     declarations();
 

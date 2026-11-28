@@ -339,9 +339,9 @@ void OneShot::readBoth(const Sample &s, double position, double *x) const noexce
         x[c] = y + (s.data[b * stride + ch] - y) * t;
     }
 }
-void OneShot::queueNoteGain(double gain) noexcept {
+void OneShot::queueNoteGain(double gain, bool reverse) noexcept {
     if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
-    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = std::max(0., gain);
+    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = {std::max(0., gain), reverse};
     ++noteGainCount_;
 }
 
@@ -420,8 +420,10 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.age = ++age_;
     v.velocity = std::clamp(e.value, 0., 1.);
     v.gain = 1;
+    bool reverse = false;
     if (noteGainCount_ > 0) {
-        v.gain = noteGains_[noteGainHead_];
+        v.gain = noteGains_[noteGainHead_].gain;
+        reverse = noteGains_[noteGainHead_].reverse;
         noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
         --noteGainCount_;
     }
@@ -442,6 +444,23 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     }
     v.end = std::max(v.begin + 1, v.end);
     v.loop = std::clamp(v.loop, v.begin, v.end - 1);
+    // SC-483: the Sampler's own loop points. With a fresh Travel the sustain
+    // loop ends where the region does, as it always did.
+    v.loopEnd = v.end;
+    if (travel_.loopEnd >= 0)
+        v.loopEnd = std::clamp(frames * travel_.loopEnd, v.loop + 1, v.end);
+    v.releaseLoop = std::clamp(frames * travel_.releaseLoop, v.begin, v.end - 1);
+    if (reverse) {
+        // Played from the end: position p reads the frame begin + end - 1 - p,
+        // and the sustain loop is the same stretch of the sample, entered
+        // from above. The release loop stays the last stretch the voice
+        // reaches, now the sample's first frames (Live's manual does not say).
+        v.reversed = true;
+        v.mirror = v.begin + v.end - 1;
+        const double low = v.begin + v.end - v.loopEnd, high = v.begin + v.end - v.loop;
+        v.loop = low;
+        v.loopEnd = high;
+    }
     v.position = v.begin;
 }
 void OneShot::rememberMidiControl(MidiChannels &channels, const engine::Event &e) noexcept {
@@ -590,6 +609,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     // bit for bit.
     constexpr int kStretch = 64;
     double acc[2][kStretch];
+    const Travel travel = travel_;  // SC-483: this call's, for every voice
     for (int i = 0; i < io.frames;) {
         const int frame = io.blockOffset + i;
         bool moved = false;
@@ -613,14 +633,39 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     // in the devices log for Simpler) and ends when the release
                     // reaches zero, not at the loop's end with a click.
                     const bool looping = classic && p[LoopOn] > 0 && (v.held || v.stage == 3);
-                    if (v.position >= v.end) {
-                        if (looping) {
-                            const double overlap = (v.end - v.loop) * p[Fade] / 200.;
-                            v.position = v.loop + overlap +
-                                         std::fmod(v.position - v.end, v.end - v.loop - overlap);
-                        } else {
+                    // SC-483 (the Sampler's layers; a fresh Travel changes
+                    // nothing here): after note-off a voice may leave its
+                    // sustain loop for the rest of the sample.
+                    if (looping && v.stage == 3 && travel.release != 0 && !v.tail) {
+                        v.tail = true;
+                        v.backward = false;
+                    }
+                    const bool sustainLoop = looping && !v.tail;
+                    const bool tailLoop = looping && v.tail && travel.release >= 2;
+                    // The loop the voice is in, if it is in one: from..to.
+                    const double from = sustainLoop ? v.loop : v.releaseLoop;
+                    const double to = sustainLoop ? v.loopEnd : v.end;
+                    const double fadePercent = sustainLoop ? p[Fade] : travel.releaseFade * 100;
+                    const bool turns = sustainLoop ? travel.pingPong : travel.release == 3;
+                    if (v.backward && !(sustainLoop || tailLoop))
+                        v.backward = false;
+                    if (v.backward) {
+                        if (v.position <= from) {
+                            v.position = std::min(from + (from - v.position), to);
+                            v.backward = false;
+                        }
+                    } else if (v.position >= to) {
+                        if (!(sustainLoop || tailLoop)) {
                             v.active = false;
                             break;
+                        }
+                        if (turns) {
+                            v.position = std::max(to - (v.position - to), from);
+                            v.backward = true;
+                        } else {
+                            const double overlap = (to - from) * fadePercent / 200.;
+                            v.position = from + overlap +
+                                         std::fmod(v.position - to, to - from - overlap);
                         }
                     }
                     if (v.stage == 3) {
@@ -678,7 +723,8 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     if (!classic)
                         amplitude *= std::min(1., (v.end - v.position) / increment /
                                                       std::max(1., rate_ * p[FadeOut] * .001));
-                    const double fade = looping ? (v.end - v.loop) * p[Fade] / 200. : 0;
+                    const double fade =
+                        (sustainLoop || tailLoop) && !turns ? (to - from) * fadePercent / 200. : 0;
                     // The filter's coefficients: the block's, or this voice's
                     // this sample when the LFO moves the cutoff.
                     double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
@@ -688,14 +734,17 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         d = 1 + g * (g + r);
                     }
                     double both[2];
-                    readBoth(*s, v.position, both);
+                    readBoth(*s, v.reversed ? v.mirror - v.position : v.position, both);
                     for (int c = 0; c < 2; ++c) {
                         double x = both[c];
-                        if (fade > 0 && v.position > v.end - fade) {
-                            const auto t = (v.position - (v.end - fade)) / fade;
-                            x = x * std::cos(t * pi * .5) +
-                                read(*s, v.loop + v.position - (v.end - fade), c) *
-                                    std::sin(t * pi * .5);
+                        if (fade > 0 && v.position > to - fade) {
+                            const auto t = (v.position - (to - fade)) / fade;
+                            const double entering = from + v.position - (to - fade);
+                            const double other =
+                                read(*s, v.reversed ? v.mirror - entering : entering, c);
+                            x = travel.linearFade
+                                    ? x * (1 - t) + other * t
+                                    : x * std::cos(t * pi * .5) + other * std::sin(t * pi * .5);
                         }
                         if (p[FilterOn] > 0) {
                             x = v.filters[c][0].run(x, g, r, d, static_cast<int>(p[FilterType]));
@@ -707,7 +756,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         acc[c][k] += x * amplitude *
                                      (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));
                     }
-                    v.position += increment;
+                    if (v.backward)
+                        v.position -= increment;
+                    else
+                        v.position += increment;
                     ++v.played;
                 }
         if (io.out)

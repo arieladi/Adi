@@ -23,7 +23,12 @@ nlohmann::json zoneJson(const Sampler::Zone &z) {
             {"power", z.constantPower},
             {"gain", z.gainDb},
             {"pan", z.pan},
-            {"detune", z.detune}};
+            {"detune", z.detune},
+            {"loopEnd", z.loopEnd},
+            {"pingPong", z.pingPong},
+            {"release", z.release},
+            {"releaseLoop", z.releaseLoop},
+            {"releaseFade", z.releaseFade}};
 }
 // The other way. A field the object lacks keeps the value z came with; a field
 // of the wrong type throws, which the caller turns into a refusal.
@@ -47,6 +52,11 @@ void zoneFrom(const nlohmann::json &a, Sampler::Zone &z) {
     z.gainDb = a.value("gain", z.gainDb);
     z.pan = a.value("pan", z.pan);
     z.detune = a.value("detune", z.detune);
+    z.loopEnd = a.value("loopEnd", z.loopEnd);
+    z.pingPong = a.value("pingPong", z.pingPong);
+    z.release = a.value("release", z.release);
+    z.releaseLoop = a.value("releaseLoop", z.releaseLoop);
+    z.releaseFade = a.value("releaseFade", z.releaseFade);
 }
 } // namespace
 Sampler::Sampler() {
@@ -84,6 +94,25 @@ void Sampler::initialise() {
     select.defaultValue = ParamValue::withReal(0, 0);
     params_.push_back(select);
     destinations_.push_back(OneShot::Count);
+    // SC-483: the Sampler's own switches, after Sample Select. Reverse is
+    // Live's global Reverse; the other is Live's title-bar option "Use
+    // Constant Power Fade for Loops", on as Live's is.
+    const auto toggle = [this](const char *id, const char *name, double def) {
+        ParamDescriptor p;
+        p.id = id;
+        p.name = name;
+        p.hasRealRange = true;
+        p.minReal = 0;
+        p.maxReal = 1;
+        p.domain = ParamDomain::Enum;
+        p.shape = ParamShape::Switch;
+        p.stepCount = 2;
+        p.defaultValue = ParamValue::withReal(def, def);
+        params_.push_back(p);
+        destinations_.push_back(OneShot::Count);
+    };
+    toggle("reverse", "Reverse", 0);
+    toggle("loop_fade_power", "Loop fade: constant power", 1);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
 }
@@ -134,9 +163,16 @@ bool Sampler::valid(const Zone &z) noexcept {
             !std::isfinite(r.fadeHigh) || r.low < 0 || r.high > 127 || r.high < r.low ||
             r.fadeLow < 0 || r.fadeHigh < 0 || r.fadeLow + r.fadeHigh > r.high - r.low)
             return false;
-    for (double v : {z.start, z.end, z.loopStart, z.crossfade, z.gainDb, z.pan, z.detune})
+    for (double v : {z.start, z.end, z.loopStart, z.crossfade, z.gainDb, z.pan, z.detune, z.loopEnd,
+                     z.releaseLoop, z.releaseFade})
         if (!std::isfinite(v))
             return false;
+    // SC-483: a sustain loop ends inside the zone, after it starts; a release
+    // loop starts inside the zone.
+    if (!(z.loopEnd < 0 || (z.loopEnd > z.loopStart && z.loopEnd <= z.end)) || z.release < 0 ||
+        z.release > 3 || z.releaseLoop < 0 || z.releaseLoop > 1 || z.releaseFade < 0 ||
+        z.releaseFade > 1 || (z.release >= 2 && (z.releaseLoop < z.start || z.releaseLoop >= z.end)))
+        return false;
     return z.root >= 0 && z.root <= 127 && z.start >= 0 && z.end <= 1 && z.end > z.start &&
            z.loopStart >= z.start && z.loopStart < z.end && z.crossfade >= 0 && z.crossfade <= 1 &&
            z.gainDb >= -90 && z.gainDb <= 24 && std::abs(z.pan) <= 1 && std::abs(z.detune) <= 50;
@@ -316,11 +352,11 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
                         bool slot) noexcept {
     engine.setMidiChannels(midiChannels_);
     // This block's values, by index: no string lookup per layer (DEV-21).
-    for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
+    for (std::size_t i = 0; i < kSelect; ++i) {
         engine.setParamAt(static_cast<int>(destinations_[i]), initial[i]);
     }
     engine::EventList events(events_.data(), static_cast<int>(events_.size()));
-    for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
+    for (std::size_t i = 0; i < kSelect; ++i) {
         engine::Event e;
         e.type = engine::EventType::ParamMod;
         e.frame = io.blockOffset;
@@ -328,7 +364,18 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
         e.value = modulation_[i];
         events.push(e);
     }
-    double select = initial[params_.size() - 1], selectMod = modulation_[params_.size() - 1];
+    double select = initial[kSelect], selectMod = modulation_[kSelect];
+    // SC-483: Reverse is latched by a note-on, as Sample Select is; the zone's
+    // loops and the loop fades' law are this block's for the layer's voices.
+    double reverse = initial[kReverse], reverseMod = modulation_[kReverse];
+    OneShot::Travel travel;
+    travel.loopEnd = z.loopEnd;
+    travel.pingPong = z.pingPong;
+    travel.release = z.release;
+    travel.releaseLoop = z.releaseLoop;
+    travel.releaseFade = z.releaseFade;
+    travel.linearFade = initial[kLoopFadePower] + modulation_[kLoopFadePower] < .5;
+    engine.setTravel(travel);
     bool notes = false;  // a note-on this layer takes this block
     for (const auto &input : io.events) {
         auto e = input;
@@ -336,11 +383,13 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             if (e.paramId >= params_.size() || !std::isfinite(e.value)) {
                 continue;
             }
-            if (e.paramId == params_.size() - 1) {
-                if (e.type == engine::EventType::ParamValue) {
-                    select = std::clamp(e.value, 0., 1.);
-                } else {
-                    selectMod = e.value;
+            if (e.paramId >= kSelect) {
+                // The Sampler's own parameters never reach a layer.
+                const bool value = e.type == engine::EventType::ParamValue;
+                if (e.paramId == kSelect) {
+                    (value ? select : selectMod) = value ? std::clamp(e.value, 0., 1.) : e.value;
+                } else if (e.paramId == kReverse) {
+                    (value ? reverse : reverseMod) = value ? std::clamp(e.value, 0., 1.) : e.value;
                 }
                 continue;
             }
@@ -358,7 +407,7 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             // squeeze (0.825 for a 0.5 fade at 35 %). Queued only for a
             // note-on the layer will see, so later notes keep their own.
             if (events.push(e)) {
-                engine.queueNoteGain(w);
+                engine.queueNoteGain(w, reverse + reverseMod >= .5);
                 notes = true;
             }
             continue;
@@ -501,10 +550,14 @@ bool Sampler::loadState(const std::string &role, const std::vector<std::uint8_t>
         return false;
     try {
         const auto j = nlohmann::json::from_cbor(bytes);
+        // A state from before SC-483 holds the first 24 parameters; the ones
+        // added since take their defaults.
         if (j.at("version") != 1 || j.at("zones").size() > 32 ||
-            j.at("parameters").size() != params_.size())
+            j.at("parameters").size() < kFirstParams || j.at("parameters").size() > params_.size())
             return false;
         auto values = j.at("parameters").get<std::vector<double>>();
+        for (std::size_t i = values.size(); i < params_.size(); ++i)
+            values.push_back(params_[i].defaultValue.normalized);
         for (double v : values)
             if (!std::isfinite(v) || v < 0 || v > 1)
                 return false;

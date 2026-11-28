@@ -5,10 +5,13 @@ namespace adi::device {
 // DEV-21: the Sampler's parameters and its 32 sample slots, written in the
 // [adi.param] and [adi.sample] record syntax so parsePdDeclarations reads them
 // as it reads a canvas. It is NOT a Pd canvas: makeNativePdDevice never matches
-// it, so no Pd patch can become the Sampler. Ids 1..23 are the Sampler core's
-// parameter indices + 1; each line's range, default, unit and curve is the
-// matching line of pd/devices/OneShot.pd (test_sampler checks they agree).
-// Slot N is a zone over every key and velocity until a zone op edits it.
+// it, so no Pd patch can become the Sampler. Each id is the Sampler core's
+// parameter index + 1; for ids 1..23 the line's range, default, unit and curve
+// is the matching line of pd/devices/OneShot.pd (test_sampler checks they
+// agree). Ids are fixed: a new parameter takes the next id, and its default is
+// the sound the Sampler had without it, because a project saved before it
+// existed opens with that default (SC-483: 25 and 26).
+// Slot N is a zone over every key and velocity until its zone table says otherwise.
 inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0 600 900 12;
 #X obj 20 20 adi.param \$0 1 -36 36 -12 dB lin Volume;
 #X obj 20 40 adi.param \$0 2 -48 48 0 st int Transpose;
@@ -34,6 +37,8 @@ inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0
 #X obj 20 440 adi.param \$0 22 0 8 0 octaves lin LFO_filter;
 #X obj 20 460 adi.param \$0 23 0 100 35 % lin Vel_>_Vol;
 #X obj 20 480 adi.param \$0 24 0 127 0 - lin Sample_select;
+#X obj 20 500 adi.param \$0 25 0 1 0 - int Reverse;
+#X obj 20 520 adi.param \$0 26 0 1 1 - int Loop_fade:_constant_power;
 #X obj 300 20 adi.sample \$0 1 Sample_1;
 #X obj 300 40 adi.sample \$0 2 Sample_2;
 #X obj 300 60 adi.sample \$0 3 Sample_3;

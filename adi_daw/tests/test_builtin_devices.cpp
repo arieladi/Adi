@@ -929,6 +929,12 @@ void samplerZones() {
     check(!copy->loadState("zones",{1,2,3}) && !copy->loadState("zones",samplerZoneTable(40,Payload::object())) &&
           !copy->loadState("zones",samplerZoneTable(3,{{"key",std::array{80.,20.,0.,0.}}})) && copy->saveState("zones")==saved,
           "a table that is not one, names slot 40 or holds an invalid range is refused, and the old table stays");
+    // Reverse is an ordinary parameter of the loaded instrument, off by default.
+    const auto backward=plain();
+    check(backward->getParam("25").real==0 && backward->getParam("26").real==1 && backward->setParam("25",ParamValue::withReal(0,1)),
+          "Reverse is parameter 25 and off; the loop fades are constant-power (26)");
+    check(std::abs(static_cast<double>(samplerRender(*backward,c3,256)[0][100])-8091./8192)<1e-7,
+          "with Reverse on the hosted Sampler plays the sample from its end");
     // In a project: the note is C3 (key 60). A zone that ends at B2 leaves it
     // silent, through reopening; Undo brings the sound back.
     const double one=.5*std::pow(10.,-12./20);
@@ -947,7 +953,7 @@ void samplerSession() {
     check(!device::makeNativePdDevice(builtinDeclarations(device::samplerUid),0,2) &&
           !device::makeNativePdDevice(builtinDeclarations(device::samplerUid),2,2),"no Pd canvas path can become the Sampler");
     auto instance=load("org.adidaw.builtin.sampler");
-    check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==24,"it consumes notes and has its 24 parameters");
+    check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==26,"it consumes notes and has its 26 parameters");
     const auto roles=instance->stateRoles();
     check(roles.size()==34 && roles.front()=="state" && roles[1]=="sample:1" && roles[32]=="sample:32" && roles.back()==device::samplerZonesRole,
           "32 sample roles beside its state, and its zone table (SC-483)");

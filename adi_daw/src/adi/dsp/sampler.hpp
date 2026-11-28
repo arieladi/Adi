@@ -13,6 +13,16 @@ class Sampler final : public DeviceInstance {
         double sampleRate = 48000, start = 0, end = 1, loopStart = 0, crossfade = 0;
         double gainDb = 0, pan = 0, detune = 0;
         bool loop = false, constantPower = true;
+        // SC-483, Live's Sustain Mode and Release Mode. All are fractions of
+        // the whole sample, as start, end and loopStart are.
+        double loopEnd = -1;       ///< where the sustain loop ends; below 0, at the zone's end
+        bool pingPong = false;     ///< the sustain loop runs forward and back
+        /// After note-off, when the sustain loop is on: 0 stay in it, 1 play
+        /// on to the end, 2 play on and loop from releaseLoop to the end,
+        /// 3 that loop forward and back.
+        int release = 0;
+        double releaseLoop = 0;    ///< where the release loop starts
+        double releaseFade = 0;    ///< its crossfade, as crossfade is the sustain loop's
         std::vector<float> samples;
     };
     Sampler();
@@ -88,6 +98,10 @@ class Sampler final : public DeviceInstance {
     };
     void initialise();
     static void applyZone(OneShot &, const Zone &) noexcept;
+    // The Sampler's own parameters, after the 23 it hands to every layer.
+    static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25;
+    /// The parameters a state of the first version held (SC-483 added to them).
+    static constexpr std::size_t kFirstParams = 24;
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,
                    const std::array<double, OneShot::Count> &initial,
                    const OneShot::PreparedSample *, std::uint64_t generation, bool slot) noexcept;
