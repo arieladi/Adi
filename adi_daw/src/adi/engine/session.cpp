@@ -420,6 +420,19 @@ device::DeviceNode* Session::nodeFor(std::int64_t deviceId) noexcept {
     return e == nullptr ? nullptr : &devices_.nodeAt(e->hostIndex);
 }
 
+bool Session::setHearDifference(std::int64_t deviceId) {
+    if (deviceId == 0) {
+        hearDifference_ = 0;
+        graph_.setDifferenceNode(nullptr);
+        return true;
+    }
+    auto* node = nodeFor(deviceId);
+    if (node == nullptr) return false;
+    hearDifference_ = deviceId;
+    graph_.setDifferenceNode(node);
+    return true;
+}
+
 device::DeviceInstance* Session::instanceFor(std::int64_t deviceId) noexcept {
     const Entry* e = entryFor(deviceId);
     return e == nullptr ? nullptr : &devices_.deviceAt(e->hostIndex);
@@ -1550,6 +1563,13 @@ bool Session::rebuild() {
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
+    // MX-38: Hear Difference follows its device into the graph about to play,
+    // and ends with it when the device is gone.
+    if (hearDifference_ != 0) {
+        const auto* listened = nodeFor(hearDifference_);
+        if (listened == nullptr) hearDifference_ = 0;
+        graph_.setDifferenceNode(listened);
+    }
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {

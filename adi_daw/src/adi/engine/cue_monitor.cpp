@@ -90,14 +90,14 @@ using ListenFilter = dsp::StereoMeterWeighting;
 using ListenHistory = std::array<ListenFilter::History, 2>;
 struct Buffers {
     int frames,channels;
-    std::vector<double> cue,reference,scratch;
+    std::vector<double> cue,reference,scratch,difference;
     double sampleRate;
     std::array<ListenFilter, 4> weighting;
     ListenHistory narrowHistory{}, wideHistory{}; // audio only
     MainAudition activeFilter = MainAudition::Stereo;
     Buffers(int n,int ch,double rate)
         :frames(n),channels(ch),cue(static_cast<std::size_t>(2)*static_cast<std::size_t>(n)),
-         reference(cue.size()),scratch(cue.size()),sampleRate(rate) {
+         reference(cue.size()),scratch(cue.size()),difference(cue.size()),sampleRate(rate) {
         using Weight = ListenFilter::Weighting;
         weighting[1].prepare(rate, Weight::A);
         weighting[2].prepare(rate, Weight::C);
@@ -126,6 +126,7 @@ struct CueMonitor::Impl {
     SnapshotPublisher<Scene> scenes;
     CueSink* lastReference=nullptr; // audio only; feeds live for the session
     Ramp referenceMix,volume{1,1,0,0};
+    Ramp differenceMix; // MX-38, audio only
 };
 CueMonitor::CueMonitor():impl_(std::make_unique<Impl>()){}
 CueMonitor::~CueMonitor()=default;
@@ -319,6 +320,31 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     // physical monitor pair changes here, before adding cue/reference/click.
     const auto audition = impl_->audition.load(std::memory_order_relaxed);
     auto& buffers=*scene->buffers;
+    // MX-38 (ADR-0254 d23): Hear Difference takes the physical Main pair, with
+    // the reference's five-ms complementary swap, before the Main auditions so
+    // they apply to it too. Main's meters, Cue Out and every render keep Main.
+    const bool differenceOn = graph.differenceArmed() && !io.exporting;
+    if ((differenceOn || impl_->differenceMix.current != 0) && io.frames <= buffers.frames) {
+        const auto stride = static_cast<std::size_t>(buffers.frames);
+        double* difference[]{buffers.difference.data(), buffers.difference.data() + stride};
+        AudioIo copy;copy.out64=difference;copy.numOut=2;copy.frames=io.frames;
+        if (!graph.copyRenderedDifference(copy))
+            for (auto* lane : difference) std::fill_n(lane, static_cast<std::size_t>(io.frames), 0.0);
+        else if (buffers.channels == 1)
+            std::copy_n(difference[0], static_cast<std::size_t>(io.frames), difference[1]);
+        impl_->differenceMix.set(differenceOn ? 1.0 : 0.0, scene->ramp);
+        const int pair = std::min(io.numOut, 2);
+        for (int i = 0; i < io.frames; ++i) {
+            const double amount = impl_->differenceMix.next();
+            const auto at = static_cast<std::size_t>(i);
+            for (int c = 0; c < pair; ++c) {
+                const double d = difference[c][at];
+                if (io.out && io.out[c])
+                    io.out[c][i] = static_cast<float>(static_cast<double>(io.out[c][i]) * (1 - amount) + d * amount);
+                if (io.out64 && io.out64[c]) io.out64[c][i] = io.out64[c][i] * (1 - amount) + d * amount;
+            }
+        }
+    }
     if (audition != MainAudition::Stereo && !io.exporting && io.numOut >= 2 && buffers.channels >= 2) {
         if (isFilterListen(audition)) {
             if (buffers.activeFilter != audition) {

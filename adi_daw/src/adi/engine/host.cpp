@@ -313,6 +313,7 @@ bool GraphHost::RenderBlock::process(const AudioIo& io, std::span<const std::int
     AudioIo block = io;
     block.renderBlock = serial_;
     if (const auto* state = snapshot_->transportState()) block.transport = state->beginBlock();
+    snapshot_->graph().graph().setDifferenceNode(host_.differenceNode_.load(std::memory_order_acquire));
     snapshot_->graph().graph().processWithExcludedTracks(block, excludedTracks);
     host_.fadeIn(io);
     return true;
@@ -333,6 +334,11 @@ bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noe
     if(!lastSnap_)return false;
     const auto& graph=lastSnap_->graph().graph();
     return graph.copyNodeOutput(graph.find(node),io);
+}
+
+bool GraphHost::copyRenderedDifference(const AudioIo& io) const noexcept {
+    if (!lastSnap_) return false;
+    return lastSnap_->graph().graph().copyDifference(io);
 }
 
 std::int32_t GraphHost::renderedLatency() const noexcept {

@@ -1041,6 +1041,19 @@ public:
     /// False (and clears output) for an invalid node, stale/unprepared graph or
     /// a frame count different from the last successful process call.
     [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
+    /// MX-38 (ADR-0254 d23): Hear Difference. The one node whose input minus
+    /// its output is captured each block: the input is the aligned dry the
+    /// graph keeps for bypass, so the device's own latency is matched and a
+    /// device that only delays nulls. Processing owner, before `process`; null
+    /// captures nothing. Only a node with bypass (a device) is captured, and
+    /// nothing is captured while exporting. What the node outputs, and so every
+    /// render, is untouched: the capture is a copy.
+    void setDifferenceNode(const Node* node) noexcept { differenceNode_ = node; }
+    /// Processing owner, after `process`, at the frame count it rendered: the
+    /// captured difference, at graph precision. False, and silence, when
+    /// nothing was captured this block (none armed, the node asleep or not in
+    /// this graph, an export); an asleep device's difference is silence.
+    [[nodiscard]] bool copyDifference(const AudioIo&) const noexcept;
     /// Cached arrival + node latency, at the same output point. No device call.
     [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
 
@@ -1453,6 +1466,12 @@ private:
     std::int32_t renderedFrames_ = 0;
     std::uint64_t renderBlock_ = 0;
     bool exporting_ = false;
+    // MX-38: the armed node (compared, never dereferenced), its captured
+    // difference (channels x maxFrames, double) and whether this block wrote it.
+    // A render worker may run the armed node, hence the atomic flag.
+    const Node* differenceNode_ = nullptr;
+    std::vector<double> difference_;
+    std::atomic<bool> differenceCaptured_{false};
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;

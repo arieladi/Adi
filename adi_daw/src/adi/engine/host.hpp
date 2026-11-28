@@ -168,6 +168,18 @@ public:
     /// Audio owner after process, before the next process: protected by its
     /// current publication. Copies already rendered samples, never runs DSP.
     [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
+    /// MX-38 (ADR-0254 d23): Hear Difference's node, from any thread; null
+    /// turns it off. Each block hands it to the graph that plays, so it holds
+    /// across rebuilds; a node not in that graph captures nothing.
+    void setDifferenceNode(const Node* node) noexcept {
+        differenceNode_.store(node, std::memory_order_release);
+    }
+    [[nodiscard]] bool differenceArmed() const noexcept {
+        return differenceNode_.load(std::memory_order_acquire) != nullptr;
+    }
+    /// Audio owner after process, as copyRenderedOutput: the armed node's
+    /// input minus its output this block (`Graph::copyDifference`).
+    [[nodiscard]] bool copyRenderedDifference(const AudioIo&) const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device
@@ -311,6 +323,7 @@ private:
     } stats_;
     std::string error_;
     std::vector<std::string> problems_;
+    std::atomic<const Node*> differenceNode_{nullptr};   ///< MX-38; compared, never dereferenced
     std::int32_t headroom_ = 8192;
     std::atomic<std::int32_t> fadeFrames_{0};
     Precision precision_ = Precision::Float32;

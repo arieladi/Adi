@@ -769,6 +769,80 @@ void coldReference() {
     check(std::all_of(b.wide[0].begin(),b.wide[0].begin()+100,[](double v){return near(v,0.0125);}),"cold cue delay fills before Main starts fading");
     check(near(b.wide[0][100],0.0125*(239.0/240)+1.0/240) && near(b.wide[0][339],1),"five-ms swap starts exactly when the new reference's compensated audio is ready");
 }
+// MX-38 (ADR-0254 d23): Hear Difference plays one device's input minus its
+// output on the monitor pair, aligned by the device's latency, outside the
+// project and never in a render. A signal that climbs, so a misaligned dry
+// cannot pass for an aligned one.
+struct Climb final:Node {
+    std::int64_t position=0;
+    bool processesDouble() const noexcept override{return true;}
+    void process(const NodeIo& io) noexcept override {
+        for(int i=0;i<io.frames;++i){
+            const double v=0.001*static_cast<double>((position+i)%997)-0.4;
+            for(int c=0;c<io.channels;++c){
+                const double s=c?-0.5*v:v;
+                if(io.wide())io.out64[c][io.blockOffset+i]=s;else io.out[c][io.blockOffset+i]=static_cast<float>(s);
+            }
+        }
+        position+=io.frames;
+    }
+};
+struct DifferenceRig {
+    Fixture f;Climb source;std::int64_t frames=0;
+    // Main's device (id 9) has the gain and latency asked for; Main's fader is at 0 dB.
+    bool load(Precision precision,double gain,int delay,bool exporting=false){
+        f.effects(delay);f.store->db().exec("UPDATE mixer_strip SET volume_db=0 WHERE track_id=9");
+        f.session.setSourcesFor([this](std::int64_t id){return id==1?std::vector<Node*>{&source}:std::vector<Node*>{};});
+        SessionSpec spec;spec.maxFrames=512;spec.precision=precision;spec.performanceState=true;spec.exporting=exporting;
+        return f.session.load(*f.store,[this,gain,delay](const DeviceRequest& request,std::string&){
+            return std::make_unique<Effect>(request.device->id==9?gain:1.0,request.device->id==9?delay:0,frames);},spec);
+    }
+};
+void hearDifference(Precision precision) {
+    const auto sample=[precision](const Block& b,int channel,int i){
+        const auto ch=static_cast<std::size_t>(channel),at=static_cast<std::size_t>(i);
+        return precision==Precision::Float32?static_cast<double>(b.narrow[ch][at]):b.wide[ch][at];
+    };
+    struct Case {double gain;int delay;};
+    for(const auto c:{Case{0.5,0},Case{0.5,7},Case{1.0,7},Case{0.25,33}}) {
+        DifferenceRig heard,plain;
+        check(heard.load(precision,c.gain,c.delay) && plain.load(precision,c.gain,c.delay),"Hear Difference fixtures load");
+        Block a,b;heard.f.process(a);plain.f.process(b);
+        check(!heard.f.session.setHearDifference(123) && heard.f.session.hearDifference()==0,"Hear Difference refuses a device the session does not have");
+        check(heard.f.session.setHearDifference(9) && heard.f.session.hearDifference()==9,"Hear Difference arms Main's device");
+        check(!History(*heard.f.store).canUndo(),"Hear Difference is not an undo step");
+        allocations.store(0);countAllocations.store(true);heard.f.process(a);countAllocations.store(false);
+        check(allocations.load()==0,"Hear Difference's capture and swap allocate nothing");
+        plain.f.process(b);heard.f.process(a);plain.f.process(b);
+        // The device's output is gain times its aligned input, so the difference
+        // is (1 - gain) / gain times what the plain twin hears: -6 dB of input
+        // for a gain of 0.5, and nothing for a device that only delays.
+        const double factor=(1-c.gain)/c.gain;
+        double worst=0;bool heardSomething=false;
+        for(int ch=0;ch<2;++ch)for(int i=0;i<512;++i){
+            worst=std::max(worst,std::abs(sample(a,ch,i)-sample(b,ch,i)*factor));
+            heardSomething=heardSomething || sample(b,ch,i)!=0;
+        }
+        check(heardSomething && worst<1e-6,"the monitor plays the device's aligned input minus its output");
+        if(c.gain==1.0)check(worst==0,"a device that only delays nulls exactly");
+        heard.f.session.setHearDifference(0);
+        heard.f.process(a);plain.f.process(b);heard.f.process(a);plain.f.process(b);
+        check(heard.f.session.hearDifference()==0 && a.narrow==b.narrow && a.wide==b.wide,"Hear Difference off gives Main back, untouched");
+        check(heard.f.session.setHearDifference(9) && heard.f.op("device.setEnabled",{{"id",9},{"enabled",false}}),"the listened device is bypassed");
+        check(heard.f.session.hearDifference()==9,"a rebuild keeps Hear Difference on its device");
+        heard.f.process(a);heard.f.process(a);
+        bool silent=true;for(int ch=0;ch<2;++ch)for(int i=0;i<512;++i)silent=silent && sample(a,ch,i)==0;
+        check(silent,"a bypassed device's difference is silence");
+        check(heard.f.op("device.remove",{{"id",9}}) && heard.f.session.hearDifference()==0,"Hear Difference ends with its device");
+    }
+    // A render is the same with Hear Difference on and off.
+    DifferenceRig on,off;
+    check(on.load(precision,0.5,7,true) && off.load(precision,0.5,7,true),"exporting Hear Difference fixtures load");
+    check(on.f.session.setHearDifference(9),"Hear Difference arms during an export");
+    Block a,b;bool same=true;
+    for(int block=0;block<3;++block){on.f.process(a);off.f.process(b);same=same && a.narrow==b.narrow && a.wide==b.wide;}
+    check(same,"a render made while Hear Difference is on equals one made while it is off");
+}
 void allocation() {
     Fixture f;f.effects(100);f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
     f.op("cue.setOutput",{{"first",2}});f.op("cue.setReference",{{"on",true},{"id",2}});f.op("transport.setMetronome",{{"on",true}});
@@ -780,5 +854,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();for(auto precision:{Precision::Float32,Precision::Float64})hearDifference(precision);allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

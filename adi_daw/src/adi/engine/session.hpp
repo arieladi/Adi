@@ -480,6 +480,14 @@ public:
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
     /// Ephemeral monitoring choice for the live stereo device pair.
     void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
+    /// MX-38 (ADR-0254 d23): Hear Difference on one device. While set, the
+    /// live monitor pair plays that device's input minus its output, aligned
+    /// by its own latency; zero turns it off. Outside undo and the project, and
+    /// never in a render or an export. A rebuild keeps it on the same device,
+    /// and turns it off when that device is gone. False, and no change, for a
+    /// device row this session did not resolve. Message thread.
+    bool setHearDifference(std::int64_t deviceId);
+    [[nodiscard]] std::int64_t hearDifference() const noexcept { return hearDifference_; }
     // The application owns the single player. Attach before starting the
     // driver, and keep it alive until the driver has stopped.
     void setSamplePreview(SamplePreview *player) noexcept { cueMonitor_.setSamplePreview(player); }
@@ -771,6 +779,7 @@ private:
     std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
     std::map<std::int64_t, std::int64_t> auditionedTakeLanes_;
+    std::int64_t hearDifference_ = 0;   ///< MX-38: the device Hear Difference plays, or 0
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
         std::string row;

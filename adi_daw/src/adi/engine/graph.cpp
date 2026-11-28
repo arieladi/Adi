@@ -1057,6 +1057,10 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     const auto fr = static_cast<std::size_t>(maxFrames);
 
     const bool wide = precision_ == Precision::Float64;
+    // MX-38: Hear Difference's capture, sized once here so arming a device
+    // later never allocates. Doubles at either precision.
+    difference_.assign(ch * fr, 0.0);
+    differenceCaptured_.store(false, std::memory_order_relaxed);
     // Establish worker resources before any borrowed device is prepared, so
     // driver initialization failure cannot reset the running graph's nodes.
     prepareRenderState(render_);
@@ -1735,6 +1739,10 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         s.serviceBypassTransition = s.node->needsBypassTransition(configuredLatency);
     }
     const bool serviceBypass = bypass && s.serviceBypassTransition;
+    // MX-38: this node is the one Hear Difference listens to.
+    const bool listening = differenceNode_ != nullptr && s.node == differenceNode_ && s.hasBypass &&
+                           !exporting_ && !difference_.empty();
+    const auto differenceStride = static_cast<std::size_t>(maxFrames_);
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1974,9 +1982,11 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
 
         // Keep the dry line warm even while the device runs. Write at graph
         // precision: a bypassed float-only plug-in must not narrow the dry.
+        bool dryInOutput = false;   // MX-38: the aligned dry sits in the output buffer
         if (s.hasBypass) {
             const bool immediate = s.dryDelay.delay() == 0 && !s.dryDelay.busy();
             if (immediate) s.dryDelay.forget();
+            dryInOutput = !immediate || bypass;
             // Zero-latency active devices need neither a copy nor a ring
             // write. A later latency increase primes real history, just as
             // the graph's zero-compensation edges do (ADR-0079).
@@ -2013,6 +2023,24 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                 if (!immediate) s.dryDelay.endEdge(edge, drySilent);
             }
         }
+        // MX-38: take the aligned dry before the device writes over it. With
+        // no latency and no bypass the dry line is idle and the input is the
+        // aligned dry itself.
+        if (listening) {
+            for (std::size_t c = 0; c < ch; ++c) {
+                double* d = difference_.data() + c * differenceStride + static_cast<std::size_t>(begin);
+                if (dryInOutput) {
+                    if (wide) std::copy_n(s.widePtrs[c] + begin, n, d);
+                    else for (std::int32_t i = 0; i < n; ++i) d[i] = s.chanPtrs[c][begin + i];
+                } else if (!anyMain) {
+                    std::fill_n(d, n, 0.0);
+                } else if (wide) {
+                    std::copy_n(r.mixWidePtrs_[c] + begin, n, d);
+                } else {
+                    for (std::int32_t i = 0; i < n; ++i) d[i] = r.mixPtrs_[c][begin + i];
+                }
+            }
+        }
         if (!bypass) {
             if (s.hasBypass) s.node->processActive(nio);
             else s.node->process(nio);
@@ -2030,7 +2058,16 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                 for (std::int32_t i = 0; i < n; ++i) d[i] = f[i];
             }
         }
+        // MX-38: the difference is the aligned dry less what the device wrote.
+        if (listening) {
+            for (std::size_t c = 0; c < ch; ++c) {
+                double* d = difference_.data() + c * differenceStride + static_cast<std::size_t>(begin);
+                if (wide) for (std::int32_t i = 0; i < n; ++i) d[i] -= s.widePtrs[c][begin + i];
+                else for (std::int32_t i = 0; i < n; ++i) d[i] -= static_cast<double>(s.chanPtrs[c][begin + i]);
+            }
+        }
     }
+    if (listening) differenceCaptured_.store(true, std::memory_order_release);
 
     // Capture what downstream really hears, after active processing or compensated
     // dry bypass, at graph precision. Latencies are this callback's cached values.
@@ -2138,6 +2175,27 @@ bool Graph::copyNodeOutput(NodeId id, const AudioIo& io) const noexcept {
     return true;
 }
 
+bool Graph::copyDifference(const AudioIo& io) const noexcept {
+    for (std::int32_t c = 0; c < io.numOut; ++c) {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            if (io.out && io.out[c]) io.out[c][i] = 0.0f;
+            if (io.out64 && io.out64[c]) io.out64[c][i] = 0.0;
+        }
+    }
+    if (!ok_ || !prepared_ || renderedFrames_ <= 0 || io.frames != renderedFrames_ || io.numOut < 0 ||
+        !differenceCaptured_.load(std::memory_order_acquire))
+        return false;
+    const auto stride = static_cast<std::size_t>(maxFrames_);
+    for (std::int32_t c = 0; c < io.numOut && c < channels_; ++c) {
+        const double* d = difference_.data() + static_cast<std::size_t>(c) * stride;
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            if (io.out && io.out[c]) io.out[c][i] = static_cast<float>(d[i]);
+            if (io.out64 && io.out64[c]) io.out64[c][i] = d[i];
+        }
+    }
+    return true;
+}
+
 std::optional<std::int64_t> Graph::outputLatencyOf(NodeId id) const noexcept {
     if (!ok_ || !prepared_ || id < 0 || static_cast<std::size_t>(id) >= slotLatency_.size())
         return std::nullopt;
@@ -2175,6 +2233,7 @@ void Graph::processWithExcludedTracks(const AudioIo& io, std::span<const std::in
         ((std::uint64_t{1} << 63) | (directSerial.fetch_add(1, std::memory_order_relaxed) + 1));
     pinPhysicalPdc(renderBlock_);
     exporting_ = io.exporting;
+    differenceCaptured_.store(false, std::memory_order_relaxed);   // MX-38: this block's, or none
 
     ++stats_.blocks;
     render_.stats=GraphStats{};
