@@ -110,10 +110,21 @@ void decode(){
         if(!agree){
             // Where it differs: frames, and the best lag of the decoded audio against the reference.
             double best=1e9;int lag=0;const auto ch=reader.channels();
-            for(int l=-4096;l<=4096;++l){double e=0,n=0;
-                for(std::size_t i=0;i<got.size();i+=97){const auto j=static_cast<std::int64_t>(i)+static_cast<std::int64_t>(l)*ch;
-                    if(j<0||j>=static_cast<std::int64_t>(want.size()))continue;const double d=got[i]-want[static_cast<std::size_t>(j)];e+=d*d;n+=static_cast<double>(want[static_cast<std::size_t>(j)])*want[static_cast<std::size_t>(j)];}
-                if(n>0&&e/n<best){best=e/n;lag=l;}}
+            for (int offset = -4096; offset <= 4096; ++offset) {
+                double error = 0, energy = 0;
+                for (std::size_t i = 0; i < got.size(); i += 97) {
+                    const auto j = static_cast<std::int64_t>(i) + static_cast<std::int64_t>(offset) * ch;
+                    if (j < 0 || j >= static_cast<std::int64_t>(want.size())) continue;
+                    const auto reference = want[static_cast<std::size_t>(j)];
+                    const double difference = got[i] - reference;
+                    error += difference * difference;
+                    energy += static_cast<double>(reference) * reference;
+                }
+                if (energy > 0 && error / energy < best) {
+                    best = error / energy;
+                    lag = offset;
+                }
+            }
             float worst=0;std::size_t at=0;
             for(std::size_t i=0;i<got.size() && i<want.size();++i)if(std::abs(got[i]-want[i])>worst){worst=std::abs(got[i]-want[i]);at=i;}
             std::printf("  %s%s: frames %llu, expected %llu, reference %zu; best lag %d frames, error/energy %.2e; largest difference %.4f at frame %zu\n",name.c_str(),adts?" ADTS":"",
