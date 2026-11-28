@@ -77,13 +77,26 @@ and latency/topology reports fail the job rather than publishing degraded audio.
 Names support `{project}`, `{track}` (the source name), `{group}` (the selected
 group's name or its nearest ancestor group's name, otherwise empty), `{region}`
 (the selected cycle marker's name, otherwise empty), `{bpm}` at range start,
-and `{counter}` (the stable, one-based enqueue
-ordinal, unchanged by removal or retry). `{{` and `}}` escape braces.
+`{format}` (`wav` or `ni_stems_mp4`, the manifest's container label), `{rate}`
+(integer output Hz, such as `44100`, regardless of the project's rate), and
+`{index}` (the stable, one-based delivery/enqueue ordinal in this runner).
+`{counter}` keeps its existing meaning and value: that same enqueue ordinal,
+unchanged by removal or retry. Index does not number tracks, the current visible
+queue, collision attempts, or NI's five internal streams. Direct runner calls
+use their supplied counter argument for both ordinals (default 1).
+`{{` and `}}` escape braces.
 Unknown or unmatched braces are errors. Expanded values are sanitized into one
 portable filename component; values cannot introduce folders or more tokens.
 The runner adds `.wav` (or the complete `.stem.mp4` suffix for NI Stems).
 An empty name or a final filename over 200 UTF-8 bytes is refused, including
 the suffix and any collision numbering.
+
+WAV encoding depth does not change `{format}`: PCM16, PCM24 and Float32 all use
+`wav`. NI resolves its final name from Main's captured metadata with the final
+`ni_stems_mp4` context, separately from its private Float32 WAV intermediates.
+The captured context and run manifest retain format, rate and index, including
+on a later failure; a naming receipt does not mean publication succeeded. Date
+and time tokens remain unsupported pending a shared run timestamp/timezone rule.
 
 The destination directory must already exist. `Job::collision` defaults to
 `Fail`; `Increment` selects the first available ` (2)`, ` (3)`, etc. before the

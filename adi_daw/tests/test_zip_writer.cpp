@@ -137,6 +137,74 @@ void errors() {
         check(reader.ready && mz_zip_reader_get_num_files(&reader.zip) == 0, "empty archive read back");
     }
 }
+void streamControls() {
+    adi::test::TempDirectory tmp("zip_writer", "stream_control");
+    const auto source = tmp.path() / "source";
+    std::vector<char> bytes(1024 * 1024 + 123);
+    for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<char>((i * 37 + i / 11) & 255);
+    write(source, bytes);
+    const auto owner = std::this_thread::get_id();
+    for (const auto compression : {ZipCompression::store, ZipCompression::deflate}) {
+        const auto path = tmp.path() / (compression == ZipCompression::store ? "store.zip" : "deflate.zip");
+        bool ordered = true, onOwner = true, first = true;
+        std::uint64_t last = 0; unsigned notifications = 0;
+        ZipEntryControl control;
+        control.progress = [&](ZipEntryProgress progress) {
+            onOwner = onOwner && std::this_thread::get_id() == owner;
+            ordered = ordered && progress.totalBytes == bytes.size() && progress.bytesRead <= progress.totalBytes &&
+                progress.bytesRead >= last && progress.bytesRead - last <= 65536 && (!first || progress.bytesRead == 0);
+            first = false; last = progress.bytesRead; ++notifications;
+        };
+        ZipWriter writer(path);
+        check(writer.addFile(source, "media", compression, control) && writer.finish(), "controlled STORE/DEFLATE write completes normally");
+        check(ordered && onOwner && last == bytes.size() && notifications > 2, "progress is monotonic source bytes with <=64KiB owner-worker steps");
+        Reader verify(path); std::vector<char> actual(bytes.size());
+        check(verify.ready && mz_zip_reader_extract_to_mem(&verify.zip, 0, actual.data(), actual.size(), 0) && actual == bytes,
+              "controlled ZIP retains exact bytes and CRC");
+        std::stop_source stop; std::uint64_t observed = 0;
+        control.stop = stop.get_token();
+        control.progress = [&](ZipEntryProgress progress) { observed = progress.bytesRead; if (observed >= 3 * 65536) stop.request_stop(); };
+        ZipWriter cancelled(tmp.path() / (compression == ZipCompression::store ? "cancel-store.zip" : "cancel-deflate.zip"));
+        check(!cancelled.addFile(source, "media", compression, control) && cancelled.error() == ZipError::cancelled &&
+              observed == 3 * 65536 && observed < bytes.size(), "cancellation stops inside one STORE/DEFLATE entry");
+        check(!cancelled.finish() && !cancelled.addFile(source, "later") && cancelled.error() == ZipError::cancelled,
+              "cancelled writer cannot finalize or reset its sticky error");
+        std::stop_source finalStop;
+        control.stop = finalStop.get_token();
+        control.progress = [&](ZipEntryProgress progress) {
+            observed = progress.bytesRead;
+            if (progress.bytesRead == progress.totalBytes) finalStop.request_stop();
+        };
+        ZipWriter finalRead(tmp.path() / (compression == ZipCompression::store ? "final-store.zip" : "final-deflate.zip"));
+        check(!finalRead.addFile(source, "media", compression, control) && finalRead.error() == ZipError::cancelled &&
+              observed == bytes.size() && !finalRead.finish(), "stop after the final read still refuses miniz's apparent end-of-entry success");
+    }
+    {
+        std::stop_source stop; stop.request_stop(); unsigned calls = 0;
+        ZipWriter writer(tmp.path() / "pre-cancel.zip");
+        check(!writer.addFile(source, "media", ZipCompression::store,
+              {stop.get_token(), [&](ZipEntryProgress) { ++calls; }}) && writer.error() == ZipError::cancelled && calls == 0,
+              "already-requested stop refuses before source callbacks");
+    }
+    for (const bool standard : {true, false}) {
+        ZipWriter writer(tmp.path() / (standard ? "observer-standard.zip" : "observer-other.zip"));
+        std::uint64_t reached = 0;
+        ZipEntryControl control;
+        control.progress = [&](ZipEntryProgress progress) {
+            reached = progress.bytesRead;
+            if (reached >= 65536) { if (standard) throw std::runtime_error("observer failed"); throw 7; }
+        };
+        check(!writer.addFile(source, "media", ZipCompression::store, control) && writer.error() == ZipError::progress && reached == 65536,
+              "all observer exceptions stop before crossing the C callback boundary");
+        check(!writer.finish(), "observer failure cannot finalize a partial archive");
+    }
+    const auto empty = tmp.path() / "empty"; write(empty, {});
+    std::stop_source stop; unsigned calls = 0;
+    ZipWriter writer(tmp.path() / "empty-cancel.zip");
+    check(!writer.addFile(empty, "empty", ZipCompression::store,
+          {stop.get_token(), [&](ZipEntryProgress progress) { ++calls; if (progress.bytesRead == 0 && progress.totalBytes == 0) stop.request_stop(); }}) &&
+          calls == 1 && writer.error() == ZipError::cancelled, "empty entry has a cancellable initial checkpoint");
+}
 struct LargeCompare {
     mz_uint64 size;
     mz_uint64 seen = 0;
@@ -207,7 +275,7 @@ void big() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // as every suite; MSVC /WX refuses setbuf (C4996)
-    try { roundtrip(); errors(); big();
+    try { roundtrip(); errors(); streamControls(); big();
         if (const auto* flag = envVar("ADI_ZIP_BIG"); flag && std::string_view(flag) == "1") aggregateBig();
     } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);

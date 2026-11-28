@@ -414,7 +414,10 @@ int main(int argc, char** argv) {
             if (!store) result = {false, adi::toString(error)};
             else {
                 result = adi::media::extractMedia(*store);
-                if (result.ok && !store->close()) result = {false, "database close/checkpoint failed"};
+                if (result.ok && !store->close()) {
+                    result.ok = false;
+                    result.error = "media extraction committed. The database could not be closed as one file";
+                }
             }
         }
         if (!result.ok) std::fprintf(stderr, "%s: %s\n", cmd.c_str(), result.error.c_str());

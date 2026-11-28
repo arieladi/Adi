@@ -80,6 +80,11 @@ struct NameContext {
     std::string project, track, group, bpm;
     std::uint64_t counter = 1;
     std::string region = "";
+    std::string format = ""; // manifest container label: wav or ni_stems_mp4
+    std::uint32_t rate = 0; // integer Hz of this output, not the project's rate
+    // The runner's stable one-based delivery/enqueue ordinal, like counter.
+    // Not a track index, current queue position, or collision suffix.
+    std::uint64_t index = 1;
 };
 struct RenderSnapshot {
     // Zero represents the captured SQL NULL head before any journal operation.
@@ -119,6 +124,9 @@ struct ReplacementBinding {
     std::string blake3; // Detect in-place edits as well as changed native identity.
     std::vector<std::string> foldedNames; // Exact spellings in the colliding set.
 };
+// Pure job-input validation shared by the queue and its JSON codec. Does not
+// open the project, resolve its revision/names, enqueue or render anything.
+void validateJob(const Job&);
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -205,6 +213,9 @@ struct Cancelled {};
 // Main audio is processed. Ordinary callers use renderWav without this hook.
 Result renderWavPrepared(Job, engine::DeviceLoader, Control, JobId, std::uint64_t,
                         const std::function<void(const Result&)>&);
+// Resolve the final NI delivery from Main's captured metadata. Intermediate WAV
+// format/names stay separate; no AAC encoder or audio work is performed here.
+void prepareNiOutput(Result&, const Result& main, const Job& delivery);
 void discardStage(std::filesystem::path&&, std::optional<StageCleanupFailure>&) noexcept;
 void retainIntermediateMedia(Result& delivery, Result& intermediate);
 void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Control&,

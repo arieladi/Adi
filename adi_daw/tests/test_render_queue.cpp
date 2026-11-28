@@ -946,7 +946,13 @@ void normalizedRenders() {
 
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
+    c.format="wav";c.rate=44100;c.index=9;
     check(resolveName("{project}-{track}-{group}-{bpm}-{counter}",c)==".._A{track}-B_C-G-90-3","metadata cannot inject paths or more placeholders");
+    check(resolveName("{{format}}-{format}-{rate}-{index}-{counter}",c)=="{format}-wav-44100-9-3",
+          "format, integer-Hz rate and explicit index expand once, independently of counter and escaped braces");
+    auto hostile=c;hostile.format="../{rate}/bad";
+    check(resolveName("{format}-{index}",hostile)==".._{rate}_bad-9",
+          "new context strings cannot inject paths or recursively expand more tokens");
     check(resolveName("{{literal}}",c)=="{literal}" && resolveName("CON",c)=="_CON","literal braces and Windows reserved names are portable");
     check(resolveName("COM\xC2\xB9.wav",c)=="_COM\xC2\xB9.wav" && resolveName("lpt\xC2\xB2",c)=="_lpt\xC2\xB2",
           "Windows superscript device names are escaped, including names with extensions");
@@ -980,13 +986,19 @@ void namesAndValidation() {
             const auto reserved=resolveName("CON."+std::string(bytes-suffix.size()-5,'n'),c)+suffix;
             check(reserved.size()==bytes && finalNameAccepted(reserved)==(bytes<=200),
                   "final byte cap includes the reserved-name underscore and complete suffix");
+            auto profile=c;profile.format=suffix==".wav" ? "wav" : "ni_stems_mp4";
+            const auto tail=resolveName("-{format}-{rate}-{index}",profile);
+            const auto expanded=resolveName("CON."+std::string(bytes-suffix.size()-5-tail.size(),'n')+
+                "-{format}-{rate}-{index}",profile)+suffix;
+            check(expanded.size()==bytes && finalNameAccepted(expanded)==(bytes<=200),
+                  "new token expansion keeps the complete filename budget including reserved prefix and compound suffix");
         }
     }
     check(resolveName(std::string(200,'n'),c).size()==200,
           "standalone resolveName retains its existing extension-free contract");
     check(finalNameAccepted(resolveName("Mix"+std::string(25,' ')+"...",c)+".wav"),
           "trimmed trailing bytes do not count against the final name");
-    for (const char* bad : {"{unknown}","{project","project}","{}","..."}) {
+    for (const char* bad : {"{unknown}","{date}","{time}","{project","project}","{}","..."}) {
         bool threw=false; try {(void)resolveName(bad,c);} catch(const std::invalid_argument&) {threw=true;}
         check(threw,"invalid name syntax fails explicitly");
     }
@@ -998,6 +1010,38 @@ void namesAndValidation() {
     check(threw && q.snapshot().empty(),"invalid queue job is refused without mutation");
     job=f.job(); job.session.maxFrames=0;
     check(renderMasterWav(job,{}).state==JobState::Failed,"zero block size fails");
+}
+void deliveryNameTokens() {
+    Fixture f;Queue queue;
+    const auto removed=queue.add(f.job("removed"));
+    check(queue.remove(removed),"name-token fixture removes an earlier enqueue ordinal");
+    auto job=f.job("{format}-{rate}-{index}-{counter}");
+    const auto id=queue.add(job);
+    const auto occupied=job.directory/"wav-48000-2-2.wav";
+    {std::ofstream old(occupied);old<<"existing";}
+    queue.run();const auto failed=queue.snapshot().front().result;
+    check(id==2 && failed.state==JobState::Failed && failed.output==occupied && failed.snapshot &&
+          failed.snapshot->names.index==2 && failed.snapshot->names.counter==2,
+          "index uses stable enqueue identity despite removal and collision failure");
+    fs::remove(occupied);check(queue.retry(id),"token-named failed delivery can be explicitly retried");
+    queue.run();const auto retry=queue.snapshot().front().result;
+    check(retry.output==occupied && matches(read(retry,866),137) && retry.snapshot &&
+          retry.snapshot->names.format=="wav" && retry.snapshot->names.rate==48000 && retry.snapshot->names.index==2,
+          "retry preserves all naming values and publishes actual Float32 WAV audio");
+    const auto retryManifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    const auto& names=retryManifest["members"][0]["result"]["resolved_snapshot"]["names"];
+    check(names["format"]=="wav" && names["rate"]==48000 && names["index"]==2 && names["counter"]==2,
+          "run manifest retains the exact resolved filename token context");
+    for(const auto encoding : {audio::WavFormat::Pcm16,audio::WavFormat::Pcm24}) {
+        job.session.sampleRate=44100;job.encoding.format=encoding;job.encoding.dither=audio::WavDither::None;
+        const auto next=queue.add(job);queue.run();const auto result=queue.snapshot().back().result;
+        const auto ordinal=std::to_string(next);
+        check(result.output.filename()==("wav-44100-"+ordinal+"-"+ordinal+".wav") && result.snapshot &&
+              result.snapshot->sampleRate==44100 && result.snapshot->names.rate==44100,
+              "filename rate follows the actual export rate, not the 48000-Hz project setting");
+        (void)read(result,866,44100,encoding);
+    }
+    check(f.noStage(),"token-named renders leave no private staging directories");
 }
 void finalNamesAndCaseCollisions() {
     Fixture f;
@@ -1780,7 +1824,7 @@ void mediaIdentities() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--export-speed-only") largeSongExportSpeed();
-        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); deliveryNameTokens(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     }
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);

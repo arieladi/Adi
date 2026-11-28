@@ -109,6 +109,14 @@ void validateNiStems(const Job &job) {
             stem.name.size() > 1024 || !audio::stemColorValid(stem.color))
             throw std::invalid_argument("invalid NI Stems source/name/color");
 }
+void detail::prepareNiOutput(Result& result, const Result& main, const Job& delivery) {
+    if (!main.snapshot) throw std::runtime_error("NI Main render has no captured project snapshot");
+    result.snapshot=main.snapshot;
+    auto& names=result.snapshot->names;
+    names.format="ni_stems_mp4";
+    result.output=delivery.directory/media::pathFromUtf8(resolveName(delivery.nameTemplate,names)+".stem.mp4");
+    prepareOutput(result,delivery.collision,".stem.mp4","NI Stems destination already exists");
+}
 Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobId id, std::uint64_t counter) {
     Result result;
     try {
@@ -124,7 +132,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         Stage stage(job.directory, result);
         const auto project = captureProject(job, stage);
         const auto ni = *job.niStems;
-        const auto collision = job.collision;
+        const auto delivery = job;
         job.project = project;
         job.directory = stage.path;
         job.niStems.reset();
@@ -142,10 +150,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         };
         auto rendered = detail::renderWavPrepared(job, loader, renderControl, id, counter,
             [&](const Result& prepared) {
-                result.snapshot=prepared.snapshot;
-                result.output=stage.path.parent_path()/prepared.output.filename();
-                result.output.replace_extension(".stem.mp4");
-                detail::prepareOutput(result,collision,".stem.mp4","NI Stems destination already exists");
+                detail::prepareNiOutput(result,prepared,delivery);
             });
         if (rendered.state == JobState::Cancelled)
             throw Cancelled{};
@@ -154,7 +159,8 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         if (!rendered.snapshot)
             throw std::runtime_error("NI Main render has no captured project snapshot");
         detail::retainIntermediateMedia(result, rendered);
-        result.snapshot = std::move(rendered.snapshot);
+        // Keep the final NI name context captured by prepareNiOutput; rendered's
+        // snapshot names the private WAV and must not overwrite that receipt.
         result.framesWritten = rendered.framesWritten;
         std::vector<audio::AacTrack> tracks;
         std::vector<audio::StemLabel> labels;

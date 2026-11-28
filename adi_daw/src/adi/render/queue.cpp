@@ -106,8 +106,13 @@ std::string portableName(std::string name) {
         stem == "CONIN$" || stem == "CONOUT$" || numberedDevice) name = "_" + name;
     return name;
 }
+// The {format} name token: the container, never the PCM depth (an AIFF delivery names itself "aiff").
+const char* formatToken(PcmContainer container) {
+    return container == PcmContainer::Aiff ? "aiff" : "wav";
+}
+} // namespace
 
-void validate(const Job& j) {
+void validateJob(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
@@ -146,9 +151,11 @@ void validate(const Job& j) {
             !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
             throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
     } else if (!j.exactPcmFilename) {
-        (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
+        (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region",
+            j.niStems ? "ni_stems_mp4" : formatToken(j.container),static_cast<std::uint32_t>(j.session.sampleRate),1});
     }
 }
+namespace {
 struct Stage {
     fs::path path;
     std::optional<StageCleanupFailure>& failure;
@@ -307,6 +314,9 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
         else if (token == "bpm") name += context.bpm;
         else if (token == "region") name += context.region;
         else if (token == "counter") name += std::to_string(context.counter);
+        else if (token == "format") name += context.format;
+        else if (token == "rate") name += std::to_string(context.rate);
+        else if (token == "index") name += std::to_string(context.index);
         else throw std::invalid_argument("unknown export name token: " + token);
         at = end + 1;
     }
@@ -465,7 +475,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
     Result result;
     try {
         cancellation(control);
-        validate(job);
+        validateJob(job);
         if (job.niStems) throw std::invalid_argument("renderWav requires a WAV job; use renderNiStems for NI Stems");
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
@@ -485,6 +495,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         auto& session = *owned;
         NameContext names;
         names.counter = counter;
+        names.format = formatToken(job.container);
+        names.rate = static_cast<std::uint32_t>(job.session.sampleRate);
+        names.index = counter;
         {
             // Metadata, device states and playback rows describe one database
             // revision, sampled when this job starts, never when it is queued.
@@ -711,7 +724,7 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
 }
 
 JobId Queue::add(Job job) {
-    validate(job);
+    validateJob(job);
     if (next_ == std::numeric_limits<JobId>::max()) throw std::overflow_error("export job IDs exhausted");
     const auto id = next_++;
     jobs_.push_back({id, std::move(job), {}});
@@ -720,7 +733,7 @@ JobId Queue::add(Job job) {
 bool Queue::update(JobId id, Job job) {
     const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
     if (it == jobs_.end() || it->result.state != JobState::Pending) return false;
-    validate(job); it->job = std::move(job); return true;
+    validateJob(job); it->job = std::move(job); return true;
 }
 bool Queue::remove(JobId id) {
     const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
@@ -772,7 +785,9 @@ std::string serializeRunManifest(const RunReport& run) {
             {"region_id", snapshot.regionId ? Json(*snapshot.regionId) : Json(nullptr)},
             {"names", {{"project", snapshot.names.project}, {"track", snapshot.names.track},
                 {"group", snapshot.names.group}, {"bpm", snapshot.names.bpm},
-                {"counter", snapshot.names.counter}, {"region", snapshot.names.region}}}};
+                {"counter", snapshot.names.counter}, {"region", snapshot.names.region},
+                {"format", snapshot.names.format}, {"rate", snapshot.names.rate},
+                {"index", snapshot.names.index}}}};
     };
     Json manifest{{"version", 1}, {"planned_count", run.plannedCount},
                   {"capture_complete", run.captureComplete}, {"members", Json::array()}};

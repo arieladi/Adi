@@ -10,6 +10,7 @@
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -311,6 +312,57 @@ void deliveryMediaVerification() {
           "unchanged inputs complete the same checked exclusive delivery path");
 }
 
+void preparedDeliveryNames() {
+    test::TempDirectory dir{"ni_stems","prepared_names"};
+    auto store=target(dir.path()/"source.adi");
+    store->db().exec("UPDATE project SET name='NI {rate}/Name';");
+    const auto stage=dir.path()/"private";fs::create_directory(stage);
+    render::Job delivery;delivery.project=store->path();delivery.directory=dir.path();
+    delivery.session={2,44100,64};delivery.endSample=64;
+    delivery.nameTemplate="{project}-{format}-{rate}-{index}-{counter}";
+    delivery.niStems=render::NiStems{{{{9,engine::OfflineTap::PostFader},"Main",""}},256000};
+    auto intermediate=delivery;intermediate.niStems.reset();intermediate.directory=stage;
+    intermediate.encoding.format=audio::WavFormat::Float32;
+    render::Result prepared,final;
+    bool beforeProgress=false,earlyProgress=false;
+    render::Control control;control.progress=[&](render::JobId,std::uint64_t,std::uint64_t) {
+        if(!beforeProgress)earlyProgress=true;
+    };
+    const auto rendered=render::detail::renderWavPrepared(intermediate,{},control,77,23,
+        [&](const render::Result& main) {
+            prepared=main;
+            store->db().exec("UPDATE project SET name='Changed after snapshot';");
+            render::detail::prepareNiOutput(final,main,delivery);
+            beforeProgress=main.framesWritten==0 && final.snapshot.has_value() && !fs::exists(final.output);
+        });
+    check(rendered.state==render::JobState::Completed && beforeProgress && !earlyProgress,
+          "actual prepared Main WAV route resolves final NI names before progress without invoking AAC");
+    check(rendered.snapshot && rendered.snapshot->names.format=="wav" && rendered.snapshot->names.rate==44100 &&
+          rendered.output.filename()=="NI {rate}_Name-wav-44100-23-23.wav",
+          "private intermediate keeps its own actual WAV format and frozen metadata names");
+    check(final.snapshot && final.snapshot->names.project=="NI {rate}/Name" &&
+          final.snapshot->names.format=="ni_stems_mp4" && final.snapshot->names.rate==44100 &&
+          final.snapshot->names.index==23 && final.snapshot->names.counter==23 &&
+          final.output.filename()=="NI {rate}_Name-ni_stems_mp4-44100-23-23.stem.mp4" && !fs::exists(final.output),
+          "NI final context uses the captured project, output rate and stable ordinal, never intermediate WAV names");
+    render::RunReport run;render::RunMember member;member.id=77;member.started=true;
+    member.state=render::JobState::Running;member.job=delivery;member.result=final;run.members.push_back(member);
+    const auto manifest=nlohmann::json::parse(render::serializeRunManifest(run));
+    const auto& names=manifest["members"][0]["result"]["resolved_snapshot"]["names"];
+    check(names["format"]=="ni_stems_mp4" && names["rate"]==44100 && names["index"]==23 &&
+          manifest["members"][0]["result"]["publication"].is_null(),
+          "NI preflight manifest reports final naming values without claiming an encoded or published delivery");
+    for(const std::size_t bytes : {199u,200u,201u}) {
+        const auto tail=render::resolveName("-{format}-{rate}-{index}",final.snapshot->names);
+        delivery.nameTemplate="CON."+std::string(bytes-9-5-tail.size(),'n')+"-{format}-{rate}-{index}";
+        render::Result bounded;bool rejected=false;
+        try{render::detail::prepareNiOutput(bounded,prepared,delivery);}
+        catch(const std::invalid_argument&){rejected=true;}
+        check(rejected==(bytes>200) && media::pathUtf8(bounded.output.filename()).size()==bytes &&
+              !fs::exists(bounded.output),
+              "NI prepared path enforces 199/200/201 complete-byte bounds after format expansion and escaping");
+    }
+}
 void integration() {
     if (!audio::aacCodecAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
@@ -389,6 +441,9 @@ void integration() {
     };
     queue.run({}, control);
     auto result = queue.snapshot().front().result;
+    check(result.snapshot && result.snapshot->names.format=="ni_stems_mp4" &&
+          result.snapshot->names.rate==48000 && result.snapshot->names.index==id,
+          "completed NI delivery preserves final format/rate/index rather than replacing them with its Main WAV snapshot");
     check(result.state == render::JobState::Completed,
           result.error.empty() ? "NI queue job completes" : result.error.c_str());
     if (result.state != render::JobState::Completed)
@@ -623,6 +678,7 @@ int main() {
         normalizationRefusal();
         collisionPublication();
         deliveryMediaVerification();
+        preparedDeliveryNames();
         integration();
     } catch (const std::exception &error) {
         check(false, error.what());
