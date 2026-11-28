@@ -822,6 +822,20 @@ void ArrangementCanvas::setPlaybackProblemIds(std::vector<std::int64_t> ids) {
 bool ArrangementCanvas::hasPlaybackProblem(std::int64_t id) const noexcept {
     return std::binary_search(playbackProblemIds_.begin(), playbackProblemIds_.end(), id);
 }
+bool ArrangementCanvas::hasInfoAt(juce::Point<int> point) const {
+    if (!getLocalBounds().contains(point))
+        return false;
+    const auto &geo = view.geometry;
+    const auto &reader = view.reader();
+    const auto tick = geo.tick(point.x);
+    if (const auto *track = geo.trackAt(reader, point.y))
+        return geo.hit(*track, tick) != nullptr;
+    if (const auto take = geo.takeLaneAt(reader, point.y))
+        return std::ranges::any_of(take->track->takeClips, [&](const auto &clip) {
+            return clip->laneId == take->lane->id && tick >= clip->posTicks && tick - clip->posTicks < clip->lengthTicks;
+        });
+    return false;
+}
 juce::String ArrangementCanvas::getTooltip() {
     if (!playbackProblemIds_.empty()) {
         const auto mouse = getMouseXYRelative();

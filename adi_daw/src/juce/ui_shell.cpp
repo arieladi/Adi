@@ -1978,8 +1978,11 @@ void AdiRootComponent::frame() noexcept {
         infoShown_ = commands_.infoView();
         resized();
     }
-    if (!infoArea_.isEmpty())
-        hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
+    if (!infoArea_.isEmpty()) {
+        const auto mouse = juce::Desktop::getInstance().getMainMouseSource();
+        auto *target = mouse.getComponentUnderMouse();
+        hover(target, target ? target->getLocalPoint(nullptr, mouse.getScreenPosition().roundToInt()) : juce::Point<int>{});
+    }
     infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
@@ -2039,22 +2042,26 @@ void AdiRootComponent::frame() noexcept {
     if (lastDrain_ & (DirtySet::Layout | DirtySet::Content))
         repaint();
 }
-void AdiRootComponent::hover(juce::Component *c) {
+void AdiRootComponent::hover(juce::Component *c, juce::Point<int> position) {
     // A boxed analyzer never replaces itself with its own Info tooltip.
     if (c == &infoSpectrum || (c && infoSpectrum.isParentOf(c))) c = nullptr;
-    if (c != nullptr && c != this && !isParentOf(c))
+    if (c != nullptr && (c == this || !isParentOf(c) || !c->getLocalBounds().contains(position)))
         c = nullptr;
     // The nearest element that can describe itself, as Live's Info View does.
-    juce::TooltipClient *client = nullptr;
-    for (auto *p = c; p != nullptr && p != this; p = p->getParentComponent())
-        if ((client = dynamic_cast<juce::TooltipClient *>(p)) != nullptr) {
-            c = p;
-            break;
-        }
-    if (c == hovered_)
+    auto *target = c;
+    while (target && target != this && dynamic_cast<juce::TooltipClient *>(target) == nullptr)
+        target = target->getParentComponent();
+    if (target == this ||
+        (target == &arrangement.canvas && !arrangement.canvas.hasInfoAt(target->getLocalPoint(c, position))) ||
+        (target == &browser && !browser.hasInfoAt(target->getLocalPoint(c, position))))
+        target = nullptr;
+    if (target == hovered_)
         return;
-    hovered_ = c;
-    infoText_ = client ? c->getTitle() + "\n" + client->getTooltip() : juce::String();
+    hovered_ = target;
+    auto *client = dynamic_cast<juce::TooltipClient *>(target);
+    const auto description = client ? client->getTooltip() : juce::String{};
+    infoText_ = description.isNotEmpty() ? target->getTitle() + "\n" + description : juce::String{};
+    infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     dirty_.mark(DirtySet::Content);
 }
 std::int64_t AdiRootComponent::timelineTick() const noexcept {
@@ -2315,6 +2322,8 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     // Live's Info View: a title bar with the element's name, its description below.
     if (!infoArea_.isEmpty()) {
         panel(infoArea_);
+        if (infoText_.isEmpty())
+            return;
         const auto inner = infoArea_.reduced(look::border);
         g.setColour(look::panel);
         g.fillRect(inner);

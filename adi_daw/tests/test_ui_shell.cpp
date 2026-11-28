@@ -502,8 +502,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     root.arrangement.geometry.selection.track = 4;
     root.frame();
     root.frame();
-    // The capture's mouse rests on the lanes: the Info View describes them.
-    root.hover(&root.arrangement.canvas);
+    // The capture's mouse rests on the beat-time ruler.
+    root.hover(&root.arrangement.ruler);
     check(root.arrangement.headers.getWidth() == ArrangementView::kHeaderWidth &&
               root.mixer.getWidth() + root.strip.getWidth() == MixerPanel::kFullWidth &&
               root.devices.panels.size() == 2,
@@ -14651,6 +14651,9 @@ void arrangementTakeLanes(AppCommands &commands, const std::filesystem::path &di
             menuItems.add(item.getItem().text);
     };
     const auto right = juce::ModifierKeys::rightButtonModifier;
+    root.hover(&canvas, insideSecond.roundToInt());
+    check(root.infoText().contains("insert marker"), "SC-457: a visible take clip remains a real Info target");
+    root.hover(nullptr);
     canvas.mouseDown(pressAt(canvas, insideSecond, right));
     canvas.mouseUp(pressAt(canvas, insideSecond));
     check(menuItems == juce::StringArray{"Audition Take Lane", "Copy Selection to Main Lane"},
@@ -29510,13 +29513,15 @@ int main(int argc, char **argv) {
         auto &infoView = a.infoSpectrum;
         juce::Image empty(juce::Image::RGB, infoView.getWidth(), infoView.getHeight(), true,
                           juce::SoftwareImageType{});
-        juce::Graphics graphics(empty);
-        infoView.paintEntireComponent(graphics, true);
+        {
+            juce::Graphics graphics(empty);
+            infoView.paintEntireComponent(graphics, true);
+        }
         bool blankPlot = true;
-        for (int y = 22; y < empty.getHeight(); ++y)
+        for (int y = 0; y < empty.getHeight(); ++y)
             for (int x = 0; x < empty.getWidth(); ++x)
                 blankPlot = blankPlot && empty.getPixelAt(x, y) == juce::Colour(look::display);
-        check(blankPlot, "the idle spectrogram has an empty plot without spectrum grid or status prose");
+        check(blankPlot, "SC-462: the whole idle spectrogram is plot background without a title or status prose");
 
         const auto previousCentre = a.infoArea().getCentre();
         check(a.command(AppCommands::SwapPanels), "move the Info gestures to the right-hand Browser dock");
@@ -29592,27 +29597,64 @@ int main(int argc, char **argv) {
     check(windowTooltipLabel(a.transport.play) == "Play" && windowTooltipLabel(a.status.infoToggle) == "Info View" &&
               windowTooltipLabel(a.transport.tempo).isEmpty() && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
           "SC-433: only an explicitly marked icon gets its short name in the tooltip");
-    a.hover(&a.arrangement.canvas);
-    check(a.infoText().contains("insert marker") && windowTooltipLabel(a.arrangement.canvas).isEmpty(),
-          "SC-433: hovering the Arrangement shows its full directions only inside Info View");
+    const auto canvasSpace = juce::Point<int>{a.arrangement.canvas.getWidth() - 1, 5};
+    a.hover(&a.arrangement.canvas, canvasSpace);
+    check(a.infoText().isEmpty() && a.infoSpectrum.isVisible(), "SC-457: empty Arrangement space keeps the analyser");
+    a.hover(&a.browser, a.browser.sidebarRowBounds(0).getCentre());
+    check(a.infoText().contains("Browser") && !a.infoSpectrum.isVisible(), "a labelled Browser row still has help");
+    a.hover(&a.browser, a.browser.sidebarRowBounds(2).getCentre());
+    check(a.infoText().isEmpty() && a.infoSpectrum.isVisible(), "the Browser's empty spacer keeps the analyser");
+    a.hover(&a.arrangement.ruler);
+    check(a.infoText().contains("zoom") && windowTooltipLabel(a.arrangement.ruler).isEmpty(),
+          "SC-433: ruler directions appear only inside Info View");
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
+    {
+        auto hoverStore = Store::createNewProject(temp.path() / "info-hover.adi", err);
+        check(hoverStore != nullptr, "open a project for the Info hover fixture");
+        if (hoverStore) {
+            engine::ProjectView hoverView;
+            hoverView.refresh(*hoverStore);
+            OpSubmitter hoverEdits(*hoverStore, hoverView);
+            OpRequest clip;
+            clip.opType = "clip.create";
+            clip.payload = {{"id", 20}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", 4 * textproj::kPPQ}};
+            check(hoverEdits.submit(std::move(clip)).ok, "add a clip to the first lane");
+            ViewStateStore hoverState(*hoverStore);
+            SessionState hoverSession(*hoverStore);
+            AdiRootComponent root(hoverView, hoverEdits, mailbox, commands, hoverState, hoverSession, "info-hover");
+            root.setSize(1200, 720);
+            root.frame();
+            auto &canvas = root.arrangement.canvas;
+            root.hover(&canvas, {8, 20});
+            check(root.infoText().contains("insert marker") && !root.infoSpectrum.isVisible(),
+                  "an actual Arrangement clip keeps its directions in Info View");
+            root.hover(&canvas, {canvas.getWidth() - 1, 20});
+            check(root.infoText().isEmpty() && root.infoSpectrum.isVisible(),
+                  "moving within the same lane from the clip to empty time restores the analyser");
+            root.hover(&canvas, {-1, 20});
+            check(root.infoText().isEmpty() && root.infoSpectrum.isVisible(),
+                  "a captured mouse outside the canvas does not hit the clip at the clamped timeline start");
+        }
+    }
     {
         // Each platform's fonts wrap a description differently: one longer than the panel is
         // cut at the panel's foot, never drawn over its edge or the Status Bar below.
         auto render = [&a] {
             juce::Image image(juce::Image::ARGB, a.getWidth(), a.getHeight(), true,
                               juce::SoftwareImageType{});
-            juce::Graphics g(image);
-            a.paintEntireComponent(g, true);
+            {
+                juce::Graphics g(image);
+                a.paintEntireComponent(g, true);
+            }
             return image;
         };
         const auto quiet = render();
-        const auto saved = a.arrangement.canvas.getTooltip();
-        a.arrangement.canvas.setTooltip(juce::String::repeatedString("A description that goes on. ", 80));
-        a.hover(&a.arrangement.canvas);
+        const auto saved = a.arrangement.ruler.getTooltip();
+        a.arrangement.ruler.setTooltip(juce::String::repeatedString("A description that goes on. ", 80));
+        a.hover(&a.arrangement.ruler);
         const auto busy = render();
-        a.arrangement.canvas.setTooltip(saved);
+        a.arrangement.ruler.setTooltip(saved);
         a.hover(nullptr);
         const auto inner = a.infoArea().reduced(look::border);
         int outside = 0;

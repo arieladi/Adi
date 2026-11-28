@@ -260,6 +260,7 @@ class ArrangementCanvas final : public juce::Component,
     // The engine projection supplies sorted, unique clip IDs.
     void setPlaybackProblemIds(std::vector<std::int64_t> ids);
     [[nodiscard]] bool hasPlaybackProblem(std::int64_t id) const noexcept;
+    bool hasInfoAt(juce::Point<int>) const;
     juce::String getTooltip() override;
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;

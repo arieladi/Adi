@@ -703,7 +703,7 @@ class AdiRootComponent final : public juce::Component,
     bool fullScreen() const;
     // What the Info View shows: the element under the mouse, read in the frame.
     const juce::String &infoText() const noexcept { return infoText_; }
-    void hover(juce::Component *);
+    void hover(juce::Component *, juce::Point<int> position = {});
     // Laid-out rectangles, in the root's logical units, for tests and children.
     juce::Rectangle<int> deviceArea() const noexcept { return deviceArea_; }
     juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
