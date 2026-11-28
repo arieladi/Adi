@@ -35,6 +35,7 @@
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/starter_drums.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/settings_availability.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -16011,6 +16012,154 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+void emptyArrangementAddsTrack(const std::filesystem::path &dir) {
+    const auto settingsPath = dir / "empty-track-settings.json";
+    settings::AppSettings preferences(appdata::App::Daw, settingsPath);
+    preferences.setLogUserChanges(false);
+    AppCommands commands(preferences);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "empty-track-area.adi", true, {}, error);
+    check(document != nullptr, "DF-W64: open a project for the empty-area gesture");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "empty-track-area");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &arrangement = root.arrangement;
+    auto &geo = arrangement.geometry;
+    auto &canvas = arrangement.canvas;
+    geo.height = 48;
+    arrangement.changed();
+    root.frame();
+    const auto emptyY = [&] { return geo.tracksHeight(root.reader()) - geo.scrollY; };
+    const auto trackCount = [&] { return root.reader().trackCount(); };
+    const auto gapPoint = [&] { return juce::Point<float>{80.f, static_cast<float>(emptyY() + 4)}; };
+    const auto gapBottom = geo.footTop(root.reader()) - 2;
+    check(emptyY() == 4 * 48 && gapPoint().y < static_cast<float>(gapBottom),
+          "DF-W64: the gap begins after the last ordinary lane and ends before Main's separator");
+    const int leftButton = juce::ModifierKeys::leftButtonModifier;
+    const auto tap = [&](juce::Point<float> at, int count, int modifiers = 0) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(), at,
+                                     juce::ModifierKeys(leftButton | modifiers), 1.f, 0.f, 0.f, 0.f, 0.f,
+                                     &canvas, &canvas, now, at, now, count, false);
+        canvas.mouseDown(event);
+        canvas.mouseUp(event);
+        if (count >= 2)
+            canvas.mouseDoubleClick(event);
+    };
+    const auto doubleTap = [&](juce::Point<float> at, int modifiers = 0) {
+        tap(at, 1, modifiers);
+        tap(at, 2, modifiers);
+    };
+    std::optional<juce::PopupMenu> prompt;
+    juce::Point<int> anchor;
+    int prompts = 0;
+    arrangement.onContextMenu = [&](juce::Point<int> where, bool, const engine::AutomationLaneNode *,
+                                    const juce::PopupMenu &menu) {
+        ++prompts;
+        anchor = where;
+        prompt = menu;
+    };
+    const auto initialTracks = trackCount();
+    geo.selection.track = 2;
+    geo.selection.start = 0;
+    geo.selection.end = textproj::kWhole;
+    geo.selection.marked = true;
+    root.publishSelection();
+    const auto range = geo.selection;
+    const auto press = gapPoint();
+    tap(press, 1);
+    check(prompts == 0 && trackCount() == initialTracks && geo.selection == range,
+          "DF-W64: a single empty-area click preserves an existing range and adds nothing");
+    canvas.mouseDown(pressAt(canvas, press, juce::ModifierKeys(leftButton)));
+    canvas.mouseDrag(dragAt(canvas, press, press.translated(40.f, 0.f)));
+    canvas.mouseUp(dragAt(canvas, press, press.translated(40.f, 0.f)));
+    check(geo.selection == range, "DF-W64: a drag starting in empty space does not modify an existing range");
+    doubleTap({80.f, static_cast<float>(gapBottom + 3)});
+    doubleTap(press, juce::ModifierKeys::altModifier);
+    tap({80.f, static_cast<float>(emptyY() - 1)}, 1);
+    tap(press, 2);
+    check(prompts == 0 && trackCount() == initialTracks,
+          "DF-W64: Main, a modified click and a double click straddling the last lane add no tracks");
+
+    geo.selection = range;
+    root.publishSelection();
+    doubleTap(press);
+    check(prompts == 1 && prompt && anchor == canvas.localPointToGlobal(press.toInt()) &&
+              trackCount() == initialTracks && geo.selection == range,
+          "DF-W64: both gap clicks request the choices there without editing the song");
+    prompt.reset();
+    check(preferences.get(settings::kEmptyArrangementTrackKey) == "Ask", "DF-W64: dismissing remembers nothing");
+    doubleTap(press);
+    if (!prompt) {
+        check(false, "DF-W64: the unanswered choice is asked again");
+        return;
+    }
+    juce::StringArray names;
+    std::function<void()> chooseMidi;
+    for (juce::PopupMenu::MenuItemIterator item(*prompt); item.next();) {
+        names.add(item.getItem().text);
+        if (item.getItem().text == "MIDI Track")
+            chooseMidi = item.getItem().action;
+    }
+    check(names == juce::StringArray{"MIDI Track", "Audio Track", "FX Channel"} && chooseMidi,
+          "DF-W64: the first-use menu offers exactly MIDI, Audio and FX");
+    if (!chooseMidi)
+        return;
+    prompt.reset();
+    chooseMidi();
+    root.frame();
+    const auto *midi = root.reader().findTrack(geo.selection.track);
+    check(trackCount() == initialTracks + 1 && midi && midi->kind == "midi" && midi->parent == 0 &&
+              laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, midi->id, 1} &&
+              preferences.get(settings::kEmptyArrangementTrackKey) == "MIDI Track",
+          "DF-W64: the choice appends a top-level MIDI track, selects it and remembers MIDI");
+    const settings::AppSettings reopened(appdata::App::Daw, settingsPath);
+    check(reopened.get(settings::kEmptyArrangementTrackKey) == "MIDI Track",
+          "DF-W64: the remembered result is saved across settings reloads");
+    check(root.command(AppCommands::Undo), "DF-W64: the track insertion has one Undo");
+    root.frame();
+    check(trackCount() == initialTracks && preferences.get(settings::kEmptyArrangementTrackKey) == "MIDI Track",
+          "DF-W64: Undo removes only the new track and keeps the app preference");
+    const auto rememberedPoint = gapPoint();
+    doubleTap(rememberedPoint);
+    root.frame();
+    check(prompts == 2 && trackCount() == initialTracks + 1,
+          "DF-W64: another double-click uses the remembered choice without a popup");
+    tap(rememberedPoint, 3);
+    root.frame();
+    const auto *rememberedMidi = root.reader().findTrack(geo.selection.track);
+    check(trackCount() == initialTracks + 1 && rememberedMidi && rememberedMidi->clips.empty(),
+          "DF-W64: a third click in the same series neither adds a track nor inserts a clip on the new lane");
+
+    SettingsPanel editing(preferences);
+    editing.setSize(640, 520);
+    editing.showPage("Editing");
+    juce::ComboBox *chooser = nullptr;
+    for (const auto &row : editing.rows())
+        if (row->setting.key == settings::kEmptyArrangementTrackKey)
+            chooser = dynamic_cast<juce::ComboBox *>(row->control.get());
+    check(chooser && chooser->isEnabled() && chooser->getText() == "MIDI Track" && chooser->getNumItems() == 4,
+          "DF-W64: Settings Editing exposes the typed choice and the remembered value");
+    if (!chooser)
+        return;
+    chooser->setSelectedId(3, juce::sendNotificationSync);
+    doubleTap(gapPoint());
+    root.frame();
+    const auto *audio = root.reader().findTrack(geo.selection.track);
+    check(prompts == 2 && audio && audio->kind == "audio" && audio->parent == 0 && trackCount() == initialTracks + 2,
+          "DF-W64: changing Settings to Audio immediately changes the next double-click");
+    chooser->setSelectedId(4, juce::sendNotificationSync);
+    doubleTap(gapPoint());
+    root.frame();
+    const auto *fx = root.reader().findTrack(geo.selection.track);
+    check(prompts == 2 && fx && fx->kind == "return" && fx->parent == 0 && trackCount() == initialTracks + 3 &&
+              findSend(root.current()->sends, 2, fx->id) != nullptr,
+          "DF-W64: FX uses the existing Return insertion with its source sends");
+    document->release();
+}
 // walk-B B13: a new project's tracks renumber as Live's when a track is inserted or grouped before
 // them (manual 18.2). They are stored "# MIDI" and "# Audio"; before, "3 Audio" and "4 Audio" kept their
 // numbers, so an audio track inserted after 2 MIDI made two "3 Audio", and a group two "4 Audio". Every
@@ -19699,6 +19848,40 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.frame();
     check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");
     check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");
+
+    constexpr auto selectionKey = "transport.loopSwitchTakesSelection";
+    const auto oldBrace = loopOf(stored());
+    sel.start = 14 * barTicks;
+    sel.end = 15 * barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(settingAvailable(selectionKey) && settings.get(selectionKey) == false &&
+              !stored().loopEnabled && loopOf(stored()) == oldBrace,
+          "DF-W65: the default Loop switch ignores the time selection and toggles the current brace");
+
+    check(settings.set(selectionKey, true, {}, refusal), "enable the Loop switch's time selection setting");
+    const LoopRange chosen{sel.start, sel.end};
+    bar.loop.onClick();
+    root.frame();
+    check(stored().loopEnabled && loopOf(stored()) == chosen && bar.loop.getToggleState(),
+          "the Loop switch moves the brace to the time selection and enables it");
+    bar.loop.onClick();
+    root.frame();
+    check(!stored().loopEnabled && loopOf(stored()) == chosen,
+          "the switch matches Loop Selection when the brace already matches the selected time");
+
+    sel.start = sel.end = 20 * barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(stored().loopEnabled && loopOf(stored()) == chosen,
+          "with only an insert marker, the switch toggles the existing brace");
+    sel.clip = 99;
+    sel.end += barTicks;
+    bar.loop.onClick();
+    root.frame();
+    check(!stored().loopEnabled && loopOf(stored()) == chosen && root.undoTitle(false) == undoTitle,
+          "a clip selection's span is not a time selection for the Loop switch");
+    check(settings.set(selectionKey, false, {}, refusal), "restore the standard Loop switch setting");
 
     constexpr auto shortBar = 4 * textproj::kPPQ;
     constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;
@@ -34596,6 +34779,7 @@ int main(int argc, char **argv) {
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("emptyArrangementAddsTrack", [&] { emptyArrangementAddsTrack(temp.path()); });
     trace("browserStartupLabel", [&] { browserStartupLabel(commands, temp.path()); });
     trace("projectFilesList", [&] { projectFilesList(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });

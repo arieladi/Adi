@@ -487,7 +487,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         metronomeMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&metronome));
     };
     punchIn.onClick = [this] { root_.togglePunch(true); };
-    loop.onClick = [this] { root_.toggleLoop(); };
+    loop.onClick = [this] { root_.clickLoopSwitch(); };
     punchOut.onClick = [this] { root_.togglePunch(false); };
     loopStart.onClick = [this] { beginLoopStartEdit(); };
     loopLength.onClick = [this] { beginLoopLengthEdit(); };

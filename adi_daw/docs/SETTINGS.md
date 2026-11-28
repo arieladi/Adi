@@ -42,6 +42,11 @@ saved name when the identifier changes.
 `record.autoArmOnSelect` defaults to `none`. Saved choices still apply when a
 user has selected `instrumentAndMidi` or `all`.
 
+`editing.emptyArrangementTrack` is **Double-click below tracks** on the Editing
+page (DF-W64). It starts at **Ask**. Choosing MIDI Track, Audio Track or FX
+Channel adds the track and remembers that choice. Set it back to Ask to choose
+again on the next double-click below the Arrangement tracks.
+
 ### Graph worker admission (DEV-23)
 
 `audio.graphWorkers` is an internal app preference. Its `auto` value
@@ -207,7 +212,7 @@ servers, appear in two sections each, so the section is part of the name.
 | AI | 6 | |
 | Export | 7 | the export dialog's defaults (A7-03 c, ADR-0203) |
 | Mixing | 4 | |
-| Transport | 5 | |
+| Transport | 6 | Loop switch takes time selection is off by default (DF-W65). |
 | Sync | 3 | the sync source and tempo responsiveness (Bitwig); Link's own settings are on Link |
 | Engine | 1 | |
 | Windows | 3 | |

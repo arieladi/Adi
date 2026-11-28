@@ -662,6 +662,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Ripple editing also moves locked clips (REAPER).", false));
     r.push_back(make("editing.splitAllWithNoSelection", Type::Bool, "Editing", "Split all at the cursor",
                      "With nothing selected, Split splits every track at the cursor (REAPER).", false));
+    r.push_back(choice(kEmptyArrangementTrackKey, "Editing", "Double-click below tracks",
+                       "Choose the track created by a double-click in the empty Arrangement. Ask remembers the answer.",
+                       {"Ask", "MIDI Track", "Audio Track", "FX Channel"}, "Ask"));
 
     // --- Mixing (catalogue III). No default send level and no New track page: a
     // new send starts at -inf and a new track at Live's defaults (fader 0 dB, in
@@ -682,6 +685,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How fast fast-forward and rewind move, in bars per second (Cubase).", 4.0, 0.25, 64));
     r.push_back(make("transport.locateOnClick", Type::Bool, "Transport", "Locate on click in empty space",
                      "A click in empty track space moves the playhead, as in Live.", true));
+    r.push_back(make("transport.loopSwitchTakesSelection", Type::Bool, "Transport", "Loop switch takes time selection",
+                     "Click Loop to use the selected time. With no time selected, Loop toggles the current brace.", false));
     r.push_back(choice("transport.seekOnClick", "Transport", "Seek on click",
                        "Where a click moves the playhead during playback (REAPER).",
                        {"ruler", "rulerAndEmptyArea", "anywhere"}, "rulerAndEmptyArea"));
