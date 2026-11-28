@@ -185,6 +185,62 @@ bool rePitchReadAhead() {
     std::printf("Re-Pitch 512-frame read-ahead: %lld source frames\n", static_cast<long long>(frames));
     return frames < 1024 && !input.readOutsideRange;
 }
+bool reverseTextureReadAhead() {
+    struct StepClock {
+        double changeFrame, before, after;
+        double tickAt(double frame) const noexcept {
+            return frame <= changeFrame ? frame * before : changeFrame * before + (frame - changeFrame) * after;
+        }
+    };
+    constexpr auto changeFrame = std::int64_t{200000};
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{80000, 4000}, WarpMarker{160000, 8000},
+        WarpMarker{400000, 50000}};
+    WarpRenderPlan plan;
+    plan.mode = WarpMode::Texture;
+    plan.sourceFrames = 400000;
+    Input input{std::vector<float>(plan.sourceFrames, 0.25f), {}, false};
+    bool audible = false;
+    std::int64_t widestSteady = 0;
+    for (const auto caseClock : {StepClock{changeFrame, 0.04, 2.0}, StepClock{changeFrame, 2.0, 0.04}}) {
+        // Use the same source interval around both directions of the cut.
+        const auto state = std::pair{caseClock, caseClock.tickAt(changeFrame) - 8000};
+        for (const auto rate : {32000u, 96000u}) {
+            const StreamingWarp player(plan, markers, rate, 1);
+            const WarpStreamClock clock{&state,
+                [](const void* context, double frame) noexcept {
+                    const auto& [step, base] = *static_cast<const std::pair<StepClock, double>*>(context);
+                    return step.tickAt(frame) - base;
+                }, [](const void* context, double tick) noexcept {
+                    const auto& [step, base] = *static_cast<const std::pair<StepClock, double>*>(context);
+                    const auto cut = step.changeFrame * step.before;
+                    const auto at = tick + base;
+                    return at <= cut ? at / step.before : step.changeFrame + (at - cut) / step.after;
+                }, 2.0, -1537, true};
+            const auto verify = [&](std::int64_t first, std::int64_t last) {
+                input.requested = player.sourceRange(first, last, clock);
+                for (auto frame = first; frame <= last; ++frame) {
+                    std::array<float, 1> output{};
+                    if (!player.renderFrame(frame, {&input, Input::read}, clock, output)) return false;
+                    audible = audible || output[0] > 0.1f;
+                }
+                return true;
+            };
+            for (auto first = changeFrame - 3600; first < changeFrame + 3600; first += 257) {
+                if (!verify(first, first + 256)) return false;
+                if (caseClock.before < caseClock.after && first == changeFrame - 3600)
+                    widestSteady = std::max(widestSteady, input.requested.last - input.requested.first);
+            }
+            // A hunt spanning more than 32 centers uses the constant-time
+            // projection bound and must still cover both sides of the cut.
+            if (!verify(changeFrame - 13000, changeFrame + 13000)) return false;
+        }
+    }
+    std::printf("Reverse Texture across both extreme tempo steps and mixed rates: reads covered %s, "
+                "nearby steady read-ahead %lld source frames\n",
+                input.readOutsideRange ? "no" : "yes", static_cast<long long>(widestSteady));
+    // The high rate outside this block cannot use all eight source slots.
+    return audible && !input.readOutsideRange && widestSteady > 0 && widestSteady < 16384;
+}
 } // namespace
 
 int main() {
@@ -198,5 +254,6 @@ int main() {
     passed &= unusedPcm();
     passed &= rePitchRatios();
     passed &= rePitchReadAhead();
+    passed &= reverseTextureReadAhead();
     return passed ? 0 : 1;
 }

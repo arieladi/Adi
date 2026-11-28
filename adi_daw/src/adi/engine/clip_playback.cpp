@@ -853,7 +853,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
             const bool nativeWarp = warpMode && a->formantShift == 0 &&
                 (*warpMode == audio::WarpMode::RePitch || *warpMode == audio::WarpMode::Beats ||
-                 (*warpMode == audio::WarpMode::Texture && !a->reverse));
+                 *warpMode == audio::WarpMode::Texture);
             const bool r3Mode = warpMode && !a->reverse &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
@@ -986,9 +986,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
                 supportsR3Ratios(map.markers,warpClock,static_cast<double>(sourceOrigin),r3EndTick);
             const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
-            const bool reverseSynthesis = stream && clip->reverse && spec.mode == audio::WarpMode::Beats;
-            // Traverse the forward Beats slices backward. Its worker supplies
-            // original PCM and the onset analysis stays in the forward source.
+            const bool reverseSynthesis = stream && clip->reverse &&
+                (spec.mode == audio::WarpMode::Beats || spec.mode == audio::WarpMode::Texture);
+            // Traverse the forward Beats slices or Texture grains backward.
+            // Their worker and onset analysis still see the original source.
             if (reverseSynthesis) clip->reverse = false;
             if (stream && !r3)
                 clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));

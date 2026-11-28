@@ -271,24 +271,53 @@ void StreamingWarp::sampleFrame(WarpStreamInput input, double position, std::spa
     }
 }
 
+std::pair<std::int64_t, std::int64_t> StreamingWarp::textureGrains(double first, double last,
+                                                                 WarpStreamClock clock) const noexcept {
+    const auto half = static_cast<double>(grain_ / 2);
+    const auto grain = static_cast<double>(grain_);
+    const auto hop = static_cast<double>(grainHop_);
+    const auto shift = static_cast<double>(clock.textureGridShift);
+    return {static_cast<std::int64_t>(std::floor((first - shift - grain + half) / hop)) + 1,
+            static_cast<std::int64_t>(std::floor((last - shift + half) / hop))};
+}
+
+double StreamingWarp::textureGrainCenter(std::int64_t index, WarpStreamClock clock) const noexcept {
+    return static_cast<double>(index * grainHop_ + clock.textureGridShift);
+}
+
+double StreamingWarp::textureGrainStart(double center) const noexcept {
+    return center + static_cast<double>(grain_ - grain_ / 2 - 1);
+}
+
+double StreamingWarp::reverseTextureCenterTick(double center, WarpStreamClock clock) const noexcept {
+    // This is the latest virtual frame in the grain and therefore
+    // its first physical sample. Use only its preceding clock rate
+    // so a later tempo edit cannot move a grain that has started.
+    const auto start = textureGrainStart(center);
+    const auto startTick = clock.tickAtFrame(clock.context, start);
+    const auto slope = std::clamp(clock.tickAtFrame(clock.context, start + 1) - startTick,
+                                  0.0, clock.maxTicksPerFrame);
+    return startTick + (center - start) * slope;
+}
+
 void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStreamClock clock,
                                   std::span<float> output) const noexcept {
     const auto half = grain_ / 2;
     const auto grain = static_cast<double>(grain_);
-    const auto hop = static_cast<double>(grainHop_);
-    const auto first = static_cast<std::int64_t>(std::floor((frame - grain + static_cast<double>(half)) / hop)) + 1;
-    const auto last = static_cast<std::int64_t>(std::floor((frame + static_cast<double>(half)) / hop));
+    const auto [first, last] = textureGrains(frame, frame, clock);
     double weights = 0;
     std::array<double, 64> mix{};
     std::array<float, 64> grainPcm;
     for (auto index = first; index <= last; ++index) {
-        const auto center = static_cast<double>(index * grainHop_);
+        const auto center = textureGrainCenter(index, clock);
         const double phase = (frame - center + static_cast<double>(half)) / grain;
         const double weight = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * phase);
         if (weight == 0) continue;
         const double jitter = (static_cast<double>(grainRandom(seed_, index) >> 11) / 0x1p53 - 0.5) *
             (2 * grainJitterFrames_);
-        const double readAt = sourceAtTick(clock.tickAtFrame(clock.context, center)) + jitter + (frame - center) * pitch_;
+        const auto sourceTick = clock.causalTextureCenters && clock.maxTicksPerFrame > 0 ?
+            reverseTextureCenterTick(center, clock) : clock.tickAtFrame(clock.context, center);
+        const double readAt = sourceAtTick(sourceTick) + jitter + (frame - center) * pitch_;
         sampleFrame(input, readAt, {grainPcm.data(), output.size()});
         for (std::uint16_t channel = 0; channel < output.size(); ++channel)
             mix[channel] += grainPcm[channel] * weight;
@@ -413,8 +442,37 @@ WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::i
     case WarpMode::Texture: {
         const double half = static_cast<double>(grain_) / 2;
         const double margin = grainJitterFrames_ + (half + 1) * pitch_;
-        begin = at(first - half - 1) - margin;
-        end = at(last + half + 1) + margin + 2;
+        if (clock.causalTextureCenters && clock.maxTicksPerFrame > 0) {
+            const auto [firstGrain, lastGrain] = textureGrains(first, last, clock);
+            constexpr auto exactGrainLimit = 32;
+            const auto firstCenter = textureGrainCenter(firstGrain, clock);
+            const auto lastCenter = textureGrainCenter(lastGrain, clock);
+            double firstTick, lastTick;
+            if (lastGrain - firstGrain < exactGrainLimit) {
+                // A project-wide rate bound can include unrelated tempo
+                // events and waste pages. Use the actual source centers
+                // where their number is small enough to inspect directly.
+                firstTick = lastTick = reverseTextureCenterTick(firstCenter, clock);
+                for (auto grain = firstGrain + 1; grain <= lastGrain; ++grain) {
+                    const auto tick = reverseTextureCenterTick(textureGrainCenter(grain, clock), clock);
+                    firstTick = std::min(firstTick, tick);
+                    lastTick = std::max(lastTick, tick);
+                }
+            } else {
+                // Start ticks increase with grain index. Each center
+                // projects back at most a half-grain at the maximum
+                // clock rate, bounding larger requests in constant time.
+                const auto firstStart = textureGrainStart(firstCenter);
+                firstTick = clock.tickAtFrame(clock.context, firstStart) -
+                            (firstStart - firstCenter) * clock.maxTicksPerFrame;
+                lastTick = clock.tickAtFrame(clock.context, textureGrainStart(lastCenter));
+            }
+            begin = sourceAtTick(firstTick) - margin;
+            end = sourceAtTick(lastTick) + margin + 2;
+        } else {
+            begin = at(first - half - 1) - margin;
+            end = at(last + half + 1) + margin + 2;
+        }
         break;
     }
     case WarpMode::RePitch: {
