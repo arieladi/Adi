@@ -82,8 +82,8 @@ void sharingAndVisibility() {
     check(f.acquired == 0 && !full.subscribed() && !compact.subscribed(),
           "offscreen components without a peer acquire no analysis");
     root.setVisible(true);
-    root.addToDesktop(0); // Root creates only UiFakePeer: no OS window, display or native input.
-    check(root.getPeer() && !root.getPeer()->getNativeHandle(), "test root has only a software peer");
+    root.addToDesktop(0);
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()), "test root uses the software peer");
     root.addAndMakeVisible(full); root.addAndMakeVisible(compact);
     full.frame(); compact.frame();
     check(full.subscribed() && compact.subscribed() && f.acquired == 1 &&
@@ -1128,7 +1128,7 @@ void clearSpectrogramWhileWorkerAhead() {
         view->present(f.broker, 1);
         view->frame();
     }
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && f.acquired == 1 &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && f.acquired == 1 &&
               f.broker->stats().consumers == 2,
           "both spectrograms use a single tap through a software peer");
     writeFrames(f, fft);
@@ -1452,7 +1452,7 @@ void thirdOctaveAndPeriodSurface() {
     fixture.broker->pump();
     view.frame();
     const auto shot = view.snapshot();
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && shot && shot->periodScope &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && shot && shot->periodScope &&
               shot->request.fftSize == 4096 && shot->request.channel == SharedAnalysis::Channel::Mid &&
               (shot->outputs & (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope)) ==
                   (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope) &&
@@ -1518,7 +1518,7 @@ void colourWaveformSurface() {
     fixture.broker->pump();
     view.frame();
     const auto current = view.snapshot();
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && current && current->colourWaveform &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && current && current->colourWaveform &&
               current->colourWaveform->size >= 20 && current->colourWaveform->size < 30 &&
               current->request.channel == SharedAnalysis::Channel::Mid && fixture.broker->stats().spectralPlans == 0,
           "the fake-peer waveform consumes only timestamped paired-mono columns at the native source rate");
@@ -2350,7 +2350,7 @@ void compareAndAveragePages() {
     pages.setBounds(root.getLocalBounds());
     pages.setPage(Page::Compare);
     pages.frame(broker, original, main, guitar);
-    check(root.getPeer() && !root.getPeer()->getNativeHandle() && broker->stats().consumers == 0 &&
+    check(dynamic_cast<UiFakePeer *>(root.getPeer()) && broker->stats().consumers == 0 &&
               pages.compareA.isShowing() && pages.compareB.isShowing() && !pages.detail.isVisible(),
           "Compare uses a software peer and acquires only an explicitly chosen pair");
     pages.compareA.setSelectedId(pages.compareA.getItemId(0), juce::sendNotificationSync);

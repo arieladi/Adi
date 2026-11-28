@@ -14,13 +14,14 @@ MidiCaptureState MidiInputCapture::state() const noexcept {
 std::uint64_t MidiInputCapture::epoch() const noexcept {
     return epoch_.load(std::memory_order_acquire);
 }
-bool MidiInputCapture::start(std::vector<std::int64_t> targets, double sampleRate) {
+bool MidiInputCapture::start(std::vector<std::int64_t> targets, double sampleRate, bool overdub) {
     const auto previous = state();
     if (previous == MidiCaptureState::Waiting || previous == MidiCaptureState::Recording ||
         read_.load(std::memory_order_relaxed) != written_.load(std::memory_order_acquire) ||
         epoch() == std::numeric_limits<std::uint64_t>::max())
         return false;
     tracks_ = std::move(targets);
+    overdub_ = overdub;
     sampleRate_ = sampleRate;
     const auto next = epoch() + 1;
     state_.store(MidiCaptureState::Waiting, std::memory_order_relaxed);
@@ -42,6 +43,16 @@ std::size_t MidiInputCapture::drain(std::span<MidiCapturePacket> out, RecordingP
     read_.store(first + count, std::memory_order_release);
     return count;
 }
+bool MidiInputCapture::overdubs(std::int64_t track) const noexcept {
+    if (!transport_ || !overdub_) return false;
+    // Debug vector iterators can take a lock on the audio thread.
+    const auto* targets = tracks_.data();
+    const auto count = tracks_.size();
+    for (std::size_t index = 0; index < count; ++index)
+        if (targets[index] == track) return true;
+    return false;
+}
+
 void MidiInputCapture::finish(MidiCaptureState state) noexcept {
     active_ = false;
     transport_ = nullptr;
@@ -140,7 +151,8 @@ bool MidiInputCapture::nextSpan() noexcept {
     return append({MidiCapturePacket::Kind::Span, driverEpoch_, pass_, sliceStream_ + spanBegin_,
                    spanTimeline_, 0, static_cast<std::int32_t>(frames), {}});
 }
-void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event) noexcept {
+void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event,
+                              std::uint64_t port) noexcept {
     if (!transport_ || scheduledSample < epochStart_) return;
     if (event.frame < lastEventFrame_ || event.frame >= sliceFrames_) {
         finish(MidiCaptureState::Discontinuity);
@@ -152,7 +164,7 @@ void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSa
     auto captured = event;
     captured.frame -= spanBegin_;
     (void)append({MidiCapturePacket::Kind::Event, driverEpoch_, pass_, sliceStream_ + event.frame,
-                  spanTimeline_ + captured.frame, inputSample, 0, captured});
+                  spanTimeline_ + captured.frame, inputSample, 0, captured, port});
 }
 void MidiInputCapture::endSlice() noexcept {
     if (!transport_) return;

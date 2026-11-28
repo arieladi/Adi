@@ -27,6 +27,7 @@
 #include <array>
 
 #include "adi/controller_data.hpp"
+#include "adi/midi_output_route.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
@@ -77,6 +78,8 @@ struct AudioMediaIdentity {
     std::string contentHash;
     std::optional<std::int64_t> sampleRate,channels,frames;
     bool missing=false; // stored pool flag, not a fresh filesystem probe
+    std::string originalName{};
+    std::optional<std::int64_t> bitDepth{};
     friend bool operator==(const AudioMediaIdentity&,const AudioMediaIdentity&)=default;
 };
 struct AudioClipSource {
@@ -120,6 +123,10 @@ struct ClipNode {
     std::optional<std::int64_t> color{}; // absent inherits the track colour
     std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
     std::optional<double> fadeInTension,fadeOutTension;
+    std::int64_t contentOffsetTicks=0;
+    bool loopEnabled=false;
+    std::int64_t loopStartTicks=0;
+    std::optional<std::int64_t> loopLengthTicks;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
@@ -131,6 +138,13 @@ struct ClipNode {
     std::optional<std::int64_t> posNs,lengthNs;
     std::optional<std::int64_t> laneId{}; // null belongs to the main arrangement row
     std::shared_ptr<const MidiClipPreview> midiPreview{};
+};
+
+struct TakeLaneNode {
+    std::int64_t id = 0;
+    std::string name;
+    bool muted = false;
+    friend bool operator==(const TakeLaneNode&, const TakeLaneNode&) = default;
 };
 
 struct TrackNode {
@@ -157,8 +171,12 @@ struct TrackNode {
     std::optional<ReturnSendTap> returnSendTap{};
     bool recordArmed = false;
     std::int64_t monitorMode = 0;
+    // The enabled track-to-track main edge; absent follows the parent or Main.
+    std::optional<std::int64_t> audioOutput;
+    std::optional<rows::MidiOutput> midiOutput;
     std::optional<std::string> inputRef;
     std::vector<std::shared_ptr<const ClipNode>> takeClips; // same ordering; each node names its lane
+    std::vector<TakeLaneNode> takeLanes; // visible order, including empty lanes
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can

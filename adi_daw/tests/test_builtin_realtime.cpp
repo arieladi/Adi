@@ -585,11 +585,11 @@ void factoryNewCost(std::int32_t frames, bool playing) {
     auto& doc = *project->doc;
     auto& session = doc.session();
     const auto& model = session.model();
-    const bool factory = model.tracks.size() == 7 && model.clips.empty() &&
-        model.devices.size() == 2 && session.stats().loaded == 2;
+    const bool factory = model.tracks.size() == 5 && model.clips.empty() &&
+        model.devices.empty() && session.stats().loaded == 0;
     const auto* graph = session.graph().currentGraph();
     if (!factory || !graph) {
-        check(false, label + " needs a prepared New project and both factory return effects");
+        check(false, label + " needs a prepared New project with no return effects");
         return;
     }
     if (playing) {

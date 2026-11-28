@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -16,6 +17,8 @@ namespace adi::engine {
 class Transport;
 struct AudioMemorySnapshot;
 struct TempoMap;
+namespace recording_recovery { struct OwnedPlan; }
+enum class RecordingSource { PhysicalInput, MainMix };
 struct AudioMemoryTakeSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // resolved by recording::captureMemory on the owner
@@ -23,7 +26,9 @@ struct AudioMemoryTakeSpec {
 };
 struct RecordingTarget {
     std::int64_t trackId=0;
-    std::vector<std::uint32_t> channels; // indices in the current AudioIo.in
+    std::vector<std::uint32_t> channels; // indices in AudioIo.in, or 0/1 for MainMix
+    std::optional<std::int64_t> placementOffsetSamples{}; // linear take override for this track
+    RecordingSource source = RecordingSource::PhysicalInput;
 };
 /// Explicit frozen sample-domain loop contract. One row per nonempty pass,
 /// allocated before callback publication. Musical loop retiming ends this job.
@@ -40,6 +45,8 @@ struct RecordedPass {
 // at song zero. An unrepresentable sample position cannot be placed.
 [[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
                                                                  std::int64_t offsetSamples) noexcept;
+[[nodiscard]] std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,
+                                                      double errorMilliseconds) noexcept;
 // Intersect a latency-corrected linear take with its captured punch bounds.
 [[nodiscard]] std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,
     std::uint64_t frames,std::int64_t offsetSamples,const RecordingPunchWindow&) noexcept;
@@ -51,19 +58,25 @@ struct AudioRecordingSpec {
     std::vector<RecordingTarget> targets;
     std::optional<AudioRecordingLoop> loop; // absent retains linear capture
     std::int64_t placementOffsetSamples = 0; // captured with the device settings for a linear take
+    // The document owner supplies this through recording::configureRecovery.
+    // Empty keeps transient callers and custom recorder sinks unchanged.
+    std::string recoveryProjectUuid{};
 };
 enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture,PassLimit};
 struct RecordedTrack {
     std::int64_t trackId=0;
     std::uint16_t channels=0;
     std::filesystem::path file;
+    std::optional<std::int64_t> placementOffsetSamples{};
 };
 struct AudioRecordingPreview {
     struct Track {
         std::int64_t trackId=0;
         std::vector<std::uint32_t> channels; // indices into the preview's unique input channels
+        std::optional<std::int64_t> placementOffsetSamples{}; // linear track override
     };
-    std::int64_t startSample=0; // clip position on the timeline after the placement correction
+    std::int64_t startSample=0; // clip position on the timeline after the default placement correction
+    std::int64_t rawStartSample=0; // captured start used by a track's linear override
     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
     std::vector<Track> tracks;
     struct PunchedPlacement {
@@ -76,7 +89,8 @@ struct AudioRecordingPreview {
         std::int64_t startSample;
         std::uint64_t sourceStartFrame, frames;
     };
-    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames) const noexcept;
+    [[nodiscard]] Range latestPass(std::uint64_t acceptedFrames,
+                                   std::optional<std::int64_t> trackOffsetSamples = {}) const noexcept;
 };
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.
@@ -96,6 +110,11 @@ public:
     [[nodiscard]] const RecordingPunchWindow& punchWindow()const noexcept{return punchWindow_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
     [[nodiscard]] bool hasAttachableAudio()const noexcept;
+    [[nodiscard]] const std::string& recordingId()const noexcept{return recordingId_;}
+    [[nodiscard]] const std::string& recoveryProjectUuid()const noexcept{return recoveryProjectUuid_;}
+    [[nodiscard]] const std::string& recoveryWarning()const noexcept{return recoveryWarning_;}
+    [[nodiscard]] bool recovered()const noexcept{return recovered_;}
+    [[nodiscard]] const std::filesystem::path& recoverySource()const noexcept{return recoverySource_;}
     // Owner thread, after recording has finished. A cleanup error retains the
     // directory reference so the owner can report and retry it.
     std::error_code discard();
@@ -105,6 +124,11 @@ public:
     // Keep the snapshot for retry. Placement is supplied explicitly in session
     // samples at the captured rate, independently of the input stream clock.
     [[nodiscard]] static AudioRecordingResult fromMemory(const AudioMemorySnapshot&,const AudioMemoryTakeSpec&);
+    // Off callback. Rebuild a private copy from the verified common PCM
+    // prefix. The captured files remain intact until the project places it.
+    [[nodiscard]] static AudioRecordingResult fromInterrupted(
+        recording_recovery::OwnedPlan, const std::filesystem::path& directory, std::string sourceProject,
+        std::stop_token = {});
 private:
     struct Files;
     std::shared_ptr<Files> files_;
@@ -113,6 +137,9 @@ private:
     RecordingPunchWindow punchWindow_;
     std::vector<RecordedPass> passes_;
     bool finalizedPrefix_=false;
+    std::string recordingId_,recoveryProjectUuid_,recoveryWarning_;
+    std::filesystem::path recoverySource_;
+    bool recovered_=false;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.
@@ -148,6 +175,20 @@ public:
                                          RecordingPunch=RecordingPunch::Within,
                                          const RecordingPunchWindow& = {}, const TempoMap* clock=nullptr,
                                          std::uint64_t clockGeneration=0)noexcept;
+    struct RenderSlice {
+        void* context = nullptr;
+        // Main output, when requested, is copied in stereo from the just-rendered graph.
+        bool (*process)(void*, std::span<const std::int64_t> recordingTracks,
+                        std::span<const std::int64_t> resamplingTracks, const AudioIo* mainOutput) noexcept = nullptr;
+    };
+    struct SliceResult {
+        bool rendered = false, captured = false;
+    };
+    // Pins the same recorder job across graph rendering. Physical-only takes keep
+    // their pre-render write. Mixed inputs have one common post-render write.
+    SliceResult captureAndRender(const AudioIo&, const Transport&, RecordingPunch,
+                                 const RecordingPunchWindow&, const TempoMap*, std::uint64_t clockGeneration,
+                                 RenderSlice) noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

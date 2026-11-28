@@ -184,6 +184,10 @@ void BarItem::setCountInPosition(engine::CountInPosition position) noexcept {
         repaint();
     }
 }
+void BarItem::clicked(const juce::ModifierKeys &modifiers) {
+    if (onModifiedClick)
+        onModifiedClick(modifiers);
+}
 void BarItem::mouseDown(const juce::MouseEvent &event) {
     dropdownPress_ = onDropdown && (event.mods.isPopupMenu() || event.x >= getWidth() - 10);
     if (dropdownPress_)
@@ -220,6 +224,7 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
     }
     if (glyph != Glyph::None)
         paintGlyph(g, glyph, content,
+                   !isEnabled() ? look::text.withMultipliedAlpha(.4f) :
                    getToggleState() ? (boxed ? look::ink : look::accent) : look::text);
     if (countIn_.bar < 0) {
         char position[48];
@@ -393,7 +398,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&nudgeUp, "Nudge Up", "Unavailable until playback supports temporary tempo changes.", false},
         {&signature, "Time Signature", "Drag, scroll or use Up and Down to adjust the numerator or denominator "
                                        "at the play location. Click to type a signature such as 3/4."},
-        {&metronome, "Metronome", "O toggles the metronome. Its menu sets count-in and the shared Cue Volume."},
+        {&metronome, "Metronome", "O toggles the metronome. Its menu sets the click, Count-In and shared Cue Volume."},
         {&quantize, "Launch Quantization", "Unavailable until Session View can launch clips.", false},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
@@ -403,11 +408,11 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback. Press while stopped to return to the start."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
-        {&overdub, "MIDI Arrangement Overdub", "Unavailable until Arrangement Record can overdub MIDI clips.", false},
-        {&automationArm, "Automation Arm", "Unavailable until Arrangement Record can write automation.", false},
+        {&overdub, "MIDI Arrangement Overdub", "Adds notes to MIDI clips during Arrangement Record."},
+        {&automationArm, "Automation Arm", "While on, moving a control during Arrangement Record writes automation."},
         {&reEnable, "Re-Enable Automation", "Lit while a control you moved overrides its automation. "
                                             "Click to follow every envelope again."},
-        {&capture, "Capture MIDI", "Unavailable until the app can turn recently played MIDI into a clip.", false},
+        {&capture, "Capture MIDI", "Turns recently played MIDI into clips."},
         {&sessionRecord, "Session Record", "Unavailable until Session View can record clips.", false},
         {&loopStart, "Loop Start", "Drag, scroll or use Up and Down on a number to move the loop without changing "
                                    "its length. Click to type a start such as 5.1.1."},
@@ -417,11 +422,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&loopLength, "Loop Length", "Drag, scroll or use Up and Down on a number to move the loop's end. "
                                      "Click to type a length such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
-        {&keyboard, "Computer MIDI Keyboard", "Unavailable until computer keys can send MIDI notes.", false},
+        {&keyboard, "Computer MIDI Keyboard", "Plays MIDI notes from the computer keyboard (M). Z and X change the octave. C and V change velocity."},
         {&key, "Key Map Mode", "Unavailable until controls can be mapped to computer keys.", false},
         {&midi, "MIDI Map Mode", "Unavailable until the app can act on MIDI controller mappings.", false},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
-        {&indicators, "MIDI Indicators", "Light when MIDI comes in or goes out."},
+        {&indicators, "MIDI In", "Lights when MIDI arrives from a port."},
+        {&midiOutIndicator, "MIDI Out", "Lights when MIDI is sent to a port."},
         {&arrangementPage, "Arrangement", "Return to the Arrangement workspace (F4)."},
         {&mix, "Mix View", "Open the channel chains and analysers (F4)."}};
     for (const auto &info : infos) {
@@ -435,6 +441,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         // The bar remembers the control that last had the focus.
         info.item->onFocus = [this, item = info.item] { lastFocused_ = item; };
     }
+    for (auto *item : {&play, &stop, &record, &follow, &metronome, &loop})
+        item->getProperties().set(controls::iconTooltip, true);
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
@@ -506,11 +514,39 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         }
         root_.reenableAutomation(); // a refusal says why; the snapshot unlights the switch
     };
+    automationArm.onClick = [this] {
+        if (!root_.automationArmed || !root_.armAutomation)
+            return;
+        root_.armAutomation(!root_.automationArmed());
+        root_.mark(DirtySet::Transport);
+    };
+    automationArm.setEnabled(false);
+    automationArm.setAlpha(.45f);
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
-    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    record.onModifiedClick = [this](const juce::ModifierKeys &modifiers) {
+        root_.command(modifiers.isShiftDown() ? AppCommands::ArrangementRecordAlternate
+                                              : AppCommands::ArrangementRecord);
+    };
     draw.onClick = [this] { root_.command(AppCommands::DrawMode); };
-    // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
+    capture.setEnabled(false);
+    capture.onClick = [this] {
+        const bool playing = root_.playing();
+        const auto tick = playing ? root_.timelineTick() : root_.arrangement.geometry.selection.insert;
+        if (root_.captureRecentMidi) root_.captureRecentMidi(tick, playing);
+    };
+    keyboard.onClick = [this] { root_.command(AppCommands::ComputerMidiKeyboard); };
+    // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
+    // does to the notes already there.
+    overdub.onClick = [this] {
+        const bool on = !root_.midiOverdub();
+        root_.setMidiOverdub(on);
+        overdub.setToggleState(on, juce::dontSendNotification);
+        root_.say(on ? "MIDI Arrangement Overdub on: a MIDI recording will add to the notes already there."
+                     : "MIDI Arrangement Overdub off: a MIDI recording will replace the notes it records over.");
+    };
+    // The MIDI Indicators follow the app's input and output activity.
     indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
+    midiOutIndicator.onClick = [this] { midiOutIndicator.setToggleState(root_.midiOut(), juce::dontSendNotification); };
     onCpuMenu = [this](juce::PopupMenu menu) {
         menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&cpu));
     };
@@ -568,15 +604,45 @@ void TransportBar::resized() {
     place(key, 26, 12);
     place(midi, 28, 2);
     place(cpu, 58, 2);
-    place(indicators, 30);
+    place(indicators, 13, 1);
+    place(midiOutIndicator, 18, 0);
 }
 juce::PopupMenu TransportBar::metronomeMenu() const {
     juce::PopupMenu menu;
-    menu.addSectionHeader("Count-In");
     const auto current = root_.current();
+    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);
+    const auto options = current ? current->transport.metronomeOptions : MetronomeOptions{};
+    const bool enabled = static_cast<bool>(current);
+    menu.addItem("Enable Only While Recording", enabled, enabled && options.recordingOnly, [safe] {
+        if (safe)
+            safe->toggleMetronomeWhileRecording();
+    });
+    juce::PopupMenu sounds;
+    constexpr std::array soundChoices{std::pair{MetronomeSound::Classic, "Classic"},
+                                      std::pair{MetronomeSound::Wood, "Wood"},
+                                      std::pair{MetronomeSound::Bell, "Bell"}};
+    for (const auto &[sound, label] : soundChoices)
+        sounds.addItem(label, enabled, enabled && options.sound == sound, [safe, value = sound] {
+            if (safe)
+                safe->setMetronomeSound(value);
+        });
+    menu.addSubMenu("Sound", sounds, enabled);
+    const bool eighthNotesFit = current && metronomeEighthNotesFit(meterAt(root_.timelineTick(), current->meters).barTicks());
+    const bool playsEighthNotes = options.eighthNotes && eighthNotesFit;
+    juce::PopupMenu rhythms;
+    rhythms.addItem("Auto", enabled, enabled && !playsEighthNotes, [safe] {
+        if (safe)
+            safe->setMetronomeEighthNotes(false);
+    });
+    rhythms.addItem("1/8", eighthNotesFit, playsEighthNotes, [safe] {
+        if (safe)
+            safe->setMetronomeEighthNotes(true);
+    });
+    menu.addSubMenu("Rhythm", rhythms, enabled);
+    menu.addSeparator();
+    menu.addSectionHeader("Count-In");
     constexpr std::array choices{std::pair{0, "None"}, std::pair{1, "1 Bar"},
                                  std::pair{2, "2 Bars"}, std::pair{4, "4 Bars"}};
-    const auto safe = juce::Component::SafePointer<AdiRootComponent>(&root_);
     for (const auto &[bars, label] : choices) {
         menu.addItem(label, static_cast<bool>(current), current && current->transport.countInBars == bars,
                      [safe, value = bars] {
@@ -632,8 +698,15 @@ void TransportBar::refresh() {
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
-    record.setToggleState(root_.isRecording(), juce::dontSendNotification);
+    record.setToggleState(root_.arrangementRecordEnabled(), juce::dontSendNotification);
+    overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
+    keyboard.setToggleState(root_.computerMidiEnabled(), juce::dontSendNotification);
+    const bool canArmAutomation = root_.automationArmed && root_.armAutomation;
+    automationArm.setEnabled(canArmAutomation);
+    automationArm.setAlpha(canArmAutomation ? 1.f : .45f);
+    automationArm.setToggleState(canArmAutomation && root_.automationArmed(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
+    midiOutIndicator.setToggleState(root_.midiOut(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4).
     reEnable.setToggleState(root_.reader().automationOverridden(), juce::dontSendNotification);

@@ -42,12 +42,18 @@ PeakResult readMediaPeaks(const Store&,std::int64_t mediaId);
 // reuses the shared analysed file or hashes/resolves/decodes/streams the source.
 // No pool/op/history writes; the window
 // may memoize by contentHash and must discard stale document/generation results.
-// maxBinsPerChannel applies to newly built data. DecodeCache decoding itself is
-// not interruptible; cancellation is checked before/after it and per hash/read.
+// maxBinsPerChannel applies to newly built data. PreferRequested also attempts
+// to rebuild coarser cached peaks and falls back to them if the source cannot
+// be read. DecodeCache decoding itself is not interruptible; cancellation is
+// checked before/after it and per hash/read.
+enum class PeakCacheResolution { AnyValid, PreferRequested };
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel=4096,
-    std::stop_token={},audio::DecodeCache* = nullptr);
+    std::stop_token={},audio::DecodeCache* = nullptr,PeakCacheResolution = PeakCacheResolution::AnyValid);
 // Explicit shared analysis cache, or nullptr to disable it. The legacy
 // overload uses the process analysed folder. Cache write failure is nonfatal.
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel,
-    std::stop_token,audio::DecodeCache*,AnalysisCache*);
+    std::stop_token,audio::DecodeCache*,AnalysisCache*,PeakCacheResolution = PeakCacheResolution::AnyValid);
+/// Onsets for the Sample Editor. Reads the source only on a worker.
+[[nodiscard]] std::vector<std::uint64_t> buildMediaTransients(const Store&, std::int64_t mediaId,
+                                                             const std::string &contentHash, std::stop_token = {});
 }

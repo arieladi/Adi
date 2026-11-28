@@ -67,11 +67,13 @@ struct Fixture {
     test::TempDirectory temp{"separated_stems","project"};
     fs::path project=temp.path()/"project"/"song.adi";
     std::unique_ptr<Store> store;
+    std::int64_t initialTrackCount{};
     SeparationResult result;SeparationImportOptions options;
     std::uint32_t rate,frames;
     Fixture(std::size_t number=4,std::uint32_t hz=48000,std::uint32_t length=4800):rate(hz),frames(length) {
         fs::create_directories(project.parent_path());StoreError error{};store=Store::createNewProject(project,error);
         if(!store)throw std::runtime_error("create stem project");
+        initialTrackCount = count(*store, "tracks");
         const auto source=project.parent_path()/"source.wav";wave(source,rate,frames,0.5f);
         if(!importMedia(*store,source,50,100).ok)throw std::runtime_error("register source media");
         result.sourceMedia=50;result.sourceHash=blake3File(source).hex;result.frames=frames;
@@ -209,7 +211,9 @@ void failuresAndRetry() {
     Fixture stale;auto pending=stale.prepare();OpRequest rename;rename.opType="project.setName";rename.payload={{"name","changed"}};
     if(!OpJournal(*stale.store).commit(rename).ok)throw std::runtime_error("stale rename");
     const auto staleResult=commitSeparatedStems(*stale.store,pending,7);
-    check(!staleResult.ok && staleResult.stale && count(*stale.store,"tracks")==7 && count(*stale.store,"agent_requests")==0,"changed journal head refuses inside commit before any separation action");
+    check(!staleResult.ok && staleResult.stale && count(*stale.store, "tracks") == stale.initialTrackCount &&
+              count(*stale.store, "agent_requests") == 0,
+          "changed journal head refuses inside commit before any separation action");
     Fixture reopened;auto old=reopened.prepare();reopened.store.reset();StoreError error{};reopened.store=Store::open(reopened.project,error);
     check(!commitSeparatedStems(*reopened.store,old,7).ok,"reopened same filename/generation cannot accept an old client's prepared result");
     Fixture changed;auto captured=changed.prepare();fs::remove_all(changed.result.folder);
@@ -217,10 +221,14 @@ void failuresAndRetry() {
     Fixture corrupt;auto capturedBad=corrupt.prepare();
     for(const auto& entry:fs::directory_iterator(corrupt.project.parent_path()))if(entry.path().filename().string().starts_with(".adi-separated-"))
         std::ofstream(entry.path()/"stem-0.wav",std::ios::binary|std::ios::app)<<'x';
-    check(!commitSeparatedStems(*corrupt.store,capturedBad,7).ok && count(*corrupt.store,"tracks")==7,"changed private captured audio refuses publication and rolls back rows");
+    check(!commitSeparatedStems(*corrupt.store, capturedBad, 7).ok &&
+              count(*corrupt.store, "tracks") == corrupt.initialTrackCount,
+          "changed private captured audio refuses publication and rolls back rows");
     Fixture destination;auto destinationJob=destination.prepare();fs::create_directory(destination.project.parent_path()/"audio");
     const auto target=destination.project.parent_path()/"audio"/("separated-"+destination.result.stems.front().hash+".wav");std::ofstream(target)<<"occupied";
-    check(!commitSeparatedStems(*destination.store,destinationJob,7).ok && count(*destination.store,"tracks")==7 && fs::file_size(target)==8,"different pre-existing destination is preserved and no partial group commits");
+    check(!commitSeparatedStems(*destination.store, destinationJob, 7).ok &&
+              count(*destination.store, "tracks") == destination.initialTrackCount && fs::file_size(target) == 8,
+          "different pre-existing destination is preserved and no partial group commits");
 }
 void shapesAndValidation() {
     Fixture f;const auto baseline=digestProject(*f.store).text;
@@ -277,7 +285,8 @@ void cancellationAndCallbacks() {
     check(!prepareSeparatedStems(*f.store,f.result,options).ready(),"already-cancelled result refuses preparation");
     std::stop_source during;options=f.options;options.stop=during.get_token();unsigned calls=0;
     options.checkpoint=[&]{if(++calls==3)during.request_stop();};
-    check(!prepareSeparatedStems(*f.store,f.result,options).ready() && count(*f.store,"tracks")==7,"live cancellation during capture leaves no project changes");
+    check(!prepareSeparatedStems(*f.store, f.result, options).ready() && count(*f.store, "tracks") == f.initialTrackCount,
+          "live cancellation during capture leaves no project changes");
     auto captured=f.prepare();if(!captured.ready())throw std::runtime_error(captured.error());
     const auto preparedCost=emptyResultCost<PreparedSeparation>(),commitCost=emptyResultCost<CommitResult>();
     PreparedSeparation refused;CommitResult commit;
@@ -295,14 +304,16 @@ void boundaries() {
         window.store->db().execAndGet("SELECT count(*) FROM audio_clips WHERE src_start_frames=0 AND src_len_frames=1200").getInt()==4,
         "a named service without a weights hash can return a source subwindow at a nonzero common placement");
     Fixture growing;bool changed=false;growing.options.checkpoint=[&]{if(!changed){changed=true;std::ofstream(growing.result.folder/growing.result.stems.front().file,std::ios::binary|std::ios::app)<<'x';}};
-    check(!growing.prepare().ready() && count(*growing.store,"tracks")==7,"producer growth after size preflight refuses instead of escaping the byte budget");
+    check(!growing.prepare().ready() && count(*growing.store, "tracks") == growing.initialTrackCount,
+          "producer growth after size preflight refuses instead of escaping the byte budget");
     Fixture changing;bool active=false;unsigned checkpoints=0;
     changing.options.checkpoint=[&]{if(active && ++checkpoints==3)for(const auto& entry:fs::directory_iterator(changing.project.parent_path()))
         if(entry.path().filename().string().starts_with(".adi-separated-")){
             std::fstream file(entry.path()/"stem-0.wav",std::ios::binary|std::ios::in|std::ios::out);file.seekp(-1,std::ios::end);file.put('x');
         }};
     auto pending=changing.prepare();active=true;
-    check(!commitSeparatedStems(*changing.store,pending,7).ok && count(*changing.store,"tracks")==7 && count(*changing.store,"agent_requests")==0,
+    check(!commitSeparatedStems(*changing.store, pending, 7).ok &&
+              count(*changing.store, "tracks") == changing.initialTrackCount && count(*changing.store, "agent_requests") == 0,
         "same-size private mutation between prehash and publication copy refuses the complete transaction");
     Fixture readOnly;auto writableJob=readOnly.prepare();StoreError error{};
     auto reader=Store::open(readOnly.project,error,true);

@@ -25,8 +25,11 @@ Main is at 1.23. PLAN PD-10's register of pending minors is this table. Minors l
 | 1.24 | engine | the rack macro side tables: the saved chain selector and its settings, macro settings, enabled mappings, mapping breakpoint curves and authored target caps, keyed by (device, parameter id) (DEV-06, ADR-0060 d3-d5, ADR-0203 d15) | none yet: `engine/dev06-rack-macros` plays the macros without it | reserved; lands after DEV-03 and 3 December (ADR-0249 d3); the saved selector waits for DEV-02 |
 | 1.25 | engine | the modulation route side tables (source, target device and parameter, depth, curve points, mode, bipolar, enable), persisted and undoable; outputs never persist (DEV-07, ADR-0230 d4, XC-16) | none yet: engine queue item 12 | reserved; lands after DEV-06 (ADR-0249 d3) |
 | 1.26 | the session seat (engine, lent) | Session View's data: `scenes`, `clip_slots`, `clip_launch` and the essential extension `org.adidaw.session` (TM-SV-02, ADR-0101 d2, d4); slot clips stay out of the Arrangement's accessor and its SQL readers | none yet: `seats/session-chain` | reserved 27 November |
-| 1.27 | the pitch seat (engine, lent) | the Pitch Editor's clip-owned edit rows: stable note identities against the source's hash and the analysis version, authored edits in the project because ADIA is evictable (`docs/CLIP-VIEW-ADDITIONS.md` C1; plan row TM-PE-01, owed under DF-R3) | none yet: `seats/pitch-chain` | reserved 27 November |
-| 1.28 | — | the next minor, by reservation here | — | free |
+| 1.27 | the pitch seat (engine, lent) | the Pitch Editor's clip-owned edit rows: stable note identities against the source's hash and the analysis version, authored edits in the project because ADIA is evictable (`docs/CLIP-VIEW-ADDITIONS.md` C1; plan row TM-PE-01, owed under DF-R3); with them, in the same minor, the marker `clip_pitch_extractions` owned by an extraction's output clip, which outlives the audio source | none yet: `seats/pitch-chain` | reserved 27 November |
+| 1.28 | the basics routing session (engine, lent) | SC-404, a MIDI track's own output: one optional row per track holding the endpoint's identifier, its saved name and a MIDI channel 1 to 16; it goes with the track on delete, Undo and duplicate | none yet: the routing chain | reserved 27 November |
+| 1.29 | — | the next minor, by reservation here | — | free |
+
+**The order of the minors.** The file on main is at 1.23. Minors 1.24 and 1.25 belong to engine rows whose branches have not landed (DEV-06, DEV-07). A later minor is staged under its number and switched on only when every minor below it is on main: 1.26, 1.27 and 1.28 wait for 1.24 and 1.25, which win lands or renumbers first.
 
 Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win); chain volume and pan, a side table (DF-E73, ADR-0253 d8); AU-06's Arrangement clip-envelope modulation streams (ADR-0230 d4, M6); engine-win queue item 8, only if the device ref must store the VST3 class ID. From ADR-0254, each reserved when its row starts: MX-39's per-device gain-match flag and fixed gain; TM-FC-05's lane kind that plays along with the main lane; AGT-12, only if a request's scope needs a new object beside `agent_requests`.
 
@@ -36,7 +39,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0263**.
+Next free: **ADR-0266**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -44,7 +47,7 @@ Next free: **ADR-0263**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C9 | DF-C10 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M79 | DF-M80 |
-| DF-W | Window | the window lane and win | DF-W61 | DF-W62 |
+| DF-W | Window | the window lane and win | DF-W65 | DF-W66 |
 | DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E92 | DF-E93 |
 | DF-R | Repository | win | DF-R3 | DF-R4 |
 
@@ -61,7 +64,10 @@ Claimed by open pull requests, or reserved for a named PLAN row before its pull 
 | `lane.restore` | #662 (landed) | engine-win |
 | `noteExpression.write` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the `note_expression` AEXP rows; DF-W12's gain (3) and pan (4) are existing dimensions | engine |
 | `scene.create`, `scene.delete`, `scene.reorder`, `scene.rename`, `scene.setTempo`, `session.setSlotClip`, `session.clearSlot`, `session.setLaunchMode`, `session.setLaunchQuant`, `session.setFollowAction` (edits); `session.launchClip`, `session.launchScene`, `session.stopTrack`, `session.stopAll` (ephemeral); `transport.setLaunchQuantization` (TM-SV-01) and `capture.sessionPerformance` (TM-SV-04) | none yet: `seats/session-chain`. Further names (a scene's signature and enable, the Stop button, clip settings, a scene's cancel, slot record) keep the `scene.` and `session.` prefixes and are listed in the seat's report as they are added | the session seat |
+| `view.applyFilter`, `view.clearFilter` | none yet: `control/agent-chain`. The agent's view operations of ADR-0257 d6, through one `view_filter` tool at Propose or Apply: they change what the session shows (track order, clip highlighting), are written to the agent's log with actor and source, and touch neither the Store, routing, Undo nor the user's saved filters; no schema minor. The plan rows for ADR-0257 d4 to d6 are owed under DF-R2 | the agent seat |
 | `clip.setPitchEdits` | none yet: `seats/pitch-chain`; one batch replaces a clip's edit rows and captures the previous rows for Undo | the pitch seat |
+| `clip.splitPitchSegment`, `clip.mergePitchSegments` | none yet: `seats/pitch-chain`; each carries the resolved source-bound edit image, so Undo, Redo and replay use captured bytes | the pitch seat |
+| `scene.setSignature`, `scene.setEnabled`, `session.setStopButton`, `session.setLaunchSettings`, `session.cancelSceneLaunch`, `session.backToArrangement`, `session.setFollowActionsEnabled` | none yet: `seats/session-chain` | the session seat |
 | `noteExpression.clear` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the same rows | engine |
 
 ## PLAN rows on loan (ADR-0252)

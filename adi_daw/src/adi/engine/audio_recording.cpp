@@ -3,9 +3,12 @@
 #include "adi/engine/audio_memory.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
+#include "adi/engine/recording_recovery_wave.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -23,6 +26,19 @@ std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
     if (startSample < 0 || (offsetSamples < 0 && startSample > ceiling + offsetSamples))
         return std::nullopt;
     return offsetSamples > startSample ? 0 : startSample - offsetSamples;
+}
+
+std::int64_t recordingLatencyCorrection(std::int64_t driverSamples, double sampleRate,
+                                        double errorMilliseconds) noexcept {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0 || sampleRate > 768000 ||
+        !std::isfinite(errorMilliseconds) || std::abs(errorMilliseconds) > 150)
+        return driverSamples;
+    const auto errorSamples = static_cast<std::int64_t>(std::llround(errorMilliseconds * sampleRate / 1000.0));
+    if (errorSamples > 0 && driverSamples > std::numeric_limits<std::int64_t>::max() - errorSamples)
+        return std::numeric_limits<std::int64_t>::max();
+    if (errorSamples < 0 && driverSamples < std::numeric_limits<std::int64_t>::min() - errorSamples)
+        return std::numeric_limits<std::int64_t>::min();
+    return driverSamples + errorSamples;
 }
 
 std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std::uint64_t frames,
@@ -46,8 +62,13 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
                         keptStart,keptEnd};
 }
 
-AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames) const noexcept {
+AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames,
+    std::optional<std::int64_t> trackOffsetSamples) const noexcept {
     const auto frames = std::max(peaks.frames, acceptedFrames);
+    if (!loop && trackOffsetSamples) {
+        const auto placed = recordingPlacementRange(rawStartSample, frames, *trackOffsetSamples, {});
+        return placed ? Range{placed->timelineStartSample, 0, placed->frames} : Range{startSample, 0, 0};
+    }
     if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
         startSample < 0 || startSample >= loop->endSample)
         return {startSample, 0, frames};
@@ -61,7 +82,22 @@ AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acc
     return {loop->beginSample, frames - passFrames, passFrames};
 }
 
-struct AudioRecordingResult::Files {fs::path directory;};
+struct AudioRecordingResult::Files {
+    fs::path directory;
+    std::shared_ptr<media::ProjectFileLease> recordingOwner;
+    bool hasOriginalPlan=false;
+    bool ephemeralStage=false;
+    ~Files() {
+        if(ephemeralStage && !directory.empty()) {
+            try {
+                std::error_code ignored;
+                fs::remove_all(directory,ignored);
+            } catch(...) {
+                // A discarded recovery preview cannot affect the original.
+            }
+        }
+    }
+};
 bool AudioRecordingResult::hasAttachableAudio()const noexcept {
     if(frames==0)return false;
     switch(failure) {
@@ -79,11 +115,23 @@ std::error_code AudioRecordingResult::discard() {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
     if(!files_)return {};
     std::error_code removalError;
+    // If removal of the audio is refused, do not offer a take the owner
+    // already discarded. Deleting a link here only removes the link.
+    if(files_->hasOriginalPlan) {
+        fs::remove(files_->directory/"start.json",removalError);
+        if(removalError)return removalError;
+    }
     fs::remove_all(files_->directory,removalError);
-    if(!removalError)files_.reset();
+    if(!removalError) {
+        files_->recordingOwner.reset();
+        if(files_->hasOriginalPlan)recording_recovery::forgetLaunchTake(recordingId_);
+        if(files_->ephemeralStage)files_->directory.clear();
+        files_.reset();
+    }
     return removalError;
 }
 namespace {
+constexpr std::uint32_t kMainChannelBase = 64;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free);
 static_assert(std::atomic<RecordingFailure>::is_always_lock_free);
 class WaveSink final:public AudioRecordingSink {
@@ -111,8 +159,11 @@ struct Job {
     AudioRecordingSpec spec;
     fs::path directory;
     std::vector<RecordedTrack> tracks;
-    std::vector<std::int64_t> trackIds;
+    std::vector<std::int64_t> trackIds, resamplingTracks;
     std::vector<std::uint32_t> inputChannels;
+    std::size_t physicalChannels = 0;
+    std::vector<float> mainBuffer;
+    std::array<float*, 2> mainOutput{};
     std::vector<std::vector<std::size_t>> mappings;
     std::vector<std::unique_ptr<AudioRecordingSink>> writers;
     std::vector<std::vector<float>> output;
@@ -131,6 +182,8 @@ struct Job {
     mutable std::mutex previewMutex;
     std::shared_ptr<const AudioRecordingPreview> publishedPreview;
     bool finalized=false; // written before publishing done
+    std::optional<recording_recovery::OwnedPlan> recovery;
+    std::string recoveryWarning;
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
@@ -194,6 +247,7 @@ struct Job {
             try {
                 const auto start = firstSample.load(std::memory_order_relaxed);
                 const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
+                accumulatingPreview.rawStartSample = start;
                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
                 if (punchWindow.active())
                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};
@@ -206,6 +260,8 @@ struct Job {
                 for (std::size_t target = 0; target < spec.targets.size(); ++target) {
                     AudioRecordingPreview::Track track;
                     track.trackId = spec.targets[target].trackId;
+                    if (!spec.loop)
+                        track.placementOffsetSamples = spec.targets[target].placementOffsetSamples;
                     track.channels.reserve(mappings[target].size());
                     for (const auto channel : mappings[target])
                         track.channels.push_back(static_cast<std::uint32_t>(channel));
@@ -269,6 +325,11 @@ struct Job {
                     if(head==tail)break;
                 }
                 const auto frames=static_cast<std::uint32_t>(std::min<std::uint64_t>(4096,head-tail));
+                if(tail==0 && recovery) {
+                    auto warning=recording_recovery::writeStart(
+                        directory,recovery->plan.recordingId,firstSample.load(std::memory_order_relaxed),punchWindow);
+                    if(!warning.empty())recoveryWarning=std::move(warning);
+                }
                 for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
                     readBuffer[static_cast<std::size_t>(frame)*inputChannels.size()+channel]=ring[static_cast<std::size_t>((tail+frame)%spec.ringFrames)*inputChannels.size()+channel];
                 read.store(tail+frames,std::memory_order_release);
@@ -290,34 +351,46 @@ struct Job {
         publishPreview(Clock::now());
         done.store(true,std::memory_order_release);
     }
-    bool capture(const AudioIo& io,const Transport& transport,RecordingPunch punch,
-                 const RecordingPunchWindow& window,const TempoMap* clock,std::uint64_t clockGeneration)noexcept {
-        if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return false;
-        if(begun && !spec.loop && window!=punchWindow){fail(RecordingFailure::Discontinuity);return false;}
+    struct Capture {
+        std::uint64_t head;
+        std::int64_t position;
+        std::uint32_t frames;
+    };
+    std::optional<Capture> prepareCapture(const AudioIo& io,const Transport& transport,RecordingPunch punch,
+                                          const RecordingPunchWindow& window,const TempoMap* clock,
+                                          std::uint64_t clockGeneration) noexcept {
+        if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return std::nullopt;
+        if(begun && !spec.loop && window!=punchWindow){fail(RecordingFailure::Discontinuity);return std::nullopt;}
         if(!transport.playing() || punch==RecordingPunch::After) {
             if(begun)transportEnded.store(true,std::memory_order_release);
-            return false;
+            return std::nullopt;
         }
         if(punch==RecordingPunch::Before) {
             if(begun && spec.loop)fail(RecordingFailure::Discontinuity);
-            return false;
+            return std::nullopt;
         }
-        if(io.frames==0)return false;
-        if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return false;}
+        if(io.frames==0)return std::nullopt;
+        if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return std::nullopt;}
         const auto frames=static_cast<std::uint32_t>(io.frames);
-        for(const auto channel:inputChannels)if(!io.in || io.numIn<=0 || channel>=static_cast<std::uint32_t>(io.numIn) || !io.in[channel]){fail(RecordingFailure::MissingInput);return false;}
+        for (std::size_t index = 0; index < physicalChannels; ++index) {
+            const auto channel = inputChannels[index];
+            if (!io.in || io.numIn <= 0 || channel >= static_cast<std::uint32_t>(io.numIn) || !io.in[channel]) {
+                fail(RecordingFailure::MissingInput);
+                return std::nullopt;
+            }
+        }
         const auto position=spec.loop?transport.sampleAt(0):transport.position();
         if(position<0 || io.streamTimeSamples<0 || io.streamTimeSamples>std::numeric_limits<std::int64_t>::max()-frames ||
-           (begun && (position!=nextTimeline || io.streamTimeSamples!=nextStream))){fail(RecordingFailure::Discontinuity);return false;}
+           (begun && (position!=nextTimeline || io.streamTimeSamples!=nextStream))){fail(RecordingFailure::Discontinuity);return std::nullopt;}
         if(spec.loop) {
             if(!transport.looping() || transport.loopBegin()!=spec.loop->beginSample || transport.loopEnd()!=spec.loop->endSample ||
-               (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return false;}
+               (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return std::nullopt;}
             // Equal loop endpoints can hide a different tempo inside the brace.
             // Check the immutable map once per graph publication.
             if(spec.loop->tempo && verifiedClockGeneration!=clockGeneration) {
                 if(!clock || clock->events!=spec.loop->tempo->events) {
                     fail(RecordingFailure::Discontinuity);
-                    return false;
+                    return std::nullopt;
                 }
                 verifiedClockGeneration=clockGeneration;
             }
@@ -328,33 +401,45 @@ struct Job {
             auto previousEnd=needed?passes[needed-1].timelineEndSample:std::int64_t{-1};
             for(std::int64_t offset=0;offset<frames;) {
                 const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
-                if(count<=0){fail(RecordingFailure::Discontinuity);return false;}
+                if(count<=0){fail(RecordingFailure::Discontinuity);return std::nullopt;}
                 if(previousEnd!=at) {
-                    if(needed==passes.size()){fail(RecordingFailure::PassLimit);return false;}
+                    if(needed==passes.size()){fail(RecordingFailure::PassLimit);return std::nullopt;}
                     ++needed;
                 }
                 previousEnd=at+count;offset+=count;
             }
         }else if(position>std::numeric_limits<std::int64_t>::max()-frames || transport.contiguousFrames(0,frames)!=frames) {
-            fail(RecordingFailure::Discontinuity);return false;
+            fail(RecordingFailure::Discontinuity);return std::nullopt;
         }
         const auto head=written.load(std::memory_order_relaxed),tail=read.load(std::memory_order_acquire);
-        if(head>std::numeric_limits<std::uint64_t>::max()-frames || head-tail+frames>spec.ringFrames){fail(RecordingFailure::Overflow);return false;}
+        if(head>std::numeric_limits<std::uint64_t>::max()-frames || head-tail+frames>spec.ringFrames){fail(RecordingFailure::Overflow);return std::nullopt;}
+        return Capture{head, position, frames};
+    }
+    void copyInput(const Capture& slice, const float* const* samples, std::uint32_t sourceBase,
+                   std::size_t first, std::size_t end) noexcept {
+        if (first == end)
+            return;
+        for (std::uint32_t frame = 0; frame < slice.frames; ++frame) {
+            const auto offset = static_cast<std::size_t>((slice.head + frame) % spec.ringFrames) * inputChannels.size();
+            for (auto channel = first; channel < end; ++channel)
+                ring[offset + channel] = samples[inputChannels[channel] - sourceBase][frame];
+        }
+    }
+    void publishCapture(const Capture& slice, const AudioIo& io, const Transport& transport,
+                        const RecordingPunchWindow& window) noexcept {
+        const auto [head, position, frames] = slice;
         if(spec.loop)for(std::int64_t offset=0;offset<frames;) {
             const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
             if(passCount==0 || passes[passCount-1].timelineEndSample!=at)
                 passes[passCount++]={head+static_cast<std::uint64_t>(offset),0,at,at};
             auto& pass=passes[passCount-1];pass.frames+=static_cast<std::uint64_t>(count);pass.timelineEndSample=at+count;offset+=count;
         }
-        for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
-            ring[static_cast<std::size_t>((head+frame)%spec.ringFrames)*inputChannels.size()+channel]=io.in[inputChannels[channel]][frame];
         if(!begun){
             if(!spec.loop)punchWindow=window;
             firstSample.store(position,std::memory_order_relaxed);transportRevision=transport.revision();begun=true;
         }
         nextTimeline=spec.loop?transport.sampleAt(frames):position+frames;nextStream=io.streamTimeSamples+frames;
         written.store(head+frames,std::memory_order_release);
-        return true;
     }
 };
 struct State final:Sequenced {std::shared_ptr<Job> job;};
@@ -387,6 +472,68 @@ AudioRecordingResult AudioRecordingResult::fromMemory(const AudioMemorySnapshot&
     }
     return result;
 }
+AudioRecordingResult AudioRecordingResult::fromInterrupted(recording_recovery::OwnedPlan owned,
+    const fs::path& directory,std::string sourceProject,std::stop_token stop) {
+    if(audio::onAudioThread)throw std::runtime_error("recover recording off callback");
+    AudioRecordingResult result;
+    const auto& plan=owned.plan;
+    result.recordingId_=plan.recordingId;
+    result.recoveryProjectUuid_=plan.projectUuid;
+    result.recoveryWarning_=owned.warning;
+    result.recovered_=true;
+    result.recoverySource_=directory;
+    result.sourceProject_=std::move(sourceProject);
+    const auto start=recording_recovery::readStart(directory,plan.recordingId);
+    result.startSample=start.sample;
+    result.placementOffsetSamples=plan.placementOffsetSamples;
+    result.punchWindow_=start.punch;
+    result.sampleRate=plan.sampleRate;
+    result.loop_=plan.loop;
+    std::uint64_t frames=std::numeric_limits<std::uint64_t>::max();
+    for(std::size_t i=0;i<plan.targets.size();++i) {
+        if(stop.stop_requested())throw std::runtime_error("recording recovery cancelled");
+        const auto source=directory/("take-"+std::to_string(i)+".wav");
+        const auto channels=static_cast<std::uint16_t>(plan.targets[i].channels.size());
+        const auto wave=recording_recovery::inspectWave(source,plan.identities.at(i),
+                                                         {plan.sampleRate,channels,plan.format});
+        frames=std::min(frames,wave.frames);
+    }
+    if(result.startSample<0 || result.startSample>(std::int64_t{1}<<50) || frames==0 ||
+       frames>static_cast<std::uint64_t>((std::int64_t{1}<<50)-result.startSample))
+        throw std::runtime_error("No complete, representable recording to recover");
+    result.frames=frames;
+    if(plan.loop) {
+        auto timeline=result.startSample;
+        for(std::uint64_t offset=0;offset<frames;) {
+            if(timeline>=plan.loop->endSample || result.passes_.size()>=plan.loop->maxPasses)
+                throw std::runtime_error("Interrupted recording exceeds its frozen loop plan");
+            const auto length=std::min(frames-offset,static_cast<std::uint64_t>(plan.loop->endSample-timeline));
+            const auto end=timeline+static_cast<std::int64_t>(length);
+            result.passes_.push_back({offset,length,timeline,end});
+            offset+=length;
+            timeline=plan.loop->beginSample;
+        }
+    }
+    const auto scratch=reserve(directory.parent_path());
+    try {
+        for(std::size_t i=0;i<plan.targets.size();++i) {
+            const auto file="take-"+std::to_string(i)+".wav";
+            const auto channels=static_cast<std::uint16_t>(plan.targets[i].channels.size());
+            recording_recovery::copyRepaired(directory/file,plan.identities.at(i),
+                {plan.sampleRate,channels,plan.format},scratch/file,frames,stop);
+            result.tracks.push_back({plan.targets[i].trackId,channels,scratch/file,plan.targets[i].placementOffsetSamples});
+        }
+        result.files_=std::make_shared<Files>();
+        result.files_->directory=scratch;
+        result.files_->recordingOwner=std::move(owned.ownership);
+        result.files_->ephemeralStage=true;
+    } catch(...) {
+        std::error_code ignored;
+        fs::remove_all(scratch,ignored);
+        throw;
+    }
+    return result;
+}
 struct AudioInputRecorder::Impl {
     std::unique_ptr<SnapshotPublisher<State>> published=std::make_unique<SnapshotPublisher<State>>();
     std::shared_ptr<Job> job;
@@ -404,6 +551,8 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
     try {
         if(audio::onAudioThread)throw std::runtime_error("start recording off callback");
         if(impl_->job)throw std::runtime_error("a recording is still pending");
+        if(!spec.recoveryProjectUuid.empty() && (spec.sourceProject.empty() || factory))
+            throw std::runtime_error("recoverable recording needs a project and the built-in WAV writer");
         if(spec.workFolder.empty() || spec.sampleRate<8000 || spec.sampleRate>768000 || spec.maxFrames==0 || spec.maxFrames>16384 ||
            spec.ringFrames<spec.maxFrames || spec.targets.empty() || spec.targets.size()>256)throw std::runtime_error("invalid recording format or buffer bounds");
         if(spec.format!=audio::WavFormat::Float32 && spec.format!=audio::WavFormat::Pcm16 && spec.format!=audio::WavFormat::Pcm24)throw std::runtime_error("invalid recording encoding");
@@ -415,21 +564,45 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
             if(target.trackId<=0 || !targetIds.insert(target.trackId).second || target.channels.empty() || target.channels.size()>64)throw std::runtime_error("invalid or duplicate recording track");
             std::set<std::uint32_t> unique;
             for(const auto channel:target.channels)if(channel>=64 || !unique.insert(channel).second)throw std::runtime_error("invalid or duplicate input channel");
-            channels.insert(target.channels.begin(),target.channels.end());
+            if (target.source == RecordingSource::MainMix) {
+                if (target.channels.size() != 2 || target.channels[0] != 0 || target.channels[1] != 1)
+                    throw std::runtime_error("Resampling needs the stereo Main mix");
+                job->resamplingTracks.push_back(target.trackId);
+                channels.insert(kMainChannelBase);
+                channels.insert(kMainChannelBase + 1);
+            } else
+                channels.insert(target.channels.begin(),target.channels.end());
         }
         if(static_cast<std::uint64_t>(spec.ringFrames)*channels.size()*sizeof(float)>256ULL*1024*1024)throw std::runtime_error("recording ring exceeds memory bound");
         job->trackIds.assign(targetIds.begin(),targetIds.end());
         job->inputChannels.assign(channels.begin(),channels.end());job->ring.resize(static_cast<std::size_t>(spec.ringFrames)*channels.size());job->readBuffer.resize(4096*channels.size());
-        owned=reserve(spec.workFolder);job->directory=owned;
+        job->physicalChannels = channels.size();
+        if (!job->resamplingTracks.empty()) {
+            std::sort(job->resamplingTracks.begin(), job->resamplingTracks.end());
+            job->physicalChannels -= 2;
+            job->mainBuffer.resize(static_cast<std::size_t>(spec.maxFrames) * 2);
+            job->mainOutput = {job->mainBuffer.data(), job->mainBuffer.data() + spec.maxFrames};
+        }
+        owned=reserve(spec.workFolder);
+        if(!spec.recoveryProjectUuid.empty())owned=fs::canonical(owned);
+        job->directory=owned;
         for(std::size_t index=0;index<spec.targets.size();++index) {
             const auto& target=spec.targets[index];const auto file=owned/("take-"+std::to_string(index)+".wav");
             const auto width=static_cast<std::uint16_t>(target.channels.size());
-            job->tracks.push_back({target.trackId,width,file});std::vector<std::size_t> mapping;
-            for(const auto channel:target.channels)mapping.push_back(static_cast<std::size_t>(std::lower_bound(job->inputChannels.begin(),job->inputChannels.end(),channel)-job->inputChannels.begin()));
+            job->tracks.push_back({target.trackId,width,file,spec.loop ? std::nullopt : target.placementOffsetSamples});
+            std::vector<std::size_t> mapping;
+            const auto base = target.source == RecordingSource::MainMix ? kMainChannelBase : 0U;
+            for(const auto channel:target.channels)mapping.push_back(static_cast<std::size_t>(std::lower_bound(job->inputChannels.begin(),job->inputChannels.end(),channel + base)-job->inputChannels.begin()));
             job->mappings.push_back(std::move(mapping));job->output.emplace_back(4096*target.channels.size());
             auto writer=factory?factory(file,spec.sampleRate,width,spec.format):std::make_unique<WaveSink>(file,spec.sampleRate,width,spec.format);
             if(!writer)throw std::runtime_error("recording writer was not created");
             job->writers.push_back(std::move(writer));
+        }
+        if(!spec.recoveryProjectUuid.empty()) {
+            job->recovery=recording_recovery::begin(spec,owned,spec.recoveryProjectUuid);
+            job->recoveryWarning=job->recovery->warning;
+            auto launchWarning=recording_recovery::registerLaunchTake(owned,job->recovery->plan);
+            if(!launchWarning.empty())job->recoveryWarning=std::move(launchWarning);
         }
         job->worker=std::thread([raw=job.get()]{raw->run();});
         auto state=std::make_unique<State>();state->job=job;impl_->published->publish(std::move(state));impl_->job=std::move(job);impl_->stoppedSeq=0;error.clear();return true;
@@ -481,6 +654,13 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
         case RecordingFailure::PassLimit:result.error="Recording loop pass capacity exhausted";break;
     }
     result.files_=std::make_shared<AudioRecordingResult::Files>();result.files_->directory=job->directory;
+    if(job->recovery) {
+        result.recordingId_=job->recovery->plan.recordingId;
+        result.recoveryProjectUuid_=job->recovery->plan.projectUuid;
+        result.recoveryWarning_=std::move(job->recoveryWarning);
+        result.files_->recordingOwner=std::move(job->recovery->ownership);
+        result.files_->hasOriginalPlan=true;
+    }
     job.reset();
     if(deviceStopped)impl_->published=std::make_unique<SnapshotPublisher<State>>();
     else impl_->published->collect();
@@ -495,8 +675,50 @@ std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,cons
                                                         RecordingPunch punch,const RecordingPunchWindow& window,
                                                         const TempoMap* clock,std::uint64_t clockGeneration)noexcept {
     SnapshotPublisher<State>::AudioRead state(*impl_->published);
-    if(state.valid() && state->job && state->job->capture(io,transport,punch,window,clock,clockGeneration))
-        return state->job->trackIds;
+    if (!state.valid() || !state->job)
+        return {};
+    auto& job = *state->job;
+    if (!job.resamplingTracks.empty()) {
+        job.fail(RecordingFailure::MissingInput);
+        return {};
+    }
+    if (const auto slice = job.prepareCapture(io, transport, punch, window, clock, clockGeneration)) {
+        job.copyInput(*slice, io.in, 0, 0, job.physicalChannels);
+        job.publishCapture(*slice, io, transport, window);
+        return job.trackIds;
+    }
     return {};
+}
+AudioInputRecorder::SliceResult AudioInputRecorder::captureAndRender(
+    const AudioIo& io, const Transport& transport, RecordingPunch punch, const RecordingPunchWindow& window,
+    const TempoMap* clock, std::uint64_t clockGeneration, RenderSlice render) noexcept {
+    if (!render.process)
+        return {};
+    SnapshotPublisher<State>::AudioRead state(*impl_->published);
+    if (!state.valid() || !state->job)
+        return {render.process(render.context, {}, {}, nullptr), false};
+    auto& job = *state->job;
+    const auto slice = job.prepareCapture(io, transport, punch, window, clock, clockGeneration);
+    if (!slice)
+        return {render.process(render.context, {}, {}, nullptr), false};
+    // Physical buffers may alias the device's outputs. Stage them before render
+    // but publish nothing until every source for this slice has been copied.
+    job.copyInput(*slice, io.in, 0, 0, job.physicalChannels);
+    if (job.resamplingTracks.empty()) {
+        job.publishCapture(*slice, io, transport, window);
+        return {render.process(render.context, job.trackIds, {}, nullptr), true};
+    }
+    AudioIo main;
+    main.out = job.mainOutput.data();
+    main.numOut = 2;
+    main.frames = io.frames;
+    if (!render.process(render.context, job.trackIds, job.resamplingTracks, &main)) {
+        job.fail(RecordingFailure::MissingInput);
+        return {false, false};
+    }
+    const std::array<const float*, 2> stereo{job.mainOutput[0], job.mainOutput[1]};
+    job.copyInput(*slice, stereo.data(), kMainChannelBase, job.physicalChannels, job.inputChannels.size());
+    job.publishCapture(*slice, io, transport, window);
+    return {true, true};
 }
 }

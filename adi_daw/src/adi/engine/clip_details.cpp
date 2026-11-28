@@ -166,9 +166,10 @@ ClipDetailsRead readClipDetails(const Store& store,std::int64_t clipId,bool incl
         std::optional<SQLite::Transaction> transaction;
         if(sqlite3_get_autocommit(db.getHandle())!=0)transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         SQLite::Statement query(db,
-            "SELECT id,track_id,lane_id,kind,name,color,time_base,pos_ticks,pos_ns,length_ticks,length_ns,"
+            "SELECT c.id,track_id,lane_id,kind,name,color,time_base,pos_ticks,pos_ns,length_ticks,length_ns,"
             "loop_enabled,loop_start_ticks,loop_len_ticks,content_offset_ticks,muted,gain_db,"
-            "fade_in_ticks,fade_out_ticks,fade_in_curve,fade_out_curve,alias_of FROM clips WHERE id=?");
+            "fade_in_ticks,fade_out_ticks,fade_in_curve,fade_out_curve,alias_of,a.transpose_semis,a.warp_enabled,a.warp_mode "
+            "FROM clips c LEFT JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=?");
         query.bind(1, clipId);
         if (!query.executeStep()) throw std::runtime_error("no such clip");
         ClipDetails clip;
@@ -182,6 +183,10 @@ ClipDetailsRead readClipDetails(const Store& store,std::int64_t clipId,bool incl
         clip.fadeInTicks = query.getColumn(17).getInt64(); clip.fadeOutTicks = query.getColumn(18).getInt64();
         clip.fadeInCurve = query.getColumn(19).getInt64(); clip.fadeOutCurve = query.getColumn(20).getInt64();
         clip.aliasOf = integer(query, 21); clip.startMarkerTicks = clip.contentOffsetTicks;
+        if (!query.getColumn(22).isNull()) {
+            clip.transposeSemis = query.getColumn(22).getDouble();
+            clip.pitchEnabled = query.getColumn(23).getInt() == 0 || query.getColumn(24).getString() != "re-pitch";
+        }
         TempoMap tempo;
         SQLite::Statement tempoQuery(db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks");
         while (tempoQuery.executeStep()) tempo.events.push_back({tempoQuery.getColumn(0).getInt64(), tempoQuery.getColumn(1).getDouble(), tempoQuery.getColumn(2).getInt()});

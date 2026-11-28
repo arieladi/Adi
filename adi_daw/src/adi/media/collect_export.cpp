@@ -18,6 +18,16 @@
 #include <algorithm>
 namespace adi::media {
 namespace fs = std::filesystem;
+std::string detail::portableFilename(std::string name, std::string_view fallback) {
+    for (char& c : name) if (static_cast<unsigned char>(c) < 32 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) c = '_';
+    while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
+    if (name.empty() || name.size() > 180) name = fallback;
+    auto stem = name.substr(0, name.find('.'));
+    for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+        (stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem[3] >= '1' && stem[3] <= '9')) name = "_" + name;
+    return name;
+}
 namespace {
 struct ArchiveCancelled {};
 
@@ -44,15 +54,7 @@ struct Stage {
     ~Stage() { std::error_code ec; fs::remove_all(path, ec); }
 };
 std::string safeName(const std::string& original, std::int64_t id) {
-    std::string name = original;
-    for (char& c : name) if (static_cast<unsigned char>(c) < 32 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) c = '_';
-    while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
-    if (name.empty() || name == "." || name == ".." || name.size() > 180) name = "media-" + std::to_string(id) + ".bin";
-    auto stem = name.substr(0, name.find('.'));
-    for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
-        (stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem[3] >= '1' && stem[3] <= '9')) name = "_" + name;
-    return name;
+    return detail::portableFilename(original, "media-" + std::to_string(id) + ".bin");
 }
 void audioDirectory(const fs::path& folder) {
     const auto audio = folder / "audio";
@@ -134,7 +136,7 @@ FileResult extractMedia(Store& store) {
     } catch (const std::exception& e) { return {false, e.what(),published.rollback()}; }
 }
 FileResult collectExport(const fs::path& input, const fs::path& output,
-                         const ArchiveControl& control) {
+                         const ArchiveControl& control, bool keepUndoHistory) {
     try {
         const auto target = fs::absolute(output);
         if (fs::exists(target) || fs::is_symlink(fs::symlink_status(target))) return {false, "output already exists: " + pathUtf8(target)};
@@ -146,7 +148,9 @@ FileResult collectExport(const fs::path& input, const fs::path& output,
         const auto project = stage.path / "project"; fs::create_directory(project);
         const auto filename = input.extension() == ".adi" ? safeName(pathUtf8(input.filename()), 0) : std::string("project.adi");
         const auto copyPath = project / pathFromUtf8(filename);
-        const auto saved=source->saveCopy(copyPath);
+        const auto policy = keepUndoHistory ? StoreCopyPolicy::shareWithUndo : StoreCopyPolicy::share;
+        const auto saved = source->saveCopy(copyPath, StoreFileCollision::Fail, policy, control.stop);
+        if (control.stop.stop_requested()) throw ArchiveCancelled{};
         if(!saved.ok)throw std::runtime_error(saved.error);
         source.reset();
         advanceArchive(control, {ArchivePhase::CollectMedia});

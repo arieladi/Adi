@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/mpe_output.hpp"
+#include "adi/engine/mpe_input.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -129,12 +130,20 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
         }
 
         case EventType::Controller: {
-            if (in.channel > 15 || in.paramId > 127 || !std::isfinite(in.value) || in.value < 0 ||
+            if (in.channel > 15 || !controllers::validController(in.paramId) || !std::isfinite(in.value) || in.value < 0 ||
                 in.value > 1)
                 return false;
             out.kind = MpeOut::Kind::Control;
             out.channel = in.channel;
             out.ctrl = static_cast<std::uint16_t>(in.paramId);
+            if (in.paramId == kCtrlPitchBend) {
+                const auto exact = controllers::pitchBendWordExact(in.value);
+                out.noteId = 0;
+                out.word = static_cast<std::uint16_t>(std::lround(exact));
+                out.value = exact / 16383.0;
+                out.paramId = caps.bendParam[in.channel];
+                return true;
+            }
             out.value = in.value;
             out.word = static_cast<std::uint16_t>(std::lround(in.value * 127.0));
             out.paramId = caps.controllerParam[in.channel][in.paramId];
@@ -329,12 +338,17 @@ void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentS
             case EventType::NoteOn:         noteOn(events, n, i, out); break;
             case EventType::NoteOff:        noteOff(events[i], out); break;
             case EventType::NoteExpression: expression(events[i], out); break;
-            case EventType::Controller:
-                if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
+            case EventType::Controller: {
+                if (events[i].paramId == kCtrlPitchBend) {
+                    MpeOut wheel;
+                    if (noteExpressionOut(events[i], caps_, wheel))
+                        out.push(wheel);
+                } else if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
                     events[i].value >= 0 && events[i].value <= 1)
                     control(events[i].channel, static_cast<std::uint16_t>(events[i].paramId), events[i].value,
                             events[i].frame, events[i].noteId, out, true);
                 break;
+            }
             case EventType::ParamValue:
             case EventType::ParamMod:       break;   // addressed, not a note stream (ADR-0091)
         }
@@ -452,11 +466,17 @@ void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     // SC-312: an expression for the whole channel (note 0: the pitch wheel, channel pressure, CC74 as
     // ADI's MIDI input makes them) is the channel's own message on EVERY route, as Live sends it: a VST3
     // takes it through its MIDI map, a CLAP as MIDI. Note expression for note 0 is ignored by synths, and
-    // the MIDI routes knew no note 0 and dropped it. On channel 0, where ADR-0054 puts every note.
+    // the MIDI routes knew no note 0 and dropped it. Global controls use the master channel. A
+    // pitch wheel can use the input channel on a raw MIDI port or when mapped to a parameter there.
     if (e.noteId == 0) {
         switch (d) {
-            case ExpressionDim::Pitch:
-                control(0, kCtrlPitchBend, e.value, e.frame, 0, out, false, kChannelBendSemitones); return;
+            case ExpressionDim::Pitch: {
+                if (e.channel >= caps_.bendParam.size() || !std::isfinite(e.value)) { drop(); return; }
+                const bool preserveChannel = caps_.preservePitchWheelChannel || caps_.bendParam[e.channel] != kNoParam;
+                const auto channel = preserveChannel ? e.channel : std::uint8_t{0};
+                control(channel, kCtrlPitchBend, e.value, e.frame, 0, out, true, kChannelBendSemitones);
+                return;
+            }
             case ExpressionDim::Pressure:
                 control(0, kCtrlAfterTouch, e.value, e.frame, 0, out); return;
             case ExpressionDim::Timbre:

@@ -11,6 +11,9 @@
 namespace adi::settings {
 namespace {
 
+// Keep the existing Track default for new inputs until Live reading R17.
+constexpr bool kDefaultTrackOnForNewMidiInputs = false;
+
 Setting make(std::string key, Type type, std::string page, std::string label, std::string help,
              Value dflt, bool agent = false) {
     Setting s;
@@ -175,6 +178,7 @@ void liveSections(std::vector<Setting>& r) {
         {"midi.autoAddControllers", "Control Surface"},
         {"midi.takeoverMode", "Control Surface"},
         {"midi.ports", "MIDI Ports"},
+        {kNewMidiInputTrackKey, "MIDI Ports"},
         // File & Folder
         {"files.sampleEditor", "Sample Editor"},
         {"files.sampleEditorOpens", "Sample Editor"},
@@ -348,8 +352,9 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("audio.srcQuality", "Audio", "Default SR & Pitch Conversion",
                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));
     r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver Error Compensation",
-                       "Milliseconds added to what the driver reports; Measure round trip fills it in.",
-                       0.0, -100, 100));
+                       "Signed milliseconds added to the driver's correction for linear audio takes when Monitor "
+                       "is Off or Keep Monitoring Latency is disabled.",
+                       0.0, -150, 150));
     r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test Tone", "Play a sine tone to the output.", false));
     r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone Volume",
                        "The test tone's level, in dB.", -36.0, -70, 0));
@@ -392,7 +397,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("files.sampleEditor", Type::Path, ff, "Sample Editor",
                      "The external editor Edit opens a sample in.", ""));
     r.push_back(choice("files.sampleEditorOpens", ff, "Sample editor opens",
-                       "Open a copy of the sample, or the file in place.", {"copy", "inPlace"}, "copy"));
+                       "Open the file in place, or open a separate copy.", {"copy", "inPlace"}, "inPlace"));
     r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum Cache Size",
                        "Decoding cache: decoded audio, analysis and peaks. The least recently "
                        "used goes first, never a file in use (ADR-0156). In MB; default 20 GB "
@@ -461,6 +466,27 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "The most results a browser search shows. 0: unlimited (the default, so "
                        "nothing Live would show is hidden; ADR-0203).",
                        0, 0, 1000000));
+    r.push_back(make("browser.lastLabel", Type::Text, "", "Last Browser label",
+                     "The Browser label to restore when a project opens.", ""));
+    {
+        auto marks = make(kBrowserFavoriteMarksKey, Type::Record, "", "Browser Favorites",
+                          "The Browser's favorite and collection color marks.", Value::object());
+        marks.check = [](const Value &value, std::string &why) {
+            for (const auto &[identity, mark] : value.items()) {
+                if (identity.empty() || !mark.is_number_integer() || mark < 1 || mark > 255) {
+                    why = "Browser Favorites needs an identity and at least one valid mark per item.";
+                    return false;
+                }
+            }
+            return true;
+        };
+        r.push_back(std::move(marks));
+    }
+    r.push_back(make(kBrowserPreviewEnabledKey, Type::Bool, "", "Browser Preview",
+                     "Play an audio file when it is selected in the Browser.", kBrowserPreviewStartsEnabled));
+    r.push_back(ranged(kStandalonePreviewLevelKey, Type::Real, "", "Preview level without a song",
+                       "The level of sample previews on outputs 1 and 2 when no song is open.",
+                       kStandalonePreviewLevelDb, -70.0, 0.0));
 
     // --- Plug-Ins (catalogue II §8) --------------------------------------------------------------
     r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-Ins", "Use VST3 Plug-In System Folders",
@@ -551,7 +577,10 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(device("midi.port.name", Type::Text, "Tempo & MIDI", "Last known port name",
                        "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
-                       "The port feeds tracks. Stored per port.", false));
+                       "The port sends or receives track MIDI. Stored per port.", false));
+    r.push_back(make(kNewMidiInputTrackKey, Type::Bool, "Tempo & MIDI", "Track on for new MIDI inputs",
+                     "Set the initial Track switch when a new MIDI input is discovered.",
+                     kDefaultTrackOnForNewMidiInputs));
     r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
     r.push_back(device("midi.port.remote", Type::Bool, "Tempo & MIDI", "Remote",
                        "The port may be MIDI-mapped. Stored per port.", false));
@@ -701,7 +730,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("updates.channel", "Licenses & Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
                        {"stable", "beta"}, "stable"));
     r.push_back(make("privacy.diagnosticLog", Type::Bool, "Licenses & Updates", "Write a diagnostic log",
-                     "A local log for support; nothing is sent (R-20).", false));
+                     "Record the ADI version, project names and window messages in a local log for support. "
+                     "Nothing is sent (R-20).", false));
     r.push_back(make("settings.logChanges", Type::Bool, "Licenses & Updates", "Log settings changes",
                      "Settings changes are logged, with the time and the old and new value "
                      "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
@@ -951,7 +981,7 @@ std::vector<Setting> build() {
 
     // --- Library: paths are roles in a bundle (R-05) -------------------------------------
     r.push_back(make("library.userLibrary", Type::Path, "Library", "User Library",
-                     "Your own presets, samples and clips.", ""));
+                     "Your own presets, samples and clips. Leave empty to use the default User Library.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
     // The default record folder is files.recordFolder, on File & Folder (ADR-0203).

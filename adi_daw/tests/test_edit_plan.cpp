@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/blob.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/digest.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/history.hpp"
@@ -728,6 +729,20 @@ void descriptionBinding() {
           after->before->name=="Material 7" && after->after.size()==1 && after->after.front().span==PlacementSpan{2*q,3*q},
           "description owns names, scope and extents after the Store is closed");
 }
+bool envelopeKnot(Store& store,std::int64_t lane,std::int64_t time,double value) {
+    const auto bytes=store.getAutomationData(lane,{});
+    if(!bytes)return false;
+    const StreamReader<AutomationPoint> reader(*bytes,FourCC::Automation);
+    std::optional<double> actual;
+    for(std::uint32_t i=0;i<reader.count();++i)
+        if(const auto point=reader.at(i);point && point->time==time)actual=point->value;
+    return actual && *actual==value;
+}
+void authoredAutomation(Store& store,std::int64_t lane,std::int64_t position,double value) {
+    AutomationPoint point{};point.time=position;point.value=value;point.point_id=1;
+    if(!store.putAutomationData(lane,{},writeStream<AutomationPoint>(FourCC::Automation,{&point,1})))
+        throw std::runtime_error("write automation fixture");
+}
 void automationAdmissionAndPolicy() {
     Project settingsProject;
     settings::AppSettings app(appdata::App::Daw,settingsProject.temporary.path()/"settings.json");
@@ -739,6 +754,7 @@ void automationAdmissionAndPolicy() {
           "effective Lock setting is read from the supplied application settings snapshot");
     for(const std::int64_t owner:{21,22,23})for(const bool crossing:{false,true}) {
         Project p;auto& store=*p.store;addClip(store,7,21,0,2*q,q);
+        store.db().exec("INSERT INTO mixer_strip(track_id,pan) VALUES(22,-0.5)");
         SQLite::Statement lane(store.db(),"INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,default_value,enabled,visible) VALUES(91,'track',?,'pan','real',0.25,0,0)");
         lane.bind(1,owner);lane.exec();
         if(crossing) {
@@ -748,13 +764,22 @@ void automationAdmissionAndPolicy() {
             if(!store.putAutomationData(91,{},bytes))throw std::runtime_error("write crossing automation fixture");
         }
         const ReadGuard before(store);const auto edit=move(store,scope(),{{7,{22,{}},{0,6*q}}});
-        const bool relevant=owner!=23;
-        check((relevant?!edit.ok:edit.ok) && before.unchanged(store),
-              "unlocked admission checks source AND destination global lanes including crossing/default-only hidden lanes, not unrelated owners");
-        if(relevant)check(!edit.error.empty(),"unsupported following automation returns a useful refusal");
+        check(edit.ok && before.unchanged(store) && commit(store,edit) && spanIs(store,7,22,0,6*q,q),
+              "unlocked move works with source, destination and unrelated automation lanes");
+        if(crossing && owner==21) {
+            const auto newLane=store.db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes WHERE owner_id=22").getInt64();
+            check(envelopeKnot(store,91,2*q,0.25) && newLane>0 && newLane!=91,
+                  "move clears source automation in its span and creates the matching destination lane");
+            check(envelopeKnot(store,newLane,7*q,-0.5),
+                  "the new destination lane preserves the destination mixer value outside the edit");
+        }
+        if(!crossing || owner==23)check(tableRows(store,"automation_data")==before.rows.at("automation_data"),
+              "empty and unrelated automation do not create envelope data");
+        check(History(store).undo().ok && typedRows(store)==before.rows,"unlocked move and automation undo together");
+        const ReadGuard restored(store);
         const Options capturedLock{48000,capturePolicy(app)};
         const auto lockedEdit=move(store,scope(),{{7,{22,{}},{0,6*q}}},capturedLock);
-        check(lockedEdit.ok && before.unchanged(store) && commit(store,lockedEdit) &&
+        check(lockedEdit.ok && restored.unchanged(store) && commit(store,lockedEdit) &&
               !describe(lockedEdit).policy.automationFollowsClips &&
               tableRows(store,"automation_lanes")==before.rows.at("automation_lanes") &&
               tableRows(store,"automation_data")==before.rows.at("automation_data") &&
@@ -775,8 +800,12 @@ void automationAdmissionAndPolicy() {
                             "INSERT INTO devices(id,chain_id) VALUES(602,502);"
                             "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(91,'device',602,'parameter.7')");
         }
-        const ReadGuard before(store);const auto edit=move(store,scope(),{{7,{22,{}},{0,4*q}}});
-        check(!edit.ok && before.unchanged(store),"unlocked automation admission follows source/destination ownership through nested devices and outgoing sends");
+        authoredAutomation(store,91,q+q/2,0.75);
+        const ReadGuard before(store);const auto edit=move(store,scope(),{{7,{21,{}},{0,4*q}}});
+        check(edit.ok && before.unchanged(store) && commit(store,edit) &&
+              (owner==22 || (envelopeKnot(store,91,q,0) && envelopeKnot(store,91,4*q+q/2,0.75))) &&
+              History(store).undo().ok && typedRows(store)==before.rows,
+              "same-track move carries automation owned by nested devices and outgoing sends");
         const auto fixed=move(store,scope(),{{7,{22,{}},{0,4*q}}},locked());
         check(fixed.ok && commit(store,fixed) && tableRows(store,"automation_lanes")==before.rows.at("automation_lanes") &&
               tableRows(store,"devices")==before.rows.at("devices") && tableRows(store,"routing")==before.rows.at("routing") &&
@@ -784,6 +813,39 @@ void automationAdmissionAndPolicy() {
               "locked material placement retains nested device/send rows and restores exact typed state on Undo");
     }
 }
+void explicitEnvelopeRanges() {
+    Project project;auto& store=*project.store;
+    addClip(store,7,21,0,0,4*q);
+    store.db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,unit,min_value,max_value)"
+                    " VALUES(91,'track',21,'pan','real','',-1,1),(92,'track',21,'volume','real','dB',-150,6)");
+    authoredAutomation(store,91,2*q,0.5);
+    authoredAutomation(store,92,2*q,-6);
+    automation::LaneSpec pan;pan.id=91;pan.ownerId=21;pan.paramRef="pan";pan.valueDomain="real";
+    automation::LaneSpec volume;volume.id=92;volume.ownerId=21;volume.paramRef="volume";volume.valueDomain="real";
+    volume.unit="dB";volume.minValue=-150;volume.maxValue=6;
+    const std::array source{pan,volume};
+    auto newVolume=volume;newVolume.id=0;newVolume.ownerId=22;newVolume.defaultValue=-12;
+    auto newPan=pan;newPan.id=0;newPan.ownerId=22;newPan.minValue=-1;newPan.maxValue=1;
+    const std::array destination{newVolume,newPan};
+    const ReadGuard before(store);
+    const auto copied=edit::copyAutomationRange(store,source,q,3*q,48000);
+    check(copied.ok && before.unchanged(store) && commit(store,edit::preparePasteAutomationRange(store,copied,destination,5*q,48000)),
+          "two literal lanes paste by selection order across unlike control ranges");
+    const auto lane=store.db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes WHERE owner_id=22 AND param_ref='volume'").getInt64();
+    check(envelopeKnot(store,lane,6*q,-33) && envelopeKnot(store,lane,7*q,-12) &&
+          tableRows(store,"clips")==before.rows.at("clips"),
+          "cross-parameter paste maps travel, guards the destination value and leaves clips alone");
+    check(History(store).undo().ok && typedRows(store)==before.rows,
+          "one Undo removes both destination lanes and restores the complete project state");
+
+    const std::array selected{pan};
+    check(commit(store,edit::prepareDeleteAutomationRange(store,selected,q,3*q,48000)) &&
+          !envelopeKnot(store,91,2*q,0.5) && envelopeKnot(store,92,2*q,-6) &&
+          tableRows(store,"clips")==before.rows.at("clips"),
+          "deleting one selected envelope leaves the other and its clip untouched");
+    check(History(store).undo().ok && typedRows(store)==before.rows,"envelope range Delete has exact undo");
+}
+
 void irrelevantRowsAndAliasDeletion() {
     for(const bool zeroLength:{false,true}) {
         Project p;auto& store=*p.store;
@@ -948,16 +1010,37 @@ void placementAdapters() {
     {
         Project p;auto& store=*p.store;addClip(store,7,21,0,0,4*q);
         store.db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,default_value) VALUES(91,'track',21,'pan',0.25)");
+        authoredAutomation(store,91,2*q,0.75);
         const auto clipboard=clip_edit::copyClip(store,7,48000);const clip_edit::RangeSelection selection{{21},{0,q},{0,3*q}};
         const auto range=clip_edit::copyRange(store,selection,48000);const ReadGuard before(store);
-        check(!clip_edit::preparePaste(store,clipboard,70,22,{0,8*q},48000).ok &&
-              !clip_edit::prepareDuplicate(store,7,70,22,{0,8*q},48000).ok &&
-              !clip_edit::prepareDeleteRange(store,selection,48000).ok &&
-              !clip_edit::preparePasteRange(store,range,{22},{0,8*q},48000).ok &&
-              !clip_edit::prepareDuplicateRange(store,selection,48000).ok && before.unchanged(store),
-              "legacy rate-only material adapters honor default unlocked automation refusal instead of silently locking");
+        auto undo=[&] {return History(store).undo().ok && typedRows(store)==before.rows;};
+        check(commit(store,clip_edit::preparePaste(store,clipboard,70,21,{0,8*q},48000)) &&
+              envelopeKnot(store,91,10*q,0.75) && undo(),"clip paste carries automation and undoes it with the clip");
+        check(commit(store,clip_edit::prepareDuplicate(store,7,70,21,{0,8*q},48000)) &&
+              envelopeKnot(store,91,10*q,0.75) && undo(),"clip duplicate preserves and copies the original automation");
+        const std::array places{clip_edit::ClipPlacement{7,70,21,{0,8*q}}};
+        check(commit(store,clip_edit::prepareDuplicates(store,places,{})) &&
+              envelopeKnot(store,91,10*q,0.75) && undo(),"copy drag uses the same guarded envelope replacement");
+        check(commit(store,clip_edit::prepareDeleteRange(store,selection,48000)) &&
+              spanIs(store,7,21,0,0,q) && !envelopeKnot(store,91,2*q,0.75) && undo(),
+              "range Delete cuts the clip and clears the automation inside the same range");
+        check(commit(store,clip_edit::preparePasteRange(store,range,{21},{0,8*q},48000)) &&
+              envelopeKnot(store,91,9*q,0.75) && undo(),"range Paste places the captured automation");
+        check(commit(store,clip_edit::prepareDuplicateRange(store,selection,48000)) &&
+              envelopeKnot(store,91,4*q,0.75) && undo(),"range Duplicate carries the selected automation");
+        const auto unlockedCut=clip_edit::prepareCutRange(store,selection,48000);
+        check(unlockedCut.copy.ok && commit(store,unlockedCut.edit) &&
+              spanIs(store,7,21,0,0,q) && !envelopeKnot(store,91,2*q,0.75) &&
+              commit(store,clip_edit::preparePasteRange(store,unlockedCut.copy,{21},{0,8*q},48000)) &&
+              envelopeKnot(store,91,9*q,0.75) && History(store).undo().ok && undo(),
+              "range Cut owns the envelope so later Paste can restore it even after deletion");
+        const auto lockedClipboard=clip_edit::copyClip(store,7,locked());
+        check(commit(store,clip_edit::preparePaste(store,lockedClipboard,70,21,{0,8*q},Options{})) &&
+              tableRows(store,"automation_data")==before.rows.at("automation_data") && undo(),
+              "clipboard captured with Lock on does not replace the destination envelope when unlocked");
+        const ReadGuard restored(store);
         const auto cut=clip_edit::prepareCutRange(store,selection,locked());
-        check(cut.copy.ok && cut.edit.ok && before.unchanged(store) && describe(cut.edit).ok && commit(store,cut.edit) &&
+        check(cut.copy.ok && cut.edit.ok && restored.unchanged(store) && describe(cut.edit).ok && commit(store,cut.edit) &&
               tableRows(store,"automation_lanes")==before.rows.at("automation_lanes"),
               "explicit captured Lock policy enables the cut adapter with unchanged global lanes");
         check(History(store).undo().ok && typedRows(store)==before.rows,"locked adapter Undo restores the exact source and automation rows");
@@ -967,11 +1050,71 @@ void placementAdapters() {
         const auto clipboard=clip_edit::copyClip(store,7,48000);
         store.db().exec("DELETE FROM clips WHERE id=7;DELETE FROM tracks WHERE id=21");
         const ReadGuard before(store);const auto defaultEdit=clip_edit::preparePaste(store,clipboard,70,22,{0,q},48000);
-        const auto lockedEdit=clip_edit::preparePaste(store,clipboard,70,22,{0,q},locked());
-        check(!defaultEdit.ok && lockedEdit.ok && before.unchanged(store) && commit(store,lockedEdit) && spanIs(store,70,22,0,q,q),
-              "locked owned clipboard remains usable after source-track deletion while unlocked source-envelope uncertainty refuses");
+        check(defaultEdit.ok && before.unchanged(store) && commit(store,defaultEdit) && spanIs(store,70,22,0,q,q),
+              "owned clipboard remains usable after source-track deletion with automation unlocked");
         check(History(store).undo().ok && typedRows(store)==before.rows,"paste from a removed owner undoes without resurrecting the source track");
     }
+}
+void sparseClipClipboard() {
+    Project project;auto& store=*project.store;
+    store.db().exec("INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,22,'take');"
+                    "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(91,'track',21,'pan'),(92,'track',22,'pan')");
+    addClip(store,7,21,0,q,2*q);
+    addClip(store,8,21,0,5*q,2*q);
+    addClip(store,9,21,0,3*q,2*q);
+    addClip(store,10,22,0,11*q,2*q);
+    addClip(store,11,21,0,0,16*q);
+    addClip(store,12,22,0,0,16*q);
+    store.db().exec("UPDATE clips SET lane_id=301 WHERE id=11;UPDATE clips SET lane_id=302 WHERE id=12");
+    const auto writeKnots=[&](std::int64_t lane,std::initializer_list<std::pair<std::int64_t,double>> knots) {
+        std::vector<AutomationPoint> points;
+        for(const auto& [position,value]:knots) {
+            AutomationPoint point{};point.time=position;point.value=value;point.point_id=points.size()+1;
+            points.push_back(point);
+        }
+        if(!store.putAutomationData(lane,{},writeStream<AutomationPoint>(FourCC::Automation,points)))
+            throw std::runtime_error("write sparse clipboard automation fixture");
+    };
+    writeKnots(91,{{2*q,0.75},{4*q,0.5},{6*q,-0.75},{12*q,0.875}});
+    writeKnots(92,{{10*q,0.125},{12*q,-0.25},{14*q,-0.125}});
+    const ReadGuard before(store);
+    const auto takes=tableRows(store,"clips","WHERE lane_id IS NOT NULL");
+    const auto takesUnchanged=[&] {return tableRows(store,"clips","WHERE lane_id IS NOT NULL")==takes;};
+    const auto undo=[&] {return History(store).undo().ok && typedRows(store)==before.rows;};
+    const std::array<std::int64_t,2> selected{7,8};
+    const std::array<std::int64_t,2> includesTake{7,11};
+    const clip_edit::RangeSelection range{{21},{0,q},{0,7*q}};
+    const auto copy=clip_edit::copySelectedClips(store,range,selected,Options{});
+    check(copy.ok && !copy.clearsRange && copy.images.size()==2 &&
+          !clip_edit::copySelectedClips(store,range,includesTake,Options{}).ok && before.unchanged(store),
+          "sparse copy captures only the picked main-lane clips in one read snapshot");
+    check(!clip_edit::preparePasteRange(store,copy,{22},{0,9*q},48000,true).ok && before.unchanged(store),
+          "the engine refuses Paste Time for an explicit clip selection");
+    check(commit(store,clip_edit::preparePasteRange(store,copy,{22},{0,9*q},Options{})) &&
+          envelopeKnot(store,92,10*q,0.75) && envelopeKnot(store,92,14*q,-0.75) &&
+          envelopeKnot(store,92,12*q,-0.25) && envelopeKnot(store,91,4*q,0.5) &&
+          spanIs(store,10,22,0,11*q,2*q) && takesUnchanged() && undo(),
+          "sparse Paste follows each picked clip's automation, preserves the gap and takes, and undoes together");
+    const auto cut=clip_edit::prepareCutClips(store,range,selected,Options{});
+    check(cut.copy.ok && commit(store,cut.edit) && !spanIs(store,7,21,0,q,2*q) && !spanIs(store,8,21,0,5*q,2*q) &&
+          !envelopeKnot(store,91,2*q,0.75) && !envelopeKnot(store,91,6*q,-0.75) &&
+          envelopeKnot(store,91,4*q,0.5) && spanIs(store,9,21,0,3*q,2*q) && takesUnchanged(),
+          "sparse Cut clears automation only in the picked main-lane clips");
+    check(commit(store,clip_edit::preparePasteRange(store,cut.copy,{22},{0,9*q},Options{})) &&
+          envelopeKnot(store,92,10*q,0.75) && envelopeKnot(store,92,14*q,-0.75) &&
+          envelopeKnot(store,92,12*q,-0.25) && History(store).undo().ok && undo(),
+          "Cut owns both envelopes for later Paste, with one Undo per edit");
+    const auto lockedCopy=clip_edit::copySelectedClips(store,range,selected,locked());
+    for(const auto& paste:{clip_edit::preparePasteRange(store,lockedCopy,{22},{0,9*q},Options{}),
+                          clip_edit::preparePasteRange(store,copy,{22},{0,9*q},locked())}) {
+        check(commit(store,paste) && tableRows(store,"automation_data")==before.rows.at("automation_data") && undo(),
+              "automation Lock leaves the destination unchanged whether set at sparse Copy or Paste");
+    }
+    const std::array places{clip_edit::ClipPlacement{7,70,21,{0,9*q}},clip_edit::ClipPlacement{8,71,21,{0,13*q}}};
+    check(commit(store,clip_edit::prepareDuplicates(store,places,Options{})) &&
+          envelopeKnot(store,91,10*q,0.75) && envelopeKnot(store,91,14*q,-0.75) &&
+          envelopeKnot(store,91,12*q,0.875) && takesUnchanged() && undo(),
+          "the existing batch Duplicate carries both envelopes and leaves the gap and takes intact in one Undo");
 }
 // Independent physical-interval oracle on the fixed 120 BPM fixture. It neither
 // calls TimeMap nor uses the planner's interval resolver. All generated musical
@@ -1107,7 +1250,7 @@ int main() {
     try {
         clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
-        irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
+        explicitEnvelopeRanges();irrelevantRowsAndAliasDeletion();placementAdapters();sparseClipClipboard();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

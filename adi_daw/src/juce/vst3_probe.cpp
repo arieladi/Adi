@@ -505,7 +505,7 @@ int controllersProbe(adi::device::Vst3Host& host, const juce::String& want) {
             if (b == 0) d->pushEvent(on);
             if (b == 30) {
                 Event bend{};
-                bend.type = EventType::NoteExpression; bend.channel = 1; bend.noteId = 0;
+                bend.type = EventType::NoteExpression; bend.channel = 0; bend.noteId = 0;
                 bend.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); bend.value = 2.0; bend.frame = 0;
                 d->pushEvent(bend);
             }

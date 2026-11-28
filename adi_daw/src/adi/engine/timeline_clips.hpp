@@ -8,14 +8,15 @@
 
 namespace adi::engine {
 
-// The clips the timeline plays: Model::clips without the clips stored in take
-// lanes. A hand-written forward range rather than a filter view, because
+// The clips the timeline plays: the main lane or the auditioned take for
+// each track. A hand-written forward range rather than a filter view, because
 // libstdc++ 12's filter view does not compile under Clang 14 (DF-E69). It
 // refers to the model's vector, so it must not outlive the model, and it
 // never allocates.
 class TimelineClipRange {
 public:
     using Clips = std::vector<rows::Clip>;
+    using Auditions = std::map<std::int64_t, std::int64_t>;
 
     class iterator {
     public:
@@ -27,7 +28,8 @@ public:
         using reference = const rows::Clip&;
 
         iterator() = default;
-        iterator(Clips::const_iterator at, Clips::const_iterator end) : at_(at), end_(end) { skip(); }
+        iterator(Clips::const_iterator at, Clips::const_iterator end, const Auditions* auditions)
+            : at_(at), end_(end), auditions_(auditions) { skip(); }
 
         [[nodiscard]] reference operator*() const { return *at_; }
         [[nodiscard]] pointer operator->() const { return &*at_; }
@@ -45,20 +47,29 @@ public:
 
     private:
         void skip() {
-            while (at_ != end_ && at_->laneId.has_value())
+            while (at_ != end_) {
+                const auto lane = auditions_->find(at_->trackId);
+                if (lane == auditions_->end() ? !at_->laneId : at_->laneId == lane->second)
+                    return;
                 ++at_;
+            }
         }
         Clips::const_iterator at_{};
         Clips::const_iterator end_{};
+        const Auditions* auditions_ = nullptr;
     };
 
-    explicit TimelineClipRange(const Clips& clips) : clips_(&clips) {}
+    explicit TimelineClipRange(const rows::Model& model) : model_(&model) {}
 
-    [[nodiscard]] iterator begin() const { return {clips_->begin(), clips_->end()}; }
-    [[nodiscard]] iterator end() const { return {clips_->end(), clips_->end()}; }
+    [[nodiscard]] iterator begin() const {
+        return {model_->clips.begin(), model_->clips.end(), &model_->auditionedTakeLanes};
+    }
+    [[nodiscard]] iterator end() const {
+        return {model_->clips.end(), model_->clips.end(), &model_->auditionedTakeLanes};
+    }
 
 private:
-    const Clips* clips_;
+    const rows::Model* model_;
 };
 
 static_assert(std::forward_iterator<TimelineClipRange::iterator>);
@@ -67,7 +78,7 @@ static_assert(std::forward_iterator<TimelineClipRange::iterator>);
 // persistence still see the stored takes through Model::clips. The selection
 // belongs here so audio, MIDI, envelopes and offline readers agree.
 [[nodiscard]] inline TimelineClipRange timelineClips(const rows::Model& model) {
-    return TimelineClipRange(model.clips);
+    return TimelineClipRange(model);
 }
 
 } // namespace adi::engine

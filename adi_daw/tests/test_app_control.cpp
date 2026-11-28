@@ -303,16 +303,17 @@ void testAppControl(const std::filesystem::path& executable) {
             app.takeConsentQuestions().empty() && app.proposals().empty(),
             "new agent writes are also refused while stopped");
 
-    const auto copyPath = temp.path() / "Another ordinary copy.adi";
-    require(document->saveCopy(copyPath), "an ordinary copy shares the current project UUID");
+    const auto copyPath = temp.path() / "Copy with the same identity.adi";
+    require(document->store().saveCopy(copyPath, StoreFileCollision::Fail, StoreCopyPolicy::preserve).ok,
+            "copy the file with its original project UUID");
     std::string copyError;
     auto copy = ui::ProjectDocument::open(copyPath, false, {}, copyError);
-    if (!copy) throw std::runtime_error("open ordinary copy: " + copyError);
-    require(copy->store().projectUuid() == uuid, "ordinary Save a Copy preserves the UUID");
+    if (!copy) throw std::runtime_error("open preserved copy: " + copyError);
+    require(copy->store().projectUuid() == uuid, "the preserved copy retains the UUID");
     OpRequest copyEdit;
     copyEdit.opType = "track.rename";
     copyEdit.payload = {{"id", 101}, {"name", "Independent copy"}};
-    require(copy->ops().submit(std::move(copyEdit)).ok, "give the ordinary copy a different edit");
+    require(copy->ops().submit(std::move(copyEdit)).ok, "give the preserved copy a different edit");
 
     app.rearmAgent();
     args["ops"][0]["payload"]["name"] = "Fresh after rearm";
@@ -327,7 +328,7 @@ void testAppControl(const std::filesystem::path& executable) {
     const auto beforeShutdown = OpJournal(document->store()).headSeq();
     require(beforeShutdown.has_value(), "the fresh change moved the committed head");
     require(OpJournal(copy->store()).headSeq() == beforeShutdown,
-            "the ordinary copy can diverge and still have the same numeric head");
+            "the preserved copy can diverge and still have the same numeric head");
     args["baseHead"] = *beforeShutdown;
     args["ops"][0]["payload"]["name"] = "Original file only";
     require(needsConsent(call(callTool(31, "changeset_propose", args, "original only"))),
@@ -356,7 +357,7 @@ void testAppControl(const std::filesystem::path& executable) {
                 errc::InvalidParams &&
             toolError(call(callTool(34, "changeset_propose", args, "original only"))) == errc::InvalidParams &&
             app.takeConsentQuestions().empty(),
-            "status and idempotent replay cannot substitute the ordinary copy");
+            "status and idempotent replay cannot substitute the preserved copy");
     originalTurn();
     const auto finished = run.get();
     require(finished.reason == "completed" && finished.answer == "The original project closed" &&

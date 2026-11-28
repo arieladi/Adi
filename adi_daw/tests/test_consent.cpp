@@ -260,11 +260,11 @@ void testPluginServerBinding() {
     check(fixture.ledger.authorize(differentServer, kNow) == ConsentDecision::ConsentRequired,
           "a different plug-in server needs its own grant");
 
-    const auto copied = original->saveCopy(copyPath);
-    check(copied.ok, "save a normal copy from the original project");
+    const auto copied = original->saveCopy(copyPath, adi::StoreFileCollision::Fail, adi::StoreCopyPolicy::preserve);
+    check(copied.ok, "save a copy that preserves the original project's UUID");
     if (!copied.ok) return;
     auto copy = adi::Store::open(copyPath, error, true);
-    check(copy && copy->projectUuid() == request.projectUuid, "an ordinary copy keeps the project UUID");
+    check(copy && copy->projectUuid() == request.projectUuid, "the preserved copy keeps the project UUID");
     if (!copy) return;
     auto copyRequest = request;
     copyRequest.fileBinding = projectFileConsentBinding(*copy);

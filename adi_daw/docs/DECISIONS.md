@@ -20853,3 +20853,193 @@ ADR-0261 d6 stands under them.
 | `docs/DEFERRED.md` | DF-W61: the sheet is drawn; what waits is the building |
 | `collab/README.md` | ADR 0262 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0263 |
+
+## ADR-0263 — Working together at different times: Undo that reverses, presence that says where, tempo as mine or theirs, a shared folder studied beside the bucket, shared files locked with a project key, an optional helper in the owner's own account, each person's own agent, and eleven refinements of the collision design — `DECIDED` (2026-11-27) — **DIRECTOR'S WORD ON EIGHT CHOICES AND ELEVEN ADDITIONS, AFTER AN OUTSIDE PANEL READ ADR-0182 IN TWO ROUNDS; ANSWERS Q-N; AMENDS ADR-0182 d5 AND d9; ADDS TO CO-01 TO CO-05 AND RE-02; P2, NOTHING BUILT NOW**
+
+**What this records.** The director put ADI's collaboration design to his outside panel: working on one
+song at different times, as Excel and Word allow, with notes as Word's comments (ADR-0182, ADR-0203 d17).
+Win gave the panel the decided design and eight open questions, and read its answers against the
+record. The panel confirmed the shape: nothing is applied without the user's Apply, no live cursors,
+ghosts that never play, no blending of clips or notes. It found real gaps, which are the additions below.
+Win put four choices to him. His words: "agreed on the rest", and for Undo he chose (a). He then asked whether
+a bucket is not already a central place, and whether a helper in the cloud could assist. Win corrected its
+own answer on presence, and a second round went to the panel. Four more choices followed; his words:
+"yes to all four", and, of ADI holding anyone's data: "oh no i wont hold data for anyone else that for sure".
+
+### Decisions
+
+1. **Undo keeps working after work is shared (his A; answers Q-N's first half).** Ctrl+Z on something
+   already uploaded sends its reversal as a new batch, leaving out whatever someone else has since built
+   on, and says that it did. Older shared work is reverted batch by batch from the History window, with a
+   preview. Nothing reaches a collaborator without their own Apply (ADR-0182 d5), so a reversal is one
+   more incoming change and rewrites nobody's song.
+2. **Presence says where, on a heartbeat (his B, revised the same day; answers Q-N's second half).**
+   - A bucket is a central place, only a passive one: it runs no rules and pushes nothing, but it stamps
+     every file with one clock. So a person's place can ride on the heartbeat and expire by itself.
+   - While someone works, their ADI renews about once a minute who they are and where (the track and the
+     bars). It starts when they arm a track or select a range and ends when they stop. It fades after
+     three minutes without renewal and is gone after ten.
+   - Drawn as a quiet band over that track and those bars with the person's initial, dimmer as it goes
+     stale. It never locks anything: two people in one place are handled by the collision design.
+   - It is renewed from the window's own loop, so a frozen ADI stops renewing. It is never an op and never
+     in the project's history. ADI never says "offline", which it cannot know: it says when someone was
+     last seen.
+   - No live cursors in the first version.
+3. **Tempo offers mine or theirs in the first version (his T; narrows ADR-0182 d9).** The other person's
+   tempo is still kept as a ghost, so both are kept. Combine is not offered for tempo: a blended tempo
+   moves every bar, every warped clip and every automation point after it.
+4. **A shared cloud folder is studied beside the bucket (his F; adds to ADR-0182 d2 and d3).** The reason
+   consumer drives were excluded is that they copy a live database mid-write. Finished batch files and
+   media that never change do not have that fault, and most musicians already have such a folder. The
+   builder of CO-01 works out whether changes can be ordered safely with no atomic claim on a bucket, and
+   reports. The live `.adi` still never lives in a synced folder.
+5. **Rights are what the storage enforces.** ADI shows no role it cannot keep. Comment-only is a place
+   in the storage that the person may write remarks to and nothing else.
+6. **A batch is one piece.** A collaborator's batch is applied, rejected or put off whole, never picked
+   apart: its edits depend on each other. (An agent's proposal is the same, ADR-0261 d7.)
+7. **Eleven refinements of the collision design (ADR-0182 d5, d9).**
+   - A tolerance for "different", per kind of value: curves that differ by less make no collision.
+   - A ghost records what it collided with. If the local curve in that region changes afterwards, the
+     region is measured again and marked as changed since.
+   - The shared starting point is shown with mine and theirs.
+   - Mine, theirs and the blend are heard at the same playhead. Letting go of the slider starts the
+     preview; Keep commits. (ADR-0182 d9 committed on release.)
+   - A region can be split at a bar line, so that parts of it take different weights.
+   - The other author is told what became of their version (kept, dropped, blended at a weight) in the
+     next summary they see.
+   - A count of waiting batches, and a prompt when the user exports or edits what a waiting batch
+     touches.
+   - The blend is taken on the scale the control uses: decibels for a level, pitch for a frequency.
+   - A collaborator's device arrives switched off beside the local one, so that nothing unchosen sounds.
+   - A missing effect is bypassed and a missing instrument is silent, each as a placeholder that keeps
+     its state, as Live's.
+   - Comments from people without ADI: a bounce goes out, comments with times come back as a file, and
+     ADI brings them in as remarks on the timeline. Later, with RE-02.
+8. **One song, one storage, one owner; ADI holds nothing for anybody.** Whoever starts a song and shares it
+   uses their own storage: a shared folder, a bucket, or their own cloud account. The people they invite
+   need none of their own: their ADI reads and writes the owner's storage for that song. The ADI project
+   runs no service and holds no user's data (ADR-0182 d2, his word again).
+9. **What is shared is locked with a project key before it leaves the computer.** Batches, media and
+   remarks are encrypted; the folder, the bucket and the helper hold only what they cannot read. ADI makes
+   the key when sharing is switched on and carries it inside the invitation; the user never types it.
+   Each person's own copy of the song is whole on their own disk, so a lost key loses nothing local.
+10. **An optional helper, in the owner's own account, built late.** It is an addition and not a third
+    level of setup: the folder and the bucket are the two levels. Its jobs, in this order: invitations
+    whose rights are enforced and can be taken back; a notice that something arrived, carrying no
+    content; a check that the setup works. Not its jobs: ordering changes, live presence, a page for
+    reviewers in the first version, an agent. It never holds the project key. Switched off or deleted,
+    nothing is lost and everything still works.
+11. **Agents in a shared song.** Each person's own agent, on their own machine or another of their own,
+    with their own key. Its proposals can be shared into everyone's waiting queue, labelled with whose
+    agent it is, which model, and the remark it answers; a person applies them, as any batch (d6). Two
+    proposals for one remark are shown together. Each collaborator's consent is recorded separately
+    (AGT-03): paying for an agent gives it no right to another person's material. Words only by default;
+    audio goes to a model only for a named task that is agreed. A warning that two people are in one
+    place needs no model. No agent service run by the ADI project.
+12. **Not taken:** a separate suggesting mode (the waiting queue already makes every incoming edit a
+    proposal); a role system drawn in the window; a web page for reviewers in the first version.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0182 d5 | Undo after an Apply is no longer open (d1); batches are whole (d6); a device arrives switched off (d7) |
+| ADR-0182 d9 | no Combine for tempo in the first version (d3); Keep commits, not the slider's release; the tolerance, the stale ghost, the base, the bar-line split, the scale of the blend (d7) |
+| ADR-0182 d2, d3 | a shared folder for finished batches and media is studied (d4) |
+| PLAN Q-N | answered: Undo (d1) and presence (d2) |
+| CO-01, CO-05 | the ordering without an atomic claim, and storage rights (d4, d5) |
+| CO-02 | as d1 |
+| CO-03 | d3, d6 and d7 |
+| CO-04 | as d2: presence with the place, expiring by itself |
+| CO-05; XC-40 | everything shared is encrypted with a project key (d9); one storage per song, the owner's (d8); the optional helper (d10) |
+| AGT-03, AGT-05 | consent per collaborator; shared proposals labelled with agent, model and remark (d11) |
+| RE-02 | comments brought in from a file (d7); a remark in place of a claim (d2) |
+| `collab/README.md` | ADR 0263 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0264 |
+
+## ADR-0264 — The Tip Zone, a goal: techniques taught in ADI's own terms, written by anyone, read by agents, with links to videos at a saved moment — `DECIDED (direction)` (2026-11-27) — **DIRECTOR'S WORD; A GOAL, NOT NEAR WORK; AN ADDITION; NOTHING BUILT NOW**
+
+**What this records.** The director's outside panel sketched a "Tip Zone": cards made from producers'
+tutorial videos. Its members could not agree on what the videos contain, since none of them can watch
+one. Win proposed another shape and he took it: "i like the way you describe what the tip zone should be,
+its a goal but not a mission". He added four things of his own, which are decisions 3 to 6.
+
+### Decisions
+
+1. **A goal, not near work.** It is in the project and waits behind the basics, the agent's side of the
+   window and the Browser's sheet. No seat starts it.
+2. **A tip teaches a technique, not a video.** Its words are written for ADI and ADI's own devices, with
+   the steps. Its proof is in ADI: a tip carries a small example that makes the sound when the steps are
+   followed. ADI makes no claim about what any video says.
+3. **Anyone can write tips, and others can use them.** His words: "i will be happy if others could also
+   help with that making their own tips that others including agents could use including building their
+   modular devices like in the grid". A tip is a file, as a preset is (ADR-0258 d18). It can carry what
+   it teaches: a preset, a device built in the Grid, a small example song.
+4. **Agents read tips.** A tip is something an agent can find and use, and "try this in my song" is a
+   proposal the user hears and applies or drops, like any other (ADR-0261 d7).
+5. **Videos are "see also".** A tip may link to a video, opened at a saved moment for one technique or
+   from its start for a whole method. His words: "maybe we can have a youtube tip menu where we just send
+   them to see a video from a saved point of time , or the entire video". A tip can be only such a link.
+   The link opens in the user's browser; ADI shows no one else's picture or logo.
+6. **A place where the agents learn what he likes.** His words: "maybe its also a zone for our agents to
+   learn what we like". The tips a user keeps, writes and uses are a readable record of taste, beside the
+   learning companion of ADR-0254 d7: local, readable, and the user's to switch off.
+
+**Win's readings, his to strike.** Tips travel as files, shared however their authors like; the ADI
+project holds nobody's tips on a service of its own (ADR-0263 d8). A collection that ships with ADI is
+reviewed as code is. A producer's name appears inside the shipped program only as a plain "see also", and
+only after that person was asked.
+
+**What is not settled here.** Where the Tip Zone sits in the window (its sheet comes first, ADR-0243 d1);
+the tip file's format; how a shared collection is gathered and checked; what an agent may learn from a
+tip without being told to.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0254 d7; AGT-11 | tips are one more readable source of what the user likes (d6) |
+| ADR-0258 d18 | a tip is a file, as a preset is (d3) |
+| `docs/DEFERRED.md` | DF-W62 holds the goal |
+| `collab/README.md` | ADR 0264 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0265; DF-W63 |
+
+## ADR-0265 — After his own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, and a double-click that adds a track — `DECIDED` (2026-11-28) — **DIRECTOR'S WORD AFTER WORKING IN ADI HIMSELF ON 27 NOVEMBER; ANSWERS THE AGENT SEAT'S TWO QUESTIONS; ADDS TO ADR-0259 d1**
+
+**What this records.** On 27 November the director worked in ADI himself, on main after the ninth stack.
+What he found is registered as SC-433 to SC-445 and given to one session
+(`collab/prompts/2026-11-28-directors-test.md`). Four of his words are rulings and are recorded here, with
+his answers to the two questions the agent seat put to him about Stop Agent: "A a, B a".
+
+### Decisions
+
+1. **Stop Agent stops every hand that writes as an agent does (his A).** ADI's own agent, and any outside
+   program that makes its changes through agent changesets. Ordinary scripts and control surfaces keep
+   working under their own grants.
+2. **Stop Agent does not end a job the user started that has no agent in it (his B).** A render or an
+   export finishes and keeps its own Cancel. ADR-0259 d1 stands for a run an agent takes part in.
+3. **A new song has no return tracks.** His words: "i don't want them at all in the default preset, screen
+   should be clean", confirmed the next day. This departs from Live's own new Set, by his word (SC-437).
+4. **FX channels stay as decided.** Inside a group and at the top level, both (ADR-0245 d9). His words:
+   "keep as today more options usually more better". The rule that keeps them from drifting in heavy
+   songs is ADR-0245's, unchanged.
+5. **A double-click on the empty area under the tracks adds a track, an addition.** The first time it
+   asks which kind, a MIDI track, an audio track or an FX channel, and it remembers the answer, as ADI's
+   other remembered choices do. A setting changes it later (DF-W64).
+6. **Loop is as Live's, and he confirmed how it behaves:** the Loop switch plays the brace where it lies,
+   and Ctrl/Cmd+L moves the brace to what is selected. What was wrong is that playback started outside
+   the brace was pulled into it (SC-445).
+7. **The Info box is the one place for its text.** No tooltip repeats it (SC-433; narrows ADR-0203 d5's
+   tooltips). His words: "showing info in the info box is great but what is that".
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0259 d1; DF-C8 | Stop Agent's reach (d1, d2) |
+| ADR-0203 d5 | no tooltip carries the Info text (d7) |
+| ADR-0245 d9 | stands: a return inside a group or at the top level (d4) |
+| `docs/SANITY-CHECK.md` | SC-433 to SC-445 |
+| `docs/DEFERRED.md` | DF-W63 (a fade editor), DF-W64 (the double-click that adds a track) |
+| `collab/README.md` | ADR 0265 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0266; DF-W65 |

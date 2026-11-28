@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/gesture_preview.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/gesture_capture_detail.hpp"
@@ -47,7 +48,7 @@ Tables readTables(const Store& store) {
         SQLite::Statement columns(store.db(),"PRAGMA table_xinfo(\""+name+"\")");
         while(columns.executeStep())schema.push_back(adi::detail::captureQueryRow(columns));
         std::string queryText="SELECT * FROM \""+name+"\"";
-        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.loop','cue.controls')";
+        if(name=="session_state")queryText+=" WHERE key IN ('transport.metronome','transport.metronomeOptions','transport.loop','cue.controls')";
         if(name=="state_blobs")queryText+=" WHERE hash_blake3 IN (SELECT s.state_hash FROM plugin_state s JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.format='internal' AND s.stream_role LIKE 'sample:%')";
         SQLite::Statement query(store.db(),queryText);
         while(query.executeStep())rows.push_back(adi::detail::captureQueryRow(query));
@@ -71,6 +72,8 @@ std::vector<std::uint8_t> imageBytes(const Tables& rows,const TransportSettings&
     Payload value=rows;
     value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,
         transport.loopStartTicks,transport.loopEndTicks,transport.punchIn,transport.punchOut};
+    const auto &click = transport.metronomeOptions;
+    value["@metronomeOptions"]={click.recordingOnly,click.eighthNotes,static_cast<int>(click.sound)};
     value["@cue"]={cue.cueMode,cue.soloInPlace,cue.referenceOn,cue.referenceFromRole,cue.firstOutputChannel,
         cue.volumeDb,cue.referenceTrack,cue.projectReferenceTrack,cue.selectedTracks};
     return Payload::to_cbor(value);
@@ -95,7 +98,8 @@ struct Image {
     bool faderOnly = false;
 };
 std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::set<std::int64_t>& overridden,
-                               const TempoFor& tempoFor,const Snapshot* previous) {
+                               const TempoFor& tempoFor,const Snapshot* previous,
+                               const std::map<std::int64_t,std::int64_t>& auditions) {
     std::optional<SQLite::Transaction> read;
     if(sqlite3_get_autocommit(store.db().getHandle())!=0)
         read.emplace(const_cast<SQLite::Database&>(store.db()),SQLite::TransactionBehavior::DEFERRED);
@@ -103,6 +107,11 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     if(History(const_cast<Store&>(store)).head()!=base.head)throw std::runtime_error("presentation journal base changed during capture");
     auto out=std::make_shared<Image>();out->base=base;out->overrides=overridden;
     out->model=rows::readModel(store);
+    for (const auto& lane : out->model.lanes) {
+        const auto selected = auditions.find(lane.trackId);
+        if (lane.kind == "take" && !lane.muted && selected != auditions.end() && selected->second == lane.id)
+            out->model.auditionedTakeLanes.emplace(lane.trackId, lane.id);
+    }
     out->tables=readTables(store);
     out->transport=readTransportSettings(store);out->cue=readCueSettings(store);
     out->bytes=imageBytes(out->tables,out->transport,out->cue);
@@ -125,7 +134,7 @@ Tables topology(Tables value, const std::set<std::int64_t>& trackDelayTargets = 
         {"mixer_strip",{"track_id","pan_law","width","phase_invert","delay_samples","vca_group_id"}},
         {"mixer_pan_settings",{"track_id","mode"}},
         {"group_summing",{"track_id","enabled","flavor"}},
-        {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin"}}};
+        {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin","channel_map"}}};
     const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state",
         "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps","routing_send_taps","routing_key_taps"};
     for(auto it=value.begin();it!=value.end();) {
@@ -309,6 +318,15 @@ std::set<std::int64_t> manualOverrides(const rows::Model& before,const rows::Mod
         const auto* old=findValue(before.routing,route,[](const auto& row){return row.id;});
         const auto* next=findValue(after.routing,route,[](const auto& row){return row.id;});
         if(old && next && old->gainDb!=next->gainDb)excluded.insert(id);
+    }
+    for (const auto& lane : before.automationLanes) {
+        if (!lane.enabled || lane.ownerKind != "device" || lane.paramRef != kDeviceActivatorParamRef ||
+            lane.valueDomain != "enum" || excluded.contains(lane.id) || writing.contains(lane.id))
+            continue;
+        const auto* old = findValue(before.devices, lane.ownerId, [](const auto& row) { return row.id; });
+        const auto* next = findValue(after.devices, lane.ownerId, [](const auto& row) { return row.id; });
+        if (old && next && old->pluginRefId == next->pluginRefId && old->enabled != next->enabled)
+            excluded.insert(lane.id);
     }
     return excluded;
 }
@@ -529,8 +547,12 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         playback.tempo=owner->playbackTempo(image->model);
         const auto& previousGraph = owner->devices_.rebuildSpec();
         const auto* previousTiming = dynamic_cast<const Session::TimingView*>(previousGraph.transportState.get());
+        auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
+        timing->spec=owner->spec_;
+        owner->prepareMidiHardware(*timing, image->model, previousTiming);
         if (preserveReaders && previousTiming && previousTiming->spec.sampleRate == owner->spec_.sampleRate &&
-            previousTiming->spec.channels == owner->spec_.channels && previousTiming->spec.maxFrames == owner->spec_.maxFrames) {
+            previousTiming->spec.channels == owner->spec_.channels && previousTiming->spec.maxFrames == owner->spec_.maxFrames &&
+            previousTiming->midiHardware == timing->midiHardware) {
             out->clips = renderedGeneration ? renderedGeneration->clips : owner->clips_;
             out->midi = renderedGeneration ? renderedGeneration->midi : owner->midi_;
         }
@@ -541,19 +563,18 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
                 owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
             out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
-                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips),
+                                                 owner->eventPathFor(image->model, *timing),clipNoteExpressions(*image->clips),
                                                  owner->spec_.performanceState && !owner->spec_.exporting);
         }
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);
-        out->devices=bindDeviceAutomation(program,excluded,owner->transport_,owner->spec_.sampleRate);
+        out->devices=owner->bindResolvedDeviceAutomation(program,excluded,image->model);
         out->controls=controls(image->model,excluded);
-        auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
-        timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
+        timing->stripLanes=out->controls->lanes;
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
@@ -575,7 +596,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
-        options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
+        options.devicesFor=[owner,timing](std::int64_t id){return owner->graphTrackChain(id, *timing);};
         // The GUI publishes both preview and committed generations through here.
         // Keep auxiliary edges when an ordinary edit replaces the playing graph.
         options.keyTapFor=[owner](std::int64_t track,Tap tap)->std::optional<Node*> {
@@ -662,7 +683,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                     PresentationStatus{PresentationState::Pending,"earlier device delivery or capture is pending",{}};
             }
             const auto previous=project()->committed();
-            auto next=readImage(store,base,owner->overridden_,tempoRule(owner),previous.get());
+            auto next=readImage(store,base,owner->overridden_,tempoRule(owner),previous.get(),owner->auditionedTakeLanes_);
             // The document and the coordinator can see the same key transaction
             // on different ticks. Publish it once, keeping the running readers.
             if (active.empty()) {
@@ -760,7 +781,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 if(change.operation=="group.setSummingDrive" && !owner->summing_.bussOf(change.id))
                     return {failed(Error::UnsupportedPreview,"drive preview requires an existing native summing buss"),{}, {}};
             }
-            auto image=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get());
+            auto image=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get(),owner->auditionedTakeLanes_);
             if(encodeTables(topology(image->tables, trackDelayTargets))!=
                encodeTables(topology(committed->tables, trackDelayTargets)))
                 return {failed(Error::UnsupportedPreview,"preview changes native topology, device material, width or latency"),{}, {}};
@@ -871,7 +892,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(at==active.end())return adopt(store,base,&receipt);
         auto* owner=engine();if(!owner || !project())return {PresentationState::Detached,"preview endpoint ended after durable commit",{}};
         try {
-            auto actual=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get());
+            auto actual=readImage(store,base,owner->overridden_,tempoRule(owner),committed->snapshot.get(),owner->auditionedTakeLanes_);
             const auto entry=*at;
             const bool matching=entry->image->faderOnly ? sameFaderImage(*entry->image,*committed,*actual)
                                                          : entry->image->bytes==actual->bytes;

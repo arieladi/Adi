@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/peaks.hpp"
 #include "adi/store.hpp"
 #include "adi/history.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/material_commands.hpp"
+#include "adi/render/freeze_capture.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -257,6 +260,108 @@ void importClip() {
     check(h.redo().ok && s.db().execAndGet("SELECT count(*) FROM audio_clips").getInt()==1,
           "Redo restores captured audio without a source file");
 }
+void movedProjectKeepsExternalSample() {
+    Fixture f;
+    const auto sample = f.temp.path() / "Library" / "external.wav";
+    fs::create_directory(sample.parent_path());
+    const auto makeWave = [](const fs::path& path, float value) {
+        audio::WavWriter writer(path, 48000, 1, audio::WavFormat::Float32);
+        std::array<float, 320> samples{};
+        samples.fill(value);
+        writer.write(samples.data(), 320);
+    };
+    makeWave(sample, 0.25f);
+
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1)");
+    OpRequest imported;
+    const auto prepared = media::prepareImport(*f.store, sample, 10, 123, imported);
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+    const std::vector<OpRequest> ops{imported,
+        request("clip.create", {{"id",5},{"track",1},{"kind","audio"},{"pos",0},{"length",5765760}}),
+        request("clip.attachAudio", {{"id",5},{"media",10},{"frames",320}})};
+    if (!OpJournal(*f.store).commit(ops).ok) throw std::runtime_error("external sample fixture");
+    const auto captured = media::mediaRow(f.store->db(), 10);
+    check(captured.at("rel_path") == "../Library/external.wav" &&
+          captured.at("abs_path_hint") == media::pathUtf8(fs::canonical(sample)),
+          "same-drive external sample captures both its relative and original location");
+
+    const auto relocated = f.temp.path() / "Moved" / "Set" / "song.adi";
+    fs::create_directories(relocated.parent_path());
+    f.store.reset();
+    fs::rename(f.folder() / "song.adi", relocated);
+    StoreError storeError{};
+    auto reopened = Store::open(relocated, storeError);
+    if (!reopened) throw std::runtime_error("open relocated project");
+    const auto plays = [&] {
+        engine::Session session;
+        engine::SessionSpec spec;
+        spec.sampleRate = 48000;
+        spec.maxFrames = 64;
+        if (!session.load(*reopened, {}, spec)) return false;
+        session.graph().setFadeFrames(0);
+        session.transport().play();
+        if (!session.clips() || !session.clips()->problems().empty() || !session.clips()->prime()) return false;
+        std::array<float, 64> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = output;
+        io.numOut = 2;
+        io.frames = 64;
+        session.process(io);
+        return left == right && std::all_of(left.begin(), left.end(), [](float value) { return value == 0.25f; });
+    };
+    check(plays(), "moving only the project file still plays the original external sample");
+
+    const auto displaced = relocated.parent_path().parent_path() / "Library" / "external.wav";
+    fs::create_directory(displaced.parent_path());
+    makeWave(displaced, 0.5f);
+    check(plays(), "a different file at the relocated relative path cannot shadow the original sample");
+    std::string error;
+    const auto resolved = media::resolveMedia(media::projectFolder(*reopened), media::mediaRow(reopened->db(), 10), error);
+    check(!resolved.empty() && fs::equivalent(resolved, sample), "verified media lookup selects the original contents");
+    const auto peaks = media::buildMediaPeaks(*reopened, 10, 16, {}, nullptr, nullptr);
+    check(peaks && !peaks.data->bins.empty() && peaks.data->bins.front().maximum == 0.25f,
+          "waveform lookup reads the same sample as playback");
+    {
+        clip_edit::BounceOptions bounce;
+        bounce.job.source = {1, engine::OfflineTap::PostFader};
+        bounce.job.endSample = 64;
+        bounce.job.session = {2, 48000, 64};
+        bounce.destination.track = 1;
+        bounce.destination.clipId = 6;
+        bounce.destination.mediaId = 11;
+        check(clip_edit::prepareBounce(*reopened, bounce).edit.ok,
+              "bounce's private snapshot retains the original media fallback");
+    }
+    {
+        render::FreezeCaptureSpec freeze;
+        freeze.tracks = {1};
+        freeze.endSample = 64;
+        freeze.session = {2, 48000, 64};
+        const auto capture = render::captureFreezeAudio(*reopened, freeze);
+        check(capture.ready(), "freeze verifies and pins the media that playback resolved");
+    }
+
+    fs::remove(displaced);
+    fs::rename(sample, displaced);
+    check(plays(), "the relative path works when the project and its sample are moved together");
+    fs::rename(displaced, sample);
+
+    const auto copied = relocated.parent_path().parent_path() / "copy.adi";
+    if (!reopened->saveCopy(copied, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo).ok) throw std::runtime_error("copy relocated project");
+    auto copy = Store::open(copied, storeError);
+    if (!copy) throw std::runtime_error("open copied project");
+    History copyHistory(*copy);
+    check(copyHistory.undo().ok && copyHistory.redo().ok &&
+          media::mediaRow(copy->db(), 10).at("rel_path") == "../Library/external.wav",
+          "Save a Copy rebases to the available source after a manual move");
+
+    const auto newSource = sample.parent_path() / "renamed.wav";
+    fs::rename(sample, newSource);
+    check(media::relinkMedia(*reopened, 10, newSource).ok &&
+          media::mediaRow(reopened->db(), 10).at("abs_path_hint") == media::pathUtf8(fs::canonical(newSource)),
+          "relink captures a new original location");
+}
 void captureDecodeAndDedup() {
     Fixture f;audio::DecodeCache cache(f.temp.path()/"decoded",{1024*1024,0});
     OpRequest captured;
@@ -320,7 +425,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); batchRelink(); importClip(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); movedProjectKeepsExternalSample(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

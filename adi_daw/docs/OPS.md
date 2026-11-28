@@ -411,10 +411,14 @@ silent truncation in JSON, a non-issue in CBOR.
 optional literal `id` and `tension` preserve an existing canonical tempo event
 through HI-01's remove/insert preview and commit (ADR-0216). Omitted fields
 retain the historical allocation/default behavior. `project.removeTempoEvent`
-captures `pos`, `bpm`, `curve`, `id` and `tension` in its insert inverse. No
-opcode, schema or ramp algorithm changes. The existing-row gesture producer
-requires an exactly round-trippable canonical typed row and preserves every
-field except BPM; see `ENGINE-GESTURES.md`.
+captures `pos`, `bpm`, `curve`, `id` and `tension` in its insert inverse. Both
+operations reproject the tick lengths of non-looping Warp-off audio clips at
+their existing musical starts to preserve their audible duration. The
+inverse records the prior and projected lengths of changed clips for Undo
+and Redo. Older entries without those lengths replay only the tempo event.
+The existing-row gesture producer requires an exactly round-trippable
+canonical typed row and preserves every tempo-event field except BPM. See
+`ENGINE-GESTURES.md`.
 
 Native key changes and ADR-0178 tuning definitions use the explicit-ID
 payloads in `ENGINE-TUNING-EDITS.md`. Inserts never upsert. Replacing a tuning
@@ -907,6 +911,15 @@ rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
   removes its row. Existing streams restore exact bytes, including future
   record tails/header flags/trailer. The same ID/address collision checks apply.
 
+Controller address 129 identifies the channel pitch wheel for these three ops.
+Its ACTL row uses `stream_kind='pitchbend'`, the same channel, and a NULL SQL
+controller. The normalized extremes are 0 and 1, with .5 for neutral. Losing an
+envelope's playback owner returns the channel wheel to neutral. Notes retain their
+separate per-note pitch expression. Standard MIDI file import and export translate
+the 14-bit channel wheel wire value to and from this lane. Capture MIDI retains
+both normalized typed channel wheel events and the physical parser's unowned pitch
+events on their respective channels.
+
 Streams are sorted stably by time. Updating an existing future record preserves
 its full tail, while insertion of a new record into an unknown wider layout
 refuses. Values retain full normalized precision; MIDI byte quantization belongs
@@ -1379,8 +1392,9 @@ Redo/replay uses only captured values, independent of input devices or UI state.
 The closed opcode payload contains `clip` (the existing explicit MIDI clip.create
 row packet), `controllers` (array of `{id,channel,controller,bytes}`), and optional
 `notes` (`{id,bytes}`). Bytes are CBOR binary known-v1 sorted ACTL/ANOT images,
-with exact record stride/count and no opaque trailer. At most 2,048 controller
-addresses and 1,048,576 total points/notes are accepted. All stream IDs are
+with exact record stride/count and no opaque trailer. At most 2,064 controller
+addresses (2,048 CCs plus 16 channel pitch wheels) and 1,048,576 total points/notes
+are accepted. All stream IDs are
 explicit positive int64; record IDs remain uint64. Fresh records are checked for
 unique identities, times within the clip, valid domains/curves/velocity/channel/
 probability/tuning and zero reserved/flag fields. Invalid/future images,
@@ -1794,6 +1808,11 @@ chooses Post first. A uniform return toggles its setting. The click clears
 individual tap overrides on every incoming send, including disabled sends,
 and captures their complete rows in the same Undo step.
 It persists with zero sends and changes the inherited tap in one undo step.
+`routing.connect` accepts optional `midiPort` and `midiChannel` together for
+an external MIDI destination on a MIDI or instrument track. Use `dstKind`
+`hw_out`, `dst` 0 and `kind` `main`. Disconnect and Undo preserve the
+port identifier and its selected channel.
+
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
@@ -2059,6 +2078,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `cue.setVolume` | t | S | — | P1 |
 | `cue.setTrack` | t | G | — | P1 |
 | `cue.setReference` | t | G | — | P1 |
+| `mixer.setMainOutput` | t | S | — | P1 |
 | `mixer.setSoloInPlace` | t | G | — | P1 |
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
@@ -2081,6 +2101,7 @@ Cue controls are saved performance commands in Transport scope, not undo steps:
 `cue.setMode {on}` selects Solo/Cue; `cue.setTrack {id,on}` changes the Cue selection
 without editing a track's stored solo flag. `cue.setOutput {first}` selects a
 zero-based stereo pair (even 0..62); `cue.setVolume {db}` accepts -150..+6 dB.
+`mixer.setMainOutput {first}` selects Main's stereo pair using the same numbering.
 `cue.setReference {on,id?}` selects/engages exclusive reference audition. Omitted
 id retains the target (or the native reference role when present). Invalid or
 non-audio/Main targets fail. `mixer.setSoloInPlace {on}` controls return audibility
