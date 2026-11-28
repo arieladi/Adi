@@ -150,6 +150,121 @@ void timelines() {
     check(fixed && !fixed->valueAt(0, 4, ignored) && at(*fixed, 5) == 0 && !fixed->valueAt(0, 15, ignored),
           "linear placement retains its actual physical start and end");
 }
+void rampTimelines() {
+    constexpr auto quarter = 5765760;
+    for (const int curve : {1, 2}) {
+        for (const double rate : {44100.0, 48000.0, 96000.0}) {
+            // Integrate a 90-to-210 BPM ramp over four quarters. For the
+            // tension-one Bezier, musical fraction x = 2u - u*u and BPM = 90 + 120u*u.
+            const auto frameAt = [=](long double tick) {
+                const auto x = tick / (4 * quarter);
+                if (curve == 1)
+                    return rate * 2 * std::log1p(120 * x / 90);
+                const auto u = 1 - std::sqrt(1 - x);
+                const auto root = std::sqrt(90.0L * 120);
+                return rate * 480 * (std::atan(120 * u / root) / root -
+                                     std::log1p(120 * u * u / 90) / 240);
+            };
+            const auto tickAt = [&](std::int64_t sample) {
+                const auto frame = static_cast<long double>(sample);
+                long double low = 0, high = 4 * quarter;
+                for (int i = 0; i < 60; ++i) {
+                    const auto middle = (low + high) / 2;
+                    (frameAt(middle) < frame ? low : high) = middle;
+                }
+                return (low + high) / 2;
+            };
+            auto input = model();
+            input.tempo = {{0, 90, curve, 1}, {4 * quarter, 210, 0, 0}};
+            auto &clip = input.clips.front();
+            clip.lengthTicks = 4 * quarter;
+            clip.loopEnabled = true;
+            clip.loopLenTicks = 2 * quarter;
+            input.controllers.front().points = {{1, 0, .1, 0, 1, 0}, {2, quarter, .4, 0, 0, 0},
+                                                 {3, quarter, .8, 0, 0, 0}};
+            const MidiControllerPrograms programs(input, rate);
+            const auto loop = programs.forTrack(1);
+            check(loop && programs.problems().empty(), "prepare a musical controller ramp loop");
+            if (loop) {
+                const auto first = std::llround(frameAt(quarter));
+                const auto wrap = std::llround(frameAt(2 * quarter));
+                const auto repeat = std::llround(frameAt(3 * quarter));
+                const auto probe = repeat - 4096;
+                const auto elapsed = (tickAt(probe) - 2 * quarter) / quarter;
+                const auto expected = .1 + .3 * elapsed;
+                const auto wrappedValue = .1 + .3 * std::max(0.0L, tickAt(wrap) - 2 * quarter) / quarter;
+                double value = -1;
+                bool reads = false;
+                {
+                    const audio::CallbackScope callback;
+                    reads = loop->valueAt(0, probe, value);
+                }
+                check(loop->nextBoundary(1, wrap) == first && at(*loop, first) == .8 &&
+                          at(*loop, first - 1) < .4,
+                      "ramp controller keeps the last same-tick value at the exact knot sample");
+                check(loop->changesOwnerAt(0, wrap) && at(*loop, wrap - 1) == .8 &&
+                          std::abs(at(*loop, wrap) - wrappedValue) < 1e-9 && at(*loop, repeat) == .8,
+                      "ramp controller repeats at the moved loop seam and knot samples");
+                check(reads && std::abs(value - expected) < 1e-9,
+                      "callback controller interpolation follows fractional musical ramp position");
+            }
+            clip.timeBase = 1;
+            clip.posTicks.reset();
+            clip.lengthTicks.reset();
+            clip.posNs = 400000000;
+            clip.lengthNs = 1000000000;
+            clip.loopEnabled = false;
+            input.controllers.front().points = {{1, 0, .25, 0, 0, 0}, {2, quarter / 2, .75, 0, 0, 0}};
+            const MidiControllerPrograms absolutePrograms(input, rate);
+            const auto absolute = absolutePrograms.forTrack(1);
+            check(absolute && absolutePrograms.problems().empty(), "prepare an absolute controller ramp clip");
+            if (absolute) {
+                const auto start = std::llround(rate * .4);
+                const auto end = std::llround(rate * 1.4);
+                const auto origin = std::floor(tickAt(start));
+                const auto knot = std::llround(frameAt(origin + quarter / 2) - frameAt(origin) +
+                                               static_cast<long double>(start));
+                double ignored = 0;
+                check(!absolute->valueAt(0, start - 1, ignored) && at(*absolute, start) == .25 &&
+                          at(*absolute, end - 1) == .75 && !absolute->valueAt(0, end, ignored),
+                      "ramp controller preserves absolute placement's physical start and end");
+                check(absolute->nextBoundary(start + 1, end) == knot &&
+                          at(*absolute, knot - 1) == .25 && at(*absolute, knot) == .75,
+                      "absolute controller knots use the anchored musical phase through a ramp");
+            }
+        }
+    }
+    auto input = model();
+    input.tempo = {{0, 120}, {quarter, 120, 1}, {2 * quarter, 140}};
+    input.controllers.front().points = {{1, 0, .25, 0, 0, 0}, {2, 4576, .5, 0, 0, 0},
+                                         {3, 4576, .75, 0, 0, 0}};
+    const MidiControllerPrograms programs(input, 44100);
+    const auto controller = programs.forTrack(1);
+    // Tick 4576 is exactly 17.5 samples at 44.1 kHz and 120 BPM.
+    check(controller && controller->nextBoundary(1, 100) == 18 &&
+              at(*controller, 17) == .25 && at(*controller, 18) == .75,
+          "a half-sample knot in the step before a ramp rounds up and keeps the last same-tick value");
+}
+void stepLeadIn() {
+    constexpr auto quarter = 5765760;
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        for (const auto first : {-1, 0, quarter}) {
+            auto input = model();
+            input.tempo.clear();
+            if (first >= 0)
+                input.tempo.push_back({first, 90});
+            input.clips.front().lengthTicks = 2 * quarter;
+            input.controllers.front().points = {{1, 0, .25, 0, 0, 0}, {2, quarter / 2, .75, 0, 0, 0}};
+            const MidiControllerPrograms programs(input, rate);
+            const auto controller = programs.forTrack(1);
+            const auto expected = std::llround(first < 0 ? rate / 4 : rate / 3);
+            check(programs.problems().empty() && controller &&
+                      controller->nextBoundary(1, static_cast<std::int64_t>(rate)) == expected &&
+                      at(*controller, expected - 1) == .25 && at(*controller, expected) == .75,
+                  "step controller backfills the first saved BPM, or uses 120 with no saved row");
+        }
+    }
+}
 void signedPrefixAndNativeEnd() {
     auto input=model();
     input.clips[0].contentOffsetTicks=-1200;
@@ -671,7 +786,7 @@ void compensatedPlayback() {
 } // namespace
 int main() {
     try {
-        timelines();signedPrefixAndNativeEnd();
+        timelines();rampTimelines();stepLeadIn();signedPrefixAndNativeEnd();
         overlapsAndBounds();
         wire();
         graphDelivery();

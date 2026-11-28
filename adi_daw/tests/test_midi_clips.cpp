@@ -66,6 +66,7 @@ struct Instrument final:device::DeviceInstance {
     bool audible=false;int voices=0;
     bool wantsClock = false;
     std::array<DeviceTransport,32> positions{};
+    std::array<TransportInfo,32> blockPositions{};
     std::size_t positionCount = 0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
@@ -75,8 +76,10 @@ struct Instrument final:device::DeviceInstance {
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
-        if (io.deviceTransport && positionCount < positions.size())
+        if (io.deviceTransport && positionCount < positions.size()) {
+            if (io.transport) blockPositions[positionCount] = *io.transport;
             positions[positionCount++] = *io.deviceTransport;
+        }
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
         if(audible) {
             auto event=io.events.begin();
@@ -1146,6 +1149,87 @@ void livePlayQuantizeRamp() {
         }
     }
 }
+void roundedSessionMetadata() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr auto edge = 4 * quarter, nextEdge = 10 * quarter;
+    struct Case { int opening, sample; bool crowded; };
+    const auto beforeAllocations = allocations.load();
+    const auto beforeIo = audio::callbackFileIo.load();
+    for (const auto reading : {Case{127,90709,false},Case{129,89302,false},Case{129,89302,true}}) {
+        Fixture f(48000,64);
+        f.firstDeviceWantsClock = true;
+        auto& db = f.store->db();
+        db.exec("UPDATE tracks SET monitor_mode=1 WHERE id=1;DELETE FROM tempo_map;DELETE FROM time_signature_map");
+        const auto latest = edge + (reading.crowded ? 24 : 0);
+        const auto bpm = reading.crowded ? 173.0 : 143.0;
+        const auto numerator = reading.crowded ? 5 : 3;
+        const auto denominator = reading.crowded ? 16 : 4;
+        {
+            SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,?)");
+            const auto addTempo = [&](std::int64_t tick, double rate) {
+                tempo.bind(1,tick); tempo.bind(2,rate); tempo.exec(); tempo.reset();
+            };
+            addTempo(0,reading.opening); addTempo(edge,143);
+            if (reading.crowded) { addTempo(edge+8,155); addTempo(edge+16,173); }
+            addTempo(nextEdge,111);
+            SQLite::Statement meter(db,"INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,?,?)");
+            const auto addMeter = [&](std::int64_t tick, int n, int d) {
+                meter.bind(1,tick); meter.bind(2,n); meter.bind(3,d); meter.exec(); meter.reset();
+            };
+            addMeter(0,4,4); addMeter(edge,3,4);
+            if (reading.crowded) { addMeter(edge+12,7,8); addMeter(latest,numerator,denominator); }
+        }
+        f.store.reset();
+        StoreError error{};
+        f.store = Store::open(f.dir.path()/"session.adi",error);
+        if (!f.store) throw std::runtime_error("reopen rounded Session metadata");
+        f.load();
+        const auto tempo = TempoMap::fromRows(f.session.model().tempo);
+        const double seconds = static_cast<double>(reading.sample)/f.rate;
+        const auto raw = tempo.secondsToTicks(seconds);
+        const auto snapped = std::max(raw,latest);
+        const auto quarters = std::max(static_cast<double>(latest)/quarter,
+            static_cast<double>(raw)/quarter + (seconds-tempo.ticksToSeconds(raw))*tempo.bpmAt(raw)/60);
+        std::int64_t following;
+        {
+            const auto view = f.session.beginRender();
+            following = view.sampleAtTick(nextEdge);
+            check(view.sampleAtTick(edge) == reading.sample && view.sampleAtTick(latest) == reading.sample &&
+                  view.tickAtSample(reading.sample) == raw && (raw < edge) == (reading.opening == 129),
+                  "authored tempo and meter share their rounded sample while the raw inverse stays continuous");
+        }
+        const auto render = [&](std::int64_t sample, int frames) {
+            f.instrument->positionCount = 0;
+            f.clock = sample;
+            f.session.transport().locate(sample);
+            f.render(frames);
+        };
+        const auto& block = f.instrument->blockPositions;
+        const auto& device = f.instrument->positions;
+        render(reading.sample-2,6);
+        check(f.instrument->positionCount == 2 && block[0].bpm == reading.opening &&
+              block[1].bpm == reading.opening && device[0].nextChange == reading.sample &&
+              device[1].sample == reading.sample && device[1].bpm == bpm && device[1].nextChange == following,
+              "hosted event still splits once inside a held block and preserves preceding/following edges");
+        render(reading.sample,1);
+        std::printf("Rounded Session %d: raw %lld, block %.0f %d/%d, device %.0f %d/%d\n",reading.sample,
+            static_cast<long long>(raw),block[0].bpm,block[0].timeSigNumerator,block[0].timeSigDenominator,
+            device[0].bpm,device[0].numerator,device[0].denominator);
+        check(f.instrument->positionCount == 1 && block[0].timelineSample == reading.sample &&
+              block[0].bpm == bpm && block[0].ticksInQuarter == snapped%quarter &&
+              block[0].timeSigNumerator == numerator && block[0].timeSigDenominator == denominator &&
+              device[0].bpm == bpm && device[0].numerator == numerator && device[0].denominator == denominator &&
+              device[0].nextChange == following && std::abs(device[0].quarterNotes-quarters) < 1e-11,
+              "block and hosted clocks agree on the newest authored BPM and meter at the rounded edge");
+        render(following+257,1);
+        check(f.instrument->positionCount == 1 && block[0].bpm == 111 && device[0].bpm == 111 &&
+              device[0].nextChange == std::numeric_limits<std::int64_t>::max(),
+              "an ordinary later nonzero locate preserves block and hosted clocks");
+    }
+    check(allocations.load() == beforeAllocations && audio::callbackFileIo.load() == beforeIo,
+          "rounded Session metadata performs no driver allocation or file IO");
+}
+
 void indexedSessionTransport() {
     constexpr auto quarter = textproj::kPPQ;
     constexpr int lead = 96;
@@ -1980,6 +2064,79 @@ void sessionControllers() {
     check(zero && off, "Session refresh retains pedal ownership after cascade-deleting the stream");
 }
 
+void sessionControllerRamps() {
+    constexpr auto quarter = textproj::kPPQ;
+    struct Reading {
+        double rate;
+        std::int64_t linear, bezier;
+    };
+    // Independent integrals over two quarters, rounded to the nearest device sample.
+    constexpr std::array readings{Reading{44100, 45055, 56877}, Reading{48000, 49039, 61907},
+                                  Reading{96000, 98079, 123813}};
+    for (const auto& reading : readings) {
+        for (const bool bezier : {false, true}) {
+            Fixture f(reading.rate, 257);
+            f.clip(1, 2 * quarter, quarter / 4, 4 * quarter);
+            f.store->db().exec("DELETE FROM tempo_map");
+            f.store->db().exec(bezier
+                ? "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0)"
+                : "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,1,0),(23063040,210,0,0)");
+            const std::array points{controllers::Point{0, 0, .25}, controllers::Point{0, 2 * quarter, .75}};
+            const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 7, points);
+            if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+                throw std::runtime_error("ramp controller prepare/commit");
+            f.load();
+            const auto expected = bezier ? reading.bezier : reading.linear;
+            const auto oldStep = static_cast<std::int64_t>(2 * 60 * reading.rate / 90);
+            while (f.clock <= oldStep)
+                f.render();
+            const auto heard = std::span(f.instrument->heard).first(f.instrument->count);
+            const auto change = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+                const auto& e = item.e;
+                return e.type == EventType::Controller && e.channel == 3 && e.paramId == 7 && e.value == .75;
+            });
+            const auto note = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+                return item.e.type == EventType::NoteOn;
+            });
+            check(change != heard.end() && note != heard.end() && change < note &&
+                      change->clock == expected && note->clock == expected,
+                  "persisted MIDI controller reaches the input before a same-tick note at the ramp sample");
+            std::printf("controller %s %.0f Hz: %lld (expected %lld)\n", bezier ? "Bezier" : "linear",
+                        reading.rate, static_cast<long long>(change == heard.end() ? -1 : change->clock),
+                        static_cast<long long>(expected));
+        }
+    }
+}
+
+void sessionControllerStepLeadIn() {
+    constexpr auto quarter = textproj::kPPQ;
+    const std::array points{controllers::Point{0, 0, .25}, controllers::Point{0, quarter / 2, .75}};
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        Fixture f(rate, 257);
+        f.clip(1, quarter / 2, quarter / 4, 2 * quarter);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(5765760,90)");
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 7, points);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("step lead-in controller prepare/commit");
+        f.load();
+        const auto expected = std::llround(rate / 3);
+        while (f.clock <= expected) f.render();
+        const auto heard = std::span(f.instrument->heard).first(f.instrument->count);
+        const auto change = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+            const auto& e = item.e;
+            return e.type == EventType::Controller && e.channel == 3 && e.paramId == 7 && e.value == .75;
+        });
+        const auto note = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+            return item.e.type == EventType::NoteOn;
+        });
+        check(change != heard.end() && note != heard.end() && change < note &&
+                  change->clock == expected && note->clock == expected,
+              "persisted step lead-in gives controllers and notes the first saved BPM");
+        std::printf("controller step lead-in %.0f Hz: %lld (expected %lld)\n",
+                    rate, static_cast<long long>(change == heard.end() ? -1 : change->clock), expected);
+    }
+}
+
 void sessionPitchBend() {
     Fixture f(48000, 64);
     constexpr auto ppq = 5765760;
@@ -2572,6 +2729,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "play-quantize-ramp") livePlayQuantizeRamp(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "rounded-metadata") roundedSessionMetadata(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "indexed-transport") indexedSessionTransport(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
@@ -2583,6 +2742,10 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "pitch-bend") livePitchBendOwnership(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "controller-ramps") sessionControllerRamps(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "controller-step-lead-in") sessionControllerStepLeadIn(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }

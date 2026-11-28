@@ -18,6 +18,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <map>
@@ -694,6 +695,96 @@ void testARouteADeviceCannotTake() {
     check(st.executeStep() && st.getColumn(0).getString() == "note_expression", "the row is kept");
 }
 
+void testRoundedMetronome() {
+    section("TM-TT-01 -- metronome follows the shared rounded sample");
+    test::TempDirectory scratch("session","rounded_ramp_click");
+    StoreError error{};
+    auto store = Store::createEmpty(scratch.path() / "ramp.adi",error);
+    if (!store) {
+        check(false,"create rounded ramp fixture");
+        return;
+    }
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main');"
+                     "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,90,1),(23063040,210,0);"
+                     "INSERT INTO session_state(key,value) VALUES('transport.metronome','true')");
+    Session session;
+    if (!session.load(*store,{},SessionSpec{2,48000,64})) {
+        check(false,"load rounded ramp fixture: " + session.error());
+        return;
+    }
+    constexpr auto q = textproj::kPPQ;
+    const auto observe = [&](Session& player, std::int64_t tick, std::int64_t expected,
+                             const char* label, bool accented = false) {
+        const auto boundary = player.beginRender().sampleAtTick(tick);
+        if (expected >= 0) eqi(boundary,expected,"the shared clock rounds the analytic beat");
+        player.transport().locate(boundary-1);
+        player.transport().play();
+        std::array<float,8> left{},right{};
+        float* channels[]{left.data(),right.data()};
+        AudioIo io;
+        io.frames = static_cast<std::int32_t>(left.size());
+        io.numOut = 2;
+        io.out = channels;
+        player.process(io);
+        const auto heard = std::find_if(left.begin(),left.end(),[](float value) { return value != 0; });
+        const auto audible = boundary-1 + (heard-left.begin());
+        std::printf("Click at tick %lld: shared frame %lld, waveform starts %lld\n",
+                    static_cast<long long>(tick),static_cast<long long>(boundary),static_cast<long long>(audible));
+        // A click starts at sine phase zero, so the first nonzero sample
+        // follows the launch boundary by one.
+        check(audible == boundary+1 && left == right &&
+              (!accented || (heard != left.end() && *heard > 0.035f)),label);
+        player.transport().play(false);
+        player.process(io);
+    };
+    observe(session,2*q,49039,"a rounded-down beat clicks on the same sample as the musical grid");
+    observe(session,4*q,81341,"a rounded-up beat clicks on the same sample as the musical grid");
+
+    store->db().exec("INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(11531520,3,8);"
+                     "INSERT INTO session_state(key,value) VALUES('transport.countIn','1')");
+    check(session.refresh(*store),"publish a new meter on the rounded-down beat");
+    observe(session,2*q,49039,"the coincident 3/8 meter starts with an accent on its shared sample",true);
+
+    {
+        auto block = session.beginRender();
+        check(block.startPlayback(2*q,true),"start a recording count-in on the ramp at 150 BPM");
+    }
+    check(session.transport().position() == 49039 && session.transport().countInRemaining() == 28800,
+          "three count-in eighths use the starting tempo at a fixed 9600 samples each");
+    std::array<float,64> left{},right{};
+    float* channels[]{left.data(),right.data()};
+    AudioIo io;
+    io.numOut = 2;
+    io.out = channels;
+    float secondBeat = 0, secondBeatWave = 0;
+    for (auto first = 0; first < 9602; first += io.frames) {
+        io.frames = std::min(64,9602-first);
+        session.process(io);
+        if (first <= 9600 && 9600 < first + io.frames)
+            secondBeat = left[static_cast<std::size_t>(9600-first)];
+        if (first <= 9601 && 9601 < first + io.frames)
+            secondBeatWave = left[static_cast<std::size_t>(9601-first)];
+    }
+    check(session.transport().position() == 49039 && session.transport().countInRemaining() == 19198 &&
+          secondBeat == 0 && secondBeatWave > 0.01f,"the count-in clicks on its fixed clock while musical position is held");
+    session.transport().play(false);
+    io.frames = 1;
+    session.process(io);
+    check(session.setExternalTempoAt(*store,160,2*q),"perform a new tempo at the same meter boundary");
+    observe(session,2*q,49039,"the performed tempo keeps the exact metronome and meter boundary",true);
+
+    store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+                     "DELETE FROM time_signature_map; INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,16)");
+    Session tied;
+    check(tied.load(*store,{},SessionSpec{2,44100,64}),"load a half-sample metronome tie");
+    observe(tied,q/4,5513,"an exact half sample ties to the later frame at 44.1 kHz");
+
+    store->db().exec("UPDATE tempo_map SET bpm=701; UPDATE time_signature_map SET denominator=8");
+    Session far;
+    check(far.load(*store,{},SessionSpec{2,96000,64}),"load a large timeline metronome case");
+    observe(far,599850100248759360,-1,"the forward click projection wins over a coarse inverse at a late frame");
+}
+
 void testTempoRampTransport() {
     section("TM-TT-01 -- metronome and external tempo share the integrated ramp");
     test::TempDirectory scratch("session","tempo_ramp");
@@ -864,6 +955,7 @@ int main() {
     testAPlaceholderWakesOnceInstalled();
     testADeviceKnowsADIRecords();
     testTempoRampTransport();
+    testRoundedMetronome();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

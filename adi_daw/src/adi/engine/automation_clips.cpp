@@ -2,7 +2,6 @@
 #include "adi/engine/automation_clips.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
-#include "adi/engine/snapshot.hpp"
 #include "adi/engine/warp_arrangement_clock.hpp"
 #include <algorithm>
 #include <cmath>
@@ -16,7 +15,7 @@ struct AutomationClock {
     struct Knot { long double tick=0, seconds=0, ticksPerSecond=0; };
     double rate=0;
     std::vector<Knot> knots;
-    std::optional<WarpArrangementClock> rampClock;
+    std::shared_ptr<const WarpArrangementClock> rampClock;
     long double secondsAt(long double tick) const noexcept {
         if (rampClock) return rampClock->secondsAtPosition(tick);
         const auto* first = knots.data();
@@ -59,7 +58,7 @@ std::int64_t sampleAtNs(std::int64_t ns,double rate) {
     }
     return sampleAt(static_cast<long double>(ns)*1e-9L,rate);
 }
-std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,const TempoMap& tempo,double rate) {
+std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,const std::shared_ptr<const WarpArrangementClock>& tempo,double rate) {
     auto clock=std::make_shared<AutomationClock>();clock->rate=rate;
     const auto initialBpm = model.tempo.empty() ? 120.0L : static_cast<long double>(model.tempo.front().bpm);
     clock->knots.push_back({0, 0, 5765760.0L * initialBpm / 60.0L});
@@ -76,7 +75,7 @@ std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,const T
     }
     if (std::any_of(model.tempo.begin(), model.tempo.end(),
                     [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
-        clock->rampClock.emplace(tempo,rate);
+        clock->rampClock = tempo;
     return clock;
 }
 std::optional<std::int64_t> deviceTrack(const rows::Model& model,std::int64_t device) {
@@ -205,7 +204,8 @@ std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::i
     return curveValue(a.value,b.value,x,a.curve,a.tension);
 }
 void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane& row,
-    const rows::Model& model,const TempoMap& tempo,double rate,std::shared_ptr<const AutomationClock>& clipClock,
+    const rows::Model& model,const std::shared_ptr<const WarpArrangementClock>& tempo,double rate,
+    std::shared_ptr<const AutomationClock>& clipClock,
     std::vector<std::string>& problems) {
     const auto prefix="automation_lanes#"+std::to_string(row.id)+": ";
     if(std::none_of(model.automationData.begin(),model.automationData.end(),[&](const auto& d){return d.laneId==row.id && d.clipId.has_value();}))return;

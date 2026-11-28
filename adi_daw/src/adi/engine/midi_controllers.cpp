@@ -2,11 +2,13 @@
 #include "adi/engine/midi_controllers.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -40,15 +42,31 @@ struct Clock {
         double sample, speed;
     };
     std::vector<Step> steps;
-    Clock(const rows::Model &model, double rate) {
+    double rate;
+    std::optional<WarpArrangementClock> ramp;
+    Clock(const rows::Model &model, double sampleRate) : rate(sampleRate) {
         if (!std::isfinite(rate) || rate < 44100 || rate > 768000)
             throw std::runtime_error("controller rate outside 44.1-768 kHz");
-        steps.push_back({0, 0, 120.0 * ppq / (60.0 * rate)});
+        const bool hasRamp = std::adjacent_find(model.tempo.begin(), model.tempo.end(),
+            [](const auto &left, const auto &right) {
+                if (left.curve != 1 && left.curve != 2)
+                    return false;
+                return left.rampSpan ? left.rampSpan->firstBpm != left.rampSpan->lastBpm
+                                     : left.bpm != right.bpm;
+            }) != model.tempo.end();
+        // Keep the existing step clock and its sample-rounding behavior for
+        // projects without an active ramp segment.
+        if (!hasRamp) {
+            const double leadInBpm = model.tempo.empty() ? 120.0 : model.tempo.front().bpm;
+            steps.push_back({0, 0, leadInBpm * ppq / (60.0 * rate)});
+        }
         std::int64_t previous = -1;
         for (const auto &row : model.tempo) {
             if (row.posTicks < 0 || row.posTicks <= previous || !std::isfinite(row.bpm) || row.bpm <= 0)
                 throw std::runtime_error("invalid controller tempo map");
             previous = row.posTicks;
+            if (hasRamp)
+                continue;
             const auto &before = steps.back();
             const auto sample = before.sample + difference(row.posTicks, before.tick) / before.speed;
             const auto speed = row.bpm * ppq / (60.0 * rate);
@@ -61,26 +79,49 @@ struct Clock {
             else
                 steps.push_back({row.posTicks, sample, speed});
         }
+        if (hasRamp)
+            ramp.emplace(model.tempo, rate);
     }
     const Step &atSample(double sample) const noexcept {
-        auto found = std::upper_bound(steps.begin(), steps.end(), sample,
-                                      [](double value, const Step &step) { return value < step.sample; });
-        return found == steps.begin() ? steps.front() : *--found;
+        const auto *first = steps.data();
+        const auto *found = std::upper_bound(first, first + steps.size(), sample,
+            [](double value, const Step &step) { return value < step.sample; });
+        return found == first ? *first : *(found - 1);
     }
     double sampleAt(std::int64_t tick) const {
         if (tick < 0)
             throw std::runtime_error("negative controller placement");
-        auto found = std::upper_bound(steps.begin(), steps.end(), tick,
-                                      [](std::int64_t value, const Step &step) { return value < step.tick; });
-        const auto &step = found == steps.begin() ? steps.front() : *--found;
-        const auto sample = step.sample + difference(tick, step.tick) / step.speed;
+        const auto sample = [&] {
+            if (ramp)
+                return ramp->ticksToSeconds(tick) * rate;
+            const auto found = std::upper_bound(steps.begin(), steps.end(), tick,
+                [](std::int64_t value, const Step &step) { return value < step.tick; });
+            const auto &step = found == steps.begin() ? steps.front() : *(found - 1);
+            return step.sample + difference(tick, step.tick) / step.speed;
+        }();
         if (!std::isfinite(sample) || sample > sampleLimit)
             throw std::runtime_error("controller placement exceeds supported range");
         return sample;
     }
+    long double rampTick(double sample) const noexcept {
+        return ramp->positionAtSeconds(static_cast<long double>(sample) / rate);
+    }
+    double elapsedTicks(double sample, std::int64_t origin) const noexcept {
+        if (ramp)
+            return static_cast<double>(rampTick(sample) - static_cast<long double>(origin));
+        const auto &step = atSample(sample);
+        return difference(step.tick, origin) + (sample - step.sample) * step.speed;
+    }
     std::int64_t wholeTick(double sample, bool roundUp = false) const {
         if (!std::isfinite(sample) || sample < 0 || sample > sampleLimit)
             throw std::runtime_error("invalid controller source clock");
+        if (ramp) {
+            const auto position = rampTick(sample);
+            const auto integral = roundUp ? std::ceil(position) : std::floor(position);
+            if (!std::isfinite(integral) || integral < 0 || integral > tickLimit)
+                throw std::runtime_error("controller musical clock exceeds supported range");
+            return static_cast<std::int64_t>(integral);
+        }
         const auto &step = atSample(sample);
         const auto delta = (sample - step.sample) * step.speed;
         if (!std::isfinite(delta) || delta < 0 || delta > static_cast<double>(tickLimit) ||
@@ -113,13 +154,16 @@ struct Lane {
     std::vector<Interval> intervals;
 };
 const Interval *intervalAt(const Lane &lane, std::int64_t sample) noexcept {
-    auto found =
-        std::upper_bound(lane.intervals.begin(), lane.intervals.end(), sample,
-                         [](std::int64_t value, const Interval &interval) { return value < interval.first; });
-    if (found == lane.intervals.begin())
+    if (lane.intervals.empty())
         return nullptr;
-    --found;
-    return sample < found->last ? &*found : nullptr;
+    const auto *first = lane.intervals.data();
+    const auto *found =
+        std::upper_bound(first, first + lane.intervals.size(), sample,
+                         [](std::int64_t value, const Interval &interval) { return value < interval.first; });
+    if (found == first)
+        return nullptr;
+    const auto *interval = found - 1;
+    return sample < interval->last ? interval : nullptr;
 }
 void overlay(Lane &lane) {
     struct Edge {
@@ -188,22 +232,22 @@ bool MidiControllerProgram::valueAt(std::size_t index, std::int64_t sample, doub
     const auto &points = span.points;
     if (points.empty())
         return false;
-    auto found = std::upper_bound(points.begin(), points.end(), sample,
-                                  [](std::int64_t time, const Point &point) { return time < point.sample; });
-    if (found == points.begin()) {
+    const auto *first = points.data();
+    const auto *end = first + points.size();
+    const auto *found = std::upper_bound(first, end, sample,
+        [](std::int64_t time, const Point &point) { return time < point.sample; });
+    if (found == first) {
         value = points.front().value;
         return true;
     }
-    if (found == points.end()) {
+    if (found == end) {
         value = points.back().value;
         return true;
     }
     const auto &right = *found;
-    const auto &left = *--found;
+    const auto &left = *(found - 1);
     const auto clockSample = static_cast<double>(sample) - span.clockOffset;
-    const auto &step = data_->clock->atSample(clockSample);
-    const auto elapsed =
-        std::max(0.0, difference(step.tick, span.songBase) + (clockSample - step.sample) * step.speed);
+    const auto elapsed = std::max(0.0, data_->clock->elapsedTicks(clockSample, span.songBase));
     const auto duration = difference(right.time, left.time);
     const auto position =
         duration > 0 ? std::clamp((elapsed + difference(span.sourceBase, left.time)) / duration, 0.0, 1.0)
@@ -221,10 +265,12 @@ bool MidiControllerProgram::changesOwnerAt(std::size_t index, std::int64_t sampl
     return (now ? now->span + 1 : 0) != (before ? before->span + 1 : 0);
 }
 std::int64_t MidiControllerProgram::nextBoundary(std::int64_t at, std::int64_t end) const noexcept {
-    if (!data_)
+    if (!data_ || data_->boundaries.empty())
         return end;
-    const auto found = std::lower_bound(data_->boundaries.begin(), data_->boundaries.end(), at);
-    return found == data_->boundaries.end() ? end : std::min(end, *found);
+    const auto *first = data_->boundaries.data();
+    const auto *last = first + data_->boundaries.size();
+    const auto *found = std::lower_bound(first, last, at);
+    return found == last ? end : std::min(end, *found);
 }
 MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double rate) {
     std::shared_ptr<const Clock> clock;

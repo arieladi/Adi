@@ -3571,10 +3571,8 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
     auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
-    // The new timed Scene owns the rounded cut sample, even when its
-    // continuous musical boundary falls a fraction of a frame later.
-    if (preparedScene && timedCutSample > 0 && info.timelineSample == timedCutSample)
-        ticks = std::max(ticks,preparedScene->tick);
+    const auto* next = nextDeviceClockChange(info.timelineSample);
+    if (next != deviceClockChanges.data()) ticks = std::max(ticks,(next - 1)->second);
     info.bpm = tempoClock.bpmAt(ticks);
     constexpr auto ppq = textproj::kPPQ; // SPEC 4.2; exact as Pd float
     constexpr auto whole = textproj::kWhole;
@@ -3668,6 +3666,12 @@ double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
     return static_cast<double>(wholeTick) / ppq + remainder * tempoClock.bpmAt(wholeTick) / 60.0;
 }
 
+const std::pair<std::int64_t, std::int64_t>* Session::TimingView::nextDeviceClockChange(std::int64_t sample) const noexcept {
+    const auto* changes = deviceClockChanges.data();
+    return std::upper_bound(changes, changes + deviceClockChanges.size(), sample,
+        [](std::int64_t value, const auto& change) { return value < change.first; });
+}
+
 DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
     constexpr double ppq = static_cast<double>(textproj::kPPQ);
     DeviceTransport result;
@@ -3675,8 +3679,7 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     result.quarterNotes = quartersAt(sample);
     const auto* changes = deviceClockChanges.data();
     const auto* endOfChanges = changes + deviceClockChanges.size();
-    const auto* next = std::upper_bound(changes, endOfChanges, sample,
-        [](std::int64_t value, const auto& change) { return value < change.first; });
+    const auto* next = nextDeviceClockChange(sample);
     if (next != endOfChanges) result.nextChange = next->first;
     constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
     const auto seconds = static_cast<double>(sample) / sampleRate;
@@ -4609,7 +4612,7 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
     // Heard count-in clock of this callback's first frame (DF-E6 (a)).
     const auto heard=countInTailTotal_-countInTailLag_+transport_.streamedFrames();
     std::int64_t previous = -1, beatTick = 0;
-    double boundary = 0, nextBoundary = 0;
+    std::int64_t boundary = 0, nextBoundary = 0;
     bool accented = false;
     const auto* firstMeter = timing.signatures.data();
     const auto* endOfMeters = firstMeter + timing.signatures.size();
@@ -4640,27 +4643,47 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
             previous = -1;
             continue;
         }
-        if (previous < 0 || sample - 1 != previous || static_cast<double>(sample) >= nextBoundary) {
-            const auto tick = tempo.secondsToTicks(static_cast<double>(sample) / rate);
-            const auto* nextMeter = std::upper_bound(firstMeter, endOfMeters, tick,
-                [](auto at, const auto& meter) { return at < meter.posTicks; });
+        if (previous < 0 || sample - 1 != previous || sample >= nextBoundary) {
+            // Meter changes and clicks use the same rounded placement as
+            // other scheduled events. Multiple meter rows may share a sample.
+            const auto* nextMeter = std::upper_bound(firstMeter, endOfMeters, sample,
+                [&](auto at, const auto& meter) { return at < timing.sampleForTick(meter.posTicks); });
             const auto meter = nextMeter == firstMeter ? rows::TimeSignature{} : *(nextMeter - 1);
             const auto signatureBeat = textproj::kWhole / meter.denominator;
             const auto barTicks = signatureBeat * meter.numerator;
-            const auto barStart = tick - (tick - meter.posTicks) % barTicks;
             const auto interval = options.eighthNotes && metronomeEighthNotesFit(barTicks)
                 ? kMetronomeEighthNoteTicks : signatureBeat;
-            beatTick = tick - (tick - barStart) % interval;
-            accented = beatTick == barStart;
-            boundary = tempo.ticksToSeconds(beatTick) * rate;
-            auto nextTick = beatTick + std::min(interval, std::numeric_limits<std::int64_t>::max() - beatTick);
-            if (nextMeter != endOfMeters) nextTick = std::min(nextTick, nextMeter->posTicks);
-            nextBoundary = std::nextafter(tempo.ticksToSeconds(nextTick) * rate,
-                                          -std::numeric_limits<double>::infinity());
+            const auto limitTick = nextMeter == endOfMeters ? std::numeric_limits<std::int64_t>::max()
+                                                           : nextMeter->posTicks - 1;
+            const auto limit = (limitTick - meter.posTicks) / interval;
+            const auto edgeSeconds = (static_cast<long double>(sample) + 0.5L) / rate;
+            const auto estimate = std::clamp(tempo.secondsToTicks(static_cast<double>(edgeSeconds)),
+                                             meter.posTicks,limitTick);
+            const auto frameAt = [&](auto index) { return timing.sampleForTick(meter.posTicks + index * interval); };
+            auto index = (estimate - meter.posTicks) / interval;
+            // Inversion gives a starting point. Check the canonical samples
+            // too, including half ties and large positions with coarser float precision.
+            if (index > 0 && frameAt(index) > sample) --index;
+            else if (index < limit && frameAt(index + 1) <= sample) ++index;
+            const bool ahead = frameAt(index) > sample;
+            auto low = ahead ? 0 : index;
+            auto high = ahead ? index - 1 :
+                (index < limit && frameAt(index + 1) <= sample ? limit : index);
+            while (low < high) {
+                const auto middle = high - (high - low) / 2;
+                if (frameAt(middle) <= sample) low = middle;
+                else high = middle - 1;
+            }
+            beatTick = meter.posTicks + low * interval;
+            accented = (beatTick - meter.posTicks) % barTicks == 0;
+            boundary = frameAt(low);
+            nextBoundary = low < limit ? frameAt(low + 1) :
+                (nextMeter == endOfMeters ? std::numeric_limits<std::int64_t>::max()
+                                         : timing.sampleForTick(nextMeter->posTicks));
         }
         previous = sample;
         const bool adjacent = clickWasPlaying_ && sample > 0 && clickLastSample_ == sample - 1;
-        const bool atBoundary = std::abs(static_cast<double>(sample) - boundary) <= 1.01;
+        const bool atBoundary = sample == boundary;
         if ((adjacent && beatTick != clickLastBeat_) || (!adjacent && atBoundary))
             triggerClick(accented, options.sound);
         const double click = nextClickSample(rate, decay, options.sound);

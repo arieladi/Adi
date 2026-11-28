@@ -4,7 +4,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/engine/curves.hpp"
-#include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,7 +100,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
         problems_.push_back("automation: session rate " + std::to_string(sessionRate) + " is not a rate; nothing compiled");
         return;
     }
-    const auto tempo = TempoMap::fromRows(model.tempo);
+    const auto tempo = std::make_shared<const WarpArrangementClock>(model.tempo,rate_);
     std::shared_ptr<const AutomationClock> clipClock;
 
     std::map<std::int64_t,std::map<std::int64_t,const rows::AutomationSegmentRange*>> rangeIndex;
@@ -168,7 +168,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
             if (k > 0 && rec->time < previousTime) { refused = at + "time out of order"; break; }
             previousTime = rec->time;
 
-            const double seconds = row.timeBase == 0 ? tempo.ticksToSeconds(rec->time)
+            const double seconds = row.timeBase == 0 ? tempo->ticksToSeconds(rec->time)
                                                      : static_cast<double>(rec->time) * 1e-9;
             PlacedPoint placed;
             if (!toSample(seconds, sessionRate, placed.sample)) { refused = at + "time outside the supported range"; break; }
