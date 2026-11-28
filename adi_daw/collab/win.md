@@ -16,7 +16,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **He had not handed the night's pastes on,** so the integrator has not started on the review's findings and the finished rows on the edit, safety and routing branches wait for it.
 
-**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-478.
+**His corrections the same day:** the take with parts cut happened once (SC-447 goes to the foot of the queue); Quantize also lacks Live's settings (SC-453); and he asks for a sanity check of the right-click menus against Live (SC-478: Live's side is read in Live, `collab/prompts/2026-11-28-live-readings-menus.md`). SC-454, EQ Eight opening as a hosted plug-in's empty panel, goes to the devices seat. He raised bringing his own ADI EQ in as the EQ device; win put it to him beside his ruling of 5 November (ADR-0212), which has no separate built-in EQ of his on a track.
+
+**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-479.
 
 ---
 
