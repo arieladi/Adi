@@ -181,9 +181,9 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 
 The macOS default already registered Cmd+Shift+Z. JUCE's native menu validation reads the enabled flag captured when the menu item was built. ADI's menu model did not observe command-state changes, so it could keep the disabled entry after Undo made Redo available.
 
-The menu model now follows the command manager. Undo, Redo and history restores signal state changes. Querying an already-active project's menu does not schedule another update. Menu headings retain their existing shortcut feedback, and each platform keeps its registered keymap. Live uses Cmd+Shift+Z on macOS and Ctrl+Y on Linux and Windows.
+The menu model now follows the command manager. Undo, Redo and history restores signal state changes. Querying an already-active project's menu does not schedule another update. Menu headings retain their existing shortcut feedback, and each platform keeps its registered keymap. ADI’s Live preset maps Redo to Cmd+Shift+Z on macOS and Ctrl+Y on Windows and Linux.
 
-Redo is still item 2 of Edit. There are no added controls or position changes. A peerless fixture builds the Edit menu data and exercises real history edits and mapped keys. It tests the Linux Live chord and shifted Z through the Cubase preset, and will test the native Live chord when built on macOS. No desktop or native menus are required.
+Redo is still item 2 of Edit. There are no added controls or position changes. A peerless fixture builds the Edit menu data and exercises real history edits and mapped keys. It tests ADI’s Live-preset chord on Linux and shifted Z through the Cubase preset. On macOS the same fixture uses the platform’s Live-preset chord. No desktop or native menus are required.
 
 The linked Debug fixture passed seven of nine checks against the baseline and all nine against the fix with DISPLAY unset. The separate isolated message-loop probe held an Edit menu cache and made no manual menu reads between actions. The baseline delivered zero updates. The fix delivered one after a normal rename, one after Undo and one after Redo. Cached Undo and Redo availability followed the history, and querying the menu during its callback did not schedule a second refresh. Native keyboard delivery on macOS remains a runner check.
 
