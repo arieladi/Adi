@@ -1,6 +1,17 @@
-Ready for review: basics/integrate-2 at f02bd171caca744ea91898f6c4a8d733488f2e3a
-
 # Basics integration
+
+## Integrate-3
+
+`basics/integrate-3` starts from `6aeeed1b19b6f45cb15ec1bb65ce1084058bb127`, with PR #830 in its history. The table numbers follow the 27 November review. [Gemini review](https://github.com/arieladi/Adi/blob/98a21833c54c539bf0f334b88e0a684f637aa3c9/adi_daw/collab/gemini.md#L7-L33)
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| 1. First-project hardware MIDI out | Fixed on main | `0bf77b33d` passes the output feed when attaching the first normal project, before the port host starts. |
+| 2. First-project hardware MIDI in | Fixed on main | `0bf77b33d` refreshes the installed window's input ports after the host is created. |
+| 8. Backup rotation on Windows | Resolved before this integration | The active path calls the recycle-only Windows file operation and keeps the identity lease through deletion. The Safety owner verified that combination on Windows. JUCE's `std::string` constructor decodes UTF-8. |
+| 9. Match a recovered take to its project | Fixed on main | `0bf77b33d` compares open projects with filesystem identity, covering alternate spellings of the same file. |
+| 13. Refresh Current Project after collection | Fixed on main | `0bf77b33d` invalidates the cached catalog after Collect All and Save and republishes the listing. |
+| 16. Refresh Undo History after a snapshot | Fixed on main | `0bf77b33d` refreshes an open Undo History after the snapshot succeeds, even when the edit generation is unchanged. |
 
 ## Tenth stack, first review bundle
 
