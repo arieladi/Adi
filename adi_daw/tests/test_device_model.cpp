@@ -22,6 +22,8 @@
 
 #include "juce/device_model.hpp"
 
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -394,6 +396,97 @@ void testTheWidthReachesTheDevice() {
 
 // --- the missing plugin ------------------------------------------------------
 
+// MX-39 (ADR-0203 d8, ADR-0254 d23): auto gain-match on any device, and Match
+// Output Gain. A device that adds 6 dB, held at its input's loudness; the gain
+// committed as a fixed value, which no longer follows the device.
+class GainDevice final : public DeviceInstance {
+public:
+    explicit GainDevice(bool doubles) : doubles_(doubles) {}
+    [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
+    [[nodiscard]] bool loaded() const noexcept override { return true; }
+    [[nodiscard]] bool processesDouble() const noexcept override { return doubles_; }
+    void process(const engine::NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+                if (io.wide()) io.out64[c][i] = io.in64 ? io.in64[c][i] * gain : 0.0;
+                else io.out[c][i] = io.in ? static_cast<float>(static_cast<double>(io.in[c][i]) * gain) : 0.0f;
+            }
+    }
+    double gain = 2.0;   // +6.02 dB
+private:
+    DeviceIdentity id_;
+    bool doubles_;
+};
+
+void testOutputMatchHoldsTheInputLoudness() {
+    section("MX-39 -- auto gain-match holds a device at its input's loudness; Match Output Gain fixes it");
+    for (const bool wide : {false, true}) {
+        GainDevice d(wide);
+        DeviceNode n(d);
+        n.prepare(48000.0, 480);
+        constexpr int frames = 480;
+        std::vector<std::vector<float>> in(2, std::vector<float>(frames)), out(2, std::vector<float>(frames));
+        std::vector<std::vector<double>> in64(2, std::vector<double>(frames)), out64(2, std::vector<double>(frames));
+        std::vector<const float*> inPtr{in[0].data(), in[1].data()};
+        std::vector<float*> outPtr{out[0].data(), out[1].data()};
+        std::vector<const double*> in64Ptr{in64[0].data(), in64[1].data()};
+        std::vector<double*> out64Ptr{out64[0].data(), out64[1].data()};
+        std::int64_t position = 0;
+        // Seconds of a 997 Hz tone at -20 dBFS; returns the output over input
+        // level of the last second, in dB, and whether every sample was 2 x in.
+        const auto play = [&](double seconds, bool& doubled) {
+            double inEnergy = 0, outEnergy = 0;
+            doubled = true;
+            const auto blocks = static_cast<int>(seconds * 100);
+            for (int b = 0; b < blocks; ++b) {
+                for (int i = 0; i < frames; ++i) {
+                    const double v = 0.1 * std::sin(2 * 3.141592653589793 * 997 * static_cast<double>(position + i) / 48000);
+                    for (std::size_t c = 0; c < 2; ++c) {
+                        in[c][static_cast<std::size_t>(i)] = static_cast<float>(v);
+                        in64[c][static_cast<std::size_t>(i)] = v;
+                    }
+                }
+                position += frames;
+                engine::NodeIo io;
+                io.channels = 2;
+                io.frames = frames;
+                io.sampleRate = 48000.0;
+                if (wide) { io.in64 = in64Ptr.data(); io.out64 = out64Ptr.data(); }
+                else { io.in = inPtr.data(); io.out = outPtr.data(); }
+                n.process(io);
+                for (std::size_t c = 0; c < 2; ++c)
+                    for (std::size_t i = 0; i < static_cast<std::size_t>(frames); ++i) {
+                        const double x = wide ? in64[c][i] : static_cast<double>(in[c][i]);
+                        const double y = wide ? out64[c][i] : static_cast<double>(out[c][i]);
+                        doubled = doubled && (wide ? y == x * d.gain : static_cast<float>(y) == static_cast<float>(x * d.gain));
+                        if (b >= blocks - 100) { inEnergy += x * x; outEnergy += y * y; }
+                    }
+            }
+            return 10 * std::log10(outEnergy / inEnergy);
+        };
+        bool doubled = false;
+        const double off = play(1.0, doubled);
+        check(doubled && std::abs(off - 6.0206) < 0.01, "flag off: the device is untouched, bit for bit (+6 dB)");
+        n.setOutputMatch(engine::OutputMatch::Mode::Match);
+        const double matched = play(6.0, doubled);
+        std::printf("  matched %s: %.3f dB from the input\n", wide ? "64" : "32", matched);
+        check(std::abs(matched) < 0.5, "flag on: a device that adds 6 dB reads within 0.5 dB of bypass");
+        const double committed = n.matchedOutputDb();
+        check(std::abs(committed + 6.0206) < 0.5, "the matcher's gain is about -6 dB, ready to commit");
+        n.setOutputMatch(engine::OutputMatch::Mode::Fixed, committed);
+        const double fixed = play(1.0, doubled);
+        check(std::abs(fixed - matched) < 0.05 && n.outputMatch() == engine::OutputMatch::Mode::Fixed,
+              "Match Output Gain keeps the matched level as a fixed gain");
+        d.gain = 4.0;   // the device now adds 12 dB: a fixed gain does not follow
+        const double after = play(1.0, doubled);
+        check(std::abs(after - fixed - 6.0206) < 0.05, "and the matcher has stopped");
+        n.setOutputMatch(engine::OutputMatch::Mode::Off);
+        d.gain = 2.0;
+        (void)play(0.1, doubled);
+        check(doubled, "flag off again: the device is untouched");
+    }
+}
+
 void testMissingPluginIsStillADevice() {
     section("ADR-0011 / SPEC 7.1: a missing plugin is never dropped");
     DeviceIdentity id;
@@ -536,6 +629,7 @@ int main() {
     testAnInstrumentConsumesAndBypassDoesNot();
     testPrepareAndReleaseReachTheDevice();
     testTheWidthReachesTheDevice();
+    testOutputMatchHoldsTheInputLoudness();
     testMissingPluginIsStillADevice();
     testMissingPluginPassesAudio();
     testMissingPluginKeepsStateByteForByte();

@@ -156,6 +156,7 @@ bool MissingDevice::loadState(const std::string& role, const std::vector<std::ui
 // ---------------------------------------------------------------------------
 
 void DeviceNode::prepare(double sampleRate, std::int32_t maxFrames) {
+    match_.prepare(sampleRate);   // MX-39: the audio thread re-prepares the matcher at this rate
     if (inst_ != nullptr) inst_->prepare(sampleRate, maxFrames);
 }
 
@@ -173,6 +174,7 @@ void DeviceNode::process(const engine::NodeIo& io) noexcept {
 void DeviceNode::processActive(const engine::NodeIo& io) noexcept {
     if (inst_ == nullptr) { passThrough(io); return; }
     inst_->process(io);
+    match_.apply(io);   // MX-39: nothing at all while the flag is off
 }
 void DeviceNode::didSuspend() noexcept {
     didSuspendAfterBypass(bypassed());

@@ -72,6 +72,9 @@ public:
     /// ran; `wet` is its output, scaled in place.
     void process(const float* const* dry, float* const* wet, int channels,
                  int frames) noexcept;
+    /// The same at 64-bit (ADR-0207 d2), for a device handed doubles (MX-39).
+    void process(const double* const* dry, double* const* wet, int channels,
+                 int frames) noexcept;
 
     /// The gain being applied, in dB (the end of the last ramp).
     [[nodiscard]] double gainDb() const noexcept;
@@ -91,8 +94,10 @@ private:
         double energy[kControlFrames] = {};
     };
     /// K-weights `count` frames into side.energy; returns their mean.
-    double weigh(Side& side, const float* const* x, int channels, int from,
-                 int count) noexcept;
+    template <class T>
+    double weigh(Side& side, const T* const* x, int channels, int from, int count) noexcept;
+    template <class T>
+    void run(const T* const* dry, T* const* wet, int channels, int frames) noexcept;
     void feed(Side& side, int count) const noexcept;
 
     double sr_ = 48000.0;

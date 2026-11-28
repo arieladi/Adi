@@ -26,6 +26,7 @@
 #include "adi/engine/graph.hpp"
 #include "juce/device_editor.hpp"
 #include "adi/engine/mpe_output.hpp"
+#include "adi/engine/output_match.hpp"
 #include "adi/engine/param_edits.hpp"
 
 #include <array>
@@ -676,11 +677,24 @@ public:
 
     [[nodiscard]] DeviceInstance& instance() const noexcept { return *inst_; }
 
+    /// MX-39: auto gain-match on this device's output (Match), the committed
+    /// gain of Match Output Gain (Fixed), or nothing at all (Off, the default).
+    /// Message thread. The per-device flag and fixed gain are stored with the
+    /// device once their schema minor is reserved; until then this is the
+    /// engine's half, set by whoever reads them.
+    void setOutputMatch(engine::OutputMatch::Mode mode, double fixedDb = 0.0) noexcept {
+        match_.set(mode, fixedDb);
+    }
+    [[nodiscard]] engine::OutputMatch::Mode outputMatch() const noexcept { return match_.mode(); }
+    /// The matcher's gain now, in dB: what Match Output Gain fixes.
+    [[nodiscard]] double matchedOutputDb() const noexcept { return match_.matchedDb(); }
+
 private:
     DeviceInstance* inst_ = nullptr;
     engine::Precision handed_ = engine::Precision::Float32;
     std::atomic<bool> always_{false};
     std::atomic<bool> bypassed_{false};
+    engine::OutputMatch match_;
 };
 
 /// A device that must be DEACTIVATED to take a new layout, rate or sample

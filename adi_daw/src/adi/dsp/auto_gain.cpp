@@ -87,7 +87,8 @@ void AutoGain::reset() noexcept {
     gain_ = 1.0;
 }
 
-double AutoGain::weigh(Side& side, const float* const* x, int channels, int from,
+template <class T>
+double AutoGain::weigh(Side& side, const T* const* x, int channels, int from,
                        int count) noexcept {
     const int measured = channels < kMaxChannels ? channels : kMaxChannels;
     double total = 0.0;
@@ -129,8 +130,8 @@ void AutoGain::feed(Side& side, int count) const noexcept {
     }
 }
 
-void AutoGain::process(const float* const* dry, float* const* wet, int channels,
-                       int frames) noexcept {
+template <class T>
+void AutoGain::run(const T* const* dry, T* const* wet, int channels, int frames) noexcept {
     if (channels <= 0) {
         return;
     }
@@ -161,14 +162,24 @@ void AutoGain::process(const float* const* dry, float* const* wet, int channels,
         const double step = (target - gain_) / static_cast<double>(n);
         for (int c = 0; c < channels; ++c) {
             double g = gain_;
-            float* out = wet[c] + start;
+            T* out = wet[c] + start;
             for (int i = 0; i < n; ++i) {
                 g += step;
-                out[i] = static_cast<float>(static_cast<double>(out[i]) * g);
+                out[i] = static_cast<T>(static_cast<double>(out[i]) * g);
             }
         }
         gain_ = target;
     }
+}
+
+void AutoGain::process(const float* const* dry, float* const* wet, int channels,
+                       int frames) noexcept {
+    run(dry, wet, channels, frames);
+}
+
+void AutoGain::process(const double* const* dry, double* const* wet, int channels,
+                       int frames) noexcept {
+    run(dry, wet, channels, frames);
 }
 
 double AutoGain::gainDb() const noexcept { return 20.0 * std::log10(gain_); }
