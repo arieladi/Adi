@@ -362,6 +362,11 @@ adi_pd_replace([=[void g_canvas_freepdinstance(void)
     THISGUI->i_newargv = 0;
     THISGUI->i_newargc = 0;
 ]=])
+# DF-E67 (b), the other half (the devices lane's devices/df-e67b-canvas-args): no arguments store no copy,
+# so the loader's canvas_setargs(0, 0) after every abstraction leaves nothing pending; canvas_new already
+# makes the empty list it needs from a null. The teardown above frees what arguments are still pending.
+adi_pd_replace("    THISGUI->i_newargv = copybytes(argv, argc * sizeof(t_atom));"
+    "    THISGUI->i_newargv = argc > 0 ? copybytes(argv, argc * sizeof(t_atom)) : 0;")
 file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
 # DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
 # write files through its canvas. `savetofile` writes the patch's text to any
