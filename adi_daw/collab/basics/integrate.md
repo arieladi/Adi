@@ -1,4 +1,4 @@
-Integrating basics/integrate-4 at `b629045be7463a43a23982a086d9377d8b7b79e6`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
+Integrating basics/integrate-4 at `6ae9defb5e236ade043fdca09bc67679542654f2`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
@@ -24,6 +24,8 @@ Started from `land/basics-1128c` at `16064c0a6d8e3f435ed5cb9626e09d2b73f042cd` w
 | Tested `seats/stretcher-session-integration` follow-up `d968a7ff4c31a045d066a78d30576d6aa4b5019d` | `b629045be7463a43a23982a086d9377d8b7b79e6` | Clean merge. Active physical Legato loops keep their saved source window and timing across No Stop scenes. The owner passed all 312 headless suites at this tip. Four subsequent companion commits still awaited their full gate at the cutoff. [Stretcher log](https://github.com/arieladi/Adi/blob/5b0bfb9b214899bb0b11e1d00049d1041c557366/adi_daw/collab/seats/stretcher.md) |
 
 At the Session checkpoint, Slot Commit, Arrangement Isolation, Performance Capture, R3 Worker and Overlay Delay passed. Persisted Launch, Performance Graph, Scene Clock and Warp Integration exposed regressions at the shared media-bank boundaries. `e54505f9` separates native one-shot validation from pinned physical handovers. `f845be1f` prepares fixed source projections for retained tempo periods. The delayed scene now keeps its sample-192000 clock switch and produces the expected −0.25 PCM. `bb4691a98` matches steady Re-Pitch across Session and Arrangement. The captured Warp fixture went from 839 differing samples to exact PCM. The four original failing fixtures passed scoped verification with their assertions intact. The full JUCE build and CTest gate are running on the combined head, with both C++ Node helper checks enabled. All six validators and the landing-check tests passed. The JavaScript helper passed all 15 tests on the CI Node version.
+
+`24a7acc55` qualified the Pitch fixture’s existing row-capture helper after Speed added a second `detail` namespace. The unchanged fixture then compiled with warnings as errors. Once #838 landed, `6ae9defb5` merged `origin/main` at `bac01d4e89c66fc49307de8312f519486a44d467` cleanly. The sync adds only the newer Win log to this branch. The six validators and landing-check tests passed again on the synced head. [Landed PR](https://github.com/arieladi/Adi/pull/838)
 
 ## Integrate-3
 
