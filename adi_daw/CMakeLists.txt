@@ -2001,6 +2001,11 @@ add_test(NAME adi_session_performance_capture_tests COMMAND adi_session_performa
 add_executable(adi_session_scene_clock_tests tests/test_session_scene_clock.cpp)
 target_link_libraries(adi_session_scene_clock_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_tests)
+# The Session View's window side, free of drawing (TM-SV-05): its model and its commands.
+target_sources(adi_core PRIVATE src/adi/ui/session_view_model.cpp src/adi/ui/session_view_commands.cpp)
+add_executable(adi_session_view_tests tests/test_session_view.cpp)
+target_link_libraries(adi_session_view_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_view_tests COMMAND adi_session_view_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
     target_link_options(adi_launch_audio_tests PRIVATE
