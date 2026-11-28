@@ -51,6 +51,10 @@ public:
     /// A held Repeat also protects a return to saved Start at the first lap.
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                   bool requestAhead = true, bool repeatAtEnd = false) noexcept;
+    /// Driver only. Pin the already requested aligned PCM and, if this
+    /// callback can wrap, the loop head. Release through the same cue lease.
+    [[nodiscard]] bool reserveWorkerCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
+                                        bool includeLoopHead) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader

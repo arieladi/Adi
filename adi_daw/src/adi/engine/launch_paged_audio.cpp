@@ -111,12 +111,17 @@ void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexce
     if (!found || firstFrame < 0) return;
     const auto& source = found->source;
     const bool looping = source.loopEndFrame > source.loopBeginFrame;
-    const std::array starts{firstFrame, source.firstFrame, looping ? source.loopBeginFrame : source.firstFrame};
+    const auto head = looping ? source.loopBeginFrame : source.firstFrame;
+    const bool worker = found->latency > 0;
+    // A worker cue and its possible musical wrap are mandatory windows.
+    // Keep saved Start behind both when the page cap is tight.
+    const auto starts = worker ? std::array{firstFrame,head,source.firstFrame}
+                               : std::array{firstFrame,source.firstFrame,head};
     std::array<Transport, starts.size()> candidates;
     for (std::size_t index = 0; index < starts.size(); ++index) {
         auto& next = candidates[index];
         next.locate(starts[index]);
-        next.loop(source.loopBeginFrame, source.loopEndFrame, looping);
+        next.loop(source.loopBeginFrame, source.loopEndFrame, looping && !worker);
         next.play();
     }
     ClipPlayback::prefetchSource(*found->playback, candidates);
@@ -141,6 +146,20 @@ bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int3
     auto restart = next;
     restart.loop(source.firstFrame,end,true);
     return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead,&restart);
+}
+
+bool LaunchPagedAudio::reserveWorkerCue(std::int64_t id, std::int64_t frame, std::int32_t frames,
+                                       bool includeLoopHead) noexcept {
+    const auto* found = find(id);
+    if (!found || found->latency <= 0 || frame < 0 || frame >= found->source.endFrame) return false;
+    Transport next;
+    next.locate(frame);
+    next.play();
+    // Musical laps and fades are rendered as linear reads. Preserve the
+    // forecast's request while pinning both anchors needed for this callback.
+    auto head = next;
+    head.locate(found->source.loopBeginFrame);
+    return ClipPlayback::reserveSource(*found->playback,next,frames,false,includeLoopHead ? &head : nullptr);
 }
 
 void LaunchPagedAudio::releaseCue(std::int64_t id) noexcept {

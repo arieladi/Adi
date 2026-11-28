@@ -624,7 +624,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,offset,cueAdmission)) return false;
+            !sink.admitLegatoCue(sink.context,*target,cue,tick,offset,cueAdmission)) return false;
     }
     track.follow.reset();
     track.repeat.reset();
@@ -819,7 +819,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 if (pending.grid != LaunchQuantization::None) cueAdmission = LaunchCueAdmission::Scheduled;
                 else cueAdmission = pending.repeat ? LaunchCueAdmission::HeldRepeat : LaunchCueAdmission::ReadyOnly;
             } else if (next == &track.follow && pending.linkedPhysical) {
-                cueAdmission = LaunchCueAdmission::Scheduled;
+                cueAdmission = LaunchCueAdmission::Linked;
             }
             if (transition(track,block,view,sink,pending,cursor,edgeTick,cueAdmission)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)

@@ -598,16 +598,19 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         return next;
     }, [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
         static_cast<Context*>(state)->driver.retargetPinnedRun(previous,next,run);
-    }, [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue,
+    }, [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue, std::int64_t tick,
            std::int32_t offset, LaunchCueAdmission cueAdmission) noexcept {
         auto& call = *static_cast<Context*>(state);
-        if (!call.media->stored() || target.physicalFrames <= 0) return true;
-        if (!needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))) return true;
+        if (!call.media->stored()) return true;
+        const auto physical = target.physicalFrames > 0;
+        if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
+                     : cueAdmission != LaunchCueAdmission::Scheduled || target.mode == LaunchMode::Repeat) return true;
         const auto* pcm = call.media->clip(target.clip);
-        if (!pcm) return false;
+        if (!pcm) return !physical;
         auto* pages = pcm->pageReader();
-        if (!pages) return true;
-        if (cueAdmission == LaunchCueAdmission::None || cue.physicalFrame < 0) return false;
+        if (!pages || (!physical && (pcm->latencySamples() == 0 || pcm->allWorkerPhasesPrimed()))) return true;
+        const auto frame = physical ? cue.physicalFrame : pcm->frameForTick(cue.tick,call.media->bpm());
+        if (cueAdmission == LaunchCueAdmission::None || frame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
         if (!rendered || rendered->cuePages) return false;
         // An earlier range on this source could trim the new reservation
@@ -622,9 +625,21 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         // The exact slice can end earlier than its maximum at a timeline
         // wrap or phase change; reserve the outer callback's remaining PCM.
         const auto remaining = call.frames - call.offset - offset;
-        if (!pages->reserveCue(target.clip,cue.physicalFrame,remaining,
-                               cueAdmission == LaunchCueAdmission::Scheduled,
-                               cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
+        if (physical) {
+            const auto requestAhead = cueAdmission == LaunchCueAdmission::Scheduled || cueAdmission == LaunchCueAdmission::Linked;
+            if (!pages->reserveCue(target.clip,frame,remaining,requestAhead,
+                                   cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
+        } else {
+            auto wrap = false;
+            if (target.loopEndTick > target.loopStartTick) {
+                const auto lap = std::min(target.loopEndTick - cue.tick,std::numeric_limits<std::int64_t>::max() - tick);
+                const auto end = call.block.sampleAtTick(call.block.clock,tick + lap);
+                // The next outer-callback slice can cross a transport or clock
+                // boundary. Keep its loop head ready, including roundoff at End.
+                wrap = remaining > call.block.frames - offset || end - (call.block.sample + offset) <= remaining + 1;
+            }
+            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap)) return false;
+        }
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
         return true;

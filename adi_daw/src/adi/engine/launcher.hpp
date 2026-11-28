@@ -151,7 +151,7 @@ struct LaunchStatusHeader {
     bool transportPlaying = false, backToArrangement = false;
 };
 
-enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, ReadyOnly, HeldRepeat };
+enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, Linked, ReadyOnly, HeldRepeat };
 
 struct LaunchSink {
     void* context = nullptr;
@@ -165,8 +165,8 @@ struct LaunchSink {
     std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
     void (*retargeted)(void*,const LaunchSlot& previous,const LaunchSlot& next,std::uint64_t run) noexcept = nullptr;
     // May reserve a prospective cue before the running track is changed.
-    bool (*admitLegatoCue)(void*, const LaunchSlot&, const LaunchSourceCue&, std::int32_t offset,
-                           LaunchCueAdmission) noexcept = nullptr;
+    bool (*admitLegatoCue)(void*, const LaunchSlot&, const LaunchSourceCue&, std::int64_t launchTick,
+                           std::int32_t offset, LaunchCueAdmission) noexcept = nullptr;
     // Driver-only forecast. Linked follows stay out of the user-queued status.
     void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, std::int64_t frame) noexcept = nullptr;
 };
