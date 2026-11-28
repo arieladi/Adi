@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <stop_token>
 #include <string>
@@ -66,6 +67,16 @@ struct WarpResult {
 /// Output PCM is aligned offline, so its eventual paged reader adds no live
 /// stretcher latency. A future live stretcher must declare its own PDC delay.
 [[nodiscard]] WarpResult prepareWarp(const WarpRenderPlan&,std::stop_token={});
+struct WarpPcmReader {
+    void* context = nullptr;
+    void (*read)(void*, std::uint64_t fileFrame, float* interleaved, std::uint32_t frames) = nullptr;
+};
+/// Worker only. Render a page of the legacy reversed Complex result at exact
+/// unity, 48 kHz, one or two channels, with the original two endpoint anchors.
+void renderReversedUnityComplexPage(const WarpPcmReader&, std::uint64_t sourceStart,
+                                    std::uint64_t sourceFrames, std::uint16_t channels,
+                                    std::uint64_t first, std::span<float> output);
+
 
 /// A shared worker result. An empty result means the render is pending.
 /// Request and inspect from owner or disk workers only.

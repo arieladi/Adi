@@ -190,6 +190,7 @@ struct Clip {
     std::int32_t playbackDelay = 0;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool reverse = false;
+    bool reversedUnityComplex = false;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
     // Open streams and cache pins die with the generation off the callback.
@@ -448,7 +449,14 @@ struct Clip {
             std::fill_n(p.data.get(),sampleCount,0.0f);
         }
         const auto count=std::min(pageFrames,pageSourceEnd()-first);
-        if (r3Warp) {
+        if (reversedUnityComplex) {
+            const audio::WarpPcmReader source{reader.get(),[](void* context,std::uint64_t frame,float* output,
+                                                               std::uint32_t frames) {
+                static_cast<WavSource*>(context)->read(frame,output,frames);
+            }};
+            audio::renderReversedUnityComplexPage(source,sourceStart,sourceLength,channels,
+                static_cast<std::uint64_t>(first),{p.data.get(),static_cast<std::size_t>(count)*channels});
+        } else if (r3Warp) {
             const WarpR3Source source{this, [](void* context,std::uint64_t frame,float* output,std::uint32_t frames) {
                 auto& clip = *static_cast<Clip*>(context);
                 // WarpR3Pages supplies file offsets. The clip reader applies
@@ -1025,7 +1033,19 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                         std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
                             return anchor.sourceFrame == anchor.outputFrame;
                         });
-                    if (!nativeIdentity) {
+                    // The zero-latency unity pages reproduce the same offline
+                    // Complex output with bounded history instead of preparing
+                    // the full file. Any changed clock keeps the original path.
+                    clip->reversedUnityComplex = !impl_->synchronousReads && clip->reverse && clip->reader &&
+                        spec.mode == audio::WarpMode::Complex && clip->rate == 48000 && clip->sourceRate == 48000 &&
+                        clip->channels >= 1 && clip->channels <= 2 &&
+                        spec.transposeSemis == 0 && spec.formantScale == 1 &&
+                        warpClock.constantFramesPerTick() > 0 && spec.anchors.size() == 2 &&
+                        spec.anchors.back() == audio::WarpAnchor{clip->sourceLength,clip->sourceLength} &&
+                        // Shorter clips can reuse the existing whole prepared file;
+                        // no eligible page needs to read the complete source.
+                        clip->sourceLength >= 32768 && clip->sourceLength <= (std::uint64_t{1} << 31) - 1;
+                    if (!nativeIdentity && !clip->reversedUnityComplex) {
                         clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
                         clip->length=static_cast<std::int64_t>(clip->sourceLength);
                         auto task = audio::requestWarp(std::move(spec));
@@ -1170,7 +1190,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     // Spread heavier conversion work without increasing the number of workers
     // with every added clip. Each clip still has exactly one page writer.
     constexpr std::size_t maxWorkers=4, conversionsPerWorker=4;
-    const auto needsConversion=[](const auto& clip){return clip->r3Warp || (!clip->streamingWarp && clip->rate!=clip->sourceRate);};
+    const auto needsConversion=[](const auto& clip){
+        return clip->r3Warp || clip->reversedUnityComplex || (!clip->streamingWarp && clip->rate!=clip->sourceRate);
+    };
     const auto converted=static_cast<std::size_t>(std::count_if(impl_->clips.begin(),impl_->clips.end(),needsConversion));
     const auto hardware=static_cast<std::size_t>(std::thread::hardware_concurrency());
     const auto workerCount=std::max(std::size_t{1},std::min({hardware,maxWorkers,
