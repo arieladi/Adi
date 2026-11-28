@@ -950,6 +950,110 @@ int clapMpeAcceptance(const std::string& want) {
 /// ADR-0100: pressure and timbre through the CLAP host, measured on Surge XT
 /// with a patch that makes each audible (probe_surge.hpp). Every dialect, both
 /// dimensions: delivered PER NOTE, or not delivered -- never globally.
+/// SC-310, the CLAP half: a value the HOST sets (`setParam`: ADI's panel, Undo, Delete, a project's rows
+/// at open) moves a real CLAP plug-in's sound as the same value sent as automation does. CLAP was read
+/// as fine (its `setParam` sends a parameter event in the next process call); this measures it with the
+/// test the VST3 host is held to. Three fresh instances on one timeline: no change, set by the host, as
+/// automation. --param-reach <plugin name> <parameter name> <normalized value>
+int clapParamReach(const std::string& want, const std::string& paramName, double target) {
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+    const adi::device::ClapPluginRef* record = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.name == want) record = &r;
+    if (record == nullptr) { std::printf("  skip  no CLAP plugin named '%s'\n", want.c_str()); return 0; }
+    enum class Change { None, Host, Automation };
+    struct Run {
+        double level = 0.0;
+        std::string name;
+        double original = 0.0;
+        bool ok = false;
+    };
+    const auto run = [&](Change change, bool playing) {
+        Run out;
+        std::string err;
+        auto dev = chost.makeDevice(*record, 48000.0, 512, err);
+        auto* clap = dynamic_cast<adi::device::ClapDevice*>(dev.get());
+        if (clap == nullptr || !clap->loaded()) {
+            std::printf("  FAIL  %s did not load: %s\n", want.c_str(), err.c_str());
+            return out;
+        }
+        std::int32_t index = -1;
+        for (std::int32_t i = 0; i < clap->paramCount(); ++i)
+            if (const auto* d = clap->paramAt(i); d != nullptr && d->name == paramName) index = i;
+        if (index < 0) {
+            std::printf("  FAIL  %s has no parameter '%s'\n", want.c_str(), paramName.c_str());
+            return out;
+        }
+        const auto* desc = clap->paramAt(index);
+        const std::string id = desc->id;
+        out.name = desc->name;
+        out.original = clap->getParam(id).normalized;
+        clap->prepare(48000.0, 512);
+        std::vector<float> l(512), r(512), il(512), ir(512);
+        float* outp[2] = {l.data(), r.data()};
+        const float* inp[2] = {il.data(), ir.data()};
+        adi::engine::DeviceTransport clock;
+        clock.playing = playing;
+        std::int64_t at = 0;
+        double phase = 0.0;
+        const auto block = [&] {
+            for (std::size_t i = 0; i < il.size(); ++i) { // a 220 Hz tone in, for an effect
+                il[i] = ir[i] = static_cast<float>(0.25 * std::sin(phase));
+                phase += 2.0 * 3.141592653589793 * 220.0 / 48000.0;
+            }
+            clock.sample = at;
+            clock.quarterNotes = static_cast<double>(at) / 24000.0;
+            adi::engine::NodeIo io;
+            io.in = inp; io.out = outp; io.channels = 2; io.frames = 512; io.sampleRate = 48000.0;
+            io.deviceTransport = &clock;
+            clap->process(io);
+            at += 512;
+        };
+        adi::engine::Event on;
+        on.type = adi::engine::EventType::NoteOn; on.noteId = 1; on.dim = 48; on.value = 0.8; on.frame = 0;
+        clap->pushEvent(on);
+        for (int b = 0; b < 30; ++b) block();
+        if (change == Change::Host)
+            clap->setParam(id, adi::device::ParamValue::fromNormalized(target));
+        else if (change == Change::Automation) {
+            adi::engine::Event automation;
+            automation.type = adi::engine::EventType::ParamValue;
+            automation.paramId = static_cast<std::uint32_t>(std::stoul(id, nullptr, 16)); // CLAP ids are hex
+            automation.value = target;
+            automation.frame = 0;
+            clap->pushEvent(automation);
+        }
+        for (int b = 0; b < 8; ++b) block();
+        double sum = 0.0;
+        std::size_t n = 0;
+        for (int b = 0; b < 20; ++b) {
+            block();
+            for (std::size_t i = 0; i < l.size(); ++i) { sum += double(l[i]) * l[i]; ++n; }
+        }
+        out.level = 10.0 * std::log10(sum / double(n) + 1e-20);
+        out.ok = true;
+        return out;
+    };
+    int rc = 0;
+    for (const bool playing : {false, true}) {
+        const auto none = run(Change::None, playing);
+        const auto bySet = run(Change::Host, playing);
+        const auto byAutomation = run(Change::Automation, playing);
+        if (!none.ok || !bySet.ok || !byAutomation.ok) return 1;
+        std::printf("  %s (CLAP), %s, '%s' %.3f -> %.3f: unchanged %.1f dB, set by the host %.1f dB, as automation %.1f dB\n",
+                    want.c_str(), playing ? "playing" : "stopped", none.name.c_str(), none.original, target, none.level,
+                    bySet.level, byAutomation.level);
+        const bool moves = std::fabs(byAutomation.level - none.level) > 3.0;
+        check(moves, "the same value as automation moves the level (else the parameter proves nothing)");
+        const bool reaches = std::fabs(bySet.level - byAutomation.level) < 1.0;
+        check(reaches, std::string(playing ? "playing: " : "stopped: ") +
+                           "a value the host sets moves the sound as automation does");
+        if (!moves || !reaches) rc = 1;
+    }
+    return rc;
+}
+
 int clapDimensions(const std::string& want) {
     using adi::device::ClapDialect;
     using adi::device::ClapDialectChoice;
@@ -1039,6 +1143,8 @@ int main(int argc, char** argv) {
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
     std::string laneWant, laneDir;
     std::string latencyWant, coalesceWant, rebuildWant, seamWant, mpeWant, dimWant;
+    std::string reachName, reachParam;
+    double reachValue = 0.1;
     bool wetOnly = false;
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--wet-only") wetOnly = true;
@@ -1052,6 +1158,18 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--search") laneDir = argv[i + 1];
         if (std::string(argv[i]) == "--mpe") mpeWant = argv[i + 1];
         if (std::string(argv[i]) == "--dimensions") dimWant = argv[i + 1];
+    }
+    for (int i = 1; i + 3 < argc; ++i)
+        if (std::string(argv[i]) == "--param-reach") {
+            reachName = argv[i + 1];
+            reachParam = argv[i + 2];
+            reachValue = std::atof(argv[i + 3]);
+        }
+    if (!reachName.empty()) {
+        std::printf("[SC-310] a value the host sets reaches a real CLAP plug-in's sound\n");
+        const int rc = clapParamReach(reachName, reachParam, reachValue);
+        std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
     }
     if (!dimWant.empty()) {
         std::printf("[ADR-0100] pressure and timbre through the CLAP host, measured\n");

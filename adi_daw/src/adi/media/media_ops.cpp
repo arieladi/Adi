@@ -54,8 +54,10 @@ Payload capturedPaths(const Store& store, const fs::path& input) {
     const auto source = fs::weakly_canonical(input.is_absolute() ? input : folder / input);
     std::error_code ec;
     const auto relative = fs::relative(source, folder, ec);
-    return {{"rel_path", !ec && !relative.empty() ? Payload(pathUtf8(relative)) : Payload(nullptr)},
-            {"abs_path_hint", ec || relative.empty() ? Payload(pathUtf8(source)) : Payload(nullptr)},
+    const bool hasRelative = !ec && !relative.empty();
+    const bool external = !hasRelative || *relative.begin() == "..";
+    return {{"rel_path", hasRelative ? Payload(pathUtf8(relative)) : Payload(nullptr)},
+            {"abs_path_hint", external ? Payload(pathUtf8(source)) : Payload(nullptr)},
             {"missing", 0}};
 }
 bool noEmbedded(SQLite::Database& db, std::int64_t id, std::string& error) {
@@ -160,29 +162,86 @@ Payload mediaRow(SQLite::Database& db, std::int64_t id) {
     }
     return row;
 }
-fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+namespace {
+struct MediaPaths {
     std::vector<fs::path> candidates;
-    if (!row.at("rel_path").is_null()) {
-        const auto relative = pathFromUtf8(row.at("rel_path").get<std::string>());
-        if (relative.is_absolute()) { error = "absolute rel_path is invalid"; return {}; }
-        candidates.push_back(folder / relative);
-    }
-    const auto basename = pathFromUtf8(row.at("orig_name").get<std::string>()).filename();
-    if (!basename.empty()) candidates.push_back(folder / "audio" / basename);
-    if (!row.at("abs_path_hint").is_null()) {
-        const auto hint = pathFromUtf8(row.at("abs_path_hint").get<std::string>());
-        candidates.push_back(hint.is_absolute() ? hint : fs::path{});
-    }
-    for (const auto& path : candidates) {
+    bool distinctHint = false;
+};
+MediaPaths mediaPaths(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                      const std::string& originalName, std::string& error) {
+    if (relative.is_absolute()) { error = "absolute rel_path is invalid"; return {}; }
+    const auto preferred = relative.empty() ? fs::path{} : folder / relative;
+    const bool differing = preferred.lexically_normal() != hint.lexically_normal();
+    MediaPaths paths;
+    paths.distinctHint = !relative.empty() && *relative.begin() == ".." && hint.is_absolute() && differing;
+    if (!preferred.empty()) paths.candidates.push_back(preferred);
+    const auto basename = pathFromUtf8(originalName).filename();
+    if (!basename.empty()) paths.candidates.push_back(folder / "audio" / basename);
+    if (!hint.empty() && differing)
+        paths.candidates.push_back(hint.is_absolute() ? hint : fs::path{});
+    return paths;
+}
+} // namespace
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+    const auto path = [&](const char* column) {
+        const auto& value = row.at(column);
+        return value.is_null() ? fs::path{} : pathFromUtf8(value.get<std::string>());
+    };
+    const auto name = row.at("orig_name").get<std::string>();
+    const auto resolved = resolveMedia(folder, path("rel_path"), path("abs_path_hint"),
+                                       name, row.at("hash_blake3").get<std::string>(), error);
+    if (resolved.empty() && error.empty()) error = "missing media: " + name;
+    return resolved;
+}
+fs::path resolveMedia(const fs::path& folder, const fs::path& relative, const fs::path& hint,
+                      const std::string& originalName, const std::string& expectedHash,
+                      std::string& error, std::stop_token stop) {
+    error.clear();
+    const auto paths = mediaPaths(folder, relative, hint, originalName, error);
+    for (const auto& path : paths.candidates) {
+        if (stop.stop_requested()) return {};
         if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
         std::error_code ec;
-        if (!fs::exists(path, ec)) { if (ec) { error = "cannot inspect " + pathUtf8(path); return {}; } continue; }
-        const auto hash = blake3File(path);
-        if (!hash) { error = "cannot hash " + pathUtf8(path); return {}; }
-        if (hash.hex != row.at("hash_blake3").get<std::string>()) { error = "hash mismatch: " + pathUtf8(path); return {}; }
-        return path;
+        const bool exists = fs::exists(path, ec);
+        if (!exists && !ec) continue;
+        const auto fail = [&](std::string detail) {
+            if (error.empty()) error = std::move(detail);
+        };
+        if (ec) fail("cannot inspect " + pathUtf8(path));
+        else {
+            const auto hash = blake3File(path, stop);
+            if (hash.error == HashError::cancelled) return {};
+            if (hash && hash.hex == expectedHash) { error.clear(); return path; }
+            fail((hash ? "hash mismatch: " : "cannot hash ") + pathUtf8(path));
+        }
+        if (!paths.distinctHint) return {};
     }
-    error = "missing media: " + row.at("orig_name").get<std::string>();
+    return {};
+}
+fs::path mediaPathForBrowser(const Store& store, std::int64_t id, std::string& error) {
+    error.clear();
+    try {
+        SQLite::Statement query(store.db(), "SELECT orig_name,rel_path,abs_path_hint FROM media_files WHERE id=?");
+        query.bind(1, id);
+        if (!query.executeStep()) { error = "no such media"; return {}; }
+        const auto pathAt = [&](int index) {
+            const auto column = query.getColumn(index);
+            return column.isNull() ? fs::path{} : pathFromUtf8(column.getString());
+        };
+        const auto name = query.getColumn(0).getString();
+        const auto paths = mediaPaths(projectFolder(store), pathAt(1), pathAt(2), name, error);
+        for (const auto& path : paths.candidates) {
+            if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
+            std::error_code ec;
+            const bool exists = fs::exists(path, ec);
+            if (ec) { error = "cannot inspect " + pathUtf8(path); return {}; }
+            if (!exists) continue;
+            if (fs::is_regular_file(path, ec)) return fs::weakly_canonical(path);
+            error = "not a sample file: " + pathUtf8(path);
+            return {};
+        }
+        if (error.empty()) error = "missing media: " + name;
+    } catch (const std::exception& e) { error = e.what(); }
     return {};
 }
 bool importApply(OpContext& c, const Payload& p, std::string& error) {

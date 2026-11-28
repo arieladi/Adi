@@ -5,7 +5,7 @@
 // `src/juce/` owns devices and plugin hosting; `src/adi/engine/` owns the graph
 // and has no JUCE in it (ADR-0036). This header is the one place they meet, and
 // it deliberately lives on the engine side: the graph is what gets driven, so
-// the graph declares how it is driven. It pulls in nothing but `<cstdint>`.
+// the graph declares how it is driven. It pulls in only standard headers.
 //
 // It exists early and on its own so that neither side waits for the other. The
 // device can be built and tested against `SilenceProcessor` before a graph
@@ -15,11 +15,13 @@
 
 #pragma once
 
+#include <bit>
 #include <cstdint>
 
 namespace adi::engine {
 
 struct TransportInfo;
+struct MidiHardwareSink;
 
 /// What the graph's buffers hold and its nodes process (ADR-0207 d2): the
 /// Processing Precision switch on the Audio page. 32 is Live's scheme, the
@@ -27,6 +29,23 @@ struct TransportInfo;
 /// Cubase's "64 bit float": the whole graph in double, a node that cannot take
 /// double processed at 32 between conversions. Changing it builds a new graph.
 enum class Precision : std::uint8_t { Float32 = 32, Float64 = 64 };
+
+/// Device callbacks pack together the enabled channels. Cue Out names physical
+/// channels, so a disabled channel must not redirect it to the next active one.
+struct OutputChannelMap {
+    static constexpr int maximumChannels = 64;
+    std::uint64_t enabled = ~std::uint64_t{0}; // identity for offline and synthetic buffers
+
+    [[nodiscard]] constexpr int packedPair(int first) const noexcept {
+        if (first < 0 || first >= maximumChannels - 1)
+            return -1;
+        const auto pair = std::uint64_t{3} << first;
+        if ((enabled & pair) != pair)
+            return -1;
+        return std::popcount(enabled & ((std::uint64_t{1} << first) - 1));
+    }
+    bool operator==(const OutputChannelMap &) const = default;
+};
 
 /// One callback's worth of audio, as the device hands it over.
 ///
@@ -65,6 +84,14 @@ struct AudioIo {
     std::uint64_t renderBlock = 0;
     /// Explicit export quality intent. Offline analysis does not imply this.
     bool exporting = false;
+
+    /// Physical output channels in the device's packed buffer order.
+    OutputChannelMap outputChannels{};
+    const MidiHardwareSink* midiHardware = nullptr;
+    [[nodiscard]] int packedOutputPair(int first) const noexcept {
+        const auto packed = outputChannels.packedPair(first);
+        return packed >= 0 && numOut >= 2 && packed <= numOut - 2 ? packed : -1;
+    }
 };
 
 /// What an audio device drives. The graph implements it.

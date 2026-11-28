@@ -13,6 +13,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 namespace adi::wts01 {
 inline constexpr double kRate = 48000;
@@ -147,8 +149,8 @@ class Driver {
         io.streamTimeSamples = stream;
         if (feed)
             feed->pump(stream, kFrames, kRate, static_cast<double>(stream) * 1000.0 / kRate,
-                       [this](std::int64_t sample, const engine::Event &event) {
-                           return doc_->session().enqueueMidiInput(sample, event);
+                       [this](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) {
+                           return doc_->session().enqueueMidiInput(sample, event, inputSample);
                        });
         doc_->process(io);
         if (clips && clips == doc_->session().clips())
@@ -156,6 +158,13 @@ class Driver {
         stream += kFrames;
         if (++blocks_ % 4 == 0)
             doc_->tick(stream * 1000 / static_cast<std::int64_t>(kRate));
+        // A device calls once per block of real time, and the recorder's writer keeps up with that.
+        // This driver runs as fast as the engine renders: in a song with little to render it filled
+        // the recorder's two-second ring between two turns of the writer, and the take was cut short
+        // (seen on loaded machines once a new song had no returns). While a take is being recorded
+        // the driver gives the writer a turn every sixteenth block, about 85 ms of audio.
+        if (doc_->recording() && blocks_ % 16 == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
         if (heard)
             for (std::size_t c = 0; c < 2; ++c)
                 heard->c[c].insert(heard->c[c].end(), out_[c].begin(), out_[c].end());

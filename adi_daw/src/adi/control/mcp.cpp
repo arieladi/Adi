@@ -2,7 +2,10 @@
 #include "adi/control/mcp.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <initializer_list>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +37,9 @@ constexpr ToolDef kTools[] = {
      "With no arguments, the index of ops a changeset may contain; with names, their exact JSON "
      "Schemas. Read a schema before you use an op.",
      true, true},
+    {"browser_catalog", "browser.catalog", "Read the Browser catalogue",
+     "Read devices, discovered plug-ins and their presets. Use nextOffset to page through matching rows.",
+     true, true},
     {"changeset_propose", "changeset.propose", "Propose a changeset",
      "Group every op for ONE request into ONE call: it is previewed and queued for the user, never "
      "applied here, and once applied it is a single undo step. Pass the head you read as baseHead. "
@@ -42,6 +48,9 @@ constexpr ToolDef kTools[] = {
     {"changeset_status", "changeset.status", "Changeset status",
      "Whether a changeset you proposed is awaiting review, applied, rejected, stale or expired.",
      true, true},
+    {"jobs_get", "jobs.get", "Job status", "Read the latest status of a job you own.", true, true},
+    {"jobs_poll", "jobs.poll", "Job events", "Read and consume pending job progress and status events.", true, false},
+    {"jobs_cancel", "jobs.cancel", "Cancel job", "Request cancellation of a job you own.", false, true},
 };
 
 const ToolDef* findTool(std::string_view name) {
@@ -209,11 +218,11 @@ Json McpEndpoint::toolsList(Tier tier) const {
     return {{"tools", std::move(tools)}};
 }
 
-Json McpEndpoint::resourcesList() const {
+Json McpEndpoint::resourcesList(bool discloseLabels) const {
     Json list = Json::array();
     for (const auto& p : projects_.all()) {
         const std::string base = "adi://projects/" + p->handle() + "/";
-        const std::string who = p->label();
+        const std::string who = discloseLabels ? p->label() : "Project";
         list.push_back({{"uri", base + "manifest"}, {"name", who + " manifest"}, {"mimeType", "application/json"},
                         {"description", "sample rate, ppq, length, tempo, meter, key, schema, head"}});
         list.push_back({{"uri", base + "graph"}, {"name", who + " graph"}, {"mimeType", "application/json"},
@@ -223,6 +232,9 @@ Json McpEndpoint::resourcesList() const {
     }
     list.push_back({{"uri", "adi://ops"}, {"name", "ops"}, {"mimeType", "application/json"},
                     {"description", "the ops a changeset may contain"}});
+    if (service_.find("browser.catalog"))
+        list.push_back({{"uri", "adi://browser/catalog"}, {"name", "Browser catalogue"},
+                        {"mimeType", "application/json"}, {"description", "first page of devices, plug-ins and presets"}});
     return {{"resources", std::move(list)}};
 }
 
@@ -242,16 +254,46 @@ Json McpEndpoint::resourceTemplates() const {
 }
 
 Outcome McpEndpoint::run(const Principal& who, std::string_view method, const Json& params,
-                         const RequestMeta& meta) {
-    // Shared, so a late completion (an executor that does not run inline,
-    // which this endpoint does not support) writes into live memory.
-    auto result = std::make_shared<std::optional<Outcome>>();
-    auto pending = service_.call(who, method, params, meta, [result](Outcome o) { *result = std::move(o); });
-    if (!*result) {
+                         RequestMeta meta, std::stop_token stop) {
+    const auto stopped = [] {
+        return Outcome::fail(errc::DeadlinePassed, "the control listener is stopping");
+    };
+    if (stop.stop_requested()) return stopped();
+
+    constexpr std::int64_t listenerDeadlineMs = 10000;
+    const bool canWait = stop.stop_possible();
+    if (canWait) meta.deadlineMs = listenerDeadlineMs;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(listenerDeadlineMs);
+    struct Completion {
+        std::mutex mutex;
+        std::condition_variable_any ready;
+        std::optional<Outcome> result;
+    };
+    auto completion = std::make_shared<Completion>();
+    auto pending = service_.call(who, method, params, meta, [completion](Outcome result) {
+        {
+            std::lock_guard lock(completion->mutex);
+            completion->result.emplace(std::move(result));
+        }
+        completion->ready.notify_one();
+    });
+    std::unique_lock lock(completion->mutex);
+    if (completion->result) return std::move(*completion->result);
+    if (!canWait) {
         pending->abandon();
-        return Outcome::fail(errc::Internal, "the call did not complete");
+        return Outcome::fail(errc::Internal, "the call did not complete inline");
     }
-    return std::move(**result);
+    const auto done = [&] { return completion->result.has_value(); };
+    if (!completion->ready.wait_until(lock, stop, deadline, done)) {
+        const bool abandoned = pending->abandon();
+        if (stop.stop_requested()) return stopped();
+        if (abandoned)
+            return Outcome::fail(errc::DeadlinePassed, "the request deadline passed before it ran");
+        // The owner took the call before the deadline. A write may already
+        // be committed, so wait for its real answer unless shutting down.
+        if (!completion->ready.wait(lock, stop, done)) return stopped();
+    }
+    return std::move(*completion->result);
 }
 
 void McpEndpoint::noteConnection(const Session& session, const char* kind) {
@@ -270,7 +312,8 @@ std::string McpEndpoint::refuse(const Json& id, const std::string& label, const 
     return encodeError(id, std::move(error));
 }
 
-std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, Tier tier, RpcError& error) {
+std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, Tier tier,
+                                         const Session& session, std::stop_token stop, RpcError& error) {
     // A refusal made here is audited here; one from the method came through
     // Service::call, which audited it already.
     const auto local = [this, &who, &error](RpcError e) -> std::optional<Json> {
@@ -293,6 +336,8 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
         arguments = *a;
     }
     RequestMeta meta;
+    meta.readDestination = session.readDestination;
+    meta.receivedAgentEpoch = session.receivedAgentEpoch;
     if (const Json* m = metaOf(params)) {
         // Present but not a key is refused, as parseMeta refuses it on the
         // RPC path: ignoring it would silently turn off the dedup a retry
@@ -306,7 +351,7 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
         }
     }
 
-    Outcome out = run(who, tool->method, arguments, meta);
+    Outcome out = run(who, tool->method, arguments, std::move(meta), stop);
     if (out.error && out.error->code == errc::Internal) {
         error = *out.error;
         return std::nullopt;
@@ -327,7 +372,7 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
 }
 
 std::optional<Json> McpEndpoint::readResource(const Json& params, const Principal& who, bool modern,
-                                              RpcError& error) {
+                                              const Session& session, std::stop_token stop, RpcError& error) {
     if (!params.is_object() || !params.contains("uri") || !params.at("uri").is_string()) {
         error = {errc::InvalidParams, "resources/read needs a uri", nullptr};
         auditRefusal(who.label, "resources/read", error);
@@ -341,7 +386,9 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
     Json args = Json::object();
     constexpr std::string_view kProjects = "adi://projects/";
     constexpr std::string_view kOps = "adi://ops";
-    if (uri == kOps) {
+    if (uri == "adi://browser/catalog" && service_.find("browser.catalog")) {
+        method = "browser.catalog";
+    } else if (uri == kOps) {
         method = "ops.describe";
     } else if (uri.rfind(std::string(kOps) + "/", 0) == 0 && uri.size() > kOps.size() + 1) {
         method = "ops.describe";
@@ -363,7 +410,9 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
         auditRefusal(who.label, "resources/read", error);
         return std::nullopt;
     }
-    Outcome out = run(who, method, args, RequestMeta{});
+    RequestMeta meta;
+    meta.readDestination = session.readDestination;
+    Outcome out = run(who, method, args, std::move(meta), stop);
     if (out.error) {
         // Already audited by Service::call. The params are ours, so its
         // −32602 means the project or the op is not there: not found.
@@ -378,7 +427,7 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
                                             {"text", dumpJson(out.result)}}})}};
 }
 
-std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session& session) {
+std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session& session, std::stop_token stop) {
     switch (message.kind) {
         case Incoming::Kind::Notification:
         case Incoming::Kind::Response:
@@ -465,7 +514,7 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
         result = toolsList(*granted);
         cacheable = true;
     } else if (method == "resources/list") {
-        result = resourcesList();
+        result = resourcesList(!session.readDestination);
         cacheable = true;
     } else if (method == "resources/templates/list") {
         result = resourceTemplates();
@@ -473,11 +522,11 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
     } else if (method == "resources/read") {
         // Refusals are audited inside: those made there, by readResource;
         // those from the method, by Service::call.
-        result = readResource(params, who, era.modern, error);
+        result = readResource(params, who, era.modern, session, stop, error);
         cacheable = true;
         if (!result) return encodeError(id, error);
     } else if (method == "tools/call") {
-        result = callTool(params, who, *granted, error);   // audited inside, as above
+        result = callTool(params, who, *granted, session, stop, error);   // audited inside, as above
         if (!result) return encodeError(id, error);
     } else {
         // initialize under modern _meta, ping in the modern era, or anything else.

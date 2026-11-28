@@ -11,17 +11,23 @@
 #include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/textproj_store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <new>
 #include <numbers>
+#include <stop_token>
+#include <string_view>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
 void adi::test::countReplacedNew() noexcept{if(adi::audio::onAudioThread)++callbackAllocations;}
 namespace {
@@ -69,9 +75,14 @@ void modesAndLoops() {
     for(const auto width:{Precision::Float32,Precision::Float64})for(const auto* mode:{"beats","tones","texture","re-pitch","complex","complexPro"}) {
         Fixture f;
         {SQLite::Statement row(f.store->db(),"UPDATE audio_clips SET warp_mode=?");row.bind(1,mode);row.exec();}
+        if(std::string_view(mode)=="re-pitch")
+            f.store->db().exec("UPDATE audio_clips SET transpose_semis=7 WHERE clip_id=7");
         f.load(width);const auto output=f.render(26000,width);
         if(!f.session.problems().empty())std::printf("mode %s: %s\n",mode,f.session.problems().front().c_str());
         check(f.session.problems().empty(),"actual Session loads every stored warp mode at either native precision");
+        if(std::string_view(mode)=="re-pitch")
+            check(f.store->db().execAndGet("SELECT transpose_semis FROM audio_clips WHERE clip_id=7").getDouble()==7,
+                  "Re-Pitch plays without discarding transposition stored for the other modes");
         double power=0;bool finite=true;
         for(std::size_t frame=18000;frame<22000;++frame){power+=output[frame*2]*output[frame*2];finite=finite && std::isfinite(output[frame*2]);}
         check(finite && power>1,"heard warped PCM continues beyond the old unwarped source-end pin");
@@ -82,6 +93,94 @@ void modesAndLoops() {
         f.session.transport().locate(0);const auto looped=f.render(48000,width);
         check(std::equal(looped.begin(),looped.begin()+48000,looped.begin()+48000),"warped loop uses musical bounds rather than old physical loop pins");
     }
+}
+std::array<float,2048> hearWarpHead(Session& session) {
+    session.transport().locate(0);session.transport().play();
+    if(!session.clips()->prime(std::chrono::seconds(60)))throw std::runtime_error("prime warped audio");
+    std::array<float,2048> samples{};
+    float* channels[]={samples.data(),samples.data()+1024};
+    AudioIo io;io.frames=1024;io.numOut=2;io.out=channels;
+    {audio::CallbackScope scope;session.process(io);}
+    return samples;
+}
+void longWarpResponse() {
+    constexpr std::uint32_t rate=48000,seconds=180,frames=rate*seconds;
+    constexpr std::int64_t length=q*400; // stretch 180 source seconds to 200 at 120 BPM
+    using Clock=std::chrono::steady_clock;
+    test::TempDirectory temporary{"warp_playback","long_beats"};
+    const auto project=temporary.path()/"long.adi";
+    const auto source=temporary.path()/"source.wav";
+    std::vector<float> burst(rate*2);
+    for(std::uint32_t frame=0;frame<rate;++frame) {
+        // Distinct onsets over the whole sample give Beats material to align.
+        const double envelope=(frame%(rate/2))<rate/8?0.25:0.0;
+        burst[2*frame]=static_cast<float>(envelope*std::sin(2*std::numbers::pi*440*frame/rate));
+        burst[2*frame+1]=static_cast<float>(envelope*std::sin(2*std::numbers::pi*660*frame/rate));
+    }
+    {
+        audio::WavWriter writer(source,rate,2,audio::WavFormat::Float32);
+        // The cold request must miss even if a previous test left a cache.
+        const auto stamp=static_cast<std::uint64_t>(Clock::now().time_since_epoch().count());
+        for(std::size_t sample=0;sample<8;++sample)
+            burst[burst.size()-1-sample]=static_cast<float>((stamp>>(8*sample))&255u)/65536.0f;
+        for(std::uint32_t second=0;second<seconds;++second)writer.write(burst.data(),rate);
+        writer.close();
+    }
+    const auto digest=media::blake3File(source);
+    if(!digest)throw std::runtime_error("hash long warp fixture");
+    StoreError error{};
+    auto store=Store::createEmpty(project,error);
+    if(!store)throw std::runtime_error(toString(error));
+    {
+        auto& db=store->db();
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Warp'),(2,'audio','Other'),(9,'master','Main')");
+        SQLite::Statement media(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+                                   "VALUES(1,?,'source.wav','wav',48000,2,?)");
+        media.bind(1,digest.hex);media.bind(2,frames);media.exec();
+        SQLite::Statement clip(db,"INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,1,'audio',0,?)");
+        clip.bind(1,length);clip.exec();
+        const auto markers=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{frames,length}},frames);
+        SQLite::Statement audio(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers) "
+                                   "VALUES(7,1,?,1,'beats',?)");
+        audio.bind(1,frames);audio.bind(2,markers.bytes.data(),static_cast<int>(markers.bytes.size()));audio.exec();
+    }
+    const auto elapsed=[](Clock::time_point start){return std::chrono::duration<double,std::milli>(Clock::now()-start).count();};
+    const auto load=[&](Session& session) {
+        session.graph().setFadeFrames(0);
+        if(!session.load(*store,{},SessionSpec{2,rate,1024}))throw std::runtime_error(session.error());
+    };
+    double coldOwner=0,coldReady=0,renameOwner=0,renameReady=0;
+    std::array<float,2048> original{};
+    {
+        Session session;
+        const auto start=Clock::now();
+        load(session);coldOwner=elapsed(start);
+        std::stop_source cancelled;
+        cancelled.request_stop();
+        check(!session.clips()->waitForWarp(cancelled.get_token()),"an offline caller can cancel its Warp wait");
+        original=hearWarpHead(session);coldReady=elapsed(start);
+        check(std::any_of(original.begin(),original.end(),[](float sample){return std::abs(sample)>0.01f;}),
+              "long warped PCM is audible after cold preparation");
+        OpRequest rename;rename.opType="track.rename";rename.payload={{"id",2},{"name","Renamed"}};
+        const auto edit=Clock::now();
+        if(!OpJournal(*store).commit(rename).ok || !session.refresh(*store))throw std::runtime_error("rename in warped song");
+        renameOwner=elapsed(edit);
+        const auto renamed=hearWarpHead(session);renameReady=elapsed(edit);
+        check(renamed==original,"unrelated rename preserves the prepared warped PCM");
+    }
+    store.reset();
+    const auto reopen=Clock::now();
+    store=Store::open(project,error);
+    if(!store)throw std::runtime_error(toString(error));
+    Session reopened;
+    load(reopened);const auto reopenOwner=elapsed(reopen);
+    const auto reopenedPcm=hearWarpHead(reopened);const auto reopenReady=elapsed(reopen);
+    check(reopenedPcm==original,"reopening the project preserves the prepared warped PCM");
+    std::printf("SC-194 three-minute stereo Beats, owner/first PCM ms: cold %.2f/%.2f, rename %.2f/%.2f, reopen %.2f/%.2f\n",
+                coldOwner,coldReady,renameOwner,renameReady,reopenOwner,reopenReady);
+    check(coldOwner<coldReady/2,"cold Warp load returns on the owner before the stretch finishes");
+    check(renameReady<coldReady/2,"an unrelated edit reuses the complete prepared warp");
+    check(reopenReady<coldReady/2,"a reopened project reuses the complete prepared warp");
 }
 void sourceRatesAndTempoBoundary() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
@@ -101,6 +200,89 @@ void sourceRatesAndTempoBoundary() {
     check(anchors==std::vector<audio::WarpAnchor>{{0,0},{6000,12000},{12000,36000}},"tempo projection inserts its exact interior anchor instead of flattening a bar");
     check(warpSourceSamples(tempo,-q,q,48000)==24000 && warpSourceSamples(tempo,-q,2*q,48000)==60000,"trimmed source clock extends the initial tempo before the project origin");
 }
+void unwarpedPitch() {
+    for(const double semitones:{12.0,-0.5}) {
+        Fixture fixture;
+        auto& db=fixture.store->db();
+        db.exec("UPDATE audio_clips SET warp_enabled=0");
+        if(semitones<0)
+            db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=340000000 WHERE id=7");
+        OpRequest request;
+        request.opType="audioClip.setTranspose";
+        request.payload={{"id",7},{"semitones",semitones}};
+        const auto before=digestProject(*fixture.store).text;
+        const auto edit=OpJournal(*fixture.store).commit(request);
+        check(edit.ok,"an audio clip can store a pitch edit independently of Warp");
+        if(edit.ok) {
+            const auto after=digestProject(*fixture.store).text;
+            History history(*fixture.store);
+            check(history.undo().ok && digestProject(*fixture.store).text==before &&
+                  history.redo().ok && digestProject(*fixture.store).text==after,
+                  "pitch edit undo and redo preserve other clip rows exactly");
+        } else {
+            SQLite::Statement row(db,"UPDATE audio_clips SET transpose_semis=? WHERE clip_id=7");
+            row.bind(1,semitones);row.exec();
+        }
+        fixture.load(Precision::Float32);
+        const auto output=fixture.render(16000,Precision::Float32);
+        const auto speed=std::exp2(semitones/12);
+        double error=0;
+        for(std::size_t frame=1024;frame<5120;++frame) {
+            const auto expected=0.25*std::sin(2*std::numbers::pi*440*static_cast<double>(frame)*speed/48000);
+            const auto difference=output[frame*2]-expected;
+            error+=difference*difference;
+        }
+        check(fixture.session.problems().empty() && error/4096<0.00005,
+              "an unwarped sample plays audibly at the requested octave or fractional pitch");
+        const auto tail=static_cast<std::size_t>(std::ceil(12000/speed))+2;
+        check(std::all_of(output.begin()+static_cast<std::ptrdiff_t>(tail*2),output.end(),[](double value){return value==0;}) &&
+                  fixture.session.clips()->underrunSamples()==0,
+              "unwarped pitch plays to the resampled source end without callback underruns");
+    }
+}
+void compressedPitchAndRecordingWarp() {
+    Fixture fixture;
+    auto& db=fixture.store->db();
+    const auto assets=std::filesystem::path(__FILE__).parent_path()/"fixtures"/"decode";
+    std::filesystem::copy_file(assets/"tone16.flac",fixture.temporary.path()/"source.flac");
+    db.exec("UPDATE media_files SET rel_path='source.flac',format='flac' WHERE id=1;"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=300000000 WHERE id=7;"
+            "UPDATE audio_clips SET warp_enabled=0,src_len_frames=9600,transpose_semis=12 WHERE clip_id=7");
+    fixture.load(Precision::Float32);
+    const auto compressed=fixture.render(8000,Precision::Float32);
+    audio::WavReader reference(assets/"src16.wav");
+    std::vector<float> source(19200);
+    check(reference.read(source.data(),9600)==9600,"load the lossless FLAC fixture's original PCM");
+    double error=0.;
+    for(std::size_t i=1000;i<4000;++i) {
+        const auto difference=compressed[i*2]-source[i*4];
+        error+=difference*difference;
+    }
+    check(fixture.session.problems().empty() && error/3000<0.00005 &&
+          std::all_of(compressed.begin()+9600,compressed.end(),[](double value){return value==0;}),
+          "octave transpose works with a progressive FLAC on an absolute clip clock");
+
+    Fixture take;
+    auto& takeDb=take.store->db();
+    takeDb.exec("UPDATE audio_clips SET warp_mode='beats'");
+    const auto identity=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{12000,q/2}},12000);
+    SQLite::Statement row(takeDb,"UPDATE audio_clips SET warp_markers=? WHERE clip_id=7");
+    row.bind(1,identity.bytes.data(),static_cast<int>(identity.bytes.size()));row.exec();
+    take.load(Precision::Float32);
+    const auto original=take.render(14000,Precision::Float32);
+    takeDb.exec("UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=7");
+    check(take.session.refresh(*take.store),"refresh a take whose direct Warp path now needs pitching");
+    take.session.transport().locate(0);
+    const auto pitched=take.render(14000,Precision::Float32);
+    const auto crossings=[](const auto& signal) {
+        int count=0;
+        for(std::size_t i=1024;i<5120;++i)if(signal[(i-1)*2]<=0. && signal[i*2]>0.)++count;
+        return count;
+    };
+    check(take.session.problems().empty() && crossings(pitched)>crossings(original)*3/2 &&
+          std::all_of(pitched.begin()+24000,pitched.end(),[](double value){return value==0;}),
+          "pitch takes Beats Warp out of its identity path while preserving the take's duration");
+}
 void modelAndRefusals() {
     Fixture f;const auto model=rows::readModel(*f.store);
     check(model.audioClips.size()==1 && model.audioClips[0].warpMarkers &&
@@ -110,6 +292,44 @@ void modelAndRefusals() {
     f.load(Precision::Float32);
     const auto silent=f.render(1024,Precision::Float32);
     check(!f.session.problems().empty() && std::all_of(silent.begin(),silent.end(),[](double value){return value==0;}),"malformed stored warp data reports a named problem");
+}
+void workerFailure() {
+    Fixture f;
+    f.store->db().exec("UPDATE audio_clips SET warp_mode='complexPro',formant_shift=48");
+    f.load(Precision::Float32);
+    check(!f.session.clips()->waitForWarp(),"offline Warp wait refuses a failed render");
+    constexpr std::string_view diagnostic = "clips#7: invalid warp source, rate, pitch or anchor count";
+    const auto problems = f.session.clips()->decodeProblems();
+    check(problems.size() == 1 && problems.front().find(diagnostic) != std::string::npos,
+          "the Warp worker keeps the failed clip's diagnostic");
+    f.session.tick(0);
+    check(f.session.clipPlaybackUnavailable(7) && !f.session.clips()->mediaUnavailable(7) &&
+              std::ranges::any_of(f.session.problems(), [diagnostic](const auto& problem) {
+                  return problem.find(diagnostic) != std::string::npos;
+              }), "SC-151: the owner reports a terminal Warp failure on the clip and in the problem list");
+}
+void replacementSourceInvalidatesWarp() {
+    Fixture f;
+    f.store->db().exec("UPDATE audio_clips SET warp_mode='re-pitch'");
+    f.load(Precision::Float32);
+    const auto original=hearWarpHead(f.session);
+    check(std::any_of(original.begin(),original.end(),[](float sample){return std::abs(sample)>0.01f;}),
+          "the first Warp recipe reads audible source bytes");
+    const auto source=f.temporary.path()/"source.wav";
+    const auto bytes=std::filesystem::file_size(source);
+    const auto modified=std::filesystem::last_write_time(source);
+    {
+        const std::vector<float> silence(12000*2);
+        audio::WavWriter writer(source,48000,2,audio::WavFormat::Float32);
+        writer.write(silence.data(),12000);writer.close();
+    }
+    std::filesystem::last_write_time(source,modified+std::chrono::seconds(10));
+    check(std::filesystem::file_size(source)==bytes,"source replacement keeps the same WAV dimensions and size");
+    check(f.session.refresh(*f.store),"refresh the same Warp recipe on a changed source");
+    const auto replaced=hearWarpHead(f.session);
+    check(f.session.problems().empty() && f.session.clips()->readErrors()==0 &&
+              std::all_of(replaced.begin(),replaced.end(),[](float sample){return sample==0.0f;}),
+          "changed bytes at the same media path invalidate the old Warp result");
 }
 void trimmedMusicalOffset() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
@@ -242,4 +462,25 @@ void warpFadesAcrossTempoAndLinearSplit() {
     }
 }
 }
-int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(int argc,char** argv) {
+    try {
+        test::TempDirectory home{"warp_playback","cache"};
+#if defined(_WIN32)
+        if(_wputenv_s(L"ADI_HOME",home.path().c_str())!=0)throw std::runtime_error("set Warp playback app data");
+#else
+        if(setenv("ADI_HOME",home.path().c_str(),1)!=0)throw std::runtime_error("set Warp playback app data");
+#endif
+        if(argc==2 && std::string_view(argv[1])=="--long-warp-speed-only")longWarpResponse();
+        else {
+            modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();modelAndRefusals();workerFailure();
+            replacementSourceInvalidatesWarp();
+            unwarpedPitch();compressedPitchAndRecordingWarp();
+            trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();
+            warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();
+        }
+    } catch(const std::exception& error){check(false,error.what());}
+    check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,
+          "actual warped audio callback allocates nothing and performs no file I/O");
+    std::printf("%d checks, %d failures\n",checks,failures);
+    return failures?1:0;
+}

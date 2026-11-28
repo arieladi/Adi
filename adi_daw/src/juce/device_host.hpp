@@ -114,6 +114,8 @@ public:
     // A rewired auxiliary bus reuses the current source readers, bindings and
     // prepared DSP. Keep the new model supplier for subsequent shape reports.
     bool publishDeviceKeys(const rows::Model& model, std::function<const rows::Model*()> current);
+    /// Publish new source bindings while keeping the running format and devices.
+    bool publishSources(const rows::Model&, engine::SourceFn);
 
     /// The chain supplier to hand `realize()`. Bound to this host, so a
     /// rebuild re-injects the DEVICES THAT ARE ALREADY LOADED rather than
@@ -169,6 +171,7 @@ public:
 
     [[nodiscard]] std::size_t deviceCount() const noexcept { return devices_.size(); }
     [[nodiscard]] DeviceInstance& deviceAt(std::size_t i) { return *devices_[i].device; }
+    [[nodiscard]] const DeviceInstance& deviceAt(std::size_t i) const noexcept { return *devices_[i].device; }
     [[nodiscard]] DeviceNode& nodeAt(std::size_t i) { return *devices_[i].node; }
     [[nodiscard]] std::int64_t trackAt(std::size_t i) const { return devices_[i].trackId; }
 

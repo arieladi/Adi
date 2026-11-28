@@ -32,18 +32,24 @@ std::atomic<long> g_allocs{0};
 std::atomic<bool> g_counting{false};
 }  // namespace
 
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     if (g_counting.load(std::memory_order_relaxed))
         g_allocs.fetch_add(1, std::memory_order_relaxed);
     void* p = std::malloc(n == 0 ? 1 : n);
     if (p == nullptr) throw std::bad_alloc();
     return p;
 }
-void* operator new[](std::size_t n) { return operator new(n); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void* operator new[](std::size_t n) { return operator new(n); }
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 
@@ -2183,6 +2189,51 @@ private:
     std::atomic<std::int32_t> latency_;
 };
 
+void testFixedSingleFeedNeedsNoHeadroom() {
+    section("a single feed with fixed nonnegative latency needs no compensation ring");
+    SaysLatency moving(0);
+    SumNode fixed, main, side, multi;
+    Graph graph;
+    const auto source = graph.addNode(moving);
+    const auto junction = graph.addNode(fixed, 0);
+    const auto mainOnly = graph.addNode(main), sideOnly = graph.addNode(side), both = graph.addNode(multi);
+    graph.connect(source, junction);
+    graph.connect(junction, mainOnly);
+    graph.connect(junction, sideOnly, Bus::Sidechain);
+    graph.connect(junction, both);
+    graph.connect(source, both, Bus::Sidechain);
+    graph.setOutput(mainOnly);
+    graph.setLatencyHeadroom(512);
+    graph.prepare(48000, 256);
+    check(graph.ok(), "prepared: " + graph.error());
+
+    const auto capacity = [&](NodeId from, NodeId to, Bus bus = Bus::Main) {
+        const auto* line = graph.edgeLine(from, to, bus);
+        return line ? line->capacity() : -1;
+    };
+    eqi(capacity(junction, mainOnly), 0, "a lone main edge keeps no ring");
+    eqi(capacity(junction, sideOnly, Bus::Sidechain), 0, "a lone sidechain edge keeps no ring");
+    eqi(capacity(junction, both), 512, "a main edge with a sidechain still needs headroom");
+    eqi(capacity(source, junction), 512, "a signed feed can need headroom at a single-input junction");
+
+    moving.set(64);
+    check(graph.retapLatency(), "the arriving path can move without either fixed feed needing a ring");
+    graph.pinPhysicalPdc(0);
+    eqi(graph.latencySamples(), 64, "the output tracks the upstream arrival");
+    eqi(graph.arrivalOf(sideOnly), 64, "so does the sidechain-only sink");
+
+    moving.set(-96);
+    check(graph.retapLatency(), "the signed path can cross zero and retap inside the same graph");
+    graph.pinPhysicalPdc(0);
+    const auto target = [&](NodeId from, NodeId to, Bus bus = Bus::Main) {
+        const auto* line = graph.edgeLine(from, to, bus);
+        return line ? line->target() : -1;
+    };
+    eqi(target(source, junction), 96, "the signed single feed is compensated");
+    eqi(target(source, both, Bus::Sidechain), 96, "the signed sidechain still aligns with the main feed");
+    eqi(target(junction, mainOnly), 0, "the downstream fixed single feed stays direct");
+}
+
 /// Where a return's send into itself ends (ADR-0203 d3): a sink whose input
 /// is the loop's own.
 class LoopSink final : public Node {
@@ -2248,6 +2299,7 @@ int main() {
     testTheGlideCrossfadesAndSettles();
     testWithoutHeadroomARetapIsRefused();
     testTheHeadroomCostIsMeasuredNotGuessed();
+    testFixedSingleFeedNeedsNoHeadroom();
     testARetapFollowsTheNewLatency();
     testARetapAllocatesNothingOnTheAudioThread();
     testAZeroEdgeCanStillBeGivenADelay();

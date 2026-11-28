@@ -154,6 +154,7 @@ public:
 
 private:
     friend class ProgressiveDecoder;
+    friend class WarpRenderCache;
     struct Item {
         std::uint64_t bytes = 0;
         std::int64_t lastUse = 0;

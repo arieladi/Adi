@@ -12,6 +12,7 @@
 #include "adi/gesture_presentation.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
+#include "ui_picture_compare.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace adi;
@@ -79,13 +81,13 @@ struct MixFocusTestAccess {
                    return std::ranges::all_of(member.scopePaths, oneSegment);
                });
     }
-    static juce::Image scopePicture(MixFocus &focus) {
+    static adi::uitest::ComparisonPicture scopePicture(MixFocus &focus) {
         const auto plot = focus.plot_.toNearestInt();
-        juce::Image image(juce::Image::RGB, plot.getWidth(), plot.getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics g(image);
-        g.setOrigin(-plot.getX(), -plot.getY());
-        focus.paint(g);
-        return image;
+        return adi::uitest::pictureForComparison(juce::Image::RGB, plot.getWidth(), plot.getHeight(),
+                                                [&focus, plot](juce::Graphics &g) {
+                                                    g.setOrigin(-plot.getX(), -plot.getY());
+                                                    focus.paint(g);
+                                                });
     }
     static bool sumStrokeAt(MixFocus &focus, float value) {
         const auto plot = focus.plot_;
@@ -173,7 +175,7 @@ struct Event {
 };
 // Exercises the actual GUI callback/coordinator seam without opening hardware.
 struct SimulatedDevice final : juce::AudioIODevice {
-    SimulatedDevice() : AudioIODevice("Owned callback fixture", "test") {}
+    explicit SimulatedDevice(const juce::String &name = "Owned callback fixture") : AudioIODevice(name, "test") {}
     double rate = 48000.;
     int frames = 256;
     juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
@@ -196,6 +198,79 @@ struct SimulatedDevice final : juce::AudioIODevice {
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+void audioDeviceStatus(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "device-notice.adi", true, {}, error);
+    check(bool(doc), "SC-28: an open project for device status");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "device-status");
+    int settingsOpened = 0;
+    root.openAudioSettings = [&] { ++settingsOpened; };
+    root.setSize(1440, 900);
+    SimulatedDevice primary("Primary interface"), alternate("Alternate interface");
+    device::DeviceBridge bridge(*doc);
+    const auto publish = [&] {
+        if (auto message = bridge.takeDeviceProblem(); message.isNotEmpty())
+            root.status.setAudioDeviceProblem(std::move(message));
+    };
+
+    bridge.audioDeviceAboutToStart(&primary);
+    bridge.audioDeviceStopped();
+    primary.frames = 512;
+    bridge.audioDeviceAboutToStart(&primary);
+    publish();
+    check(bridge.core().isOpen() && !root.status.audioSettings.isVisible(),
+          "SC-28: an in-place restart does not warn");
+
+    bridge.audioDeviceStopped();
+    bridge.audioDeviceAboutToStart(&alternate);
+    bridge.acknowledgeDeviceSetup();
+    publish();
+    check(!root.status.audioSettings.isVisible(), "SC-28: changing devices in Settings does not warn");
+
+    bridge.audioDeviceStopped();
+    bridge.audioDeviceAboutToStart(&primary);
+    publish();
+    check(root.status.audioDeviceProblem().contains("Alternate interface") && root.status.audioSettings.isVisible(),
+          "SC-28: an unexpected stop is reported even when a different interface opens immediately");
+    root.status.audioSettings.onClick();
+    check(settingsOpened == 1, "SC-28: the Status Bar can open Audio Settings");
+
+    std::thread driver([&] { bridge.audioDeviceError("Driver lost its connection"); });
+    driver.join();
+    publish();
+    root.say("Kept the audio recorded before the interruption.");
+    check(root.status.audioDeviceProblem().contains("Driver lost its connection") &&
+              root.error() == "Kept the audio recorded before the interruption.",
+          "SC-28: driver details and the take's outcome are both available in the Status Bar");
+    check(bridge.takeDeviceProblem().isEmpty(), "SC-28: each driver fault is consumed once");
+
+    root.status.setAudioDeviceProblem({});
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    const bool recording = doc->ops().submit(arm).ok && doc->synchronise() && doc->startRecording(0, 1, false);
+    check(recording, "SC-28: a take is recording when its device stops");
+    constexpr int frames = 512;
+    std::array<float, frames> input{}, left{}, right{};
+    input.fill(0.25f);
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    if (recording)
+        bridge.audioDeviceIOCallbackWithContext(inputs, 1, outputs, 2, frames, {});
+    bridge.audioDeviceError("Stream ended");
+    bridge.audioDeviceStopped();
+    publish();
+    check(!bridge.core().isOpen() && root.status.audioDeviceProblem().contains("Primary interface") &&
+              root.status.audioDeviceProblem().contains("Stream ended"),
+          "SC-28: a stopped driver releases the document and reports the stop and the error");
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    check(settled && landed && landed->ok && landed->clips.size() == 1,
+          "SC-28: the stopped driver still leaves its captured audio to land");
+}
 struct KeyProbe final : device::DeviceInstance {
     device::DeviceIdentity identity_;
     double keyPeak = 0, choice = 0;
@@ -494,7 +569,7 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     root.setSize(1200, 800);
     UiPeerRoot peer;
     peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0);
-    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(), "test has only UiFakePeer and no OS window");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "test input uses UiFakePeer");
     peer.addAndMakeVisible(root);
     auto publication = std::make_shared<ParameterPublication>();
     publication->push_back(makePanel(21, true, "External limiter"));
@@ -1076,10 +1151,8 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
         return nullptr;
     };
     const auto paintPanel = [](DevicePanelView &panel) {
-        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
-        juce::Graphics g(image);
-        panel.paint(g);
-        return image;
+        return adi::uitest::pictureForComparison(juce::Image::RGB, panel.getWidth(), panel.getHeight(),
+                                                 [&panel](juce::Graphics &g) { panel.paint(g); });
     };
     auto *panel = findPanel(findPanel, surface);
     check(panel != nullptr, "the spectrum uses the existing EQ card");
@@ -1106,14 +1179,11 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
     const auto audible = paintPanel(*card);
     const auto result = sibling.read();
     int changedPixels = 0;
-    bool withinGraph = true;
     const auto graph = card->eqPreviewBounds().toNearestInt();
-    for (int y = 0; y < silent.getHeight(); ++y)
-        for (int x = 0; x < silent.getWidth(); ++x)
-            if (silent.getPixelAt(x, y) != audible.getPixelAt(x, y)) {
-                ++changedPixels;
-                withinGraph = withinGraph && graph.contains(x, y);
-            }
+    const bool withinGraph = adi::uitest::comparePicturePixels(silent, audible, [&](int x, int y) {
+        ++changedPixels;
+        return graph.contains(x, y);
+    });
     if (!result || std::abs(result->binsDbfs[16] + 6.0206f) >= .002f || changedPixels == 0 || !withinGraph)
         std::cout << "Stack spectrum fixture: bin16=" << (result ? result->binsDbfs[16] : -999.f)
                   << ", peak=" << (result ? result->peak[0] : -1.f)
@@ -1530,7 +1600,7 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
         const auto before = broker->stats();
         const auto openedBefore = opened.size(), closedBefore = closed.size();
         const auto overlay = MixFocusTestAccess::scopePicture(focus);
-        const auto plotCentre = static_cast<float>(overlay.getHeight()) * .5f;
+        const auto plotCentre = static_cast<float>(overlay.raster.getHeight()) * .5f;
         const auto sharedRow = [plotCentre](float level) { return plotCentre * (1.f - level); };
         const auto traceAt = [](const juce::Image &image, float row) {
             constexpr std::array positions{.2f, .4f, .6f, .8f};
@@ -1545,28 +1615,25 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
             layout->setSelectedItemIndex(index, juce::sendNotificationSync);
             return MixFocusTestAccess::scopePicture(focus);
         };
-        check(traceAt(overlay, sharedRow(.25f)) && traceAt(overlay, sharedRow(-.125f)) &&
-                  traceAt(overlay, sharedRow(.125f)),
+        check(traceAt(overlay.raster, sharedRow(.25f)) && traceAt(overlay.raster, sharedRow(-.125f)) &&
+                  traceAt(overlay.raster, sharedRow(.125f)),
               "the original Overlay contains both members and their signed sum");
         const auto layers = select(1);
-        check(traceAt(layers, sharedRow(.25f)) && traceAt(layers, sharedRow(-.125f)) &&
-                  !traceAt(layers, sharedRow(.125f)),
+        check(traceAt(layers.raster, sharedRow(.25f)) && traceAt(layers.raster, sharedRow(-.125f)) &&
+                  !traceAt(layers.raster, sharedRow(.125f)),
               "Layers shows both members around one baseline without a sum trace");
         const auto stack = select(2);
-        check(traceAt(stack, sharedRow(.25f) * .5f) &&
-                  traceAt(stack, plotCentre + sharedRow(-.125f) * .5f) &&
-                  !traceAt(stack, sharedRow(.25f)) && !traceAt(stack, sharedRow(-.125f)),
+        check(traceAt(stack.raster, sharedRow(.25f) * .5f) &&
+                  traceAt(stack.raster, plotCentre + sharedRow(-.125f) * .5f) &&
+                  !traceAt(stack.raster, sharedRow(.25f)) && !traceAt(stack.raster, sharedRow(-.125f)),
               "Stack moves each member to its own baseline");
         const auto sum = select(3);
-        check(traceAt(sum, sharedRow(.125f)) && !traceAt(sum, sharedRow(.25f)) &&
-                  !traceAt(sum, sharedRow(-.125f)),
+        check(traceAt(sum.raster, sharedRow(.125f)) && !traceAt(sum.raster, sharedRow(.25f)) &&
+                  !traceAt(sum.raster, sharedRow(-.125f)),
               "Sum displays the signed combination without the member traces");
         const auto restored = select(0);
-        bool equal = true;
-        for (int y = 0; equal && y < overlay.getHeight(); ++y)
-            for (int x = 0; equal && x < overlay.getWidth(); ++x)
-                equal = overlay.getPixelAt(x, y) == restored.getPixelAt(x, y);
-        check(equal, "returning to Overlay restores the existing plot exactly");
+        check(adi::uitest::samePicturePixels(overlay, restored),
+              "returning to Overlay restores the existing plot exactly");
         root.frame();
         const auto after = broker->stats();
         check(after.consumers == before.consumers && after.taps == before.taps &&
@@ -1996,8 +2063,7 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     peer.setVisible(true);
     peer.addToDesktop(0);
     peer.addAndMakeVisible(root);
-    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(),
-          "Clean presentation uses only a software peer");
+    check(dynamic_cast<UiFakePeer *>(peer.getPeer()), "Clean presentation uses the software peer");
     auto &strip = root.devices;
     strip.setVisible(true);
     strip.publication = [&] { return doc->parameterFeed().current(); };
@@ -2213,6 +2279,7 @@ int main() {
     test::TempDirectory temporary("ui_mix_functions", "component");
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
+    audioDeviceStatus(commands, temporary.path());
     callbackKeys(commands, temporary.path());
     callbackAnalyzerRateChange(temporary.path());
     functions(commands, temporary.path());

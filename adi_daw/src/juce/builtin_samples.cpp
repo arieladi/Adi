@@ -23,16 +23,20 @@ constexpr std::string_view hybridReverbUid="org.adidaw.builtin.hybrid-reverb";
 void offThread(){if(audio::onAudioThread)throw std::runtime_error("sample preparation belongs off the audio thread");}
 void validRate(double rate){if(!std::isfinite(rate)||rate<=0||rate>768000)throw std::runtime_error("invalid sample processing rate");}
 bool hashValid(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
+float sourceSample(std::span<const std::uint8_t> bytes, std::size_t sample) noexcept {
+    const auto offset=sample*4;
+    const std::uint32_t bits=static_cast<std::uint32_t>(bytes[offset]) |
+        (static_cast<std::uint32_t>(bytes[offset+1])<<8) | (static_cast<std::uint32_t>(bytes[offset+2])<<16) |
+        (static_cast<std::uint32_t>(bytes[offset+3])<<24);
+    return std::bit_cast<float>(bits);
+}
 #if ADI_WITH_PD
 std::vector<float> sourceMono(const Payload& value) {
     const auto& bytes=value.at("source_f32le").get_binary();
     if(bytes.empty() || bytes.size()%4!=0 || bytes.size()/4>builtinSampleMaxFrames)throw std::runtime_error("invalid sample backup length");
     std::vector<float> result(bytes.size()/4);
     for(std::size_t i=0;i<result.size();++i) {
-        const auto offset=i*4;const std::uint32_t bits=static_cast<std::uint32_t>(bytes[offset]) |
-            (static_cast<std::uint32_t>(bytes[offset+1])<<8) | (static_cast<std::uint32_t>(bytes[offset+2])<<16) |
-            (static_cast<std::uint32_t>(bytes[offset+3])<<24);
-        result[i]=std::bit_cast<float>(bits);if(!std::isfinite(result[i]))throw std::runtime_error("nonfinite sample backup");
+        result[i]=sourceSample(bytes,i);if(!std::isfinite(result[i]))throw std::runtime_error("nonfinite sample backup");
     }
     return result;
 }
@@ -84,6 +88,52 @@ BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
     info.slot=static_cast<std::int32_t>(slot);info.empty=value.at("empty").get<bool>();
     if(!info.empty){info.mediaHash=value.at("mediaHash").get<std::string>();if(!hashValid(info.mediaHash))throw std::runtime_error("invalid sample media hash");}
     return info;
+}
+media::PeakResult buildBuiltinSamplePeaks(const Payload &value, std::stop_token stop) {
+    using media::PeakProblem;
+    if (audio::onAudioThread) return {PeakProblem::audioThread, {}, {}};
+    try {
+        const auto info = inspectBuiltinSample(value);
+        if (info.empty) return {PeakProblem::invalidSource, {}, {}};
+        const auto channels = value.value("channels", 1);
+        const auto rate = value.at("sourceRate").get<double>();
+        validRate(rate);
+        const auto &bytes = value.at("source_f32le").get_binary();
+        if (channels < 1 || channels > 2 || rate < 1 || bytes.empty() ||
+            bytes.size() % (4 * static_cast<std::size_t>(channels)) != 0 || bytes.size() / 4 > builtinSampleMaxFrames)
+            return {PeakProblem::invalidSource, "Invalid sample backup dimensions.", {}};
+        media::MediaPeaks peaks;
+        peaks.contentHash = info.mediaHash;
+        peaks.sampleRate = static_cast<std::uint32_t>(rate);
+        peaks.channels = static_cast<std::uint32_t>(channels);
+        peaks.frames = bytes.size() / (4 * peaks.channels);
+        constexpr auto binsLimit = std::uint64_t{4096};
+        peaks.framesPerBin = (peaks.frames + binsLimit - 1) / binsLimit;
+        const auto bins = (peaks.frames + peaks.framesPerBin - 1) / peaks.framesPerBin;
+        peaks.bins.resize(static_cast<std::size_t>(bins * peaks.channels));
+        for (std::uint64_t bin = 0; bin < bins; ++bin) {
+            if (stop.stop_requested()) return {PeakProblem::cancelled, {}, {}};
+            const auto first = bin * peaks.framesPerBin;
+            const auto last = std::min(peaks.frames, first + peaks.framesPerBin);
+            for (std::uint32_t ch = 0; ch < peaks.channels; ++ch) {
+                auto &range = peaks.bins[static_cast<std::size_t>(bin * peaks.channels + ch)];
+                const auto sample = [&](std::uint64_t frame) {
+                    return sourceSample(bytes, static_cast<std::size_t>(frame * peaks.channels + ch));
+                };
+                range.minimum = range.maximum = sample(first);
+                if (!std::isfinite(range.minimum)) return {PeakProblem::invalidSource, "Invalid sample backup audio.", {}};
+                for (auto frame = first + 1; frame < last; ++frame) {
+                    const auto amplitude = sample(frame);
+                    if (!std::isfinite(amplitude)) return {PeakProblem::invalidSource, "Invalid sample backup audio.", {}};
+                    range.minimum = std::min(range.minimum, amplitude);
+                    range.maximum = std::max(range.maximum, amplitude);
+                }
+            }
+        }
+        return {PeakProblem::none, {}, std::move(peaks)};
+    } catch (const std::exception &e) {
+        return {PeakProblem::invalidSource, e.what(), {}};
+    }
 }
 Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::filesystem::path& source,
     const std::filesystem::path& playable,double rate) {

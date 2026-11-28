@@ -32,6 +32,8 @@ class SettingRow final : public juce::Component, public juce::SettableTooltipCli
   private:
     void commit(const settings::Value &);
     SettingsPanel &panel_;
+    std::unique_ptr<juce::TextButton> folderPicker_;
+    const bool available_;
     bool keyFocus_ = false;
 };
 // A page's head that holds some of its page's settings among its own controls, where Live has them
@@ -103,6 +105,10 @@ class SettingsPanel final : public juce::Component {
     const juce::String &help() const noexcept { return help_; }
     // Writes one value and saves the file; the help line says why when it cannot.
     bool change(const settings::Setting &, const settings::Value &);
+    bool acceptLibraryFolder(const settings::Setting &, const juce::File &);
+    settings::Value value(const settings::Setting &) const;
+    bool testTone() const noexcept { return testTone_; }
+    void stopTestTone();
     const std::vector<std::unique_ptr<SettingRow>> &rows() const noexcept { return rows_; }
     // Shows the values in force again, after something else changed them (the audio
     // device's own chooser, the agent).
@@ -136,6 +142,8 @@ class SettingsPanel final : public juce::Component {
     static constexpr int kPageListWidth = 94, kHelpHeight = 58;
 
   private:
+    friend class SettingRow;
+    void chooseLibraryFolder(const settings::Setting &);
     void layoutRows();
     std::vector<std::string> pageNames_;
     std::string page_;
@@ -147,8 +155,10 @@ class SettingsPanel final : public juce::Component {
     juce::Viewport scroll_;
     juce::Component content_;
     std::vector<std::unique_ptr<SettingRow>> rows_;
+    std::unique_ptr<juce::FileChooser> folderChooser_;
     std::vector<std::unique_ptr<SettingsHeading>> headings_;
     std::vector<juce::Component *> order_; // the page, top to bottom
+    bool testTone_ = false;
     juce::Rectangle<int> pageArea() const noexcept;
 };
 // The Settings window: floating, remembered where it was for the session, closed with

@@ -16,6 +16,7 @@
 
 #include "adi/changeset.hpp"
 #include "adi/control/jsonrpc.hpp"
+#include "adi/control/service.hpp"
 #include "adi/store_rows.hpp"
 
 #include <cstdint>
@@ -29,6 +30,11 @@
 namespace adi::control {
 
 struct TelemetryFrame;
+
+/// A project carries only a cap. Raising it is a host-side user action and
+/// it cannot raise the application's ceiling or a credential's grant.
+[[nodiscard]] std::optional<Tier> readProjectAgentTier(const Store&);
+[[nodiscard]] bool setProjectAgentTier(Store&, std::optional<Tier>);
 
 /// The rows and the undo head, read under ONE read transaction: a read never
 /// pairs one state's rows with a later head, so a changeset built on what was
@@ -45,6 +51,8 @@ public:
     /// The project's name on the wire: `project_uuid` when the file has one,
     /// otherwise a stable opaque handle. Never a path.
     [[nodiscard]] virtual const std::string& handle() const = 0;
+    /// The persisted identity used for consent, empty on a legacy reader.
+    [[nodiscard]] virtual std::string projectUuid() const { return {}; }
     /// What a person calls it: the project row's name, else the file's stem.
     [[nodiscard]] virtual std::string label() const = 0;
 
@@ -61,6 +69,14 @@ public:
     /// the projection diffed. Headless, on a snapshot of the current head.
     [[nodiscard]] virtual agent::Preview preview(const agent::Changeset&,
                                                  const agent::Limits&) = 0;
+    /// Any thread. A live host can use its read-only project connection.
+    [[nodiscard]] virtual std::optional<Tier> agentTierOverride() { return std::nullopt; }
+    [[nodiscard]] virtual bool allowsAutomaticApply() const { return false; }
+    /// The owner thread only. The headless backend never takes this path.
+    [[nodiscard]] virtual agent::ApplyResult applyChangeset(const agent::Changeset&,
+                                                            const agent::Limits&) {
+        return {false, agent::Refusal::ReadOnly, "project is open read-only"};
+    }
     /// The owner thread: whether a changeset carrying this actor detail was
     /// applied (its agent_requests row exists).
     [[nodiscard]] virtual bool wasApplied(const std::string& actorDetail) = 0;
@@ -77,14 +93,18 @@ public:
 class ProjectSet {
 public:
     void add(std::shared_ptr<ProjectAccess> project);
+    void clear();
     [[nodiscard]] std::shared_ptr<ProjectAccess> find(std::string_view handle) const;
     [[nodiscard]] std::vector<std::shared_ptr<ProjectAccess>> all() const;
+    [[nodiscard]] bool contains(const std::shared_ptr<ProjectAccess>&) const;
 
     /// ADR-0232 d2: `params.project` names a bound project. A name that is
     /// not bound is refused (−32602) and touches nothing (AC-17). Omitting it
     /// is allowed only when the host opted in with allowImplicitSingle() and
     /// exactly one project is bound -- adi-mcp, which serves one file.
-    [[nodiscard]] std::shared_ptr<ProjectAccess> resolve(const Json& params, RpcError& error) const;
+    /// A trusted host may also require the exact open instance.
+    [[nodiscard]] std::shared_ptr<ProjectAccess> resolve(
+        const Json& params, RpcError& error, const std::shared_ptr<const ProjectAccess>& boundProject = {}) const;
     /// For a host bound to one project for its whole life (adi-mcp --project).
     /// Never for the app, where projects open and close (ADR-0068).
     void allowImplicitSingle(bool allow);

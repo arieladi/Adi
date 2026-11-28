@@ -5,6 +5,7 @@ namespace adi {
 struct CueSettings {
     bool cueMode=false,soloInPlace=true,referenceOn=false,referenceFromRole=true;
     int firstOutputChannel=0;
+    int firstMainOutputChannel=0;
     double volumeDb=0;
     std::int64_t referenceTrack=0;
     std::int64_t projectReferenceTrack=0; // derived from tracks.role when that format field exists
@@ -14,6 +15,7 @@ struct CueSettings {
 CueSettings readCueSettings(const Store&);
 bool cueModeApply(OpContext&,const Payload&,std::string&);
 bool cueOutputApply(OpContext&,const Payload&,std::string&);
+bool mainOutputApply(OpContext&,const Payload&,std::string&);
 bool cueVolumeApply(OpContext&,const Payload&,std::string&);
 bool cueTrackApply(OpContext&,const Payload&,std::string&);
 bool cueReferenceApply(OpContext&,const Payload&,std::string&);

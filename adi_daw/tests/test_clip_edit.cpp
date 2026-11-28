@@ -8,6 +8,7 @@
 #include "adi/store_rows.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/history.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -254,7 +255,8 @@ void clipboardAndSplits() {
     db.exec("INSERT INTO clip_playback_details(clip_id,in_tension) VALUES(8,0.4)");
     db.exec("INSERT INTO automation_segment_ranges(id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last) VALUES(72,71,8,0,0.2,0.7,0,1)");
     db.exec("UPDATE clips SET kind='midi',alias_of=8 WHERE id=9");
-    const auto clipboard=clip_edit::copyClip(*p.store,8,48000);
+    edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+    const auto clipboard=clip_edit::copyClip(*p.store,8,locked);
     check(clipboard.ok,"copy captures complete opaque native clip data without decoding/re-encoding blobs");
     OpRequest remove;remove.opType="clip.delete";remove.payload={{"id",8}};
     check(OpJournal(*p.store).commit(remove).ok,"delete captures core, all native children and external alias links");
@@ -268,8 +270,7 @@ void clipboardAndSplits() {
           db.execAndGet("SELECT alias_of FROM clips WHERE id=9").getInt64()==8,"undo returns future bytes, every native child and aliases exactly");
     // This fixture tests opaque copying and existing alias ownership. Keep its
     // authored global lanes locked and place into free space; overlap and
-    // unlocked-automation admission have their own placement fixtures.
-    edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+    // unlocked automation have their own placement fixtures.
     const auto pasted=clip_edit::preparePaste(*p.store,clipboard,18,21,{0,11531520},locked);
     check(pasted.ok && clip_edit::commitPrepared(*p.store,pasted).ok,"paste prepared image as one independent clip");
     check(db.execAndGet("SELECT id FROM event_streams WHERE clip_id=18").getInt64()>100 &&
@@ -294,7 +295,7 @@ void clipboardAndSplits() {
     db.exec("INSERT INTO lanes(id,track_id,ord,name,kind) VALUES(301,21,0,'Comp','take')");
     db.exec("UPDATE clips SET lane_id=301 WHERE id=8");
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'audio','Destination')");
-    const auto laneCopy=clip_edit::copyClip(*p.store,8,48000);
+    const auto laneCopy=clip_edit::copyClip(*p.store,8,locked);
     const auto lanePaste=clip_edit::preparePaste(*p.store,laneCopy,70,22,{0,0},locked);
     check(lanePaste.ok && clip_edit::commitPrepared(*p.store,lanePaste).ok &&
           db.execAndGet("SELECT lane_id IS NULL FROM clips WHERE id=70").getInt()==1,"paste to another track clears the source track's comp lane");
@@ -400,6 +401,139 @@ void rangeCommands() {
           History(*p.store).redo().ok,"Duplicate Time undo/redo retains one-step semantics");
     const auto bad=clip_edit::preparePasteRange(*p.store,copy,{}, {0,0},48000);
     check(!bad.ok,"paste refuses a mismatched track mapping");
+}
+
+void sparseClipboardAutomation() {
+    Project project;
+    auto& store=*project.store;
+    auto& db=store.db();
+    db.exec("DELETE FROM clips;"
+            "UPDATE tracks SET kind='midi' WHERE id=21;"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(7,21,'midi',0,5765760),(8,21,'midi',5765760,11531520),"
+            "(9,21,'midi',17297280,5765760),(10,21,'midi',51891840,11531520);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,default_value) "
+            "VALUES(91,'track',21,'pan',0.0)");
+    constexpr std::int64_t q=5765760;
+    const auto point=[](std::int64_t time,double value,std::uint64_t id) {
+        AutomationPoint result{};
+        result.time=time;result.value=value;result.point_id=id;
+        return result;
+    };
+    const auto first=point(q/2,0.125,11), sourceGap=point(2*q,0.375,12), second=point(7*q/2,0.75,13);
+    const auto destinationGap=point(10*q,0.5,15);
+    const auto authored=writeStream<AutomationPoint>(FourCC::Automation,std::array{
+        first,sourceGap,second,point(17*q/2,0.25,14),destinationGap,point(23*q/2,0.625,16),
+    });
+    check(store.putAutomationData(91,{},authored),"SC-179 seed automation on both picked clips and their gaps");
+    const auto hasPoint=[&](std::int64_t time,double value,std::optional<std::uint64_t> id={}) {
+        const auto bytes=store.getAutomationData(91,{});
+        if(!bytes)return false;
+        const auto points=StreamReader<AutomationPoint>(*bytes,FourCC::Automation).all();
+        return points && std::any_of(points->begin(),points->end(),[&](const auto& record) {
+            return record.time==time && record.value==value && (!id || record.point_id==*id);
+        });
+    };
+    const clip_edit::RangeSelection selection{{21},{0,0},{0,4*q}};
+    const std::array<std::int64_t,2> picked{7,9};
+    const edit_plan::Options options{48000,{}};
+    const auto clipboard=clip_edit::copySelectedClips(store,selection,picked,options);
+    const auto paste=clip_edit::preparePasteRange(store,clipboard,{21},{0,8*q},options);
+    const auto pasted=clip_edit::commitPrepared(store,paste);
+    check(pasted.ok && hasPoint(8*q+first.time,first.value) && hasPoint(8*q+second.time,second.value) &&
+          hasPoint(destinationGap.time,destinationGap.value,destinationGap.point_id) &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=10").getInt()==1,
+          "SC-179 sparse Paste carries both picked envelopes and keeps the destination gap intact");
+    check(pasted.ok && History(store).undo().ok && store.getAutomationData(91,{})==authored &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt()==4,
+          "SC-179 one Undo restores the original automation bytes and clips after sparse Paste");
+
+    const auto cut=clip_edit::prepareCutClips(store,selection,picked,options);
+    check(cut.copy.ok && edit_plan::describe(cut.edit).ok,"SC-179 sparse Cut retains its placement description");
+    const auto cutResult=clip_edit::commitPrepared(store,cut.edit);
+    check(cutResult.ok && !hasPoint(first.time,first.value) && !hasPoint(second.time,second.value) &&
+          hasPoint(sourceGap.time,sourceGap.value,sourceGap.point_id) &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id IN (7,9)").getInt()==0 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=8").getInt()==1,
+          "SC-179 sparse Cut removes the picked clips and their automation while retaining the source gap");
+    check(cutResult.ok && History(store).undo().ok && store.getAutomationData(91,{})==authored &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id IN (7,8,9,10)").getInt()==4,
+          "SC-179 one Undo restores the original automation bytes and clip identities after sparse Cut");
+}
+
+void rangeMoveRefusalsAndNoOps() {
+    Project project;
+    auto& store=*project.store;
+    auto& db=store.db();
+    db.exec("DELETE FROM clips;"
+            "UPDATE tracks SET kind='midi' WHERE id=21;"
+            "INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Alias');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,alias_of) VALUES"
+            "(8,21,'midi',0,5765760,NULL),(9,22,'midi',0,5765760,8);"
+            "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,8,'notes',X'010203')");
+    constexpr std::int64_t beat=5765760;
+    const edit_plan::Options options{48000,{}};
+    const auto head=OpJournal(store).headSeq();
+    const clip_edit::RangeSelection whole{{21},{0,0},{0,beat}};
+    const clip_edit::RangeSelection middle{{21},{0,beat/4},{0,3*beat/4}};
+    const auto empty=clip_edit::prepareMoveRange(store,{{21},{0,beat},{0,2*beat}},{0,0},options);
+    check(empty.ok && empty.requests.empty() && clip_edit::commitPrepared(store,empty).ok,
+          "SC-180 moving empty time over a clip does not clear it");
+    const auto same=clip_edit::prepareMoveRange(store,middle,middle.begin,options);
+    check(same.ok && same.requests.empty() && clip_edit::commitPrepared(store,same).ok,
+          "SC-180 moving to the original position does not split the source");
+
+    const auto ownsAlias=clip_edit::prepareMoveRange(store,whole,{0,2*beat},options);
+    const auto crossesAliasSource=clip_edit::prepareMoveRange(store,middle,{0,2*beat},options);
+    const auto alias=clip_edit::prepareMoveRange(store,{{22},whole.begin,whole.end},{0,2*beat},options);
+    check(!ownsAlias.ok && ownsAlias.error.find("linked clips")!=std::string::npos &&
+          !crossesAliasSource.ok && crossesAliasSource.error.find("linked clips")!=std::string::npos &&
+          !alias.ok && alias.error.find("linked clips")!=std::string::npos,
+          "SC-180 refuses incoming and outgoing alias links before copying or splitting");
+    check(OpJournal(store).headSeq()==head && db.execAndGet("SELECT count(*) FROM clips").getInt()==2 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=8 AND pos_ticks=0 AND length_ticks=5765760").getInt()==1 &&
+          db.execAndGet("SELECT alias_of FROM clips WHERE id=9").getInt64()==8 &&
+          db.execAndGet("SELECT hex(data) FROM event_streams WHERE id=61 AND clip_id=8").getString()=="010203",
+          "SC-180 no-ops and refusals leave the original rows, note bytes, and journal intact");
+}
+
+void rangeMoveAutomation() {
+    Project project;
+    auto& store=*project.store;
+    auto& db=store.db();
+    db.exec("DELETE FROM clips;"
+            "UPDATE tracks SET kind='midi' WHERE id=21;"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(7,21,'midi',5765760,5765760),(9,21,'midi',23063040,5765760);"
+            "DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,default_value) "
+            "VALUES(91,'track',21,'pan',0.0)");
+    constexpr std::int64_t q=5765760;
+    constexpr std::int64_t samplesPerQuarter=24000;
+    AutomationPoint first{},gap{},second{},outside{};
+    first.time=3*q/2;first.value=0.125;first.point_id=11;
+    gap.time=5*q/2;gap.value=0.375;gap.point_id=12;
+    second.time=9*q/2;second.value=0.75;second.point_id=13;
+    outside.time=8*q;outside.value=0.875;outside.point_id=14;
+    const auto envelope=writeStream<AutomationPoint>(FourCC::Automation,std::array{first,gap,second,outside});
+    check(store.putAutomationData(91,{},envelope),"SC-180 seed automation within and between the clips");
+
+    const clip_edit::RangeSelection selection{{21},{0,q},{0,5*q}};
+    const edit_plan::Options options{48000,{}};
+    const auto move=clip_edit::prepareMoveRange(store,selection,{0,3*q},options);
+    const auto moved=clip_edit::commitPrepared(store,move);
+    check(moved.ok && move.requests.size()==1 && move.requests.front().label=="Move Material" &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE pos_ticks IN (17297280,34594560) AND length_ticks=5765760").getInt()==2,
+          "SC-180 moves the overlapping range as one packet with a gap between the moved clips");
+    const AutomationProgram program(rows::readModel(store),48000);
+    const auto* lane=program.lane(91);
+    check(lane && program.problems().empty() && valueAt(*lane,3*samplesPerQuarter/2)==0.0 &&
+          valueAt(*lane,7*samplesPerQuarter/2)==first.value && valueAt(*lane,9*samplesPerQuarter/2)==gap.value &&
+          valueAt(*lane,13*samplesPerQuarter/2)==second.value && valueAt(*lane,8*samplesPerQuarter)==outside.value,
+          "SC-180 clears source automation before placing the overlapping destination, including automation in the clip gap");
+    check(moved.ok && History(store).undo().ok && store.getAutomationData(91,{})==envelope &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE (id=7 AND pos_ticks=5765760) OR (id=9 AND pos_ticks=23063040)").getInt()==2,
+          "SC-180 one Undo restores the original clip identities and exact automation bytes");
 }
 
 void clockSharing() {
@@ -961,6 +1095,88 @@ void rangeTimeLaneScope() {
     }
 }
 
+void consolidateMidi() {
+    Project project;
+    auto &store = *project.store;
+    auto &db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Keys');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(71,22,'midi',5765760,5765760),(72,22,'midi',17297280,5765760),"
+            "(73,22,'midi',23063040,5765760);");
+    constexpr auto beat = 5765760;
+    constexpr int pressure = static_cast<int>(ExpressionDim::Pressure);
+    constexpr int timbre = static_cast<int>(ExpressionDim::Timbre);
+    constexpr auto sharedId = std::numeric_limits<std::uint64_t>::max();
+    const auto first = writeStream<NoteRecord>(FourCC::Notes, std::array{
+        NoteRecord{beat/4,beat/4,sharedId,60,100,64,1,NoteFlags::HasExpression,10000,12.f,0},
+    });
+    const auto second = writeStream<NoteRecord>(FourCC::Notes, std::array{
+        NoteRecord{beat/2,beat/4,sharedId,62,105,64,1,NoteFlags::HasExpression,10000,0.f,0},
+        NoteRecord{3*beat/4,beat/4,1,64,110,64,1,0,10000,0.f,0},
+    });
+    ExpressionPoint point{};
+    point.value = 0.375f;
+    const auto firstPressure = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    point.value = 0.625f;
+    const auto secondPressure = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    point.time_ticks = beat/8;
+    point.value = 0.25f;
+    const auto secondTimbre = writeStream<ExpressionPoint>(FourCC::Expression, std::array{point});
+    check(store.putEventStream(71, "notes", first) && store.putEventStream(72, "notes", second) &&
+              store.putNoteExpression(71, sharedId, pressure, firstPressure) &&
+              store.putNoteExpression(72, sharedId, pressure, secondPressure) &&
+              store.putNoteExpression(72, sharedId, timbre, secondTimbre),
+          "SC-178 sources share a clip-local note ID but carry distinct expression curves");
+    const clip_edit::RangeSelection range{{22},{0,beat},{0,4*beat}};
+    const edit_plan::Options options{48000,{}};
+    const std::array<std::int64_t,2> picked{71,72};
+    const auto originalHead = OpJournal(store).headSeq();
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=2882880 WHERE id=71");
+    const auto repeated = clip_edit::prepareMidiConsolidation(store, range, picked, options);
+    check(!repeated.edit.ok && repeated.edit.error.find("repeated") != std::string::npos,
+          "SC-178 refuses a clip whose loop would repeat a note");
+    db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=5765760 WHERE id=71");
+    const std::array<std::int64_t,2> skipMiddle{71,73};
+    check(!clip_edit::prepareMidiConsolidation(store, {{22},{0,beat},{0,5*beat}}, skipMiddle, options).edit.ok,
+          "SC-178 refuses replacing an unpicked clip in the gap");
+    const auto prepared = clip_edit::prepareMidiConsolidation(store, range, picked, options);
+    check(prepared.edit.ok && prepared.edit.requests.size() == 1 &&
+              prepared.edit.requests.front().label == "Consolidate" && OpJournal(store).headSeq() == originalHead,
+          "SC-178 prepares one operation for two single-pass MIDI clips without changing the journal");
+    if (!prepared.edit.ok)
+        throw std::runtime_error(prepared.edit.error);
+    const auto committed = clip_edit::commitPrepared(store, prepared.edit);
+    check(committed.ok && db.execAndGet("SELECT count(*) FROM clips WHERE id IN (71,72,73)").getInt() == 1,
+          "SC-178 removes both sources and keeps the clip touching the right boundary");
+    if (!committed.ok)
+        throw std::runtime_error(committed.error);
+    const auto merged = notes::captureNotes(store, prepared.clip);
+    std::string error;
+    const auto records = merged.records();
+    const auto earlier = records.size() == 3 ? notes::values(records[0], error) : std::nullopt;
+    const auto later = records.size() == 3 ? notes::values(records[1], error) : std::nullopt;
+    const auto unique = records.size() == 3 ? notes::values(records[2], error) : std::nullopt;
+    check(merged.ok && earlier && later && unique && earlier->id == sharedId && earlier->start == beat/4 &&
+              earlier->cents == 12.f && later->id == 2 && later->start == 2*beat+beat/2 && unique->id == 1,
+          "SC-178 keeps the first and unique IDs and remaps the collision without closing the gap");
+    check(store.getNoteExpression(prepared.clip, sharedId, pressure) == firstPressure &&
+              !store.getNoteExpression(prepared.clip, sharedId, timbre) &&
+              store.getNoteExpression(prepared.clip, 2, pressure) == secondPressure &&
+              store.getNoteExpression(prepared.clip, 2, timbre) == secondTimbre,
+          "SC-178 both notes retain their exact expression curves at their output IDs");
+    const auto undone = History(store).undo();
+    check(undone.ok && undone.txnId == committed.txnId && store.getEventStream(71, "notes") == first &&
+              store.getEventStream(72, "notes") == second && !store.getEventStream(prepared.clip, "notes") &&
+              store.getNoteExpression(71, sharedId, pressure) == firstPressure &&
+              store.getNoteExpression(72, sharedId, pressure) == secondPressure &&
+              store.getNoteExpression(72, sharedId, timbre) == secondTimbre &&
+              !store.getNoteExpression(prepared.clip, 2, pressure),
+          "SC-178 one Undo restores both original streams and their clip-local expression");
+    check(History(store).redo().ok && notes::captureNotes(store, prepared.clip).records().size() == 3 &&
+              store.getNoteExpression(prepared.clip, 2, pressure) == secondPressure &&
+              store.getNoteExpression(prepared.clip, 2, timbre) == secondTimbre,
+          "SC-178 Redo restores the consolidated clip and exact remapped expression");
+}
 } // namespace
 namespace {
 void twoPointSplitPayloadBounds() {
@@ -1156,4 +1372,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();sparseClipboardAutomation();rangeMoveRefusalsAndNoOps();rangeMoveAutomation();consolidateMidi();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

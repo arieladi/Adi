@@ -105,7 +105,7 @@ void testHistoricalTargets() {
           "Cut records a historical target after deleting its clip");
     check(checkProject(*f.store).clean(),"checking a Cut does not require its historical target to be live");
     const auto cutZip=f.dir/"cut.zip";
-    const auto exported=f.store->collectAndExport(cutZip);
+    const auto exported=f.store->collectAndExport(cutZip, true);
     check(exported.ok && fs::is_regular_file(cutZip),"Collect and Export publishes a ZIP after Cut: "+exported.error);
     check(History(*f.store).undo().ok && f.db().execAndGet("SELECT count(*) FROM clips WHERE id=5").getInt()==1,
           "Undo still uses the retained Cut history to restore the clip");
@@ -117,7 +117,7 @@ void testHistoricalTargets() {
           "Undo leaves the named clip behind the current history head");
     check(checkProject(*f.store).clean(),"a retained operation beyond the current head passes the project check");
     const auto undoZip=f.dir/"undo.zip";
-    const auto written=f.store->collectAndExport(undoZip);
+    const auto written=f.store->collectAndExport(undoZip, true);
     check(written.ok && fs::is_regular_file(undoZip),"Collect and Export publishes a ZIP after Undo: "+written.error);
 }
 

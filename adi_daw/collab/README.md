@@ -345,6 +345,14 @@ subject, say so in your log instead of writing it twice.
 | 0256 | win | `win/adr-0256` | after the walk: playing from the computer keyboard, recording MIDI and recording automation go first when the hold ends; OneShot in the Browser now; the walker takes DF-M76 | used |
 | 0257 | win | `win/sanity-1126` | the basics come first: the sanity check's rows are fixes worked now; the Dream's shape and ground; view filters placed; no AI tab, a larger Info box and its analyser's switch | used |
 | 0258 | win | `win/sanity2-1126` | after the sanity check's round 2: a folder per song and fifteen more answers, each as Live; a silent MIDI track until it has an instrument; presets are files; who works what on 27 to 29 November | used |
+| 0259 | win | `win/adr-0259` | surfaces, phones and the agent's stop: Stop Agent, a Captures place, a phone page as a direction, bias controls parked, OSC and learned mappings as decided, a lost device, who did it | used |
+| 0260 | win | `win/adr-0260` | the Jam: three templates, a Mark command with a riff list, rule-made grooves, Make Session after the Foundry, backing to the Cue output | used |
+| 0261 | win | `win/adr-0261-browser-ai` | the Browser is where the agent is met: an AI label and its mode, the floating search as the quick way, filters by what a sound measures, a preview row that waits, the plug-in server carried whole | used |
+| 0262 | win | `win/adr-0262-sheet` | the Browser's second sheet and his four choices from it: the AI column widens by itself, a proposed change is read in a floating window, the Mix View reaches the agent through the floating search, four buttons | used |
+| 0263 | win | `win/adr-0263-collab` | working together at different times: Undo that reverses, a heartbeat for presence, tempo as mine or theirs, a shared folder studied beside the bucket, eleven refinements of the collision design | used |
+| 0264 | win | `win/adr-0264-tip-zone` | the Tip Zone, a goal: techniques taught in ADI's own terms, written by anyone, read by agents, with links to videos at a saved moment | used |
+| 0265 | win | `win/adr-0264-tip-zone` | after the director's own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, a double-click that adds a track | used |
+| 0266 | win | `win/adr-0266` | after the director's second test: the encoders, backups on a timer, a clip ends with its audio, an export does not stop the song, the EQ on a track | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

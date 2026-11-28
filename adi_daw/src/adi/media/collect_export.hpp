@@ -5,8 +5,12 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 namespace adi { class Store; }
 namespace adi::media {
+namespace detail {
+std::string portableFilename(std::string name, std::string_view fallback);
+}
 struct FileResult {
     bool ok = false;
     std::string error;
@@ -29,11 +33,12 @@ struct ArchiveControl {
     std::stop_token stop;
     std::function<void(ArchiveProgress)> progress;
 };
-// Snapshot includes committed WAL data. The source is opened read-only;
+// Snapshot includes committed WAL data. Undo is optional. The source is opened read-only;
 // all relocation/extraction affects the copy. Existing ZIPs are never replaced.
 // Progress runs on the worker. Cancellation is observed between phases and
 // completed ZIP entries, until the final atomic publication starts.
 FileResult collectExport(const std::filesystem::path& input,
                          const std::filesystem::path& output,
-                         const ArchiveControl& control = {});
+                         const ArchiveControl& control = {},
+                         bool keepUndoHistory = false);
 } // namespace adi::media

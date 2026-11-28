@@ -4,6 +4,22 @@
 #include <memory>
 #include <span>
 namespace adi::engine {
+inline constexpr std::uint16_t kCcAddressCount = 16 * 128;
+inline constexpr std::uint16_t kControllerAddressCount = kCcAddressCount + 16;
+
+// These helpers take validated address parts. Keep the original CC indexes;
+// the sixteen independent pitch wheels occupy a contiguous range after them.
+constexpr std::uint16_t controllerAddress(int channel, int controller) noexcept {
+    return static_cast<std::uint16_t>(controller == controllers::kPitchBend
+                                        ? kCcAddressCount + channel : channel * 128 + controller);
+}
+constexpr int controllerNumber(std::uint16_t address) noexcept {
+    return address >= kCcAddressCount ? controllers::kPitchBend : address % 128;
+}
+constexpr std::uint8_t controllerChannel(std::uint16_t address) noexcept {
+    return static_cast<std::uint8_t>(address >= kCcAddressCount ? address - kCcAddressCount : address / 128);
+}
+
 // Owner-thread allocation of a process-unique delivery namespace.
 std::uint32_t allocateControllerSourcePrefix();
 // Immutable, owner-prepared control timelines. Points remain normalized double;

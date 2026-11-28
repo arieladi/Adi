@@ -7,6 +7,7 @@
 #include "adi/store_rows.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <sqlite3.h>
@@ -120,6 +121,34 @@ void slotsAndFailures() {
     p.store = Store::open(path, error, true);
     check(p.store && controllers::readLanes(*p.store).ok && !p.write(first, {point(1, 10, 0.9)}).ok,
           "readonly files expose controller lanes while refusing edits");
+}
+void channelPitchBend() {
+    Project project;
+    const controllers::Address cc{100, 1, 15, 127};
+    check(project.write(cc, {point(1, 0, .75)}).ok, "seed the highest standard CC address");
+    const auto standard = project.read().lanes;
+    const std::array points{point(1, 0, .5), point(2, 400, .875)};
+    const auto prepared = controllers::prepareWrite(*project.store, 1, 15, controllers::kPitchBend, points);
+    check(prepared.ok && controllers::commitPrepared(*project.store, prepared).ok,
+          "prepare and commit a channel pitch bend envelope beside CC 127");
+    if (!prepared.ok)
+        return;
+    SQLite::Statement row(project.store->db(),
+        "SELECT stream_kind,channel,controller FROM event_streams WHERE id=?");
+    row.bind(1, prepared.address.id);
+    check(row.executeStep() && row.getColumn(0).getString() == "pitchbend" &&
+              row.getColumn(1).getInt() == 15 && row.getColumn(2).isNull(),
+          "pitch bend uses the reserved stream kind and a channel-only SQL address");
+    row.reset();
+    const auto withPitch = project.read().lanes;
+    check(standard.size() == 1 && withPitch.size() == 2 && withPitch.front() == standard.front() &&
+              withPitch.back().controller == controllers::kPitchBend &&
+              withPitch.back().points == std::vector<controllers::Point>(points.begin(), points.end()),
+          "pitch bend retains full normalized points and leaves standard CC bytes untouched");
+    History history(*project.store);
+    check(history.undo().ok && project.read().lanes == standard &&
+              history.redo().ok && project.read().lanes == withPitch,
+          "pitch bend creation undoes to absence and redoes with exact bytes");
 }
 void futureAndInvalid() {
     Project p;
@@ -259,8 +288,11 @@ void consistentRead() {
         if (type != SQLITE_TRACE_PROFILE || state.fired)
             return 0;
         const auto *sql = sqlite3_sql(static_cast<sqlite3_stmt *>(statement));
-        if (!sql ||
-            std::string_view(sql).find("SELECT id,clip_id,channel,controller,data FROM event_streams") != 0)
+        const std::string_view query = sql ? sql : "";
+        // Inject after the controller rows have been read, including queries
+        // that project additional columns such as stream_kind.
+        if (!query.starts_with("SELECT id,clip_id,channel,controller,data") ||
+            query.find(" FROM event_streams ") == std::string_view::npos)
             return 0;
         state.fired = true;
         try {
@@ -360,6 +392,7 @@ int main() {
     try {
         basic();
         slotsAndFailures();
+        channelPitchBend();
         futureAndInvalid();
         snapshots();
         consistentRead();

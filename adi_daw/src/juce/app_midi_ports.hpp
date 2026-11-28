@@ -11,13 +11,15 @@
 //   lock-free ring on the port's input thread; one consumer drains all the rings (`drain`), never
 //   waiting and never allocating. The engine's live MIDI input (ADR-0248 d6 item 4) is that consumer
 //   once it is on main; until then the window reads the activity for the Control Bar's MIDI Indicators.
-// - Message thread only, `drain` included: `refresh` closes inputs and their rings there. The engine's
-//   consumer, when it comes, takes the rings through a published list instead. `activity` and `dropped`
+// - Track-enabled outputs connect on the message thread. The audio driver publishes
+//   completed blocks to a bounded queue, and a worker sends their UMP packets.
+// - `refresh` opens or closes ports on the message thread. Activity and dropped counters
 //   may be read from any thread.
 #pragma once
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/midi_input_feed.hpp"
+#include "adi/ui/midi_output_feed.hpp"
 #include "adi/ui/midi_ports.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -26,6 +28,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stop_token>
+#include <utility>
+#include <mutex>
+#include <thread>
 #include <optional>
 #include <string>
 #include <vector>
@@ -34,13 +40,21 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
   public:
     // `ports` reads the `midi.ports` record as the Settings hold it now. `write`, when given, writes it back
     // when a listing brought it up to date (N61): each listed port's name kept with its record, and a record
-    // moved to a port's new identifier; true when the Settings took it. Without it the record is only read.
+    // moved to a port's new identifier; true when the Settings took it. `newInputTrack` reads the initial
+    // Track switch for a new input. Without a writer the record is only read.
     using Writer = std::function<bool(const settings::Value &)>;
-    explicit MidiPortHost(std::function<settings::Value()> ports, Writer write = {});
+    using NewInputTrack = std::function<bool()>;
+    explicit MidiPortHost(std::function<settings::Value()> ports, Writer write = {}, NewInputTrack newInputTrack = {});
     struct Port;
+    struct OutputConnection {
+        std::function<bool(std::uint32_t)> send;
+        std::function<bool()> alive;
+    };
+    using OpenOutput = std::function<OutputConnection(const Port&)>;
     // For tests: a host over a fixed list of ports, their switches read from the record as the system's
     // are; it opens nothing and follows no hot-plug.
-    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write = {});
+    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write = {},
+                 NewInputTrack newInputTrack = {}, OpenOutput openOutput = {});
     ~MidiPortHost() override;
     MidiPortHost(const MidiPortHost &) = delete;
     MidiPortHost &operator=(const MidiPortHost &) = delete;
@@ -48,7 +62,7 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
         std::string id;   // the system's identifier: the key of its record in `midi.ports`
         std::string name; // as the system names it
         bool input = false, output = false;
-        bool open = false; // an input this host listens to
+        bool open = false; // a live input or Track-enabled output
         MidiPortSwitches switches;
     };
     // Every port the system lists, inputs first, each by name.
@@ -56,8 +70,7 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     // The system's MIDI backend in words, as the Settings name it ("Win32" on Windows); empty when the
     // platform has no MIDI.
     std::string backend() const;
-    // Lists the ports again and opens or closes each input by its switches: after a hot-plug, and when
-    // the Settings' MIDI Ports change.
+    // Open or close ports after hot-plug or a change in MIDI Settings.
     void refresh();
     // Called on the message thread after `refresh` changed what is listed or open.
     std::function<void()> onChange;
@@ -69,6 +82,8 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     // pumps it: `refresh` publishes the open inputs to it, and the host's end takes them all back
     // before their rings go. None (tests): the rings fill and nothing drains them.
     void setFeed(MidiInputFeed *feed);
+    void setOutputFeed(MidiOutputFeed *feed);
+    std::uint64_t outputActivity() const noexcept { return outputActivity_.load(std::memory_order_relaxed); }
     // A count that moves each time an open input delivers a message (the MIDI Indicators).
     std::uint64_t activity() const noexcept { return activity_.load(std::memory_order_relaxed); }
     // Events lost because a ring was full (the consumer fell behind), since the host began: the input
@@ -78,17 +93,27 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
 
   private:
     struct Input;
+    struct Output;
+    bool refreshOutputs(std::vector<Port>&, const OpenOutput&);
+    void runOutput(std::stop_token);
     void endpointsChanged() override;
     settings::Value reconciled(const std::vector<Port> &listed);
     std::function<settings::Value()> read_;
     Writer write_;
+    NewInputTrack newInputTrack_;
     bool fixed_ = false;
     std::vector<Port> fixedPorts_;
+    OpenOutput fixedOutput_;
     std::optional<juce::ump::Session> session_; // none for a fixed list
     std::vector<Port> ports_;
     // Open inputs by slot; a slot's index is its events' `port`. A closed one stays null, so indexes hold.
     std::vector<std::unique_ptr<Input>> inputs_;
     std::atomic<std::uint64_t> activity_{0};
+    std::atomic<std::uint64_t> outputActivity_{0};
+    std::mutex outputMutex_; // output worker and message thread only
+    std::vector<std::unique_ptr<Output>> outputs_;
+    MidiOutputFeed* outputFeed_ = nullptr;
+    std::jthread outputWorker_;
     std::atomic<std::uint64_t> dropped_{0};
     MidiInputFeed *feed_ = nullptr;
     std::uint64_t serials_ = 0;

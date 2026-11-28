@@ -10,7 +10,10 @@
 namespace adi::ui {
 namespace {
 using Mode = SharedSpectrumView::Mode;
-constexpr std::array modes{Mode::Spectrogram, Mode::Spectrum, Mode::Scope, Mode::Phase, Mode::Meters};
+using FilledCurve = SharedAnalysis::FilledCurve;
+constexpr std::array modes{Mode::Spectrogram, Mode::FilledSpectrum, Mode::Scope, Mode::Phase, Mode::Meters};
+constexpr std::array traceNames{"Realtime Average", "Realtime Maximum", "Held Maximum", "Average"};
+constexpr int traceId(FilledCurve curve) noexcept { return static_cast<int>(curve) + 1; }
 constexpr int mainId = 1, followId = 2;
 
 int channelNameWidth(int width) { return std::min(look::mixChannelMaxWidth, width / 4); }
@@ -332,17 +335,17 @@ MixAnalysers::MixAnalysers() {
     compare_ = std::make_unique<Compare>(*this);
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
-                         "1 s Average", "Compare"}, 1);
+                         "1 s Average", "Compare", "Bands", "Waveform"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
-    spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
-    spectrumTraceBox.addItem("Realtime Maximum", static_cast<int>(Mode::SpectrumMaximum) + 1);
-    spectrumTraceBox.addItem("Cumulative Maximum", static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1);
+    for (std::size_t i = 0; i < traceNames.size(); ++i)
+        spectrumTraceBox.addItem(traceNames[i], static_cast<int>(i) + 1);
     spectrumTraceBox.setTitle("Spectrum trace");
-    spectrumTraceBox.setSelectedId(static_cast<int>(Mode::Spectrum) + 1, juce::dontSendNotification);
+    spectrumTraceBox.setSelectedId(traceId(FilledCurve::RealtimeMaximum), juce::dontSendNotification);
     spectrumTraceBox.onChange = [this] {
         const auto id = spectrumTraceBox.getSelectedId();
-        if (page_ == Page::Spectrum && id > 0) detail.setMode(static_cast<Mode>(id - 1));
+        if (page_ == Page::Spectrum && id > 0 && id <= static_cast<int>(traceNames.size()))
+            detail.view.setFilledSpectrumCurve(static_cast<FilledCurve>(id - 1));
     };
     pageBox.onChange = [this] {
         if (const int id = pageBox.getSelectedId(); id > 0) setPage(static_cast<Page>(id - 1));
@@ -376,7 +379,7 @@ MixAnalysers::~MixAnalysers() { compare_.reset(); table_.reset(); }
 
 void MixAnalysers::setPage(Page page) {
     const auto index = static_cast<std::size_t>(page);
-    if (index > static_cast<std::size_t>(Page::Compare)) return;
+    if (index > static_cast<std::size_t>(Page::ColourWaveform)) return;
     page_ = page;
     pageBox.setSelectedId(static_cast<int>(page) + 1, juce::dontSendNotification);
     const bool all = page == Page::All;
@@ -389,8 +392,10 @@ void MixAnalysers::setPage(Page page) {
     if (!showTable && !comparing) {
         if (page == Page::Scope) detail.setMode(Mode::ClassicScope);
         else if (page == Page::Average) detail.setMode(Mode::SpectrumAverage);
-        else if (page == Page::Spectrum) detail.setMode(static_cast<Mode>(spectrumTraceBox.getSelectedId() - 1));
+        else if (page == Page::ThirdOctaveBands) detail.setMode(Mode::ThirdOctaveBands);
+        else if (page == Page::ColourWaveform) detail.setMode(Mode::ColourWaveform);
         else detail.setMode(modes[index - 1]);
+        if (page == Page::Spectrum) spectrumTraceBox.onChange();
     }
     detail.setVisible(!showTable && !comparing);
     compare_->setVisible(comparing);
@@ -400,8 +405,12 @@ void MixAnalysers::setPage(Page page) {
 void MixAnalysers::setMode(Mode mode) {
     if (mode == Mode::ClassicScope) mode = Mode::Scope;
     if (mode == Mode::SpectrumAverage) setPage(Page::Average);
-    else if (mode == Mode::Spectrum || mode == Mode::SpectrumMaximum || mode == Mode::SpectrumCumulativeMaximum) {
-        spectrumTraceBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
+    else if (mode == Mode::ThirdOctaveBands) setPage(Page::ThirdOctaveBands);
+    else if (mode == Mode::ColourWaveform) setPage(Page::ColourWaveform);
+    else if (mode == Mode::Spectrum) setPage(Page::Spectrum);
+    else if (mode == Mode::SpectrumMaximum || mode == Mode::SpectrumCumulativeMaximum) {
+        const auto curve = mode == Mode::SpectrumMaximum ? FilledCurve::RealtimeMaximum : FilledCurve::HeldMaximum;
+        spectrumTraceBox.setSelectedId(traceId(curve), juce::dontSendNotification);
         setPage(Page::Spectrum);
     }
     else if (const auto found = std::ranges::find(modes, mode); found != modes.end())

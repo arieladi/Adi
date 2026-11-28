@@ -20,11 +20,13 @@
 #include "adi/engine/session_runtime.hpp"
 #include "adi/gesture_session.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
 namespace adi {
 class Store;
+struct OpRequest;
 }
 
 namespace adi::engine {
@@ -48,6 +50,26 @@ public:
     /// Omitting the set is the no-session/offline view, with no overrides.
     std::uint64_t refresh(const Store& store, const std::set<std::int64_t>& overridden = {});
 
+    struct LocalEdit {
+        enum class Kind { TrackName, MidiPlacement, MidiNotes, Transport };
+        Kind kind;
+        std::int64_t id;
+        std::uint64_t fromGeneration;
+        std::int64_t fromTrack = 0, toTrack = 0, position = 0;
+        std::string name{};
+    };
+    /// Admission is made against the committed view before a single normal
+    /// journal operation. Unknown SQL writes or schemas use a full refresh.
+    [[nodiscard]] bool storeCurrent(const Store&) const;
+    /// Keep a previously current stamp after a specifically known
+    /// one-row advisory write, provided SQLite changed no dependent rows.
+    void acknowledgeAdvisoryWrite(const Store&) noexcept;
+    // A caller-owned metadata transaction can account for more than one row.
+    void acknowledgeAdvisoryWrite(const Store&, std::int64_t writtenRows) noexcept;
+    [[nodiscard]] std::optional<LocalEdit> prepareLocalEdit(const Store&, const OpRequest&) const;
+    bool applyLocalEdit(const Store&, LocalEdit);
+    [[nodiscard]] const std::optional<LocalEdit>& localEdit() const noexcept { return localEdit_; }
+
     /// The current snapshot, or null before the first refresh. A frame takes
     /// this ONCE and hands the same pointer to every component (ADR-0050 d3).
     [[nodiscard]] std::shared_ptr<const Snapshot> current() const noexcept { return current_; }
@@ -65,6 +87,8 @@ private:
     std::shared_ptr<const Snapshot> committed_;
     gesture::Base base_;
     std::shared_ptr<const std::vector<std::uint8_t>> image_;
+    std::optional<std::array<std::int64_t, 4>> storeStamp_;
+    std::optional<LocalEdit> localEdit_;
     bool preview_=false;
     std::uint64_t committedGeneration_=0,presentationGeneration_=0;
     std::shared_ptr<const Snapshot> current_;

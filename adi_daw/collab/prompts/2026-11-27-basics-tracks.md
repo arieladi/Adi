@@ -4,7 +4,8 @@ Read `collab/prompts/2026-11-27-basics-howto.md` first. Your report is `collab/b
 `basics/tracks-log`.
 
 **Your part:** tracks, the mixer's controls and devices. You may run on Linux: the core and the window's
-headless suites build and run there (the window suites under a virtual display, as `ui.yml` does).
+headless suites build and run there (the window suites with no display at all, as `ui.yml` runs them:
+see the howto).
 
 ## Queue, in this order
 

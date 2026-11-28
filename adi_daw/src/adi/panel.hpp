@@ -25,6 +25,11 @@ namespace adi::panel {
 /// Live's threshold: "up to 64 modifiable parameters" are shown unasked.
 inline constexpr std::size_t kDefaultLimit = 64;
 
+/// How a control should be drawn. Mirrors `device::ParamShape`, deliberately
+/// duplicated rather than included: this header is pure and JUCE-free, so it
+/// compiles on every ABI the suite runs on, and the device layer adapts.
+enum class Shape { Continuous, Switch, Menu };
+
 /// One parameter the plug-in declares, as the panel needs it. `modifiable`
 /// means automatable or explicitly configurable: a read-only or hidden meter
 /// is not a slider and does not count towards the 64. Automation eligibility
@@ -34,6 +39,8 @@ struct Declared {
     std::string name;
     bool modifiable = true;
     bool automatable = true;
+    Shape shape = Shape::Continuous;
+    std::int32_t stepCount = 0;   ///< steps including both ends; 0 if unknown
 };
 
 struct Entry {
@@ -73,11 +80,6 @@ struct Match {
 // ---------------------------------------------------------------------------
 // ADR-0198: the per-parameter record the feed sends (ADR-0181 d3).
 // ---------------------------------------------------------------------------
-
-/// How a control should be drawn. Mirrors `device::ParamShape`, deliberately
-/// duplicated rather than included: this header is pure and JUCE-free, so it
-/// compiles on every ABI the suite runs on, and the device layer adapts.
-enum class Shape { Continuous, Switch, Menu };
 
 /// WHICH SOURCE last moved a parameter -- ADR-0188 d4's "last touched wins".
 ///

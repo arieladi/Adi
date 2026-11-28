@@ -3,8 +3,11 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/midi_hardware.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
@@ -28,19 +31,26 @@
 #include <limits>
 #include <span>
 #include <thread>
+#include <vector>
 using namespace adi;
 using namespace adi::engine;
 namespace { std::atomic<unsigned> allocations{0}; }
-void* operator new(std::size_t n){if(audio::onAudioThread)++allocations;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
-void* operator new[](std::size_t n){return operator new(n);}
-void* operator new(std::size_t n,const std::nothrow_t&) noexcept{try{return operator new(n);}catch(...){return nullptr;}}
-void* operator new[](std::size_t n,const std::nothrow_t&) noexcept{try{return operator new[](n);}catch(...){return nullptr;}}
-void operator delete(void* p,const std::nothrow_t&) noexcept{std::free(p);}
-void operator delete[](void* p,const std::nothrow_t&) noexcept{std::free(p);}
-void operator delete(void* p) noexcept{std::free(p);}
-void operator delete[](void* p) noexcept{std::free(p);}
-void operator delete(void* p,std::size_t) noexcept{std::free(p);}
-void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n){if(audio::onAudioThread)++allocations;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+ADI_TEST_NOINLINE void* operator new[](std::size_t n){return operator new(n);}
+ADI_TEST_NOINLINE void* operator new(std::size_t n,const std::nothrow_t&) noexcept{try{return operator new(n);}catch(...){return nullptr;}}
+ADI_TEST_NOINLINE void* operator new[](std::size_t n,const std::nothrow_t&) noexcept{try{return operator new[](n);}catch(...){return nullptr;}}
+ADI_TEST_NOINLINE void operator delete(void* p,const std::nothrow_t&) noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,const std::nothrow_t&) noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t) noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
+#undef ADI_TEST_NOINLINE
 namespace {
 int checks=0,failures=0;
 void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("FAIL %s\n",label);}}
@@ -49,11 +59,12 @@ struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
+    EventFlow flow = EventFlow::Consume;
     bool audible=false;int voices=0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     bool processesDouble()const noexcept override{return true;}
-    EventFlow eventFlow()const noexcept override{return EventFlow::Consume;}
+    EventFlow eventFlow()const noexcept override{return flow;}
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
@@ -91,6 +102,7 @@ struct Fixture {
     test::TempDirectory dir{"midi_clips","session"};
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;Instrument* otherInstrument=nullptr;
     double rate;int block;Precision width;std::int64_t clock=0;
+    EventFlow firstDeviceFlow = EventFlow::Consume;
     explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
@@ -101,12 +113,25 @@ struct Fixture {
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
-    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();(request.device->id==3?otherInstrument:instrument)=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
-    void render(int n=0, std::span<double> capture={}){
+    void load() {
+        session.graph().setFadeFrames(0);
+        const auto loader = [this](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.device->id == 2) return std::make_unique<LatencyEffect>();
+            auto instance = std::make_unique<Instrument>();
+            if (request.device->id == 1) instance->flow = firstDeviceFlow;
+            (request.device->id == 3 ? otherInstrument : instrument) = instance.get();
+            return instance;
+        };
+        if (!session.load(*store, loader, {2, rate, block, width})) throw std::runtime_error(session.error());
+        session.transport().play();
+    }
+    void render(int n=0, std::span<double> capture={}, const MidiHardwareSink* hardware=nullptr,
+                bool exporting=false){
         if(!n)n=block;
         std::array<float,8192> out{};std::array<double,8192> out64{};
         float* channels[]={out.data(),out.data()+4096};double* wide[]={out64.data(),out64.data()+4096};
         AudioIo io;io.frames=n;io.numOut=2;io.streamTimeSamples=clock;
+        io.midiHardware=hardware;io.exporting=exporting;
         if(width==Precision::Float64)io.out64=wide;else io.out=channels;
         if(otherInstrument)otherInstrument->clock=clock;
         instrument->clock=clock;
@@ -117,6 +142,175 @@ struct Fixture {
     }
     void refresh(){if(!session.refresh(*store))throw std::runtime_error(session.error());}
 };
+void unavailableClip() {
+    Fixture f;
+    f.clip(1);
+    f.clip(2);
+    f.store->db().exec("UPDATE clips SET alias_of=1 WHERE id=2");
+    f.load();
+    check(f.session.clipPlaybackUnavailable(2) && !f.session.clipPlaybackUnavailable(1),
+          "only the MIDI clip dropped during preparation is tagged unavailable");
+    check(std::any_of(f.session.problems().begin(), f.session.problems().end(), [](const auto& problem) {
+        return problem == "clips#2: MIDI alias unsupported; silent";
+    }), "the dropped MIDI clip's reason is in the session's playback problems");
+    f.store->db().exec("UPDATE clips SET alias_of=NULL WHERE id=2");
+    f.refresh();
+    check(!f.session.clipPlaybackUnavailable(2) && f.session.problems().empty(),
+          "a fresh playback generation clears the recovered MIDI clip's diagnostic");
+}
+
+void connectMidiHardware(Store& store) {
+    OpRequest route;
+    route.opType = "routing.connect";
+    route.payload = {{"id", 1}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "hw_out"},
+                     {"dst", 0}, {"kind", "main"}, {"midiPort", "out:hardware"}, {"midiChannel", 7}};
+    if (!OpJournal(store).commit(route).ok) throw std::runtime_error("hardware MIDI route fixture");
+}
+
+struct HardwareTrace {
+    struct Word { std::int64_t sample = 0; std::uint32_t value = 0; };
+    std::array<Word, 64> words{};
+    std::size_t size = 0;
+    int resets = 0;
+    MidiHardwareSink sink{this,
+        [](void* context, std::uint64_t port, std::int64_t track, std::int64_t sample, std::uint32_t word) noexcept {
+            auto& out = *static_cast<HardwareTrace*>(context);
+            if (port == midiPortKey("out:hardware") && track == 1 && out.size < out.words.size())
+                out.words[out.size++] = {sample, word};
+        },
+        [](void* context) noexcept { ++static_cast<HardwareTrace*>(context)->resets; }};
+
+    bool has(std::int64_t sample, std::uint32_t word) const {
+        const auto written = std::span(words).first(size);
+        return std::any_of(written.begin(), written.end(), [&](const Word& item) {
+            return item.sample == sample && item.value == word;
+        });
+    }
+};
+
+void hardwareMidiOutput(EventFlow localFlow) {
+    Fixture f(48000, 64);
+    f.firstDeviceFlow = localFlow;
+    if (localFlow == EventFlow::Stop)
+        f.store->db().exec("UPDATE plugin_refs SET subtype='effect' WHERE id=1");
+    f.clip(1, 0, 24024);
+    const std::array<controllers::Point, 1> values{{{0, 0, 0.5, 0, 0, 0}}};
+    const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
+    if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+        throw std::runtime_error("hardware MIDI controller fixture");
+    connectMidiHardware(*f.store);
+    f.load();
+    HardwareTrace received;
+    const auto& sink = received.sink;
+    f.render(64, {}, &sink);
+    f.render(64, {}, &sink);
+    const auto has = [&](std::int64_t sample, std::uint32_t word) { return received.has(sample, word); };
+    check(has(0, 0x20963c5du) && has(0, 0x20b60140u) && has(100, 0x20863c25u),
+          localFlow == EventFlow::Stop
+              ? "MIDI To sends arranged notes and controllers before a local effect that stops MIDI"
+              : "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
+    check(f.instrument->count == 0, "hardware routing takes MIDI before the first local device that stops it");
+    const auto before = received.size;
+    f.session.transport().locate(0);
+    f.render(64, {}, &sink, true);
+    check(received.size == before, "export callbacks emit no hardware MIDI");
+    const auto selectInput = [&](int channel) {
+        SQLite::Statement update(f.store->db(), "UPDATE tracks SET monitor_mode=1,input_ref=? WHERE id=1");
+        update.bind(1, midiInputRef({"in:keyboard", channel}));
+        update.exec();
+    };
+    selectInput(2);
+    f.refresh();
+    f.session.transport().play(false);
+    const auto liveAt = f.clock + 5;
+    const auto inputKey = midiInputKey("in:keyboard");
+    check(f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 1, 63, 7, 0, 1}, -1, inputKey) &&
+          f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 1, 64, 8, 0, 1}, -1,
+                                     midiInputKey("in:pads")) &&
+          f.session.enqueueMidiInput(liveAt, Event{0, EventType::NoteOn, 2, 65, 9, 0, 1}, -1, inputKey),
+          "the hardware MIDI fixture accepts three tagged live notes");
+    f.render(64, {}, &sink);
+    check(has(liveAt, 0x20963f7fu) && !has(liveAt, 0x2096407fu) && !has(liveAt, 0x2096417fu),
+          "MIDI To sends only monitored events from the MIDI From port and channel");
+    selectInput(3);
+    f.refresh();
+    const auto changedAt = f.clock;
+    f.render(64, {}, &sink);
+    check(has(changedAt, 0x20863f00u), "changing MIDI From releases the note held on hardware");
+    check(History(*f.store).undo().ok, "MIDI To can undo the hardware route");
+    f.refresh();
+    const auto resets = received.resets;
+    f.render(64, {}, &sink);
+    check(received.resets == resets + 1, "removing the hardware route releases the former output");
+
+    check(History(*f.store).redo().ok, "restore the hardware route for Play-Q");
+    OpRequest quantize;
+    quantize.opType = "track.setPlayQuantize";
+    quantize.payload = {{"id", 1}, {"on", true}, {"grid", "1/32"}, {"forgivenessMs", 1.0}};
+    check(OpJournal(*f.store).commit(quantize).ok, "enable Play-Q on the hardware-routed track");
+    f.refresh();
+    f.session.transport().locate(0);
+    f.session.transport().play();
+    const auto quantizeStart = f.clock;
+    check(f.session.enqueueMidiInput(quantizeStart + 120, Event{0, EventType::NoteOn, 2, 67, 10, 0, 1}, -1, inputKey) &&
+          f.session.enqueueMidiInput(quantizeStart + 133, Event{0, EventType::NoteOff, 2, 67, 10, 0, 0}, -1, inputKey) &&
+          f.session.enqueueMidiInput(quantizeStart + 140, Event{0, EventType::NoteOn, 1, 68, 11, 0, 1}, -1, inputKey),
+          "queue hardware notes on the selected and a rejected MIDI input channel");
+    while (f.clock < quantizeStart + 3072)
+        f.render(64, {}, &sink);
+    check(!has(quantizeStart + 120, 0x2096437fu) && has(quantizeStart + 3000, 0x2096437fu) &&
+              has(quantizeStart + 3013, 0x20864300u) &&
+              !has(quantizeStart + 140, 0x2096447fu) && !has(quantizeStart + 3000, 0x2096447fu),
+          "Play-Q delays hardware notes and their release while keeping the input channel filter");
+}
+
+void hardwareMidiMuteAutomation() {
+    Fixture f(48000, 64);
+    f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1;"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) "
+        "VALUES(1,'track',1,'mute',1,'real')");
+    std::array<AutomationPoint, 5> points{};
+    const std::array<std::int64_t, 5> frames{0, 16, 32, 80, 112};
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        points[i].time = frames[i] * 1'000'000'000 / 48000;
+        points[i].value = i % 2 == 0 ? 0.0 : 1.0;
+        points[i].point_id = i + 1;
+    }
+    const auto bytes = writeStream<AutomationPoint>(FourCC::Automation, points, 1,
+        StreamFlags::SortedByTime | StreamFlags::TimeIsNanos);
+    if (!f.store->putAutomationData(1, std::nullopt, bytes)) throw std::runtime_error("MIDI mute automation fixture");
+    connectMidiHardware(*f.store);
+    f.load();
+    HardwareTrace received;
+    const auto note = [&](std::int64_t at, EventType type, std::uint16_t key, std::uint64_t identity) {
+        return f.session.enqueueMidiInput(at, {0, type, 0, key, identity, 0, type == EventType::NoteOn ? 1.0 : 0.0});
+    };
+    check(note(5, EventType::NoteOn, 60, 1) && note(16, EventType::NoteOn, 61, 2) &&
+              note(20, EventType::NoteOff, 60, 1) && note(24, EventType::NoteOff, 61, 2) &&
+              note(32, EventType::NoteOn, 62, 3) && note(40, EventType::NoteOff, 62, 3) &&
+              f.session.enqueueMidiInput(50, {0, EventType::Controller, 0, 0, 0, 64, 1.0}),
+          "queue hardware notes around exact mute boundaries and sustain before an idle block");
+    f.render(64, {}, &received.sink);
+    check(received.has(5, 0x20963c7fu) && received.has(16, kMidiHardwareRelease) &&
+              !received.has(16, 0x20963d7fu) && !received.has(20, 0x20863c00u) &&
+              received.has(32, 0x20963e7fu) && received.has(40, 0x20863e00u) && received.has(50, 0x20b6407fu),
+          "hardware MIDI releases on mute and resumes on unmute within the same block");
+    f.render(64, {}, &received.sink);
+    check(received.has(80, kMidiHardwareRelease),
+          "a mute and unmute inside an event-free block releases the previous hardware sustain exactly");
+
+    f.session.transport().loop(16, 64);
+    f.session.transport().locate(60);
+    const auto wrapStart = f.clock;
+    check(note(wrapStart + 1, EventType::NoteOn, 63, 4) && note(wrapStart + 4, EventType::NoteOn, 64, 5) &&
+              note(wrapStart + 20, EventType::NoteOn, 65, 6),
+          "queue hardware notes before and at a wrap onto a muted loop start");
+    f.render(64, {}, &received.sink);
+    check(received.has(wrapStart + 1, 0x20963f7fu) && received.has(wrapStart + 4, kMidiHardwareRelease) &&
+              !received.has(wrapStart + 4, 0x2096407fu) && received.has(wrapStart + 20, 0x2096417fu),
+          "hardware mute follows the loop wrap and releases before the muted events");
+}
+
 void liveInput() {
     for (const auto width : {Precision::Float32, Precision::Float64}) {
         Fixture f(48000, 64, width);
@@ -212,20 +406,378 @@ void liveInput() {
               other.heard[12].e.noteId == other.heard[10].e.noteId && other.balance() == 0,
               "channel-wide expression reaches the instrument with its unaddressed identity");
     }
-    Fixture overlap;
-    overlap.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
-    overlap.clip();
-    overlap.load();
-    check(overlap.session.enqueueMidiInput(100, {0,EventType::NoteOn,3,60,42,0,0.5}) &&
-          overlap.session.enqueueMidiInput(110, {0,EventType::NoteOff,3,60,42,0,0}),
-          "enqueue a live voice on the Arrangement note's channel and key");
-    overlap.render();
-    const auto& inst = *overlap.instrument;
-    check(inst.count == 4 && inst.heard[0].clock == 100 && inst.heard[1].clock == 100 &&
-          inst.heard[0].e.noteId != inst.heard[1].e.noteId && inst.heard[3].clock == 110 &&
-          inst.heard[3].e.noteId == inst.heard[0].e.noteId && inst.balance() == 1,
-          "releasing the live same-pitch note leaves the Arrangement voice active");
 }
+void midiMonitoring() {
+    const auto played = [](const Instrument& instrument, EventType type, std::int64_t frame,
+                           std::uint16_t key) {
+        return std::any_of(instrument.heard.begin(), instrument.heard.begin() + instrument.count,
+                           [=](const Heard& event) {
+                               return event.clock == frame && event.e.type == type && event.e.dim == key;
+                           });
+    };
+    const auto controller = [](const Instrument& instrument, std::int64_t frame, std::uint32_t cc,
+                               double value) {
+        return std::any_of(instrument.heard.begin(), instrument.heard.begin() + instrument.count,
+                           [=](const Heard& event) {
+                               return event.clock == frame && event.e.type == EventType::Controller &&
+                                      event.e.paramId == cc && event.e.value == value;
+                           });
+    };
+    const auto key = [](Fixture& f, std::int64_t frame, EventType type, std::uint64_t id, std::uint16_t pitch) {
+        return f.session.enqueueMidiInput(frame, {0, type, 3, pitch, id, 0, 0.5});
+    };
+    const auto cc = [](Fixture& f, std::int64_t frame, std::uint32_t number, double value) {
+        return f.session.enqueueMidiInput(frame, {0, EventType::Controller, 3, 0, 0, number, value});
+    };
+    struct Mode {
+        int value;
+        bool armed, live, arrange;
+        const char* checkLabel;
+    };
+    constexpr std::array modes{
+        Mode{0, true, false, true, "Off keeps Arrangement notes and controllers, with no input even armed"},
+        Mode{1, false, true, false, "In hears input unarmed and suppresses Arrangement notes and controllers"},
+        Mode{2, false, false, true, "Auto unarmed plays the Arrangement and ignores input"},
+    };
+    for (const auto& mode : modes) {
+        Fixture f;
+        f.clip();
+        const std::array<controllers::Point, 1> values{{{0, 0, 0.25, 0, 0, 0}}};
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("controller prepare/commit");
+        SQLite::Statement set(f.store->db(), "UPDATE tracks SET monitor_mode=?,record_armed=? WHERE id=1");
+        set.bind(1, mode.value);
+        set.bind(2, static_cast<int>(mode.armed));
+        set.exec();
+        f.load();
+        check(key(f, 50, EventType::NoteOn, 90, 61) && cc(f, 51, 7, 0.75) &&
+              key(f, 70, EventType::NoteOff, 90, 61), "enqueue typed input during a playing clip");
+        f.render();
+        const auto& instrument = *f.instrument;
+        check(played(instrument, EventType::NoteOn, 50, 61) == mode.live &&
+              played(instrument, EventType::NoteOff, 70, 61) == mode.live &&
+              controller(instrument, 51, 7, 0.75) == mode.live &&
+              played(instrument, EventType::NoteOn, 100, 60) == mode.arrange &&
+              controller(instrument, 0, 1, 0.25) == mode.arrange, mode.checkLabel);
+    }
+
+    {
+        Fixture overdub;
+        overdub.clip();
+        overdub.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+        overdub.load();
+        const std::array<std::int64_t, 1> targets{1};
+        std::string error;
+        check(overdub.session.startMidiInputCapture(targets, error, true) &&
+                  key(overdub, 50, EventType::NoteOn, 98, 66) && key(overdub, 150, EventType::NoteOff, 98, 66),
+              "start an Auto-monitored overdub while an Arrangement clip plays");
+        overdub.render();
+        check(played(*overdub.instrument, EventType::NoteOn, 50, 66) &&
+                  played(*overdub.instrument, EventType::NoteOn, 100, 60) &&
+                  played(*overdub.instrument, EventType::NoteOff, 150, 66),
+              "an Auto-monitored overdub hears new input and the Arrangement together");
+        overdub.session.midiInputCapture().stop();
+        check(key(overdub, 550, EventType::NoteOn, 99, 67), "send live MIDI after the overdub stops");
+        overdub.render();
+        check(!played(*overdub.instrument, EventType::NoteOn, 550, 67),
+              "ending overdub restores Auto suppression over the playing Arrangement clip");
+    }
+
+    Fixture f(48000, 64);
+    f.clip(1, 0, 12012, 24024);
+    f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                       "UPDATE clips SET pos_ticks=24024 WHERE id=1"); // occupies samples [100,200)
+    f.load();
+    const auto& instrument = *f.instrument;
+    check(key(f, 30, EventType::NoteOn, 91, 61) && cc(f, 31, 64, 1), "hold a live note and sustain before the clip");
+    f.render();
+    f.render(); // the next block has no live input but the clip starts inside it
+    check(played(instrument, EventType::NoteOn, 30, 61) && controller(instrument, 31, 64, 1) &&
+          played(instrument, EventType::NoteOff, 100, 61) && controller(instrument, 100, 64, 0) &&
+          played(instrument, EventType::NoteOn, 100, 60),
+          "Auto releases the live voice and pedal precisely when the Arrangement clip starts");
+    check(key(f, 131, EventType::NoteOn, 92, 62) && cc(f, 132, 7, 0.25) &&
+          key(f, 133, EventType::NoteOff, 92, 62) && key(f, 199, EventType::NoteOn, 93, 63) &&
+          key(f, 200, EventType::NoteOn, 94, 64) && key(f, 215, EventType::NoteOff, 94, 64),
+          "queue input inside the clip and at its outgoing boundary");
+    f.render();
+    f.render();
+    check(!played(instrument, EventType::NoteOn, 131, 62) && !controller(instrument, 132, 7, 0.25) &&
+          !played(instrument, EventType::NoteOn, 199, 63) && played(instrument, EventType::NoteOn, 200, 64) &&
+          played(instrument, EventType::NoteOff, 215, 64) && instrument.balance() == 0,
+          "Auto suppresses input throughout the clip, including silence, and reopens at the exact end");
+
+    f.session.transport().loop(80, 205);
+    f.session.transport().locate(195);
+    const auto loopStart = f.clock;
+    check(key(f, loopStart + 4, EventType::NoteOn, 95, 65) &&
+          key(f, loopStart + 5, EventType::NoteOn, 96, 66) &&
+          key(f, loopStart + 12, EventType::NoteOn, 97, 67), "queue input on either side of a loop wrap");
+    f.render();
+    check(!played(instrument, EventType::NoteOn, loopStart + 4, 65) &&
+          played(instrument, EventType::NoteOn, loopStart + 5, 66) &&
+          played(instrument, EventType::NoteOn, loopStart + 12, 67) &&
+          played(instrument, EventType::NoteOff, loopStart + 30, 66) &&
+          played(instrument, EventType::NoteOff, loopStart + 30, 67),
+          "Auto follows the wrapped playhead and closes again where the clip restarts");
+
+    for (const bool followsSelection : {false, true}) {
+        Fixture moved(48000, 64);
+        moved.clip(1, 0, 12012, 24024);
+        moved.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1;"
+                               "UPDATE clips SET pos_ticks=24024 WHERE id=1");
+        if (!followsSelection) moved.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+        moved.load();
+        if (followsSelection)
+            check(moved.session.setSelectionArmedTrack(1), "selecting the Auto track arms it for MIDI monitoring");
+        ProjectView view;
+        view.refresh(*moved.store);
+        OpRequest request;
+        request.opType = "clip.move";
+        request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
+        const auto edit = view.prepareLocalEdit(*moved.store, request);
+        if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
+            throw std::runtime_error("move was not admitted by the scoped Arrangement view");
+        const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
+        check(!scoped, followsSelection ? "moving a clip on a selection-armed Auto track refreshes monitoring ranges"
+                                        : "moving a clip on an armed Auto track refreshes its monitoring ranges");
+        if (!scoped) moved.refresh();
+        check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
+              key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
+        for (int block = 0; block < 5; ++block) moved.render();
+        check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
+              played(*moved.instrument, EventType::NoteOff, 135, 61) &&
+              played(*moved.instrument, EventType::NoteOn, 300, 60) &&
+              !played(*moved.instrument, EventType::NoteOn, 311, 62),
+              "the moved clip allows MIDI input at its old range and blocks it at its new range");
+    }
+}
+
+void livePlayQuantize() {
+    const auto configure = [](Fixture& fixture, bool enabled) {
+        OpRequest setting;
+        setting.opType = "track.setPlayQuantize";
+        setting.payload = {{"id", 1}, {"on", enabled}, {"grid", "1/32"}, {"forgivenessMs", 1.0}};
+        return OpJournal(*fixture.store).commit(setting).ok;
+    };
+    const auto input = [](Fixture& fixture, std::int64_t sample, EventType type, std::uint64_t id, std::uint16_t key) {
+        return fixture.session.enqueueMidiInput(sample, {0, type, 0, key, id, 0, .75});
+    };
+    const auto heard = [](const Instrument& instrument, std::int64_t at, EventType type, std::uint16_t key) {
+        const auto end = instrument.heard.begin() + static_cast<std::ptrdiff_t>(instrument.count);
+        const auto found = std::find_if(instrument.heard.begin(), end, [&](const Heard& hit) {
+            return hit.clock == at && hit.e.type == type && hit.e.dim == key;
+        });
+        return found == end ? std::uint64_t{0} : found->e.noteId;
+    };
+    for (const bool savedOff : {false, true}) {
+        Fixture exact(48000, 64);
+        exact.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        if (savedOff)
+            check(configure(exact, false), "persist Play-Q Off");
+        exact.load();
+        check(input(exact, 11, EventType::NoteOn, 1, 65) && input(exact, 57, EventType::NoteOff, 1, 65),
+              "send live input with Play-Q off or absent");
+        exact.render();
+        const auto id = heard(*exact.instrument, 11, EventType::NoteOn, 65);
+        check(id != 0 && heard(*exact.instrument, 57, EventType::NoteOff, 65) == id && exact.instrument->count == 2,
+              "saved Off and projects without a Play-Q row keep the exact original live timing");
+    }
+
+    Fixture f(48000, 64);
+    f.clip();
+    f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                       "UPDATE clips SET pos_ticks=960960 WHERE id=1"); // starts at sample 4000
+    check(configure(f, true), "enable persisted Play-Q 1/32 and a one-millisecond forgiveness window");
+    f.load();
+    f.instrument->audible = true;
+    const std::array<std::int64_t, 1> tracks{1};
+    std::string error;
+    check(f.session.startMidiInputCapture(tracks, error), "start raw Arrangement capture");
+    check(f.session.enqueueMidiInput(100, {0, EventType::NoteOn, 0, 66, 91, 0, .75}, 80) &&
+              f.session.enqueueMidiInput(120, {0, EventType::NoteExpression, 0, 1, 91, 0, .2}, 100) &&
+              f.session.enqueueMidiInput(148, {0, EventType::NoteOff, 0, 66, 91, 0, .4}, 128) &&
+              input(f, 3032, EventType::NoteOn, 92, 69) && input(f, 3096, EventType::NoteOff, 92, 69),
+          "queue a short expressive note and a second note within late forgiveness");
+
+    while (f.clock < 192)
+        f.render();
+    check(f.instrument->count == 0, "the unquantized note and its release have arrived without any early sound");
+    f.session.midiInputCapture().stop();
+    f.render();
+    std::array<MidiCapturePacket, 32> captured{};
+    const auto capturedCount = f.session.midiInputCapture().drain(captured);
+    std::array<std::int64_t, 3> accepted{}, original{};
+    std::size_t saved = 0;
+    for (const auto& packet : std::span(captured).first(capturedCount)) {
+        if (packet.kind == MidiCapturePacket::Kind::Event && saved < accepted.size()) {
+            accepted[saved] = packet.timelineSample;
+            original[saved++] = packet.inputSample;
+        }
+    }
+    check(saved == 3 && accepted == std::array<std::int64_t, 3>{100, 120, 148} &&
+              original == std::array<std::int64_t, 3>{80, 100, 128},
+          "Play-Q leaves both Arrangement capture clocks unquantized");
+
+    while (f.clock < 2944)
+        f.render();
+    check(f.instrument->count == 0, "no delayed note sounds before its grid");
+    std::array<double, 64> audio{};
+    f.render(64, audio);
+    check(audio[55] == 0.0 && audio[56] > .1, "the note becomes audible at sample 3000, the next grid line");
+    while (f.clock < 6208)
+        f.render();
+    const auto id = heard(*f.instrument, 3000, EventType::NoteOn, 66);
+    const auto forgiven = heard(*f.instrument, 3032, EventType::NoteOn, 69);
+    check(id != 0 && heard(*f.instrument, 3020, EventType::NoteExpression, 1) == id &&
+              heard(*f.instrument, 3048, EventType::NoteOff, 66) == id &&
+              forgiven != 0 && heard(*f.instrument, 3096, EventType::NoteOff, 69) == forgiven,
+          "the delayed note keeps its duration and expression while late forgiveness is immediate");
+    const auto clip = heard(*f.instrument, 4100, EventType::NoteOn, 60);
+    check(clip != 0 && heard(*f.instrument, 6100, EventType::NoteOff, 60) == clip &&
+              f.instrument->voices == 0 && f.instrument->balance() == 0,
+          "authored clip notes play at their original samples and physical notes leave no voices held");
+
+    for (const bool turnOff : {false, true}) {
+        Fixture cancel(48000, 64);
+        cancel.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        check(configure(cancel, true), "enable Play-Q before a pending note");
+        cancel.load();
+        check(input(cancel, 75, EventType::NoteOn, 1, 67) && input(cancel, 85, EventType::NoteOff, 1, 67),
+              "send a complete short note while waiting for a grid line");
+        cancel.render();
+        cancel.render();
+        check(cancel.instrument->count == 0, "both events remain queued beyond the forgiveness window");
+        if (turnOff) {
+            check(configure(cancel, false), "turn off Play-Q with an attack and release pending");
+            cancel.refresh();
+            check(input(cancel, 139, EventType::NoteOn, 2, 68) && input(cancel, 149, EventType::NoteOff, 2, 68),
+                  "new input is available after the setting changes");
+        } else {
+            cancel.session.transport().locate(2000);
+        }
+        while (cancel.clock < 3136)
+            cancel.render();
+        check(cancel.instrument->count == (turnOff ? 2u : 0u) &&
+                  cancel.instrument->balance() == 0 &&
+                  (!turnOff || (heard(*cancel.instrument, 139, EventType::NoteOn, 68) != 0 &&
+                                heard(*cancel.instrument, 149, EventType::NoteOff, 68) != 0)),
+              "disabling Play-Q or seeking clears pending input without replaying a stale note");
+    }
+
+    Fixture wrap(48000, 64);
+    wrap.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+    check(configure(wrap, true), "enable Play-Q for a short Arrangement loop");
+    wrap.load();
+    wrap.render();
+    wrap.session.transport().loop(1000, 2000);
+    wrap.session.transport().locate(1980);
+    const auto beforeWrap = wrap.clock;
+    check(input(wrap, beforeWrap + 5, EventType::NoteOn, 1, 62) &&
+              input(wrap, beforeWrap + 11, EventType::NoteOff, 1, 62),
+          "send a note just before the wrap and beyond late forgiveness");
+    wrap.render();
+    const auto wrapped = heard(*wrap.instrument, beforeWrap + 20, EventType::NoteOn, 62);
+    check(wrapped != 0 && heard(*wrap.instrument, beforeWrap + 26, EventType::NoteOff, 62) == wrapped,
+          "a note due beyond this loop pass plays at the wrap and keeps its release");
+    wrap.session.transport().play(false);
+    const auto stopped = wrap.clock;
+    check(input(wrap, stopped + 11, EventType::NoteOn, 2, 75) && input(wrap, stopped + 26, EventType::NoteOff, 2, 75),
+          "live input remains playable with the musical clock stopped");
+    wrap.render();
+    check(heard(*wrap.instrument, stopped + 11, EventType::NoteOn, 75) != 0 &&
+              heard(*wrap.instrument, stopped + 26, EventType::NoteOff, 75) != 0 && wrap.instrument->balance() == 0,
+          "a stationary grid leaves stopped monitoring immediate");
+}
+
+void noteEditorAudition() {
+    Fixture fixture(48000, 64);
+    auto& db = fixture.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name,index_in_parent,record_armed,monitor_mode) "
+            "VALUES(3,'midi','Other',2,1,2),(4,'midi','No instrument',3,0,0);"
+            "INSERT INTO device_chains(id,track_id) VALUES(3,3);"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,3,0,1,'Other')");
+    fixture.clip();
+    fixture.load();
+    auto& session = fixture.session;
+    auto& player = *fixture.instrument;
+    player.audible = true;
+    session.transport().play(false);
+    const auto keyOn = [&](std::int64_t track, unsigned key) {
+        return (session.midiKeysSounding(track)[key / 64] & (std::uint64_t{1} << (key % 64))) != 0;
+    };
+    check(!session.previewMidiNote(4, 65, 96, false) && !session.previewMidiNote(1, 128, 96, false) &&
+              !session.previewMidiNote(1, 65, 0, false) && !keyOn(4, 65),
+          "an audition needs an instrument, a valid key and a nonzero velocity");
+    check(session.previewMidiNote(1, 65, 96, true), "audition reaches the unarmed track with monitoring Off");
+    session.stopMidiPreview();
+    std::array<double,64> output{};
+    fixture.render(64, output);
+    check(player.count == 1 && player.heard[0].e.type == EventType::NoteOn &&
+              player.heard[0].e.value == 96.0 / 127 && output.front() > 0.2 &&
+              keyOn(1, 65) && !keyOn(3, 65),
+          "press and release in one callback still sounds and lights the requested key on that track");
+    for (int i = 0; i < 32 && player.balance() != 0; ++i)
+        fixture.render();
+    check(player.count == 2 && player.heard[1].e.noteId == player.heard[0].e.noteId &&
+              player.heard[1].clock >= 960 && player.balance() == 0 && !keyOn(1, 65),
+          "a quick release waits for the driver's minimum duration and clears the key");
+
+    check(session.previewMidiNote(1, 66, 81, false), "a drawn note starts a finite tap without a key-up");
+    fixture.render();
+    check(player.balance() == 1 && keyOn(1, 66), "a finite tap sounds before its deadline");
+    for (int i = 0; i < 128 && player.balance() != 0; ++i)
+        fixture.render();
+    check(player.balance() == 0 && !keyOn(1, 66), "the finite tap releases itself");
+
+    constexpr std::array<std::int64_t, 1> armed{3};
+    std::string error;
+    session.transport().locate(0);
+    session.transport().play();
+    check(session.startMidiInputCapture(armed, error), "start input capture on the other track");
+    const auto start = fixture.clock;
+    check(session.previewMidiNote(1, 72, 80, true) &&
+              session.enqueueMidiInput(start + 3, {0, EventType::NoteOn, 0, 72, 400, 0, .8}) &&
+              session.enqueueMidiInput(start + 8, {0, EventType::NoteOff, 0, 72, 400, 0, 0}),
+          "an audition can coincide with the same note from Track input");
+    fixture.render();
+    fixture.render();
+    auto& other = *fixture.otherInstrument;
+    check(keyOn(1, 60) && keyOn(1, 72) && !keyOn(3, 72) && player.count >= 5 && other.count == 2 &&
+              pluginNoteId(player.heard[4].e.noteId) != pluginNoteId(other.heard[0].e.noteId),
+          "the mask carries playback and the held audition, with distinct runtime IDs from Track input");
+    std::array<MidiCapturePacket, 16> packets{};
+    const auto count = session.midiInputCapture().drain(packets);
+    int captured = 0;
+    bool fromTrack = true;
+    for (const auto& packet : std::span(packets).first(count)) {
+        if (packet.kind == MidiCapturePacket::Kind::Event) {
+            ++captured;
+            fromTrack = fromTrack && packet.event.noteId == 400;
+        }
+    }
+    check(captured == 2 && fromTrack, "only the Track input's note and release enter the recording");
+    session.midiInputCapture().stop();
+    session.stopMidiPreview();
+    while (fixture.clock <= start + 960)
+        fixture.render();
+    check(keyOn(1, 60) && !keyOn(1, 72), "stopping audition leaves the Arrangement note audible and lit");
+
+    check(session.previewMidiNote(3, 76, 90, true), "hold an audition on an instrument about to leave the graph");
+    fixture.render();
+    check(keyOn(3, 76) && other.balance() == 1, "the other instrument owns its held audition");
+    db.exec("DELETE FROM devices WHERE id=3");
+    fixture.refresh();
+    fixture.render();
+    check(!keyOn(3, 76) && !session.previewMidiNote(3, 76, 90, true), "a removed instrument is no longer an audition target");
+    db.exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,3,0,1,'Other')");
+    fixture.refresh();
+    fixture.render();
+    check(fixture.otherInstrument == &other && other.balance() == 0 && !keyOn(3, 76),
+          "reviving the retained instrument first delivers any pending audition release");
+}
+
 void driverMidiCapture() {
     Fixture f(48000, 64);
     f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
@@ -292,8 +844,8 @@ void driverMidiCapture() {
           "input IDs carry held-note ownership across multiple wraps independently of the audible voice");
     check(event(7,2,80,28,79,0,EventType::NoteOn,502) &&
           event(8,2,80,28,80,0,EventType::NoteOff,502) &&
-          f.instrument->heard[0].e.noteId != 500,
-          "capture excludes the pre-epoch key and preserves the order and raw stamp of late input");
+          f.instrument->count == 0,
+          "capture preserves the raw stamp and order of late input while Monitor Off silences the instrument");
     transport.locate(12);
     check(start() && capture.epoch() == epoch + 1, "draining permits a new independent recording epoch");
     f.render(12);
@@ -1233,6 +1785,169 @@ void sessionControllers() {
     check(zero && off, "Session refresh retains pedal ownership after cascade-deleting the stream");
 }
 
+void sessionPitchBend() {
+    Fixture f(48000, 64);
+    constexpr auto ppq = 5765760;
+    f.clip(1, 0, ppq / 512, ppq / 256);
+    const std::array bend{controllers::Point{0, 0, .75}};
+    const auto prepared = controllers::prepareWrite(*f.store, 1, 15, kCtrlPitchBend, bend);
+    if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+        throw std::runtime_error("create channel pitch bend envelope");
+    f.load();
+    f.render();
+    f.render();
+
+    const auto heard = std::span(f.instrument->heard).first(f.instrument->count);
+    const auto wheel = [](const Heard &item) {
+        return item.e.type == EventType::Controller && item.e.paramId == kCtrlPitchBend && item.e.channel == 15;
+    };
+    const auto first = std::find_if(heard.begin(), heard.end(), wheel);
+    check(first != heard.end() && first->clock == 0 && first->e.value == .75,
+          "a channel 16 pitch wheel is chased from stored ACTL at clip start");
+    if (first == heard.end())
+        return;
+    const auto neutral = std::find_if(first + 1, heard.end(), wheel);
+    check(neutral != heard.end() && neutral->clock == 94 && neutral->e.value == .5,
+          "losing the pitch envelope owner at clip end resets the channel wheel to center");
+    if (neutral == heard.end())
+        return;
+
+    auto caps = ExpressionCaps{};
+    caps.bendParam[15] = 4321;
+    MpeRouter router;
+    router.configure(ExpressionRoute::NoteExpression, caps);
+    const std::array input{first->e, neutral->e};
+    std::array<MpeOut, 2> storage{};
+    MpeOutList output(storage.data(), 2);
+    router.route(input.data(), 2, 0, output);
+    check(output.size() == 2 && output.at(0).kind == MpeOut::Kind::Control &&
+              output.at(0).channel == 15 && output.at(0).noteId == 0 &&
+              output.at(0).ctrl == kCtrlPitchBend && output.at(0).word == 12288 &&
+              output.at(0).paramId == 4321 && output.at(1).word == 8192,
+          "host translation preserves the 14-bit channel wheel even on a note-expression route");
+    MpeOut native{};
+    check(noteExpressionOut(neutral->e, caps, native) && native.kind == MpeOut::Kind::Control &&
+              native.channel == 15 && native.noteId == 0 && native.ctrl == kCtrlPitchBend && native.word == 8192,
+          "direct host translation also delivers a channel wheel with no note identity");
+}
+
+void livePitchBendOwnership() {
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    const auto rawBend = [](Fixture& fixture, std::int64_t sample, std::uint8_t channel, double value) {
+        return fixture.session.enqueueMidiInput(sample, {0, EventType::Controller, channel, 0, 0, kCtrlPitchBend, value});
+    };
+    const auto expressionBend = [](Fixture& fixture, std::int64_t sample, std::uint8_t channel, double value) {
+        return fixture.session.enqueueMidiInput(sample, {0, EventType::NoteExpression, channel, pitch, 0, 0, value});
+    };
+    const auto bendsAt = [](const Instrument& instrument, std::int64_t at, std::uint8_t channel) {
+        std::vector<double> values;
+        for (const auto& [event, clock] : std::span(instrument.heard).first(instrument.count)) {
+            if (clock == at && event.channel == channel &&
+                ((event.type == EventType::Controller && event.paramId == kCtrlPitchBend) ||
+                 (event.type == EventType::NoteExpression && event.noteId == 0 && event.dim == pitch)))
+                values.push_back(event.value);
+        }
+        return values;
+    };
+
+    {
+        Fixture f(48000, 64);
+        f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        f.load();
+        check(rawBend(f, 10, 3, .75) && expressionBend(f, 11, 4, 1.) &&
+                  rawBend(f, 12, 5, .25) && rawBend(f, 13, 5, .5),
+              "accept both channel wheel representations, including a physical return to center");
+        f.render();
+        check(bendsAt(*f.instrument, 10, 3) == std::vector{.75} && bendsAt(*f.instrument, 11, 4) == std::vector{1.},
+              "live wheels reach the instrument at their input clocks");
+        f.session.resetMidiInput();
+        f.render();
+        check(bendsAt(*f.instrument, 64, 3) == std::vector{.5} && bendsAt(*f.instrument, 64, 4) == std::vector{0.} &&
+                  bendsAt(*f.instrument, 64, 5).empty(),
+              "a quiet reset centers only still-deflected live channels in their own representation");
+        f.render();
+        check(bendsAt(*f.instrument, 128, 3).empty() && bendsAt(*f.instrument, 128, 4).empty(),
+              "centering clears live wheel ownership after delivery");
+    }
+
+    {
+        Fixture f(48000, 64);
+        f.clip(1, 0, 12012, 24024);
+        f.clip(2, 0, 12012, 24024);
+        f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                           "UPDATE clips SET pos_ticks=24024 WHERE id=1;"
+                           "UPDATE clips SET pos_ticks=30030 WHERE id=2;"); // [100,200) and [125,225)
+        const auto setBend = [&](int clip, double value) {
+            const std::array points{controllers::Point{0, 0, value}};
+            const auto prepared = controllers::prepareWrite(*f.store, clip, 3, kCtrlPitchBend, points);
+            return prepared.ok && controllers::commitPrepared(*f.store, prepared).ok;
+        };
+        check(setBend(1, .25) && setBend(2, .625), "write two overlapping authored wheels");
+        f.load();
+        check(rawBend(f, 17, 3, .75) && expressionBend(f, 19, 4, 1.), "deflect two wheels before Auto blocks input");
+        f.render();
+        f.render();
+        check(bendsAt(*f.instrument, 100, 3) == std::vector{.5, .25} &&
+                  bendsAt(*f.instrument, 100, 4) == std::vector{0.},
+              "Auto centers live wheels at the clip boundary and the authored chase wins there");
+        check(bendsAt(*f.instrument, 125, 3) == std::vector{.5, .625} &&
+                  bendsAt(*f.instrument, 125, 4).empty(),
+              "a second native clip takes over the authored wheel without a repeated live reset");
+    }
+
+    for (const auto latency : {0, 512}) {
+        Fixture f(48000, 64);
+        f.clip(1, 0, 12012);
+        f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+        if (latency != 0)
+            f.store->db().exec("UPDATE devices SET ord=1;"
+                               "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,1,0,1,'Delay')");
+        const std::array points{controllers::Point{0, 0, .25}};
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, kCtrlPitchBend, points);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("commit the overdub's constant authored wheel");
+        f.load();
+        while (f.clock <= latency)
+            f.render();
+        check(bendsAt(*f.instrument, latency, 3) == std::vector{.25},
+              "the clip has already sent its constant wheel through the device chain");
+
+        const std::array<std::int64_t, 1> tracks{1};
+        std::string error;
+        const auto liveAt = f.clock + 9;
+        check(f.session.startMidiInputCapture(tracks, error, true) && rawBend(f, liveAt, 3, .75),
+              "an Auto overdub lets a live wheel temporarily override the constant clip value");
+        f.render(13);
+        check(bendsAt(*f.instrument, liveAt, 3) == std::vector{.75}, "the live wheel sounds immediately");
+
+        if (latency == 0) {
+            ProjectView view;
+            view.refresh(*f.store);
+            OpRequest insert;
+            insert.opType = "note.insert";
+            insert.payload = {{"clip", 1}, {"note", 43}, {"start", 576576}, {"dur", 24024},
+                              {"key", 65}, {"vel", 90}};
+            const auto edit = view.prepareLocalEdit(*f.store, insert);
+            if (!edit || !OpJournal(*f.store).commit(insert).ok || !view.applyLocalEdit(*f.store, *edit))
+                throw std::runtime_error("note insert was not admitted by the scoped clip view");
+            const auto scoped = f.session.refreshLocalEdit(*f.store, view);
+            check(!scoped, "a MIDI note edit keeps the Auto timing view and its pitch chase on the same source generation");
+            if (!scoped)
+                f.refresh();
+        }
+        const auto stop = f.clock; // deliberately between the normal 64-sample controller ticks
+        f.session.midiInputCapture().stop();
+        while (f.clock <= stop + latency)
+            f.render();
+        const auto handoff = bendsAt(*f.instrument, stop, 3);
+        if (latency == 0)
+            check(handoff == std::vector{.5, .25}, "ending Auto overdub chases the stored wheel on the handoff sample");
+        else
+            check(handoff == std::vector{.5} && bendsAt(*f.instrument, stop + latency, 3) == std::vector{.25},
+                  "the live reset is immediate and the authored re-chase follows the native MIDI/PDC path");
+    }
+}
+
 const ClipNode& projected(const Snapshot& frame, std::int64_t track, std::int64_t clip) {
     const auto* node = frame.findTrack(track);
     if (node) {
@@ -1392,6 +2107,8 @@ void expressionKnotFollowsNoteClock() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
+    try { if (only == "all" || only == "unavailable") unavailableClip(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "signed") signedOrigins(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
@@ -1404,7 +2121,26 @@ int main(int argc,char** argv){
     catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try {
+        if (only == "all" || only == "hardware") {
+            hardwareMidiOutput(EventFlow::Consume);
+            hardwareMidiOutput(EventFlow::Stop);
+        }
+    }
+    catch (const std::exception& error) { check(false, error.what()); }
+    try { if (only == "all" || only == "hardware-mute") hardwareMidiMuteAutomation(); }
+    catch (const std::exception& error) { check(false, error.what()); }
+    try { if (only == "all" || only == "monitor") midiMonitoring(); }
+    catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "pitch-bend") livePitchBendOwnership(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }

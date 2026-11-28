@@ -1321,12 +1321,18 @@ void latencyAndSafety() {
     check(error<1.e-12,"missing Difference key cannot demand unlimited cut");
 }
 }
-void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
-void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
-void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
-void* operator new[](std::size_t n){return ::operator new(n);}
-void operator delete[](void*p)noexcept{::operator delete(p);}
-void operator delete[](void*p,std::size_t)noexcept{::operator delete(p);}
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+ADI_TEST_NOINLINE void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
+ADI_TEST_NOINLINE void* operator new[](std::size_t n){return ::operator new(n);}
+ADI_TEST_NOINLINE void operator delete[](void*p)noexcept{::operator delete(p);}
+ADI_TEST_NOINLINE void operator delete[](void*p,std::size_t)noexcept{::operator delete(p);}
+#undef ADI_TEST_NOINLINE
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
 #if defined(_MSC_VER) && defined(_DEBUG)

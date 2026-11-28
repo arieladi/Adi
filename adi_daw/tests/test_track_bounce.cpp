@@ -2,6 +2,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/bounce_commands.hpp"
 #include "adi/digest.hpp"
+#include "adi/freeze_commands.hpp"
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -115,8 +116,9 @@ struct Project {
         return result;
     }
 };
-std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision) {
-    auto job = p.options().job;
+std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision,
+                        const render::Job *capturedRange = nullptr) {
+    auto job = capturedRange ? *capturedRange : p.options().job;
     job.project = p.store->path();
     job.directory = p.directory.path();
     job.nameTemplate = name;
@@ -128,8 +130,9 @@ std::vector<float> hear(Project &p, const std::string &name, engine::Precision p
     if (result.state != render::JobState::Completed)
         return {};
     audio::WavReader reader(result.output);
-    std::vector<float> data(1280);
-    check(reader.frames() == 640 && reader.read(data.data(), 640) == 640,
+    const auto frames = static_cast<std::uint32_t>(job.endSample - job.beginSample);
+    std::vector<float> data(static_cast<std::size_t>(frames) * 2);
+    check(reader.frames() == frames && reader.read(data.data(), frames) == frames,
           "audition reads exact bounced range");
     return data;
 }
@@ -159,6 +162,8 @@ void command() {
                   db.execAndGet("SELECT color FROM tracks WHERE id=30").getInt() == 6 &&
                   db.execAndGet("SELECT kind FROM tracks WHERE id=30").getString() == "audio",
               "new plain audio sibling inherits hierarchy and palette color");
+        check(db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=30").getInt() == 0,
+              "SC-249: a new audio track created by Bounce starts with Monitor Off");
         check(db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=30").getInt() == 1 &&
                   db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=22").getInt() == 2,
               "new sibling is inserted immediately after the source");
@@ -180,6 +185,8 @@ void command() {
               "one undo restores all original tracks, order, source state and media rows");
         check(History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 2,
               "one redo restores track and immutable render without running the effect again");
+        check(db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=30").getInt() == 0,
+              "SC-249: Bounce redo restores its recorded monitor mode");
         const auto path = p.store->path();
         p.store.reset();
         StoreError error{};
@@ -187,6 +194,90 @@ void command() {
         check(p.store && History(*p.store).undo().ok && digestProject(*p.store).text == digest,
               "track-bounce undo survives reopen");
     }
+}
+void wetCopy() {
+    Project p;
+    auto &store = *p.store;
+    auto &db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES (42,'return','Return',3),(43,'vca','VCA',4);"
+            "UPDATE mixer_strip SET input_gain_db=3,pan_law=1,width=0.8,phase_invert=1,delay_samples=11,"
+            "vca_group_id=43 WHERE track_id=21;"
+            "INSERT INTO mixer_pan_settings(track_id,mode,pan_left,pan_right) VALUES(21,'split',-0.5,0.75);"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pan,pre_fader,enabled) VALUES"
+            "(82,'track',21,'track',42,'send',2,-12,0.1,1,1),(83,'track',21,'track',42,'send',3,-19,-0.2,0,0);"
+            "INSERT INTO routing_send_taps(routing_id,tap) VALUES(82,'post_fx');");
+    auto options = p.options();
+    options.copyMixerSettings = true;
+    options.job.beginSample = 0;
+    options.job.endSample = 1200;
+    const auto before = hear(p, "wet-before", engine::Precision::Float32, &options.job);
+    const auto state = digestProject(store).text;
+    auto prepared = clip_edit::prepareBounceToNewTrack(store, options, loader());
+    check(prepared.ready(), prepared.error().empty() ? "post-FX bounce is ready" : prepared.error().c_str());
+    if (!prepared.ready())
+        return;
+    const auto applied = clip_edit::commitTrackBounce(store, prepared, 7);
+    check(applied.ok, applied.error.empty() ? "post-FX bounce copies mixer and sends in one edit" : applied.error.c_str());
+    if (!applied.ok)
+        return;
+    check(db.execAndGet("SELECT count(*) FROM mixer_strip WHERE track_id=30 AND volume_db=-6 AND pan=0.25 "
+                        "AND input_gain_db=0 AND pan_law=1 AND width=0.8 AND phase_invert=1 AND delay_samples=11 "
+                        "AND vca_group_id=43").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM mixer_pan_settings WHERE track_id=30 AND mode='split' "
+                            "AND pan_left=-0.5 AND pan_right=0.75").getInt() == 1,
+          "the rendered sibling retains live mixer settings and does not reapply baked input gain");
+    check(db.execAndGet("SELECT count(*) FROM routing WHERE src_id=30 AND kind='send' AND id>83 AND dst_id=42").getInt() == 2 &&
+              db.execAndGet("SELECT count(*) FROM routing JOIN routing_send_taps ON routing_id=routing.id "
+                            "WHERE src_id=30 AND gain_db=-12 AND pan=0.1 AND ord=2 AND pre_fader=1 AND tap='post_fx'").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM routing WHERE src_id=30 AND kind='send' AND gain_db=-19 AND enabled=0").getInt() == 1,
+          "outgoing sends receive distinct IDs and keep their gain, pan, tap and enabled state");
+    check(db.execAndGet("SELECT muted FROM tracks WHERE id=21").getInt() == 0 &&
+              db.execAndGet("SELECT muted FROM clips WHERE id=7").getInt() == 1,
+          "the original clip is muted and the track remains active for later clips");
+    const auto after = hear(p, "wet-after", engine::Precision::Float32, &options.job);
+    bool matches = before.size() == after.size() && !before.empty();
+    for (std::size_t i = 0; i < after.size() && matches; ++i)
+        matches = std::abs(before[i] - after[i]) < 1e-7f;
+    check(matches, "bounce playback nulls with the original including a nonzero strip delay and post-FX send");
+    check(History(store).undo().ok && digestProject(store).text == state,
+          "one Undo restores the original clips, strip and routes");
+}
+void frozenWetCopy() {
+    Project p;
+    auto &store = *p.store;
+    render::FreezeCaptureSpec spec;
+    spec.tracks = {21};
+    spec.endSample = 1200;
+    spec.session = p.options().job.session;
+    spec.documentGeneration = 7;
+    auto captured = render::captureFreezeAudio(store, spec, loader());
+    check(captured.ready(), captured.error().empty() ? "source freeze renders" : captured.error().c_str());
+    if (!captured.ready())
+        return;
+    auto frozen = freeze::prepareFreeze(store, std::move(captured), 7, 90);
+    const auto frozenCommit = freeze::commitFreeze(store, frozen, 7);
+    check(frozenCommit.ok, frozenCommit.error.empty() ? "source is frozen with a verified cache" : frozenCommit.error.c_str());
+    if (!frozenCommit.ok)
+        return;
+    auto options = p.options();
+    options.copyMixerSettings = true;
+    options.job.beginSample = 0;
+    options.job.endSample = spec.endSample;
+    const auto before = hear(p, "frozen-before", engine::Precision::Float32, &options.job);
+    const auto state = digestProject(store).text;
+    processed = 0;
+    auto prepared = clip_edit::prepareBounceToNewTrack(store, options, loader());
+    check(prepared.ready() && processed == 0,
+          prepared.error().empty() ? "the frozen bounce reads the verified wet file without loading DSP" : prepared.error().c_str());
+    if (!prepared.ready())
+        return;
+    const auto result = clip_edit::commitTrackBounce(store, prepared, 7);
+    check(result.ok, result.error.empty() ? "the original cache and new bounced track coexist" : result.error.c_str());
+    if (!result.ok)
+        return;
+    const auto after = hear(p, "frozen-after", engine::Precision::Float32, &options.job);
+    check(before == after && !before.empty() && processed == 0, "new audio matches frozen playback without rerunning the frozen effect");
+    check(History(store).undo().ok && digestProject(store).text == state, "one Undo restores the frozen source's hearing state");
 }
 void inPlace() {
     for (const auto precision :
@@ -244,6 +335,28 @@ void inPlace() {
                   db.execAndGet("SELECT enabled FROM devices WHERE id=1").getInt() == 0,
               "in-place redo restores immutable render without rerunning source DSP");
     }
+    Project sourceMidi;
+    auto &midiDb = sourceMidi.store->db();
+    midiDb.exec("UPDATE tracks SET kind='midi' WHERE id=21;"
+                "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(1,'saved',0.75);");
+    const auto midiState = digestProject(*sourceMidi.store).text;
+    clip_edit::InPlaceBounceOptions replace;
+    replace.sourceTrack = 21;
+    replace.clipId = 31;
+    replace.mediaId = 32;
+    replace.documentGeneration = 7;
+    replace.job = sourceMidi.options().job;
+    replace.job.beginSample = 0;
+    replace.job.endSample = 1024;
+    replace.replaceDevices = true;
+    auto replaced = clip_edit::prepareBounceInPlace(*sourceMidi.store, replace, loader());
+    const auto replacedResult = clip_edit::commitTrackBounce(*sourceMidi.store, replaced, 7);
+    check(replacedResult.ok && midiDb.execAndGet("SELECT kind FROM tracks WHERE id=21").getString() == "audio" &&
+              midiDb.execAndGet("SELECT count(*) FROM devices WHERE id=1").getInt() == 0,
+          replacedResult.error.empty() ? "Bounce in Place can convert MIDI to audio and remove baked devices" : replacedResult.error.c_str());
+    if (replacedResult.ok)
+        check(History(*sourceMidi.store).undo().ok && digestProject(*sourceMidi.store).text == midiState,
+              "one Undo restores the MIDI track and removed device with its state");
     Project restricted;
     clip_edit::InPlaceBounceOptions options;
     options.sourceTrack = 21;
@@ -306,6 +419,8 @@ void failureRecovery() {
 int main() {
     try {
         command();
+        wetCopy();
+        frozenWetCopy();
         inPlace();
         failureRecovery();
     } catch (const std::exception &error) {

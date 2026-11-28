@@ -177,7 +177,9 @@ void appendProposal(Proposal &to, Proposal &&from) {
     for (auto &rows : from.rowSetGuards)
         to.rowSetGuards.push_back(std::move(rows));
     if (from.presentationImage) {
-        if (to.presentationImage && to.presentationImage->image != from.presentationImage->image)
+        if (to.presentationImage && to.presentationImage->image != from.presentationImage->image &&
+            (!to.presentationImage->image || !from.presentationImage->image ||
+             *to.presentationImage->image != *from.presentationImage->image))
             throw std::runtime_error("relative scalar child presentation images differ");
         to.presentationImage = std::move(from.presentationImage);
     }

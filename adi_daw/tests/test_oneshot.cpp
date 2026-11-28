@@ -204,6 +204,75 @@ void parameterModulation() {
     for (float& sample : plant) sample *= .9f;
     check(!matches(plant, expected), "modulation oracle rejects a gain error");
 }
+void midiControllers() {
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    constexpr auto expression = engine::EventType::NoteExpression;
+    constexpr auto cc = engine::EventType::Controller;
+    constexpr auto on = engine::EventType::NoteOn;
+    constexpr auto off = engine::EventType::NoteOff;
+    auto renderEvents = [](OneShot &d, std::span<const engine::Event> events) {
+        d.release();
+        d.prepare(48000, 256);
+        std::array<float, 256> left{}, right{};
+        float *output[]{left.data(), right.data()};
+        engine::NodeIo io{};
+        io.out = output;
+        io.channels = 2;
+        io.frames = static_cast<int>(left.size());
+        io.events = {events.data(), static_cast<std::int32_t>(events.size())};
+        allocations = 0;
+        audit = true;
+        d.process(io);
+        audit = false;
+        check(allocations == 0, "controller rendering allocates nothing");
+        return left;
+    };
+    OneShot d;
+    configure(d);
+    check(d.publishSample(std::vector<float>(2048, .5f), 1, 48000), "pedal sample publishes");
+    const engine::Event pedal[]{
+        {0, on, 1, 60, 1, 0, 1}, {0, on, 2, 62, 2, 0, 1},
+        {16, cc, 1, 0, 0, 64, 1},
+        {32, off, 1, 60, 1, 0, 0}, {32, off, 2, 62, 2, 0, 0},
+        {64, cc, 2, 0, 0, 64, 0}, {160, cc, 1, 0, 0, 64, 0},
+    };
+    const auto sustained = renderEvents(d, pedal);
+    check(sustained[24] == 1.f && sustained[96] == .5f && sustained[159] == .5f &&
+              sustained[160] > 0.f && sustained[160] < .5f && sustained[240] == 0.f,
+          "CC64 keeps only its channel's key-up voice and then starts its release");
+    set(d, OneShot::Mode, 1);
+    set(d, OneShot::Gate, 0);
+    const auto triggered = renderEvents(d, pedal);
+    check(triggered[240] == .5f, "one-shot trigger ignores key-up and pedal-up");
+    set(d, OneShot::Gate, 1);
+    const auto gated = renderEvents(d, pedal);
+    check(gated[240] == 0.f, "one-shot gate still releases when its key goes up");
+    set(d, OneShot::Mode, 0);
+
+    std::vector<float> ramp(2048);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+        ramp[i] = static_cast<float>(i) / 2048.f;
+    check(d.publishSample(std::move(ramp), 1, 48000), "pitch and modulation ramp publishes");
+    const engine::Event bends[]{
+        {0, expression, 1, pitch, 0, 0, 12}, {0, on, 1, 60, 3, 0, 1},
+        {8, expression, 2, pitch, 0, 0, -12}, {16, expression, 1, pitch, 3, 0, 12},
+        {24, expression, 1, pitch, 0, 0, 0},
+    };
+    const auto bent = renderEvents(d, bends);
+    check(bent[16] == 32.f / 2048 && bent[17] == 36.f / 2048 && bent[25] == 66.f / 2048,
+          "channel semitones affect future and active voices alongside per-note pitch expression");
+    set(d, OneShot::LfoOn, 1);
+    set(d, OneShot::LfoShape, 1);
+    set(d, OneShot::LfoPitch, 12);
+    const engine::Event wheel[]{
+        {0, cc, 1, 0, 0, 1, 0}, {0, on, 1, 60, 4, 0, 1},
+        {8, cc, 2, 0, 0, 1, 1}, {16, cc, 1, 0, 0, 1, 1},
+    };
+    const auto modulated = renderEvents(d, wheel);
+    check(modulated[15] == 15.f / 2048 && modulated[16] == 16.f / 2048 &&
+              modulated[17] == 18.f / 2048,
+          "CC1 scales the authored LFO depth at the event frame on its own channel");
+}
 void preparedSamples() {
     std::vector<float> original(1024, .25f);
     const auto a = OneShot::prepareSample(original, 1, 48000);
@@ -444,6 +513,7 @@ int main() {
     sliceKeys();
     liveDefaults();
     parameterModulation();
+    midiControllers();
     preparedSamples();
     pdMidi();
     test::TempDirectory dir{"oneshot", "render"};

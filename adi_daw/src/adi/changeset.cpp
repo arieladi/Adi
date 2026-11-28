@@ -53,6 +53,10 @@ Refusal screen(const Changeset& cs, const Limits& limits, std::string& error) {
             error = "'" + q.opType + "' is not an op the agent may emit";
             return Refusal::OpNotAllowed;
         }
+        if (!agentMayEmitPayload(q.opType, q.payload)) {
+            error = "the agent may not write a marker prompt";
+            return Refusal::OpNotAllowed;
+        }
         const auto* d = OpRegistry::instance().find(q.opType);
         const auto issues = validateSubmission(*d, q.payload);
         if (!issues.empty()) {
@@ -75,6 +79,45 @@ Refusal checkHead(const Store& store, const Changeset& cs, std::string& error) {
         return Refusal::Stale;
     }
     return Refusal::None;
+}
+
+// Track the writes rather than inferring a clip from its op's name or
+// comparing the final projections. A parent delete can cascade into clips,
+// note edits write a stream, and one op can undo an earlier op's effect.
+void trackClipWrites(SQLite::Database& db) {
+    db.exec("CREATE TEMP TABLE adi_agent_touched_clips(id INTEGER PRIMARY KEY)");
+    for (const std::string_view table : {"clips", "clip_properties", "clip_playback_details",
+                                         "clip_warp_fade_domains", "event_streams", "note_expression",
+                                         "audio_clips", "automation_lanes", "automation_data",
+                                         "automation_segment_ranges"}) {
+        const auto record = [table](std::string_view row) {
+            const std::string column = std::string(row) + ".";
+            std::string id = column + "clip_id";
+            if (table == "clips") {
+                id = column + "id";
+            } else if (table == "automation_lanes") {
+                id = "CASE WHEN " + column + "owner_kind = 'clip' THEN " + column + "owner_id END";
+            } else if (table == "automation_data") {
+                id = "COALESCE(" + id + ", (SELECT owner_id FROM automation_lanes WHERE id = " +
+                     column + "lane_id AND owner_kind = 'clip'))";
+            } else if (table == "automation_segment_ranges") {
+                id = "COALESCE(" + id + ", (SELECT COALESCE(d.clip_id, l.owner_id) FROM automation_data d "
+                     "LEFT JOIN automation_lanes l ON l.id = d.lane_id AND l.owner_kind = 'clip' "
+                     "WHERE d.id = " + column + "data_id))";
+            }
+            return "INSERT INTO adi_agent_touched_clips SELECT touched.id FROM (SELECT " + id +
+                   " AS id) touched WHERE touched.id IS NOT NULL AND NOT EXISTS "
+                   "(SELECT 1 FROM adi_agent_touched_clips WHERE id = touched.id); ";
+        };
+
+        const std::string before = record("OLD");
+        const std::string after = record("NEW");
+        const std::string trigger = "CREATE TEMP TRIGGER adi_agent_clip_impact_" + std::string(table);
+        const std::string onTable = " ON main." + std::string(table) + " BEGIN ";
+        db.exec(trigger + "_insert AFTER INSERT" + onTable + after + "END");
+        db.exec(trigger + "_update AFTER UPDATE" + onTable + before + after + "END");
+        db.exec(trigger + "_delete BEFORE DELETE" + onTable + before + "END");
+    }
 }
 
 /// What the review list says an op targets. The caller's own target wins;
@@ -313,6 +356,7 @@ bool agentMayEmit(std::string_view opType) {
     // Project edits only: transport is performance and hardware is the user's
     // desk, and neither belongs in a changeset the user reviews as a diff.
     if (d->scope != Scope::Edit || d->ephemeral) return false;
+    if (opType == "marker.setPrompt") return false;  // ADR-0261 d8
     // §6.4: the agent may change a REFERENCE, never a file. `media.unlink`
     // removes a row and leaves the disk alone, `media.relink` repoints one.
     // `media.import` is refused: it records a file a caller has hashed from
@@ -327,6 +371,29 @@ bool agentMayEmit(std::string_view opType) {
     for (const std::string_view internal : {"automation.restoreLane", "automation.restoreData",
                                             "cc.restoreStream", "note.restoreNotes", "track.restoreRecording"})
         if (opType == internal) return false;
+    return true;
+}
+
+bool agentMayEmitPayload(std::string_view opType, const Payload& payload) {
+    if (opType == "marker.create") return !payload.contains("prompt");
+    if (opType != "arranger.splice") return true;
+    const auto changes = payload.find("changes");
+    if (changes == payload.end() || !changes->is_array()) return true;
+    for (const auto& change : *changes) {
+        const auto table = change.find("table");
+        const auto after = change.find("after");
+        if (table == change.end() || *table != "marker_details" ||
+            after == change.end() || !after->is_object())
+            continue;
+        const auto prompt = after->find("prompt");
+        if (prompt == after->end()) continue;  // incomplete row fails op validation
+        const auto before = change.find("before");
+        if (before == change.end() || !before->is_object()) {
+            if (*prompt != "") return false;
+        } else if (!before->contains("prompt") || before->at("prompt") != *prompt) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -361,6 +428,11 @@ Preview preview(Store& store, const Changeset& cs, const Limits& limits) {
         // is not written and nothing is logged; what the user reviews is what
         // Apply will do, computed by the same handlers.
         SQLite::Transaction scratch(db);
+        std::int64_t clipsBefore = 0;
+        if (limits.measureClipImpact) {
+            clipsBefore = db.execAndGet("SELECT COUNT(*) FROM main.clips").getInt64();
+            trackClipWrites(db);
+        }
         for (const auto& q : cs.ops) {
             const auto* d = OpRegistry::instance().find(q.opType);
             std::optional<Payload> inverse;
@@ -384,6 +456,12 @@ Preview preview(Store& store, const Changeset& cs, const Limits& limits) {
         rows::Model after = rows::readModel(store);
         dropReadTransactionNote(after);
         p.textAfter = textproj::project(textproj::buildTree(after)).text;
+        if (limits.measureClipImpact) {
+            const auto touched = db.execAndGet("SELECT COUNT(*) FROM temp.adi_agent_touched_clips").getInt64();
+            // Count distinct touched IDs, including insertions. Integer division
+            // implements the exact strict threshold without multiplying counts.
+            p.bulkClipEdit = touched > clipsBefore / 5;
+        }
     } catch (const std::exception& e) {
         p.refusal = Refusal::Invalid;
         p.error = e.what();
@@ -445,7 +523,7 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
             }
         };
         OpJournal journal(store);
-        const CommitResult res = journal.commit(reqs, options);   // ONE transaction (§6.2)
+        CommitResult res = journal.commit(reqs, options);   // ONE transaction (§6.2)
         if (res.stale) {
             const auto show = [](std::optional<std::int64_t> s) {
                 return s ? std::to_string(*s) : std::string("the root");
@@ -463,6 +541,7 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
         }
         r.ok = true;
         r.txnId = res.txnId;
+        r.seqs = std::move(res.seqs);
         return r;
     } catch (const std::exception& e) {
         r.refusal = Refusal::Invalid;

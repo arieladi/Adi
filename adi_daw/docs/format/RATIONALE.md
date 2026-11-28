@@ -148,9 +148,10 @@ or copies it off a card mid-session, loses everything since the last checkpoint 
 and the file will open *cleanly*, just old, which is considerably worse than an
 error.
 
-Policy, specified rather than left to the implementer: WAL while the project is
-open, **checkpoint + `journal_mode=DELETE` on clean close**, so a closed `.adi`
-is always exactly one self-contained file. See SPEC §3.3.
+Local projects use WAL while open and switch to `journal_mode=DELETE` after a
+checkpoint on clean close. Projects on recognized sync folders and network
+volumes use a rollback journal so each commit reaches the main file immediately.
+See SPEC §3.2–3.3.
 
 ### 5.3 The op log is not just undo — it is the AI agent's entire safety model
 

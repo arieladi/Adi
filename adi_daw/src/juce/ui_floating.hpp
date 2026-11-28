@@ -59,9 +59,12 @@ class FloatingHost {
                 juce::Rectangle<int> first = {});
     // `scaled`: an ADI view zooms with Ctrl/Cmd + and - (N4); a plug-in's own window opens at the
     // plug-in's size and is never scaled (parity-7.5 row 10).
+    // `userResizable` (SC-328): a plug-in's window the user resizes from its edges, when the plug-in can
+    // be resized. Set as the window is made: changing it afterwards recreates the native window, which
+    // destroys a CLAP editor's native view with it (SC-322).
     bool openView(const std::string &key, std::int64_t device, std::unique_ptr<juce::Component>,
                   std::function<void(const SnapshotReader &)> frame = {}, bool scaled = true,
-                  std::string title = {});
+                  std::string title = {}, bool userResizable = false);
     // Closed at the next collect(), hidden at once: safe from inside the window's own frame.
     void requestClose(const std::string &key);
     bool contains(const std::string &key) const { return entries_.contains(key); }
@@ -71,6 +74,16 @@ class FloatingHost {
     bool shown(const std::string &key) const;
     void setAlwaysOnTop(const std::string &key, bool onTop);
     bool alwaysOnTop(const std::string &key) const;
+    // SC-313: "on top" for an owned window (a plug-in's, a device's view) means above ADI's own window,
+    // never above the other programs. On Windows the owner is made the window's native owner, which keeps
+    // it above that window, minimises it with it, and lets another program's window come in front of
+    // both; JUCE's always-on-top is topmost on the whole desktop. True when it was done natively; false
+    // elsewhere (no native window here, or not Windows), where the caller keeps JUCE's own.
+    static bool floatAboveOwner(juce::Component &window, juce::Component *owner, bool on);
+    // What the desktop says of a window, for tests: its native owner is `owner`'s window; it is topmost
+    // on the whole desktop. False where there is no native window or the platform is not Windows.
+    static bool nativelyOwnedBy(juce::Component &window, juce::Component &owner);
+    static bool nativelyTopmost(juce::Component &window);
     // The keys open under `prefix`, in key order.
     std::vector<std::string> keys(const std::string &prefix) const;
     void frame(const std::string &key); // per-window attachment; public for deterministic tests

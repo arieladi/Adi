@@ -24,7 +24,12 @@ namespace {
 thread_local bool audioCall = false, ownerService = false;
 std::size_t audioAllocations = 0, audioDeallocations = 0, serviceAllocations = 0;
 } // namespace
-void *operator new(std::size_t bytes) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t bytes) {
     if (audioCall)
         ++audioAllocations;
     if (ownerService)
@@ -33,15 +38,16 @@ void *operator new(std::size_t bytes) {
         return memory;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t bytes) { return ::operator new(bytes); }
-void operator delete(void *memory) noexcept {
+ADI_TEST_NOINLINE void *operator new[](std::size_t bytes) { return ::operator new(bytes); }
+ADI_TEST_NOINLINE void operator delete(void *memory) noexcept {
     if (audioCall && memory)
         ++audioDeallocations;
     std::free(memory);
 }
-void operator delete[](void *memory) noexcept { ::operator delete(memory); }
-void operator delete(void *memory, std::size_t) noexcept { ::operator delete(memory); }
-void operator delete[](void *memory, std::size_t) noexcept { ::operator delete(memory); }
+ADI_TEST_NOINLINE void operator delete[](void *memory) noexcept { ::operator delete(memory); }
+ADI_TEST_NOINLINE void operator delete(void *memory, std::size_t) noexcept { ::operator delete(memory); }
+ADI_TEST_NOINLINE void operator delete[](void *memory, std::size_t) noexcept { ::operator delete(memory); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 namespace chain = adi::mix::eq_chain;

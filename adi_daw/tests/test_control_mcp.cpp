@@ -22,6 +22,7 @@
 
 #include "adi/changeset.hpp"
 #include "adi/control/headless_project.hpp"
+#include "adi/control/jobs.hpp"
 #include "adi/control/mcp.hpp"
 #include "adi/control/methods.hpp"
 #include "adi/control/stdio_server.hpp"
@@ -887,14 +888,21 @@ void testResources() {
 /// app host (CTL-09) will provide.
 class LiveProject final : public ProjectAccess {
 public:
-    LiveProject(std::shared_ptr<HeadlessProject> inner, const TelemetryBoard& board)
-        : inner_(std::move(inner)), board_(board) {}
+    LiveProject(std::shared_ptr<HeadlessProject> inner, const TelemetryBoard& board, Store* writer = nullptr)
+        : inner_(std::move(inner)), board_(board), writer_(writer) {}
     const std::string& handle() const override { return inner_->handle(); }
     std::string label() const override { return inner_->label(); }
     ReadSnapshot read(std::string& e) override { return inner_->read(e); }
     std::optional<std::int64_t> head(std::string& e) override { return inner_->head(e); }
     std::string fileSchema() override { return inner_->fileSchema(); }
-    agent::Preview preview(const agent::Changeset& c, const agent::Limits& l) override { return inner_->preview(c, l); }
+    agent::Preview preview(const agent::Changeset& c, const agent::Limits& l) override {
+        return writer_ ? agent::preview(*writer_, c, l) : inner_->preview(c, l);
+    }
+    std::optional<Tier> agentTierOverride() override { return inner_->agentTierOverride(); }
+    bool allowsAutomaticApply() const override { return writer_ != nullptr; }
+    agent::ApplyResult applyChangeset(const agent::Changeset& c, const agent::Limits& l) override {
+        return writer_ ? agent::apply(*writer_, c, l) : ProjectAccess::applyChangeset(c, l);
+    }
     bool wasApplied(const std::string& a) override { return inner_->wasApplied(a); }
     bool live() const override { return true; }
     std::shared_ptr<const TelemetryFrame> telemetry() const override { return board_.latest(); }
@@ -903,7 +911,130 @@ public:
 private:
     std::shared_ptr<HeadlessProject> inner_;
     const TelemetryBoard& board_;
+    Store* writer_;
 };
+
+void testApplyBoundary() {
+    section("AGT-09 and DF-C6: project and run boundaries, idempotency and the Apply cap");
+    ProjectFile file("apply_policy");
+    StoreError error = StoreError::Ok;
+    auto writer = Store::open(file.path, error, false);
+    if (!writer) throw std::runtime_error("fixture: cannot open the project writer");
+    TelemetryBoard board;
+    Bridge bridge(std::make_shared<LiveProject>(openHeadless(file.path), board, writer.get()), Tier::Apply);
+    const Principal who{bridge.session.credential, "ADI agent"};
+    const Principal other{"another-credential", "ADI agent"};
+    bridge.grants.grant(other.credential, Tier::Apply);
+    std::int64_t now = 100;
+    Tier app = Tier::Propose;
+    bridge.ctx.steadyMs = [&] { return now; };
+    bridge.ctx.appTier = [&] { return app; };
+    bridge.ctx.maxOpsPerMinute = [] { return std::size_t{1}; };
+    OpJournal journal(*writer);
+    const auto head = [&] {
+        const auto current = journal.headSeq();
+        return current ? Json(*current) : Json(nullptr);
+    };
+    const auto volume = [](const Json& base, double db) {
+        return Json{{"baseHead", base}, {"request", "Lower the bass"},
+                    {"ops", Json::array({{{"op", "mixer.setVolume"},
+                                          {"payload", {{"id", 3}, {"db", db}}}}})}};
+    };
+    const auto call = [&](const Principal& caller, const Json& args, RequestMeta meta = {}) {
+        Outcome out;
+        bridge.service.call(caller, "changeset.propose", args, meta,
+                            [&](Outcome result) { out = std::move(result); });
+        return out;
+    };
+    const auto waiting = [](const Outcome& out) {
+        return !out.error && out.result.value("status", "") == "awaiting_review";
+    };
+    const auto applied = [](const Outcome& out) {
+        return !out.error && out.result.value("status", "") == "applied";
+    };
+
+    const auto start = head();
+    check(waiting(call(who, volume(start, -1))) && head() == start, "the app tier caps the grant");
+    app = Tier::Apply;
+    check(setProjectAgentTier(*writer, Tier::Propose) && readProjectAgentTier(*writer) == Tier::Propose,
+          "the project override lives in session state");
+    RequestMeta queuedKey;
+    queuedKey.idempotencyKey = "downgrade";
+    check(waiting(call(who, volume(start, -2), queuedKey)) && head() == start,
+          "the project's Propose cap wins over app Apply");
+    check(setProjectAgentTier(*writer, Tier::Observe), "the user lowers the project tier to Observe");
+    const auto replay = call(who, volume(start, -2), queuedKey);
+    check(replay.error && replay.error->code == errc::NotGranted && head() == start,
+          "Observe refuses a proposal even when cached under that request key");
+    check(setProjectAgentTier(*writer, std::nullopt), "the user clears the project cap");
+
+    RequestMeta marker;
+    marker.runOrigin = RunOrigin::MarkerPrompt;
+    check(waiting(call(who, volume(start, -3), marker)) && head() == start,
+          "a marker run waits even in a project that allows immediate Apply");
+    RequestMeta external;
+    external.runPolicy = std::make_shared<RunPolicy>(true);
+    check(waiting(call(who, volume(start, -4), external)) && head() == start,
+          "a run with egress waits for review");
+
+    RequestMeta firstKey;
+    firstKey.idempotencyKey = "first-apply";
+    const auto firstArgs = volume(start, -5);
+    const auto first = call(who, firstArgs, firstKey);
+    check(applied(first) && head() != start, "an untainted Apply commits in one transaction");
+    const auto firstHead = head();
+    const auto retry = call(who, firstArgs, firstKey);
+    check(!retry.error && retry.result == first.result && head() == firstHead,
+          "retry replays the applied result and leaves the head alone");
+    RequestMeta secondKey;
+    secondKey.idempotencyKey = "second-apply";
+    const auto secondArgs = volume(firstHead, -6);
+    const auto over = call(who, secondArgs, secondKey);
+    check(over.error && over.error->code == errc::OverLimit && head() == firstHead,
+          "the second op in the same minute is refused without writing");
+    now += 59'999;
+    const auto early = call(who, secondArgs, secondKey);
+    check(early.error && early.error->code == errc::OverLimit, "the window is rolling");
+    ++now;
+    check(applied(call(who, secondArgs, secondKey)), "a rate refusal can retry when capacity returns");
+    check(applied(call(other, volume(head(), -7))), "another credential has its own budget");
+
+    for (int id = 1; id <= 5; ++id) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", id}, {"track", 1}, {"kind", "midi"},
+                        {"name", "Clip"}, {"pos", id * 100}, {"length", 50}};
+        check(journal.commit(clip).ok, "create a clip for the bulk threshold");
+    }
+    const auto bulkHead = head();
+    Json bulk = {{"baseHead", bulkHead}, {"request", "Remove two clips"},
+                 {"ops", Json::array({{{"op", "clip.delete"}, {"payload", {{"id", 1}}}},
+                                       {{"op", "clip.delete"}, {"payload", {{"id", 2}}}}})}};
+    check(waiting(call(who, bulk)) && head() == bulkHead,
+          "touching more than 20 percent queues even when outstanding rate capacity is zero");
+
+    writer->db().exec("INSERT INTO remarks(id,target_kind,target_id,author,text,created_utc) "
+                      "VALUES(1,'track',3,'user','Change the bass',0)");
+    const auto remarksHead = head();
+    RequestMeta ownRun;
+    ownRun.runPolicy = std::make_shared<RunPolicy>(false);
+    bridge.service.call(who, "project.read", {{"level", 1}}, ownRun, [](Outcome) {});
+    check(ownRun.runPolicy->readRemarks.load() && waiting(call(who, volume(remarksHead, -8), ownRun)) &&
+              head() == remarksHead, "returning a remark taints the host-owned run");
+    bridge.grants.grant(other.credential, Tier::Propose);
+    bridge.service.call(other, "project.read", {{"level", 1}}, {}, [](Outcome) {});
+    bridge.grants.grant(other.credential, Tier::Apply);
+    check(waiting(call(other, volume(remarksHead, -9))) && head() == remarksHead,
+          "a client that received remarks at Propose stays tainted after an Apply grant");
+
+    RequestMeta diffRun;
+    diffRun.runPolicy = std::make_shared<RunPolicy>(false);
+    app = Tier::Propose;
+    Json remarkRemoval = {{"baseHead", remarksHead}, {"request", "Remove the old remark"},
+                          {"ops", Json::array({{{"op", "remark.remove"}, {"payload", {{"id", 1}}}}})}};
+    check(waiting(call(who, remarkRemoval, diffRun)) && diffRun.runPolicy->readRemarks.load(),
+          "remarks shown in a preview also taint the run that received it");
+}
 
 void testTelemetry() {
     section("telemetry: what the engine already publishes, labelled honestly");
@@ -1238,6 +1369,51 @@ void setHome(const fs::path& p) {
 #endif
 }
 
+void testHeadlessApplyBinary() {
+    section("adi_tool propose: preview an open project, apply only when closed");
+    ProjectFile file("headless_apply");
+    StoreError error{};
+    auto editor = Store::open(file.path, error);
+    check(editor != nullptr, "the app's Store opens the test project");
+    if (!editor) return;
+    const auto head = OpJournal(*editor).headSeq();
+    const auto bytes = fileBytes(file.path);
+    const auto changeset = file.temp.path() / "changeset.json";
+    const auto log = file.temp.path() / "propose.log";
+    {
+        std::ofstream out(changeset, std::ios::binary);
+        out << dumpJson({{"request", "Rename the song"},
+                         {"baseHead", head ? Json(*head) : Json(nullptr)},
+                         {"ops", Json::array({{{"op", "project.setName"},
+                                                {"payload", {{"name", "After Apply"}}}}})}});
+        if (!out) throw std::runtime_error("cannot write the changeset fixture");
+    }
+    const auto propose = [&](bool apply) {
+        auto command = quote(fs::path(ADI_TOOL_PATH)) + " propose " + quote(file.path) + " " + quote(changeset);
+        if (apply) command += " --apply";
+        command += " > " + quote(log) + " 2>&1";
+#if defined(_WIN32)
+        command = "\"" + command + "\"";
+#endif
+        return std::system(command.c_str());
+    };
+
+    check(propose(false) == 0 && fileBytes(log).find("not applied") != std::string::npos &&
+              fileBytes(file.path) == bytes && OpJournal(*editor).headSeq() == head,
+          "preview reads a snapshot without writing the active project");
+    check(propose(true) != 0 && fileBytes(log).find("exclusive access") != std::string::npos &&
+              OpJournal(*editor).headSeq() == head &&
+              editor->db().execAndGet("SELECT name FROM project").getString() == "Song",
+          "Apply refuses an open project without moving its head or changing its name");
+    editor.reset();
+
+    check(propose(true) == 0, "the same headless Apply succeeds after the editor closes");
+    const auto saved = Store::open(file.path, error, true);
+    check(saved && OpJournal(*saved).headSeq() != head &&
+              saved->db().execAndGet("SELECT name FROM project").getString() == "After Apply",
+          "the authorized Apply changes the persisted name and advances the head");
+}
+
 void testBinary() {
     section("adi-mcp, the binary, over pipes");
     ProjectFile f("binary");
@@ -1307,10 +1483,149 @@ void testBinary() {
     }
 }
 
+void testMarkerRunWaitsForReview() {
+    section("ADR-0261 d8: marker runs carry a mandatory review requirement");
+    ProjectFile file("marker_run");
+    Bridge bridge(openHeadless(file.path), Tier::Apply);
+    bridge.initialize();
+    const auto head = bridge.head();
+    const Json args = {{"baseHead", head}, {"request", "Lower the bass"},
+                       {"ops", Json::array({{{"op", "mixer.setVolume"},
+                                             {"payload", {{"id", 3}, {"db", -6.0}}}}})}};
+    const Principal who{bridge.session.credential, "ADI agent"};
+    for (const Tier tier : {Tier::Observe, Tier::Propose, Tier::Apply}) {
+        bridge.grants.grant(who.credential, tier);
+        RequestMeta meta;
+        meta.runOrigin = RunOrigin::MarkerPrompt;
+        meta.idempotencyKey = std::string(toString(tier));
+        Outcome outcome;
+        bridge.service.call(who, "changeset.propose", args, meta,
+                            [&](Outcome result) { outcome = std::move(result); });
+        if (tier == Tier::Observe) {
+            check(outcome.error && outcome.error->code == errc::NotGranted && bridge.queue.size() == 0,
+                  "Observe cannot emit an edit, including from a marker");
+            continue;
+        }
+        check(!outcome.error && outcome.result.value("status", "") == "awaiting_review",
+              std::string(toString(tier)) + " queues edits from a marker run");
+        const auto entry = bridge.queue.find(outcome.result.value("id", ""), who.credential);
+        check(entry && entry->requiresReview && entry->state == Review::AwaitingReview,
+              "mandatory review is retained in the queued proposal");
+        meta.runOrigin = RunOrigin::Direct;
+        bridge.service.call(who, "changeset.propose", args, meta,
+                            [&](Outcome result) { outcome = std::move(result); });
+        check(outcome.error && outcome.error->code == errc::InvalidParams,
+              "the same key cannot be replayed with a different run origin");
+    }
+    check(bridge.head() == head, "the marker-triggered edit leaves the project head alone");
+    RpcError error;
+    check(!parseMeta({{"runOrigin", "direct"}}, error), "wire metadata cannot set run origin");
+
+    const auto details = bridge.tool("ops_describe", {{"names", {"marker.setPrompt", "marker.create"}}});
+    const auto& ops = details.at("structuredContent").at("ops");
+    check(!ops.at(0).at("agentMayEmit").get<bool>() && ops.at(1).at("agentMayEmit").get<bool>() &&
+              !ops.at(1).at("inputSchema").at("properties").contains("prompt"),
+          "the advertised schemas reserve prompt authoring for the user");
+}
+
+void testProjectReadConsent() {
+    section("AGT-03: an external project read asks locally and uses a one-time grant");
+    ProjectFile file("consent_gate");
+    Bridge bridge(openHeadless(file.path));
+    ConsentLedger ledger(file.temp.path() / "consent" / "ledger.json");
+    bridge.ctx.consentLedger = &ledger;
+    std::vector<ConsentRequest> questions;
+    bridge.ctx.askConsent = [&](ConsentRequest request) { questions.push_back(std::move(request)); };
+    const Principal who{bridge.session.credential, "ADI agent"};
+    RequestMeta meta;
+    meta.readDestination = std::make_shared<ConsentDestination>(
+        ConsentDestination{"trusted external pairing", "http://127.0.0.1:9999", true});
+    const auto read = [&] {
+        Outcome out;
+        bridge.service.call(who, "project.read", {{"level", 1}}, meta,
+                            [&](Outcome result) { out = std::move(result); });
+        return out;
+    };
+
+    const auto refused = read();
+    check(refused.error && refused.error->code == errc::ConsentRequired &&
+              refused.result.is_null() && refused.error->data.is_null(),
+          "an external MCP host gets no project data until it is granted, even over loopback");
+    check(questions.size() == 1 && !questions.front().projectUuid.empty(),
+          "the engine posts a question for the real project UUID");
+    if (questions.empty()) return;
+    const auto& data = questions.front().data;
+    const auto hasKind = [&](ConsentData kind) {
+        return std::any_of(data.begin(), data.end(), [&](const ConsentItem& item) {
+            return item.kind == kind && item.bytes > 0;
+        });
+    };
+    check(hasKind(ConsentData::TrackNames) && hasKind(ConsentData::Parameters) &&
+              !hasKind(ConsentData::Audio),
+          "the question measures scoped track and parameter data without offering audio");
+    check(ledger.grant(questions.front(), ConsentTerm::ThisTime, kT0 / 1'000'000),
+          "the local user can approve the question once");
+    const auto allowed = read();
+    check(!allowed.error && allowed.result.at("tracks").size() == 3,
+          "the retry receives the three tracks after the local approval");
+    const auto consumed = read();
+    check(consumed.error && consumed.error->code == errc::ConsentRequired && questions.size() == 2,
+          "the next read asks again after the one-time grant is consumed");
+
+    meta.readDestination = std::make_shared<ConsentDestination>(
+        ConsentDestination{"local provider", "http://127.0.0.1:9999", false});
+    check(!read().error && questions.size() == 2, "a loopback provider needs no disclosure");
+    RpcError wireError;
+    check(!parseMeta({{"readDestination", "localhost"}}, wireError),
+          "the client's wire data cannot declare its own consent destination");
+}
+
+void testJobTools() {
+    section("AGT-04: MCP job status, events and cancellation are owner scoped");
+    GrantTable grants;
+    Service service(inlineExecutor(), grants);
+    ProjectSet projects;
+    ChangesetQueue queue;
+    ControlContext ctx{projects, queue, agent::Limits{}, [] { return kT0; }, {}, "adi", "test", "adi-mcp"};
+    JobBook jobs;
+    ctx.jobs = &jobs;
+    registerControlMethods(service, ctx);
+    McpEndpoint endpoint(service, projects, {"adi", "ADI", "test"});
+    McpEndpoint::Session owner;
+    owner.credential = "owner";
+    McpEndpoint::Session another;
+    another.credential = "another";
+    grants.grant(owner.credential, Tier::Observe);
+    grants.grant(another.credential, Tier::Apply);
+    const auto queued = jobs.enqueue(owner.credential, {"analysis", "project", JobRevisionPolicy::CheckAtStartOnly});
+    if (!queued) { check(false, "the fixture has a job"); return; }
+    const auto request = [&](McpEndpoint::Session& session, const char* name, const Json& args) {
+        const auto message = parseMessage(dumpJson({{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+            {"params", modern({{"name", name}, {"arguments", args}})}}));
+        const auto reply = endpoint.handle(message, session);
+        return Json::parse(reply.value()).at("result");
+    };
+
+    const Json job = {{"id", queued->id}};
+    check(request(owner, "jobs_get", job).at("structuredContent").at("status") == "pending",
+          "an Observe client can watch its own work");
+    check(isToolError(request(another, "jobs_get", job)) && isToolError(request(another, "jobs_cancel", job)),
+          "an Apply grant does not reveal or cancel another owner's job");
+    check(request(owner, "jobs_poll", Json::object()).at("structuredContent").at("events").size() == 1 &&
+              request(owner, "jobs_poll", Json::object()).at("structuredContent").at("events").empty(),
+          "poll hands out the original event once");
+    check(request(owner, "jobs_cancel", job).at("structuredContent").at("status") == "cancelled" &&
+              !jobs.start(queued->id), "the owner cancels queued work without starting it");
+}
+
 int runAll() {
     testHandshakes();
     testToolsAndReads();
     testProposeLeavesTheFile();
+    testMarkerRunWaitsForReview();
+    testProjectReadConsent();
+    testJobTools();
+    testApplyBoundary();
     testRefusals();
     testEchoesAreClipped();
     testExpectHead();
@@ -1325,6 +1640,7 @@ int runAll() {
     testProjectionDetails();
     testStatusStaleAndExpired();
     testSweepAbandonedScratch();
+    testHeadlessApplyBinary();
     testBinary();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

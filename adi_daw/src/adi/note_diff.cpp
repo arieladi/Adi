@@ -585,14 +585,14 @@ Record editLegacyRecord(const Record& original,NoteValues fields,const Payload& 
     if (!result) throw std::runtime_error(error);
     return std::move(*result);
 }
-Legacy sequenceAction(std::string_view type) {
+std::optional<Legacy> scalarNoteAction(std::string_view type) {
     if (type=="note.insert") return Legacy::Insert;
     if (type=="note.delete") return Legacy::Delete;
     if (type=="note.move") return Legacy::Move;
     if (type=="note.resize") return Legacy::Resize;
     if (type=="note.setVelocity") return Legacy::Velocity;
     if (type=="note.setMute") return Legacy::Mute;
-    throw std::runtime_error("unsupported note operation in batch: "+std::string(type));
+    return {};
 }
 
 class OrderedRecords {
@@ -678,9 +678,11 @@ SequenceResult planSequence(const detail::SnapshotData& data,const Payload& step
     bool createdStream=false;
     for (const auto& step:steps) {
         closed(step,{"op","payload"});
-        const auto action=sequenceAction(step.at("op").get_ref<const std::string&>());
+        const auto& operation=step.at("op").get_ref<const std::string&>();
+        const auto action=scalarNoteAction(operation);
+        if (!action) throw std::runtime_error("unsupported note operation in batch: "+operation);
         const auto& packet=step.at("payload");
-        checkLegacyFields(packet,action);
+        checkLegacyFields(packet,*action);
         if (integer(packet.at("clip"))!=data.clip)
             throw std::runtime_error("one note batch must address one captured MIDI clip");
         const auto id=noteId(packet.at("note"));
@@ -698,7 +700,7 @@ SequenceResult planSequence(const detail::SnapshotData& data,const Payload& step
             erasedExpressions.insert(id);
         } else {
             const auto& original=records.at(id);
-            records.replace(id,editLegacyRecord(original,recordValues(original),packet,action));
+            records.replace(id,editLegacyRecord(original,recordValues(original),packet,*action));
         }
     }
 
@@ -942,6 +944,70 @@ PreparedDiff prepareBatch(const Snapshot& snapshot,std::span<const OpRequest> op
         result.error=exception.what();
     }
     return result;
+}
+
+std::optional<CommitResult> commitScalarGesture(Store& store, std::span<const OpRequest> operations) {
+    if (operations.size() < 2) return {};
+    const auto& first = operations.front();
+    for (const auto& op : operations) {
+        if (!scalarNoteAction(op.opType) || op.capturedTransaction || op.runtimeProof ||
+            op.actor != first.actor || op.actorDetail != first.actorDetail) return {};
+    }
+    CommitResult result;
+    try {
+        struct ClipEdits {
+            std::int64_t clip;
+            std::vector<OpRequest> operations;
+        };
+        std::vector<ClipEdits> groups;
+        std::map<std::int64_t, std::size_t> index;
+        for (const auto& op : operations) {
+            const auto clip = integer(op.payload.at("clip"));
+            const auto [at, inserted] = index.try_emplace(clip, groups.size());
+            if (inserted) groups.push_back({clip, {}});
+            groups[at->second].operations.push_back(op);
+        }
+        std::vector<OpRequest> requests;
+        CommitOptions options;
+        {
+            // Capture every clip at the same SQLite revision. The applicable
+            // head and each stream hash are checked by the one journal commit.
+            Read read(store.db());
+            options.expectHead.emplace(OpJournal(store).headSeq());
+            RowIds ids(store.db());
+            requests.reserve(groups.size());
+            for (const auto& group : groups) {
+                auto captured = captureNotes(store, group.clip);
+                if (captured.ok && !captured.hasStream())
+                    captured = captureNotes(store, group.clip, ids.next("event_streams"));
+                auto prepared = prepareBatch(captured, group.operations);
+                if (!prepared.ok) {
+                    result.error = std::move(prepared.error);
+                    return result;
+                }
+                if (!prepared.requests.empty()) requests.push_back(std::move(prepared.requests.front()));
+            }
+        }
+        if (requests.empty()) {
+            const auto actualHead = OpJournal(store).headSeq();
+            if (actualHead != *options.expectHead) {
+                result.stale = true;
+                result.headFound = actualHead;
+                result.error = "stale: the undo head moved";
+                return result;
+            }
+            result.ok = true;
+            return result;
+        }
+        // The first input may have made no change. Keep the gesture's name
+        // and selection on the first operation that will actually be stored.
+        requests.front().label = first.label;
+        requests.front().selBefore = first.selBefore;
+        return OpJournal(store).commit(requests, options);
+    } catch (const std::exception& error) {
+        result.error = error.what();
+        return result;
+    }
 }
 
 CommitResult commitDiff(Store& store,const PreparedDiff& prepared,Actor actor) {

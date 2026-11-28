@@ -254,7 +254,7 @@ MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double 
             if (!row.error.empty())
                 throw std::runtime_error(row.error);
             if (!row.channel || !row.controller || *row.channel < 0 || *row.channel > 15 ||
-                *row.controller < 0 || *row.controller > 127)
+                !controllers::validController(*row.controller))
                 throw std::runtime_error("invalid controller channel/address");
             if (clip.aliasOf)
                 throw std::runtime_error("controller clip alias unsupported");
@@ -303,7 +303,7 @@ MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double 
                 (clip.loopEnabled &&
                  (loop <= 0 || loop > tickLimit || loopStart < 0 || loopStart > tickLimit)))
                 throw std::runtime_error("invalid controller clip source window/loop");
-            const auto key = static_cast<std::uint16_t>(*row.channel * 128 + *row.controller);
+            const auto key = controllerAddress(static_cast<int>(*row.channel), static_cast<int>(*row.controller));
             target = &prepared[clip.trackId][key];
             target->address = key;
             oldSize = target->spans.size();

@@ -144,3 +144,16 @@ Give Live's exact version at the top. When the list is done, fetch this file aga
 - R64. Drop a Set file from the file manager onto Live: opened? Copy a clip, open another Set, paste. (SC-164, SC-190)
 - R65. Drag in a MIDI file of several tracks: what is made, and is its tempo taken? (SC-57)
 - R66. Drop several audio files with Ctrl held: onto the tracks below, or onto new tracks? Does the Browser show file extensions by default? Does Esc cancel a drag?
+- R67. Open a plug-in's window (a third-party VST3), click in it away from any text field, select a track in Live's window first, and press Delete with the plug-in window in front: is anything in Live deleted (the track, the device, a clip)? The same with Backspace. Then Ctrl+Z. (SC-323; the walk of 27 November)
+
+**The Browser's preview, loading and keys (added 27 November; owed by ADR-0254 d26; ADR-0261)**
+
+- R68. The Preview switch (the headphones at the Browser's foot): is it on in a new Set? Switch it, open another Set, then restart Live: is its state kept, and so where does it live, with the Set or with the program? (SC-123, SC-429)
+- R69. With Preview on, click a short one-shot and then a loop, first while stopped and then while the song plays: what sounds, when does it start (at once, or on the next bar), does it loop, does it follow the tempo? Press Raw and do the same. (SC-123, TM-MD-06)
+- R70. With Preview off: Shift+Enter and the right arrow on a sample. A click in the preview's waveform: does it play from there, and can it be dragged to scrub? What stops a preview: another click, Esc, the switch? (SC-123)
+- R71. The preview's level: which control sets it? With Cue Out on the same pair as Main, is the preview heard over the song? With Cue Out on another pair, where is it heard? (SC-123, SC-431, MX-08)
+- R72. Does a preview play while a take records, and is it in the recording (record with the input set to Resampling)? (SC-123)
+- R73. Which rows preview: a sample, a clip file, an instrument preset, a MIDI file, a Set, a device? What does the preview area show for each? Is the preview area there at all when a device is selected, or when nothing is? (SC-429)
+- R74. Enter and a double-click on a sample, in the Arrangement: with an audio track selected, with a MIDI track selected, and with no track selected: on which track and at what time does it land? Enter on an audio effect with a device selected in the chain: before it or after it; and with only the track selected? (SC-105, WIN-06)
+- R75. The arrows in the Browser's list: left and right on a folder, on a file and on a heading. Does opening one folder close another, and what does Ctrl change? The X in the Hot-Swap bar. (SC-126, SC-147, SC-285)
+- R76. Show Similar Files on a sample (Ctrl+Shift+F): what is listed, and how is the list left? The Filter View (Ctrl+Alt+G): which filter groups show for Samples, and which for Plug-Ins? Is there a Modulators label? (TM-MD-07, SC-140, SC-141)

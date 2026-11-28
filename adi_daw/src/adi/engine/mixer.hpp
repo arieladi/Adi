@@ -35,6 +35,7 @@
 #include "adi/store_rows.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -140,10 +141,15 @@ struct StripConfig {
     double panLeft = -1.0, panRight = 1.0;
 };
 
-/// Linear post-fader levels, independent relaxed loads for the UI frame.
-/// Peak is the largest channel magnitude; RMS averages all channel samples.
-/// No scope subscription, snapshot rebuild or SQL read is needed.
+/// Linear post-fader levels, independent relaxed loads for readers.
+/// The scalar peak is the largest channel magnitude and scalar RMS averages
+/// all samples. The mixer reads the first two channels individually.
 struct StripMeter {
+    struct Channel {
+        std::atomic<float> peak{0}, rms{0};
+    };
+    static constexpr std::size_t kStereoChannels = 2;
+    std::array<Channel, kStereoChannels> stereo{};
     std::atomic<float> peak{0}, rms{0};
     /// Highest linear post-fader peak published since the previous take.
     /// One consuming UI reader fans this value out to its widgets. Callback
@@ -174,8 +180,9 @@ struct StripControlImage {
 
 class StripNode final : public Node {
 public:
-    /// Message thread: the model's values. `audible` is mute and solo together.
-    void setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept;
+    /// Message thread: the model's values. `audible` is the gate automation
+    /// cannot override; `unmuted` is the authored Track Activator fallback.
+    void setStatic(double volumeDb, double pan, PanLaw law, bool audible, bool unmuted = true) noexcept;
     void setPanMode(PanMode mode, double left, double right) noexcept;
     /// Message thread. Sends use their existing ceiling for both static and
     /// automated gain; ordinary strips retain the unlimited default.
@@ -195,10 +202,10 @@ public:
     void setTransport(const Transport* transport) noexcept { transport_.store(transport,std::memory_order_release); }
 
     /// Message thread: all of the above from one track's configuration, with
-    /// `audible` the gate to play it at (its mute, and its solo or not).
+    /// `audible` the solo and reference-track gate.
     void configure(const StripConfig& config, bool audible, const Transport* transport) noexcept {
         setTransport(transport);
-        setStatic(config.volumeDb, config.pan, config.law, audible);
+        setStatic(config.volumeDb, config.pan, config.law, audible, config.unmuted);
         setPanMode(config.panMode, config.panLeft, config.panRight);
         setDelay(config.delaySamples, config.delayRate);
         setLanes(config.lanes, config.lanes != nullptr ? config.keepAlive : std::shared_ptr<void>{});
@@ -234,6 +241,8 @@ public:
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
     [[nodiscard]] const StripMeter& meter() const noexcept { return meter_; }
+    struct MidiAudibleRun { bool audible; std::int32_t endFrame; };
+    [[nodiscard]] MidiAudibleRun midiAudibleRun(const NodeIo&, std::int32_t frame) const noexcept;
     /// Driver stopped: clear the published readout without touching render state.
     void release() override;
 
@@ -273,7 +282,8 @@ private:
     StripMeter meter_;
     // Audio thread only. Accumulate segments of one callback; offset zero
     // starts the next. Publication after each segment describes its prefix.
-    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0;
+    std::array<double, StripMeter::kStereoChannels> meterChannelPeak_{}, meterChannelEnergy_{};
+    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0, meterFrames_ = 0;
 
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
@@ -319,7 +329,8 @@ private:
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
     std::atomic<int> law_{0}, panMode_{0};
     std::atomic<double> panLeft_{-1.0}, panRight_{1.0};
-    std::atomic<bool> audible_{true};
+    static constexpr std::uint8_t kAudible = 1, kUnmuted = 2;
+    std::atomic<std::uint8_t> hearingGates_{kAudible | kUnmuted};
     std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
@@ -380,12 +391,10 @@ public:
     /// Message thread: what the source plays at the send's tap, before the
     /// send's own gain, played at its mute (`unmuted`) and never its solo.
     /// For a Post send, its strip's configuration, the same value the strip
-    /// is given; for a Pre send, unity, its mute and its mute lane (the sends
-    /// plan's preMute, on until Live is measured). The same transport every
-    /// time, as every strip is given it, so a send turned from Pre to Post
-    /// never changes it under a graph.
-    void setSource(const StripConfig& source, const Transport* transport) {
-        source_.configure(source, source.unmuted, transport);
+    /// is given; for Post FX, unity with the mute and its lane. The Pre FX
+    /// source is neutral. The reference-track gate is independent of either.
+    void setSource(const StripConfig& source, const Transport* transport, bool audible = true) {
+        source_.configure(source, audible, transport);
         gain_.setTransport(transport);
         retainAutomation();
     }

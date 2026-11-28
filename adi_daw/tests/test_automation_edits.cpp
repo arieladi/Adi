@@ -6,7 +6,9 @@
 #include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -44,6 +46,70 @@ std::vector<AutomationPoint> points(Store& s) {
 }
 Payload point(std::uint64_t id, std::int64_t time, double value, int curve = 1, double tension = 0) {
     return {{"id",id},{"time",time},{"value",value},{"curve",curve},{"tension",tension}};
+}
+void moveJournalSize() {
+    using Clock = std::chrono::steady_clock;
+    constexpr std::uint64_t movedId = UINT64_MAX - 7;
+    constexpr std::int64_t ticksPerPoint = 960;
+    constexpr double targetValue = -3.25;
+    for (const std::size_t count : {2000u, 20000u}) {
+        test::TempDirectory temp("automation", "move-journal");
+        auto store = project(temp.path() / "move.adi");
+        store->db().exec("UPDATE automation_lanes SET value_domain='real',unit='dB',min_value=-150,max_value=6 WHERE id=2");
+        std::vector<AutomationPoint> original(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            auto& record = original[i];
+            record.time = static_cast<std::int64_t>(i) * ticksPerPoint;
+            record.point_id = i + 1;
+            record.value = -12.0;
+            record.curve = 1;
+        }
+        const auto from = count / 4, to = 3 * count / 4;
+        // Before the drag, the selected point precedes its coincident sibling.
+        // Undo must reinsert it there after a drag crosses many other points.
+        original[from].time = original[from + 1].time;
+        original[from].point_id = movedId;
+        const auto targetTime = original[to].time;
+        const auto originalBytes = writeStream<AutomationPoint>(FourCC::Automation, original);
+        {
+            SQLite::Statement seed(store->db(), "INSERT INTO automation_data(id,lane_id,data) VALUES(4,2,?)");
+            seed.bind(1, originalBytes.data(), static_cast<int>(originalBytes.size()));
+            seed.exec();
+        }
+        const auto snapshot = engine::SnapshotBuilder::fromStore(*store);
+        const auto target = ui::volumeTarget(1);
+        const auto envelope = ui::envelopeOf(*snapshot, target);
+        check(envelope.data && envelope.data->points.size() == count, "Arrangement sees the full automation envelope");
+        OpJournal journal(*store);
+        const auto before = journal.count();
+        const auto start = Clock::now();
+        const auto result = journal.commit(ui::moveAutomationPoint(envelope, target, movedId, targetTime, targetValue));
+        const double milliseconds = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        if (!result.ok || result.seqs.size() != 1)
+            throw std::runtime_error("automation drag did not commit as one op: " + result.error);
+        check(journal.count() == before + 1, "Arrangement move appends exactly one journal row");
+        {
+            SQLite::Statement row(store->db(), "SELECT length(payload),length(inverse) FROM ops "
+                                  "WHERE seq=? AND op_type='automation.movePoints'");
+            row.bind(1, result.seqs.front());
+            if (!row.executeStep()) throw std::runtime_error("automation move missing from the journal");
+            const auto payload = row.getColumn(0).getInt64(), inverse = row.getColumn(1).getInt64();
+            std::printf("SC-422 %zu points: %.2f ms, %lld payload bytes + %lld inverse bytes = %lld journal bytes\n",
+                        count, milliseconds, static_cast<long long>(payload), static_cast<long long>(inverse),
+                        static_cast<long long>(payload + inverse));
+            check(payload > 0 && inverse > 0 && payload + inverse < 1024, "moving one point adds less than 1 KiB to the journal");
+        }
+        auto selected = original[from];
+        selected.time = targetTime;
+        selected.value = targetValue;
+        original.erase(original.begin() + static_cast<std::ptrdiff_t>(from));
+        original.insert(original.begin() + static_cast<std::ptrdiff_t>(to - 1), selected);
+        const auto movedBytes = writeStream<AutomationPoint>(FourCC::Automation, original);
+        check(bytes(*store) == movedBytes, "the drag crosses other points and preserves the destination's coincident order");
+        History history(*store);
+        check(history.undo().ok && bytes(*store) == originalBytes, "Undo restores the exact original bytes and coincident order");
+        check(history.redo().ok && bytes(*store) == movedBytes, "Redo restores the exact moved bytes and coincident order");
+    }
 }
 void laneBounds() {
     test::TempDirectory temp("automation", "lane-bounds");
@@ -166,6 +232,6 @@ void run() {
 }
 } // namespace
 int main() {
-    try { run(); laneBounds(); } catch(const std::exception& e) { ++failures; std::printf("EXCEPTION: %s\n",e.what()); }
+    try { run(); moveJournalSize(); laneBounds(); } catch(const std::exception& e) { ++failures; std::printf("EXCEPTION: %s\n",e.what()); }
     std::printf("%d checks, %d failures\n",checks,failures); return failures ? 1 : 0;
 }

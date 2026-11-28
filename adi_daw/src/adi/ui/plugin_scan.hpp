@@ -39,6 +39,7 @@ struct PluginScan {
     std::size_t completed = 0;  // of those, the ones probed so far
     std::uint64_t listed = 0;   // counts each change of `listing`: a state with the same count lists the same
     PluginListing listing;      // what is listed: the last scan's, the previous list while one runs
+    bool skipped = false;       // SC-327: Alt was held as ADI started, so the startup scan did not run
 };
 // The Status Bar's line for the scan's state (DF-W34 a and b). A scan that stopped early is named with
 // why, and never worded as "the rest are listed".
@@ -52,10 +53,17 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
                    ? "Scanning plug-ins: " + std::to_string(std::min(scan.completed, scan.candidates)) + " of " +
                          std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…")
                    : "Scanning plug-ins: " + std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…");
+    if (scan.skipped)
+        return "The plug-in scan was skipped: Alt was held as ADI started. The stored list is shown; Rescan "
+               "from the Settings' Plug-Ins page scans.";
     if (!l.complete)
         return "The plug-in scan stopped early: " + l.stopped + ". " +
                (l.plugins.empty() ? std::string("Nothing could be listed.") : std::string("The list may be incomplete.")) +
                " Rescan from the Settings' Plug-Ins page.";
+    const auto skipped = std::ranges::count(l.scanFailures, scan::State::UnreadablePath, &scan::Failure::state);
+    if (skipped > 0)
+        return std::to_string(skipped) + (skipped == 1 ? " unreadable search location was" : " unreadable search locations were") +
+               (l.plugins.empty() ? " skipped. No plug-ins were found." : " skipped. The readable plug-ins are listed.");
     if (l.plugins.empty())
         return l.failed > 0 ? std::to_string(l.failed) + (l.failed == 1 ? " plug-in file" : " plug-in files") +
                                   " could not be scanned, and no plug-in was found."
@@ -65,6 +73,37 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
                " could not be scanned; the rest are listed.";
     return {};
 }
+// SC-330: the scan's line in the Status Bar. The newest message wins: a scan that starts takes the bar
+// (a note said before it, such as the audio buffer's, gives way), and its progress then stands there
+// until another message is said; at its end the line goes, or says what went wrong. `next` takes the
+// scan's state and what the bar shows now, and gives what to say, or nothing to leave the bar as it is.
+class ScanStatusLine {
+  public:
+    std::optional<std::string> next(const PluginScan &scan, const std::string &shown) {
+        if (scan.phase == PluginScan::Phase::Scanning) {
+            if (yielded_)
+                return std::nullopt; // a message said during the scan: it stays
+            if (!line_.empty() && shown != line_) {
+                yielded_ = true;
+                return std::nullopt;
+            }
+            line_ = pluginScanStatus(scan);
+            return line_;
+        }
+        yielded_ = false;
+        if (line_.empty())
+            return std::nullopt;
+        const bool ours = shown == line_;
+        line_.clear();
+        if (!ours)
+            return std::nullopt;
+        return pluginScanStatus(scan);
+    }
+
+  private:
+    std::string line_;
+    bool yielded_ = false;
+};
 // The loader's job API as the service drives it, in its own words (`juce_device_loader.hpp`).
 enum class DiscoveryMode { CacheOnly, Incremental, Refresh };
 struct DiscoveryAdmission {
@@ -112,11 +151,26 @@ class PluginCatalogueService {
         listing.complete = state_.listing.complete;
         listing.stopped = state_.listing.stopped;
         listing.failed = state_.listing.failed;
+        listing.scanFailures = std::move(state_.listing.scanFailures);
         state_.listing = std::move(listing);
         ++state_.listed;
         if (state_.phase == PluginScan::Phase::NotStarted)
             state_.phase = PluginScan::Phase::Done;
         changed();
+    }
+    // The startup's: the stored catalogue listed, then an Incremental discovery for what was installed or
+    // removed since -- unless `skipScan` (Alt held as ADI started, SC-327), which leaves the stored list
+    // and runs nothing, to get past a plug-in that takes the scan down. A later request scans as usual.
+    void startup(bool skipScan) {
+        showCatalogue();
+        if (skipScan) {
+            state_.skipped = true;
+            if (state_.phase == PluginScan::Phase::NotStarted)
+                state_.phase = PluginScan::Phase::Done;
+            changed();
+            return;
+        }
+        request(DiscoveryMode::Incremental);
     }
     // Asks for a job: now when none runs, else after the running one. A Refresh asked for during an
     // Incremental or a CacheOnly stops that one first.
@@ -208,6 +262,7 @@ class PluginCatalogueService {
         job_ = admission.job;
         mode_ = mode;
         quietCancel_ = false;
+        state_.skipped = false; // a scan asked for later runs, and the line says so
         state_.phase = PluginScan::Phase::Scanning;
         state_.candidates = state_.completed = 0;
         changed();

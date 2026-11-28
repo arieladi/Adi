@@ -41,6 +41,9 @@ struct Paths {
     std::filesystem::path cache;    ///< shared, and safe to delete
 };
 
+/// A path supplied in the environment. Returns an empty path if unset.
+[[nodiscard]] std::filesystem::path environmentPath(const char* name);
+
 /// The folders for `app` on this machine. Empty paths when the platform gives
 /// no home at all (a service account with no profile): the caller then keeps
 /// its data in memory and says so, rather than writing somewhere surprising.

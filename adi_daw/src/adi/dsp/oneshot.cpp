@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "oneshot.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/blob.hpp"
+#include "adi/controller_data.hpp"
+#include "adi/engine/mpe_input.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -154,6 +157,7 @@ void OneShot::prepare(double rate, std::int32_t frames) {
     frames_ = frames;
     rate_ = accepted;
     voices_ = {};
+    midiChannels_ = {};
     age_ = 0;
     sampleSeq_ = 0;
     borrowed_ = false;
@@ -374,7 +378,7 @@ bool OneShot::slice(int key, const Sample &s, const std::array<double, Count> &p
 }
 void OneShot::noteOn(const engine::Event &e, const Sample &s,
                      const std::array<double, Count> &p) noexcept {
-    if(e.dim>127 || !std::isfinite(e.value) || e.value<=0)return;
+    if(e.dim>127 || e.channel>=midiChannels_.size() || !std::isfinite(e.value) || e.value<=0)return;
     const int mode = static_cast<int>(p[Mode]);
     // The region this note plays is decided BEFORE a voice is chosen (DF-E46
     // a): in Slice mode a key with no slice plays nothing and steals nothing.
@@ -412,6 +416,7 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.held = true;
     v.id = e.noteId;
     v.key = e.dim;
+    v.channel = e.channel;
     v.age = ++age_;
     v.velocity = std::clamp(e.value, 0., 1.);
     v.gain = 1;
@@ -439,6 +444,28 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.loop = std::clamp(v.loop, v.begin, v.end - 1);
     v.position = v.begin;
 }
+void OneShot::rememberMidiControl(MidiChannels &channels, const engine::Event &e) noexcept {
+    if (e.channel >= channels.size() || !std::isfinite(e.value))
+        return;
+    auto &channel = channels[e.channel];
+    if (e.type == engine::EventType::Controller) {
+        if (e.paramId == 64)
+            channel.sustain = e.value >= .5;
+        else if (e.paramId == 1)
+            channel.modulation = std::clamp(e.value, 0., 1.);
+        else if (e.paramId == controllers::kPitchBend)
+            channel.bend = (std::clamp(e.value, 0., 1.) * 2. - 1.) * engine::MpeZone{}.masterBendSemitones;
+    } else if (e.type == engine::EventType::NoteExpression && e.noteId == 0 &&
+               e.dim == static_cast<std::uint16_t>(ExpressionDim::Pitch)) {
+        channel.bend = std::clamp(e.value, -96., 96.);
+    }
+}
+void OneShot::releaseVoice(Voice &v, const std::array<double, Count> &p) noexcept {
+    v.held = false;
+    v.sustained = false;
+    v.stage = 3;
+    v.releaseStep = v.env / std::max(1., rate_ * (p[Mode] == 0 ? p[Release] : p[FadeOut]) * .001);
+}
 void OneShot::event(const engine::Event &e, const Sample *s,
                     std::array<double, Count> &p) noexcept {
     if ((e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) &&
@@ -454,19 +481,26 @@ void OneShot::event(const engine::Event &e, const Sample *s,
         noteOn(e, *s, p);
     else if (e.type == engine::EventType::NoteOff) {
         for (auto &v : voices_)
-            if (v.active && (e.noteId ? v.id == e.noteId : v.key == e.dim)) {
+            if (v.active && v.held && (e.noteId ? v.id == e.noteId : v.channel == e.channel && v.key == e.dim)) {
                 if (p[Mode] != 0 && p[Gate] == 0)
                     continue;
-                v.held = false;
-                v.stage = 3;
-                v.releaseStep =
-                    v.env / std::max(1., rate_ * (p[Mode] == 0 ? p[Release] : p[FadeOut]) * .001);
+                if (midiChannels_[v.channel].sustain)
+                    v.sustained = true;
+                else
+                    releaseVoice(v, p);
             }
-    } else if (e.type == engine::EventType::NoteExpression && e.dim == 0 &&
+    } else if (e.type == engine::EventType::NoteExpression && e.noteId != 0 &&
+               e.dim == static_cast<std::uint16_t>(ExpressionDim::Pitch) &&
                std::isfinite(e.value)) {
         for (auto &v : voices_)
             if (v.active && v.id == e.noteId)
                 v.tuning = std::clamp(e.value, -96., 96.);
+    } else {
+        rememberMidiControl(midiChannels_, e);
+        if (e.type == engine::EventType::Controller && e.paramId == 64 && std::isfinite(e.value) && e.value < .5)
+            for (auto &v : voices_)
+                if (v.active && v.sustained && v.channel == e.channel)
+                    releaseVoice(v, p);
     }
 }
 void OneShot::process(const engine::NodeIo &io) noexcept {
@@ -524,8 +558,8 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0, rFixed = 0, dFixed = 0;
     double lfoStep = 0;  // the LFO's phase a sample: block-constant
     bool classic = true, lfoHeard = true, filterFixed = false;
-    const auto coefficients = [&](double lfo, double &g, double &q) {
-        const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter]), 5., rate_ * .45);
+    const auto coefficients = [&](double lfo, double depth, double &g, double &q) {
+        const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter] * depth), 5., rate_ * .45);
         g = std::tan(pi * hz / rate_);
         // Res 0..125 % (Live's 0..1.25) onto the state-variable filter's Q
         // from 1/sqrt(2) to 10: ADI's law, unmeasured.
@@ -543,7 +577,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
             p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
         lfoStep = hz / rate_;
         if (filterFixed) {
-            coefficients(0, gFixed, qFixed);
+            coefficients(0, 1, gFixed, qFixed);
             rFixed = 1 / qFixed;
             dFixed = 1 + gFixed * (gFixed + rFixed);
         }
@@ -629,8 +663,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             v.random = static_cast<double>(v.rng) / 2147483648. - 1;
                         }
                     }
+                    const auto &midi = midiChannels_[v.channel];
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
-                                         p[Detune] / 100. + v.tuning + lfo * p[LfoPitch];
+                                         p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation;
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {
@@ -639,7 +674,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     }
                     const double increment = v.increment;
                     double amplitude = v.gain * v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
-                                       level * (1 - p[LfoVolume] / 200. * (1 - lfo));
+                                       level * (1 - p[LfoVolume] / 200. * midi.modulation * (1 - lfo));
                     if (!classic)
                         amplitude *= std::min(1., (v.end - v.position) / increment /
                                                       std::max(1., rate_ * p[FadeOut] * .001));
@@ -648,7 +683,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     // this sample when the LFO moves the cutoff.
                     double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
                     if (p[FilterOn] > 0 && !filterFixed) {
-                        coefficients(lfo, g, q);
+                        coefficients(lfo, midi.modulation, g, q);
                         r = 1 / q;
                         d = 1 + g * (g + r);
                     }
@@ -667,7 +702,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             if (p[Slope] > 0)
                                 x = v.filters[c][1].run(x, g, r, d, static_cast<int>(p[FilterType]));
                         }
-                        const double pan = lfo * p[LfoPan] / 100.;
+                        const double pan = lfo * p[LfoPan] * midi.modulation / 100.;
                         // sqrt(1) is exactly 1: no pan, no square root.
                         acc[c][k] += x * amplitude *
                                      (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));

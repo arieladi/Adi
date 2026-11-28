@@ -2,8 +2,10 @@
 #pragma once
 #include "gesture_navigation_detail.hpp"
 #include "gesture_presentation.hpp"
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -16,6 +18,11 @@ namespace adi::gesture::detail {
 /// before destruction/swap. No SQLite lifetime extension or callback SQL access.
 /// All entry methods recheck connection/thread before dereferencing Store.
 CoordinatorResult coordinatorFor(const AppliedSource&);
+
+/// SQL changes on this connection, other connection commits, and persistent
+/// and temporary DDL. A failed observation cannot authorize a cached image.
+using StoreWriteStamp = std::array<std::int64_t, 4>;
+std::optional<StoreWriteStamp> storeWriteStamp(const Store&) noexcept;
 
 /// Handle to PREALLOCATED coordinator-owned pending entry + provisional lease.
 /// A target conflict may make it Suspended but cannot discard captured external

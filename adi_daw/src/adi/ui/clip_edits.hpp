@@ -48,8 +48,11 @@ inline TrackEdit insertMidiClips(const engine::Snapshot &snapshot, const std::ve
                                (named != shown.end() ? named->second : t->name) + ".";
                 return edit;
             }
+        const auto length = end - start;
         edit.ops.push_back(op("clip.create",
-                              {{"id", id}, {"track", t->id}, {"kind", "midi"}, {"pos", start}, {"length", end - start}},
+                              {{"id", id}, {"track", t->id}, {"kind", "midi"}, {"pos", start}, {"length", length}},
+                              "Insert MIDI Clip"));
+        edit.ops.push_back(op("clip.setLoop", {{"id", id}, {"on", true}, {"start", 0}, {"length", length}},
                               "Insert MIDI Clip"));
         if (edit.clip == 0) {
             edit.select = t->id;

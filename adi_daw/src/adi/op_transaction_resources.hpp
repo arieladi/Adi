@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adi {
@@ -41,7 +42,13 @@ struct OpRowSetGuard {
 };
 /// Native presentation's owned typed committed material/schema image. The
 /// fixed engine capture routine defines coverage; no caller SQL or callback.
-struct OpPresentationImageGuard { std::vector<std::uint8_t> image; };
+struct OpPresentationImageGuard {
+    explicit OpPresentationImageGuard(std::vector<std::uint8_t> bytes)
+        :image(std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes))) {}
+    explicit OpPresentationImageGuard(std::shared_ptr<const std::vector<std::uint8_t>> bytes)
+        :image(std::move(bytes)) {}
+    std::shared_ptr<const std::vector<std::uint8_t>> image;
+};
 struct OpTransactionInputs {
     std::vector<OpStateBlob> stateBlobs;
     std::vector<OpRowGuard> rowGuards;

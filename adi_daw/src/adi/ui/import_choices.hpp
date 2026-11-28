@@ -2,9 +2,18 @@
 #pragma once
 #include "adi/audio/warp.hpp"
 #include "adi/settings/store.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 namespace adi::ui {
+struct WarpModeChoice {
+    audio::WarpMode mode;
+    const char *name;
+};
+inline constexpr std::array<WarpModeChoice, 6> kWarpModeChoices{{
+    {audio::WarpMode::Beats, "Beats"}, {audio::WarpMode::Tones, "Tones"}, {audio::WarpMode::Texture, "Texture"},
+    {audio::WarpMode::RePitch, "Re-Pitch"}, {audio::WarpMode::Complex, "Complex"}, {audio::WarpMode::ComplexPro, "Complex Pro"},
+}};
 // ADI's import prompt (E5; Live 12 manual 9.2.1, 9.2.2, 5.7; ADR-0132 d6): what a dropped audio file
 // is imported with. All off by default: no Warp, no fades on the clip's edges, the file referred to
 // where it is (Live's Collect Files "never"). The choices live in the settings, so "use the last
@@ -45,17 +54,19 @@ inline bool importAsks(const settings::AppSettings &settings) {
     const auto v = settings.get("editing.importOptions");
     return !v.is_string() || v.get<std::string>() == "ask" || copyAsks(settings);
 }
-// The prompt's answer kept as the last choices, and saved; a copy setting of "ask" stays "ask".
+// Save the last choices. Turning off the prompt also replaces a copy setting of "ask"
+// with the chosen copy policy so it does not reopen the prompt.
 // `nowUtc` (microseconds) dates the settings' change log, as the Settings window does.
 inline bool keepImportChoices(settings::AppSettings &settings, const ImportChoices &choices, std::string &why,
-                              std::int64_t nowUtc = 0) {
+                              std::int64_t nowUtc = 0, bool stopAsking = false) {
     settings::ChangeContext who;
     who.timeUtc = nowUtc;
     return settings.set("record.importAutoWarp", choices.warp, who, why) &&
            settings.set("record.importEdgeFades", choices.edgeFades, who, why) &&
            settings.set("record.defaultWarpMode", std::string(audio::warpModeName(choices.mode)), who, why) &&
-           (copyAsks(settings) ||
+           ((!stopAsking && copyAsks(settings)) ||
             settings.set("files.copyImportedMedia", std::string(choices.copyIn ? "always" : "never"), who, why)) &&
+           (!stopAsking || settings.set("editing.importOptions", std::string("never"), who, why)) &&
            settings.save(why);
 }
 } // namespace adi::ui

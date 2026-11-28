@@ -15,6 +15,7 @@
 #include "adi/engine/events.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 
 namespace adi::engine {
@@ -31,16 +32,53 @@ public:
     /// the one sounding them. Note-offs always count, so a device bypassed
     /// between a note's start and its end still lets it go.
     void take(const EventList& events, bool consumes) noexcept {
+        bool keysChanged = false;
         for (const Event& e : events) {
-            if (e.type == EventType::NoteOn) { if (consumes) on(e); }
-            else if (e.type == EventType::NoteOff) off(e);
+            if (e.type == EventType::NoteOn && consumes) {
+                on(e);
+                keysChanged = true;
+            } else if (e.type == EventType::NoteOff) {
+                off(e);
+                keysChanged = true;
+            }
         }
+        if (keysChanged) publishKeys();
     }
 
     [[nodiscard]] bool any() const noexcept { return count_ > 0 || untracked_ > 0; }
     [[nodiscard]] std::int32_t count() const noexcept { return count_ + untracked_; }
 
+    // Owner/UI read of the driver's published key state. Neither the note IDs nor
+    // the audio thread's mutable key table are exposed across threads.
+    [[nodiscard]] std::array<std::uint64_t, 2> keyMask() const noexcept {
+        for (int tries = 0; tries < 3; ++tries) {
+            const auto before = keyRevision_.load();
+            if ((before & 1u) != 0) continue;
+            const std::array result{keyMask_[0].load(), keyMask_[1].load()};
+            if (keyRevision_.load() == before) return result;
+        }
+        return {};
+    }
+
+    // A quiescent driver releases all instruments when the audio device closes.
+    void clear() noexcept {
+        count_ = untracked_ = 0;
+        publishKeys();
+    }
+
 private:
+    void publishKeys() noexcept {
+        std::array<std::uint64_t, 2> mask{};
+        for (std::int32_t i = 0; i < count_; ++i) {
+            const auto key = keys_[static_cast<std::size_t>(i)];
+            if (key < 128) mask[static_cast<std::size_t>(key / 64)] |= std::uint64_t{1} << (key % 64);
+        }
+        // Odd during publication. The two words always describe one callback.
+        keyRevision_.fetch_add(1);
+        keyMask_[0].store(mask[0]);
+        keyMask_[1].store(mask[1]);
+        keyRevision_.fetch_add(1);
+    }
     // IDS, NOT A COUNTER. A source resends an off whose delivery it could not
     // confirm (ADR-0155 d2), and a counter would let the duplicate release a
     // different note that is still held -- the one failure here that is heard.
@@ -75,6 +113,8 @@ private:
 
     std::array<std::uint64_t, kCapacity> ids_{};
     std::array<std::uint16_t, kCapacity> keys_{};
+    std::array<std::atomic<std::uint64_t>, 2> keyMask_{};
+    std::atomic<std::uint32_t> keyRevision_{0};
     std::int32_t count_ = 0;
     std::int32_t untracked_ = 0;
 };

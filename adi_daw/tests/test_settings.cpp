@@ -321,6 +321,11 @@ void testM0Records() {
     // The plan's SRF-05: midi.port.* has a home, one App record per port.
     const auto* ports = find("midi.ports");
     const auto* portName = find("midi.port.name");
+    const auto* newInputTrack = find(kNewMidiInputTrackKey);
+    check(newInputTrack && newInputTrack->type == Type::Bool && newInputTrack->scope == Scope::App &&
+              newInputTrack->page == "Tempo & MIDI" && newInputTrack->section == "MIDI Ports" &&
+              newInputTrack->defaultValue == false,
+          "the provisional Track default for new MIDI inputs is an app switch on the MIDI Ports section");
     check(portName && portName->type == Type::Text && portName->scope == Scope::Device &&
               portName->page == "Tempo & MIDI" && portName->section == "MIDI Ports" &&
               portName->defaultValue == "" && !portName->agentMayChange,
@@ -350,11 +355,13 @@ void testM0Records() {
               "and still refuses a per-port row on its own: " + why);
         check(!s.set("midi.port.name", "Wrong scope", kUser, why), "a port name belongs to the aggregate record");
         check(!s.set("record.autoArmOnSelect", "unknown", kUser, why), "invalid auto-arm choices are refused");
-        check(s.set("record.autoArmOnSelect", "instrumentAndMidi", kUser, why) && s.save(why),
-              "save named ports and an explicit auto-arm choice: " + why);
+        check(s.set("record.autoArmOnSelect", "instrumentAndMidi", kUser, why) &&
+                  s.set(kNewMidiInputTrackKey, true, kUser, why) && s.save(why),
+              "save named ports with explicit auto-arm and new MIDI input settings: " + why);
         const AppSettings reopened(appdata::App::Daw, file);
         check(reopened.get("midi.ports") == records, "input and output retain distinct names across reload");
         check(reopened.get("record.autoArmOnSelect") == "instrumentAndMidi", "reload preserves the user's explicit choice");
+        check(reopened.get(kNewMidiInputTrackKey) == true, "reload preserves the new MIDI input Track preference");
     }
     // The plan's WIN-02 and WIN-04: the window's two records.
     const auto* places = find("window.places");

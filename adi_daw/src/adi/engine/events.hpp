@@ -35,7 +35,8 @@ enum class EventType : std::uint8_t {
     /// changed (ADR-0046, ADR-0052). CLAP carries this natively; for VST3 the
     /// host resolves it into a value and keeps the user's setting shadowed.
     ParamMod = 4,
-    /// Ordinary MIDI CC: channel 0..15, paramId 0..127, normalized double.
+    /// MIDI CC (paramId 0..127) or channel pitch wheel (paramId 129).
+    /// Channel 0..15, normalized double, with pitch neutral at .5.
     /// The format host alone narrows a value for a MIDI 1 wire.
     Controller = 5,
 };

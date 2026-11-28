@@ -404,7 +404,7 @@ void archivedMedia() {
     const auto hash = history.listSnapshots().front().storedStateHash;
     fs::create_directories(p.folder.path() / "copy/deep");
     const auto path = p.folder.path() / "copy/deep/Copy.adi";
-    const auto copied = p.store->saveCopy(path);
+    const auto copied = p.store->saveCopy(path, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo);
     require(copied.ok, copied.error);
     check(p.digest() == digest && history.listSnapshots().front().storedStateHash == hash,
           "Save Copy relocation leaves original stored roots unchanged");
@@ -422,7 +422,7 @@ void archivedMedia() {
           "retained ops");
     copy.reset();
     const auto zip = p.folder.path() / "Stored.zip";
-    const auto exported = p.store->collectAndExport(zip);
+    const auto exported = p.store->collectAndExport(zip, true);
     require(exported.ok, exported.error);
     const auto extracted = p.folder.path() / "extracted";
     {
