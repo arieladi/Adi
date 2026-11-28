@@ -8,10 +8,28 @@
 |---|---|---|
 | 1. First-project hardware MIDI out | Fixed on main | `0bf77b33d` passes the output feed when attaching the first normal project, before the port host starts. |
 | 2. First-project hardware MIDI in | Fixed on main | `0bf77b33d` refreshes the installed window's input ports after the host is created. |
+| 3. Unavailable Main Out | `25c80ab59` | Main and reference playback cannot leak onto unrelated hardware channels. The Cue suite reproduced three failures and passed all 286 checks with the combined routing. |
+| 4. Preview transport discontinuities | `6d1b80c6f` | Stop, retrigger, and nonzero seek fade while keeping callback ownership. The 22-check suite reproduced three discontinuities and passed all checks. |
+| 5. Hardware MIDI before stopping effects | `231c47927` | The clip, live, and Play-Q routes share the first stopping boundary. The fixture reproduced five failures and passed all 26 checks. |
+| 6. Sample-accurate hardware MIDI mute | `93ec43d07` | Mute boundaries release held notes and pedals at the exact frame, including silent callbacks and loop wraps. All seven focused checks and the 695-check MIDI suite passed. |
+| 7. Discard a recording while its owner is open | `b93390872`, `96ba72860` | Close the recording owner before removing its directory. Keep the separate preview lease release after successful cleanup. All 326 Recording Commands checks passed on Linux. Windows delete-pending behavior requires a native run. |
 | 8. Backup rotation on Windows | Resolved before this integration | The active path calls the recycle-only Windows file operation and keeps the identity lease through deletion. The Safety owner verified that combination on Windows. JUCE's `std::string` constructor decodes UTF-8. |
 | 9. Match a recovered take to its project | Fixed on main | `0bf77b33d` compares open projects with filesystem identity, covering alternate spellings of the same file. |
-| 13. Refresh Current Project after collection | Fixed on main | `0bf77b33d` invalidates the cached catalog after Collect All and Save and republishes the listing. |
+| 10. Backup folder spelling | `f4d18439d` | Compare real directory identity and still reject a symlinked Backup folder. All 143 Project Files checks passed, including the alternate-case and symlink fixtures. |
+| 11. Recovery discovery on non-UTF-8 Windows locales | `3622a0c3f` | Read directory entry names explicitly as UTF-8. The recording suite discovers the owned take with Unicode strays beside and inside its recovery session. |
+| 12. Migration backup parent alias | `1bb67c4db` | Use filesystem identity in the assertion. The symlinked temp-directory run reproduced 23 failures and then passed all 405 checks. |
+| 13. Refresh Current Project after collection | Fixed on main | `0bf77b33d` invalidates the cached catalog after Collect All and Save and republishes the listing. `bb6f022bd` adds the collection-to-listing check. |
+| 14. Favorites sorting while scanning | `a2b0648e2` | Favorites has no scan-status row. The peerless regression checks that every Favorites row sorts by name. |
+| 15. Project Files implies unsupported sorting | `945d7e2c6` | Headers retain resizing and whole-file inventory order without implying a sort. Covered in the peerless window regression. |
 | 16. Refresh Undo History after a snapshot | Fixed on main | `0bf77b33d` refreshes an open Undo History after the snapshot succeeds, even when the edit generation is unchanged. |
+| 17. Show Info View setting with Browser collapsed | `fcf37e6e6` | The Settings toggle opens the Browser on the transition to enabled. The peerless regression exercises the actual Settings callback. |
+| 18. Show Take Lanes on an empty track | `02816c4c5` | Disable the empty-track menu item and explain the shortcut refusal. Peerless menu and keyboard checks preserve the existing take rows. |
+| 19. Checked iterators in callback paths | `100e74e36`, `846bfa5bc` | The Cue object has no vector iterator calls in the audited render walks. On GCC debug iterators, the live Monitor probe fell from 77 callback mutex acquisitions to zero with the same note and release. |
+| 20. Paused preview polling and downsample aliasing | `69fe4e171` | Back off on a full queue and filter source samples before downsampling. Two spectral failures reproduced and all 26 preview checks passed. The suspended queue probe counted 475 and 32 wakeups in the same one-second workload. |
+| 21. Device output grants during restarts | `f4f4cfea3` | Publish a completed mask atomically after prepare. The peerless test checks the prior grant during restart, a new sparse grant, active empty output, and a stopped device. |
+| 22. Portability and Browser/Mixer controls | `482e2f078`, `d8c8467cf` | Use the standard filesystem hash without relying on the newer path specialization, keep network mount IDs available on older Linux headers, use explicit UTF-8 at API boundaries, and include the standard headers directly. Three header diagnostics reproduced under the old-header probe and cleared. The shell reproduced three failures for MIDI activation and Resampling with no physical provider. The normal app supplies a provider, while the chooser also supports hosts without one. |
+
+Review fixes through `98914809944a02dc6d9c5d870ebe521a10696b13`. The four Browser and window regressions reproduced four failures in 51 peerless checks on main. The combined check passed all 52 after the fixes. The WIP branch supplied candidate changes that were reviewed individually. The integration contains independently checked fixes.
 
 ## Tenth stack, first review bundle
 
