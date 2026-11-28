@@ -46,6 +46,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     bool returnToDefault();
     // The parameter's automation commands, from the control or its labels.
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     juce::PopupMenu menuItems();
     void showMenu();
@@ -274,6 +275,7 @@ class DevicePanelView final : public juce::Component,
     void cancelInteractions();
 
   private:
+    friend class ParameterControl;
     SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
     void showParameterList();
@@ -282,6 +284,8 @@ class DevicePanelView final : public juce::Component,
     void closeConfigure();
     void queueConfigureTouch(const DevicePanelData &);
     void applyConfigureTouches();
+    bool beginParameterReorder(const std::string &parameter);
+    void endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance);
     bool panelTargetCurrent(const DevicePanelData &);
     void chooseLastTouch(const DevicePanelData &, bool showAutomation);
     bool canHotSwap() const;
@@ -316,6 +320,13 @@ class DevicePanelView final : public juce::Component,
         std::vector<std::string> pending;
     };
     std::optional<ConfigureSession> configureSession_;
+    struct ParameterReorder {
+        std::string parameter;
+        std::vector<std::string> order;
+        bool configured = false;
+        std::uint64_t menuEpoch = 0, controlsEpoch = 0;
+    };
+    std::optional<ParameterReorder> parameterReorder_;
     std::optional<DevicePanelData> dragTarget_;
     std::vector<DevicePanelData> draggedDevices_;
     bool selectOnRelease_ = false;

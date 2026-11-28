@@ -169,6 +169,16 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     }
 }
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
+    if (e.eventComponent == this) {
+        if (auto *panel = dynamic_cast<DevicePanelView *>(getParentComponent())) {
+            panel->parameterReorder_.reset();
+            if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu() && name.getBounds().contains(e.getPosition())) {
+                const auto safe = SafePointer<ParameterControl>(this);
+                if (panel->beginParameterReorder(parameter) || !safe)
+                    return;
+            }
+        }
+    }
     if (e.mods.isPopupMenu()) {
         if (e.eventComponent == this || e.eventComponent == &slider || e.eventComponent == &toggle ||
             e.eventComponent == &menu || menu.isParentOf(e.eventComponent))
@@ -178,7 +188,15 @@ void ParameterControl::mouseDown(const juce::MouseEvent &e) {
             strip.root.showAutomation(target->first, target->second);
     }
 }
+void ParameterControl::mouseUp(const juce::MouseEvent &e) {
+    if (e.eventComponent == this)
+        if (auto *panel = dynamic_cast<DevicePanelView *>(getParentComponent()))
+            panel->endParameterReorder(parameter, e.getEventRelativeTo(panel).getPosition(), e.getDistanceFromDragStart());
+}
 void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (e.eventComponent == this && name.getBounds().contains(e.getPosition()))
+        if (const auto *panel = dynamic_cast<DevicePanelView *>(getParentComponent()); panel && panel->configureSession_)
+            return;
     if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
         returnToDefault();
 }
@@ -1631,6 +1649,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         return found == d.defaultValues().end() ? 0.0 : found->second;
     };
     if (!same) {
+        parameterReorder_.reset();
         const auto safe = SafePointer<DevicePanelView>(this);
         endFunctionParameter();
         if (!safe) return;
@@ -1938,6 +1957,10 @@ bool DevicePanelView::requestHotSwap(DevicePanelData expected, std::optional<std
     return true;
 }
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
+    if (k == juce::KeyPress::escapeKey && parameterReorder_) {
+        parameterReorder_.reset();
+        return true;
+    }
     if (!validTarget())
         return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
@@ -1966,6 +1989,7 @@ void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
+    parameterReorder_.reset();
     dragTarget_.reset();
     draggedDevices_.clear();
     selectOnRelease_ = false;
@@ -2099,6 +2123,63 @@ bool addPanelParameters(DeviceChainStrip &strip, const DevicePanelData &device,
     return ids.size() == before || strip.action("device.setPanel", {{"dev", device.id}, {"params", ids}});
 }
 } // namespace
+bool DevicePanelView::beginParameterReorder(const std::string &parameter) {
+    if (!configureSession_ || !configuring || mixCard_ || menuInteraction_ || strip.folded(id))
+        return false;
+    const auto expected = configureSession_->expected;
+    const auto menuEpoch = menuEpoch_, controlsEpoch = controlsEpoch_;
+    const auto source = parameter;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (!panelTargetCurrent(expected) || !safe)
+        return false;
+    const auto feed = strip.latestPublication();
+    if (!safe || !configureSession_ || menuEpoch_ != menuEpoch || controlsEpoch_ != controlsEpoch)
+        return false;
+    const auto *current = findPanelDevice(feed, expected);
+    if (!current || !current->plugin || !current->available || !controlsMatch(*current) ||
+        !configurableParameter(*current, source))
+        return false;
+    parameterReorder_ = ParameterReorder{source, panelParameterIds(current->resolved), current->resolved.configured,
+                                         menuEpoch, controlsEpoch};
+    return true;
+}
+void DevicePanelView::endParameterReorder(const std::string &parameter, juce::Point<int> position, int distance) {
+    auto drag = std::exchange(parameterReorder_, std::nullopt);
+    if (!drag || distance < 4 || drag->parameter != parameter || !configureSession_ || !configuring ||
+        menuInteraction_ || menuEpoch_ != drag->menuEpoch || controlsEpoch_ != drag->controlsEpoch ||
+        strip.folded(id) || !reallyContains(position, true))
+        return;
+    const auto target = std::find_if(controls.begin(), controls.end(), [&](const auto &control) {
+        return control->isShowing() && control->getBounds().contains(position);
+    });
+    if (target == controls.end() || (*target)->parameter == drag->parameter)
+        return;
+    const auto destination = (*target)->parameter;
+    const auto expected = configureSession_->expected;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (!panelTargetCurrent(expected) || !safe)
+        return;
+    const auto feed = strip.latestPublication();
+    if (!safe || !configureSession_ || menuEpoch_ != drag->menuEpoch || controlsEpoch_ != drag->controlsEpoch)
+        return;
+    const auto *current = findPanelDevice(feed, expected);
+    if (!current || !current->plugin || !current->available || !configurableParameter(*current, drag->parameter) ||
+        current->resolved.configured != drag->configured ||
+        !std::equal(current->resolved.entries.begin(), current->resolved.entries.end(),
+                    drag->order.begin(), drag->order.end(),
+                    [](const panel::Record &entry, const auto &parameterId) { return entry.id == parameterId; }))
+        return;
+    auto &order = drag->order;
+    const auto from = std::find(order.begin(), order.end(), drag->parameter);
+    const auto to = std::find(order.begin(), order.end(), destination);
+    if (from == order.end() || to == order.end())
+        return;
+    if (from < to)
+        std::rotate(from, std::next(from), std::next(to));
+    else
+        std::rotate(to, from, std::next(from));
+    strip.action("device.setPanel", {{"dev", id}, {"params", order}});
+}
 juce::PopupMenu DevicePanelView::commands() {
     // Live 12's order (manual 23.2.1, its figure of a device's menu): Cut, Copy and Duplicate; Rename;
     // Delete and Fold; then the device's own. Paste is not in it: the Edit menu's and Ctrl/Cmd+V.
@@ -2394,6 +2475,7 @@ void DevicePanelView::chooseLastTouch(const DevicePanelData &expected, bool show
         safe->strip.root.showDeviceAutomation(expected.id, paramId);
 }
 void DevicePanelView::closeConfigure() {
+    parameterReorder_.reset();
     configureSession_.reset();
     if (!std::exchange(configuring, false)) return;
     ++menuEpoch_;
