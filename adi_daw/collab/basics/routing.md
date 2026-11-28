@@ -16,7 +16,7 @@ Win brought SC-261 (`f5811eb85`), SC-252/253 (`93de1ee49`), SC-404 (`f8fc342b1`)
 
 ## Follow-ups on current main
 
-- SC-261 candidate `27a88fde7` keeps Main on a complete available physical stereo pair, rejects stale Main and Cue menu selections and changes compatible selected Audio To tracks in one Undo step. It preserves SC-431 Cue silence and rejects feedback for the whole edit. The Linux Debug core and Cue Monitor executable compiled and linked at engine head `f26e1d35a`. Its stock Cue Monitor suite passed all 280 checks in 70.11 seconds. The window candidate includes the same engine sources. The exact Debug shell build comes next, with a focused chooser mode before the full peerless run.
+- SC-261 candidate `27a88fde7` keeps Main on a complete available physical stereo pair, rejects stale Main and Cue menu selections and changes compatible selected Audio To tracks in one Undo step. It preserves SC-431 Cue silence and rejects feedback for the whole edit. The Linux Debug core and Cue Monitor executable compiled and linked at engine head `f26e1d35a`. Its stock Cue Monitor suite passed all 280 checks in 70.11 seconds. The window candidate includes the same engine sources. The exact Debug JUCE build at `27a88fde7` compiled its changed shell and mixer sources. The remaining dependencies are building ahead of the focused chooser and full peerless runs.
 - SC-252/253 candidate `377a0ab4` preserves overwritten concrete audio aliases and targets Delete to the focused take header. It restores the lane count switch and Insert button, along with global shortcuts and the Create action. The regression checks painted-button clicks, a single-click reopen from a folded track, coexistence with automation, exact Undo and Redo, and safe repeated Delete. The exact Arrangement source passed the Linux Debug syntax check. Very crowded frozen or nested headers can still omit the count control. The shortcut and header menu remain available in that layout. [Live take-lane controls](https://www.ableton.com/en/live-manual/12/comping/#inserting-and-managing-take-lanes)
 - SC-404 candidate `0316a5812` retains failed Note Off and pedal releases for the exact output and retries before fresh packets. It also pins the audio block's feed epoch through enqueue so reconnect cannot make the retired block's tail valid. The extracted shell fixture ran four checks with three failures on landed main and passed all four on the follow-up in standalone Linux GCC. The linked fake worker and window suite are queued.
 - SC-269 landed with the Resampling channel field disabled and its mixed physical inputs staged before graph rendering. Candidate `92a071309` keeps gated routes' PDC history warm and tests both sample widths. The recorded audio itself can sit late in the take when the Main path has nonzero latency.
@@ -34,7 +34,7 @@ The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes)
 
 The inactive C: image `%TEMP%\adi-routing-linux\build.qcow2` (197,120 bytes) and original read-only seed `%TEMP%\adi-routing-linux\seed.iso` (55,296 bytes) were also retained.
 
-C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 05:27 local time showed **17,551,613,952 bytes free (16.35 GiB)**.
+C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 06:01 local time showed **17,603,919,872 bytes free (16.39 GiB)**.
 
 ## For the director
 
