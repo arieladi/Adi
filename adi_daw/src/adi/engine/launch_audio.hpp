@@ -50,7 +50,7 @@ public:
                                        std::uint16_t channels, std::vector<float>);
     static LaunchAudioClip fromPages(std::int64_t clip, std::uint32_t driverRate,
                                     std::uint16_t channels, std::uint64_t frames,
-                                    std::shared_ptr<LaunchPagedAudio>);
+                                    std::shared_ptr<LaunchPagedAudio>, bool legacyRaw = false);
     /// An owner-prepared native Warp voice over a bounded resident source window.
     static LaunchAudioClip fromWarp(std::int64_t clip, std::uint16_t channels,
                                    std::uint64_t referenceFrames, LaunchWarpMedia,
@@ -60,6 +60,7 @@ public:
 
     [[nodiscard]] std::int64_t clip() const noexcept { return clip_; }
     [[nodiscard]] std::uint32_t rate() const noexcept { return rate_; }
+    [[nodiscard]] bool legacyRaw() const noexcept { return legacyRaw_; }
     [[nodiscard]] std::uint64_t frames() const noexcept {
         return pages_ || followsTempo() ? renderedFrames_ : samples_.size() / channels_;
     }
@@ -69,7 +70,7 @@ public:
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
     [[nodiscard]] std::optional<LaunchAudioClip> shareRawPages() const {
         if (!pages_ || followsTempo() || latencySamples() != 0) return std::nullopt;
-        return fromPages(clip_,rate_,channels_,renderedFrames_,pages_);
+        return fromPages(clip_,rate_,channels_,renderedFrames_,pages_,legacyRaw_);
     }
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
     [[nodiscard]] bool allWorkerPhasesPrimed() const noexcept;
@@ -96,6 +97,7 @@ private:
     std::shared_ptr<const Warp> warp_;
     std::shared_ptr<LaunchWarpSource> pagedWarp_;
     std::uint64_t renderedFrames_ = 0;
+    bool legacyRaw_ = false;
 };
 
 /// Replace a half-open region of a track's source buffer with an active slot

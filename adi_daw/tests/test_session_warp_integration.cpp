@@ -8,6 +8,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/edit_rows.hpp"
 #include "adi/engine/capture_scene.hpp"
+#include "adi/engine/clip_fade.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/launch_gain_edits.hpp"
@@ -792,6 +793,161 @@ void musicalPlacementPhysicalPins(bool ram) {
             "musical placement with physical pins does not allocate or read files in the callback");
     std::printf("Musical placement pins %s: exact %d samples from %d to %d through saved and performed tempo\n",
                 ram ? "RAM" : "paged",span,start,end);
+}
+
+void legacyMusicalOneShotPlaysRawPcm() {
+    enum class Clock { Steady, AuthoredRamp, External, ChangedBacking, DriverRace, LegacyTrim, FlatRamRegion, SteadyFade };
+    constexpr auto mediaFrames = 2 * rate;
+    constexpr auto straightStop = rate;
+    constexpr auto tempoCut = 36000;
+    constexpr auto cutTick = 3 * quarter / 2;
+    constexpr auto externalStop = tempoCut + 72000;
+    const auto rampStop = std::llround(rate * (std::log(2.0) + 1.0));
+    std::vector<float> source(mediaFrames);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame % 97) - 48.f) * .004f;
+    source[51000] = -.65f;
+    bool matched = true;
+
+    for (const bool ram : {true,false}) {
+        for (const auto clock : {Clock::Steady,Clock::AuthoredRamp,Clock::External,Clock::ChangedBacking,
+                                 Clock::DriverRace,Clock::LegacyTrim,Clock::FlatRamRegion,Clock::SteadyFade}) {
+            if (ram && (clock == Clock::ChangedBacking || clock == Clock::DriverRace || clock == Clock::LegacyTrim))
+                continue;
+            const bool authoredRamp = clock == Clock::AuthoredRamp || clock == Clock::LegacyTrim;
+            const bool changed = clock == Clock::ChangedBacking || clock == Clock::DriverRace;
+            const bool race = clock == Clock::DriverRace;
+            const bool trim = clock == Clock::LegacyTrim;
+            const bool flatRegion = clock == Clock::FlatRamRegion;
+            const bool fade = clock == Clock::SteadyFade;
+            if (flatRegion && !ram) continue;
+            test::TempDirectory folder{"tick_only_raw_slot",ram ? "ram" : "paged"};
+            auto store = sceneProject(folder.path());
+            const auto file = folder.path() / "plain.wav";
+            {
+                audio::WavWriter writer(file,rate,1,audio::WavFormat::Float32);
+                writer.write(source.data(),mediaFrames);
+                writer.close();
+            }
+            const auto hash = media::blake3File(file);
+            require(static_cast<bool>(hash),"hash the unwarped drop source");
+            {
+                auto& db = store->db();
+                if (authoredRamp) {
+                    SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,60,0)");
+                    tempo.bind(1,quarter);
+                    tempo.exec();
+                } else {
+                    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+                }
+                db.exec("INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+                SQLite::Statement mediaRow(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames)"
+                    " VALUES(101,?,'plain.wav','wav',48000,1,?)");
+                mediaRow.bind(1,hash.hex);
+                mediaRow.bind(2,mediaFrames);
+                mediaRow.exec();
+                // The tick span is what a whole-file drop made at 60 BPM stored.
+                std::array<OpRequest,4> operations;
+                operations[0].opType = "clip.create";
+                operations[0].payload = {{"id",101},{"track",1},{"kind","audio"},{"pos",4*quarter},{"length",2*quarter}};
+                operations[1].opType = "clip.attachAudio";
+                operations[1].payload = {{"id",101},{"media",101},{"frames",mediaFrames}};
+                operations[2].opType = "session.setSlotClip";
+                operations[2].payload = {{"track",1},{"scene",10},{"clip",101}};
+                operations[3].opType = "session.setLaunchSettings";
+                operations[3].payload = {{"clip",101},{"ram",ram},{"fade",fade}};
+                require(OpJournal(*store).commit(operations).ok,"persist a plain drop and move it to Session");
+                if (trim) {
+                    SQLite::Statement start(db,"UPDATE clips SET content_offset_ticks=? WHERE id=101");
+                    start.bind(1,quarter/4);
+                    start.exec();
+                }
+            }
+            store.reset();
+            StoreError openError{};
+            store = Store::open(folder.path() / "song.adi",openError);
+            require(static_cast<bool>(store),"reopen the tick-only raw slot");
+            const auto hasPins = [&] {
+                return store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() != 0;
+            };
+            require(!hasPins(),"the stored clip has no source pins");
+
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+            const auto launch = race ? tempoCut - 100 : 0;
+            const auto expectedStop = clock == Clock::External ? externalStop
+                : authoredRamp ? rampStop : flatRegion ? 42000 : static_cast<std::int64_t>(launch+straightStop);
+            std::vector<float> pcm(static_cast<std::size_t>(expectedStop+blockFrames));
+            Playback playback{session,pcm};
+            playback.paged = !ram;
+            if (race) session.transport().play();
+            else scene(*store,session,10);
+            if (flatRegion) {
+                playback.through(6000);
+                const auto status = trackState(session);
+                const LaunchClipRegionEdit region{1,101,session.launchIncarnation(),status.run,
+                    {quarter/2,2*quarter,{}},ClipUpdateRate::None};
+                require(session.postLaunchClipRegionEdit(region),"flat RAM still accepts a live nonzero Start");
+            }
+            playback.through(tempoCut-100);
+            if (changed) store->db().exec("UPDATE clips SET gain_db=-6 WHERE id=101");
+            bool accepted = false;
+            if (race) {
+                accepted = session.setExternalTempoAt(*store,20,cutTick,[&] {
+                    scene(*store,session,10);
+                    playback.through(launch+1);
+                    require(playback.count == 1 && playback.edges[0].sample == launch,
+                            "start the old source after owner preparation but before adoption");
+                    return true;
+                });
+            } else if (clock == Clock::External || changed) {
+                accepted = session.setExternalTempoAt(*store,20,cutTick);
+                if (changed && !accepted)
+                    require(session.error().find("needs the active unwarped page bank") != std::string::npos,
+                            "the owner identifies the prepared candidate's different page reader");
+            }
+            playback.through(tempoCut+1);
+            const auto observed = session.beginRender().bpmAtTick(2*quarter);
+            playback.through(expectedStop+blockFrames);
+
+            const auto stop = playback.count == 2 && playback.edges[1].newClip == 0 ? playback.edges[1].sample : -1;
+            const auto playable = std::min<std::int64_t>(mediaFrames,expectedStop-launch);
+            const bool exactSource = flatRegion
+                ? std::equal(source.begin(),source.begin()+6000,pcm.begin()) &&
+                    std::equal(source.begin()+12000,source.begin()+straightStop,pcm.begin()+6000)
+                : std::equal(source.begin(),source.begin()+playable,pcm.begin()+launch);
+            bool exact = exactSource &&
+                std::all_of(pcm.begin()+launch+playable,pcm.end(),[](float sample) { return sample == 0; });
+            if (fade) {
+                constexpr std::size_t fadeFrames = 192;
+                exact = std::equal(source.begin()+fadeFrames,source.begin()+straightStop,pcm.begin()+fadeFrames) &&
+                    std::all_of(pcm.begin()+straightStop+fadeFrames,pcm.end(),[](float sample) { return sample == 0; });
+                for (std::size_t frame = 0; frame < fadeFrames; ++frame) {
+                    const auto shape = clipFadeShape(static_cast<double>(frame)/fadeFrames,4);
+                    exact &= pcm[frame] == source[frame]*static_cast<float>(shape) &&
+                        pcm[straightStop+frame] == static_cast<float>(source[straightStop-1]*(1.0-shape));
+                }
+            }
+            std::printf("Tick-only raw %s case %d: BPM %.0f, Stop %lld/%lld, exact PCM %d, owner accepted %d\n",
+                ram ? "RAM" : "paged",static_cast<int>(clock),observed,static_cast<long long>(stop),
+                static_cast<long long>(expectedStop),exact,accepted);
+            if (trim) {
+                const auto& problems = session.problems();
+                matched &= std::ranges::any_of(problems,[](const auto& p) {
+                    return p.find("requires a constant prepared tempo") != std::string::npos;
+                }) && std::all_of(pcm.begin(),pcm.end(),[](float sample) {return sample == 0;});
+                continue;
+            }
+            matched &= exact && stop == expectedStop && playback.edges[0].sample == launch &&
+                observed == (clock == Clock::External ? 20 : authoredRamp ? 60 : 120) &&
+                accepted == (clock == Clock::External || race) && session.problems().empty() && !hasPins();
+            if (race) matched &= session.beginRender().bpmAtTick(2*quarter) == 20;
+        }
+    }
+    require(matched,"a tick-only raw slot keeps original PCM, musical Stop and safe generation adoption");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the raw slot performs no callback allocation or file I/O");
 }
 
 void retainPagedOneShotOnSlotRefresh() {
@@ -3442,6 +3598,7 @@ int main() {
         musicalPlacementPhysicalPins(true);
         musicalPlacementPhysicalPins(false);
         unpinnedAbsoluteOneShotFollowsItsSource();
+        legacyMusicalOneShotPlaysRawPcm();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();
         pausedSupersessionReturnsToSameClock(false);

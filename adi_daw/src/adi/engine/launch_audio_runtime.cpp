@@ -39,7 +39,8 @@ bool samePinnedShape(const LaunchSlot& a, const LaunchSlot& b) noexcept {
     return a.track == b.track && a.scene == b.scene && a.clip == b.clip &&
         a.physicalStartFrame == b.physicalStartFrame && a.physicalFrames == b.physicalFrames &&
         a.physicalLoopBeginFrame == b.physicalLoopBeginFrame && a.physicalLoopEndFrame == b.physicalLoopEndFrame &&
-        a.fade == b.fade && a.mode == b.mode;
+        a.fade == b.fade && a.mode == b.mode &&
+        (a.physicalFrames > 0 || (a.startTick == b.startTick && a.endTick == b.endTick));
 }
 
 } // namespace
@@ -184,9 +185,12 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
         owner->collectPinnedSourceOwners();
         const auto gather = [&](const LaunchAudioProject& bank, std::vector<Candidate>& into) {
             for (const auto& slot : bank.view().slots) {
-                if (slot.clip == 0 || slot.physicalFrames <= 0) continue;
+                if (slot.clip == 0) continue;
                 const auto* pcm = bank.clip(slot.clip);
-                into.push_back({slot, pcm && needsRetainedPages(slot,pcm->rate()) ? owner->ownerFor(*pcm) : nullptr});
+                const bool legacyPaged = pcm && pcm->pageReader() && pcm->legacyRaw();
+                if (slot.physicalFrames <= 0 && !legacyPaged) continue;
+                into.push_back({slot, pcm && (legacyPaged || needsRetainedPages(slot,pcm->rate()))
+                    ? owner->ownerFor(*pcm) : nullptr});
             }
         };
         gather(*project_,pinned_);
@@ -390,7 +394,8 @@ bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::
     auto* slot = std::lower_bound(slots.data(),end,track,
         [](const LaunchSlot& item,std::int64_t id) { return item.track < id; });
     for (; slot != end && slot->track == track; ++slot) {
-        if (slot->clip != clip || !needsRetainedPages(*slot,source->rate())) continue;
+        if (slot->clip != clip ||
+            (!source->legacyRaw() && !needsRetainedPages(*slot,source->rate()))) continue;
         const auto* nextBank = after && after->hasTrack(track) ? after->mediaAt(sample).get() : nullptr;
         if (retainedOnly) {
             // An ordinary refresh may deliberately remove or move the slot.

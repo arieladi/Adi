@@ -116,13 +116,14 @@ LaunchAudioClip LaunchAudioClip::stretch(std::int64_t clip, std::int64_t firstTi
 }
 
 LaunchAudioClip LaunchAudioClip::fromPages(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
-                                           std::uint64_t frames, std::shared_ptr<LaunchPagedAudio> pages) {
+                                           std::uint64_t frames, std::shared_ptr<LaunchPagedAudio> pages, bool legacyRaw) {
     if (clip <= 0 || rate == 0 || channels == 0 || !pages || !pages->hasClip(clip) || frames == 0 ||
         frames > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
         throw std::invalid_argument("invalid paged Session clip audio");
     LaunchAudioClip result(clip, 0, rate, channels, {});
     result.pages_ = std::move(pages);
     result.renderedFrames_ = frames;
+    result.legacyRaw_ = legacyRaw;
     return result;
 }
 
