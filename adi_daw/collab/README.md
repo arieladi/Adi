@@ -355,6 +355,7 @@ subject, say so in your log instead of writing it twice.
 | 0266 | win | `win/adr-0266` | after the director's second test: the encoders, backups on a timer, a clip ends with its audio, an export does not stop the song, the EQ on a track | used |
 | 0267 | win | `win/adr-0267` | the built-in devices' look (sheets 3 to 8), the name EQ, one Auto Filter for lows and highs, a device's presets found at the device | used |
 | 0268 | win | `win/adr-0267` | instruments built from the material at hand, a goal: what the director's panel proposed beyond Live, and the rules that already bind it | used |
+| 0269 | win | `win/adr-0269` | the Session View's sheet, the Mix View's place in a chain, take lanes brought forward, and Undo: a plug-in's window, the loop's positions, kept Redo lines, a soft cap | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

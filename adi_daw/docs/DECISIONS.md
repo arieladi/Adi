@@ -21239,3 +21239,85 @@ which has no entry of its own; where any of this sits in the window (its sheet f
 | `docs/SANITY-CHECK.md` | SC-474 and SC-483 are the goal's first steps and stay in their queues |
 | `collab/README.md` | ADR 0268 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0269 |
+
+## ADR-0269 — The Session View's sheet, where the Mix View's processing sits, take lanes brought forward, and Undo: one history, a plug-in's window, the loop's positions, kept Redo lines and a soft cap — `DECIDED` (2026-11-28) — **DIRECTOR'S ANSWERS OF 28 NOVEMBER ("a", "L a, M a, N b, O a, P a", "Q a, R a, S a, T a"); AMENDS ADR-0203 d13; ADDS TO ADR-0212, ADR-0236 AND ADR-0243**
+
+**What this records.** Three sets of answers the director gave on 28 November, each after his outside
+panel had read what win put to it. The panel's conditions that win took are written into the decisions;
+what it proposed and win did not take is at the foot.
+
+### The Session View
+
+1. **Its sheet is agreed for now.** `collab/window/design/proposals/session-1`: Live 12's layout in the
+   agreed design language, with the Browser, the Info box, the Device View and the Status Bar as on the
+   Arrangement's sheet. His word: "session view looking good as far as i can tell from picture". What is
+   built from it is shown to him against it (ADR-0243).
+2. **The switch between Session and Arrangement is Live's ("a").** A small two-button switch at the top
+   right of the tracks, and the Tab key. The Control Bar's switch stays "Arrangement | Mix View".
+
+### The Mix View and takes
+
+3. **The Mix View's processing has a place in the track's chain ("L a").** By default after the track's
+   devices and before its fader; the place is movable, one value for a track, changed in one step of
+   Undo; it shows as a card in the Device View and as the channel's row in the Mix View. There is no
+   second, hidden chain. Freeze and export render up to that place exactly as it plays, with its
+   automation and its reported latency. Tools that only change what is heard while judging (Hear
+   Difference, the gain match while it is being compared) are never in a render.
+   - **Owed as a row of its own, not decided here:** a frozen channel whose processing listened to another
+     channel is marked stale when that other channel changes.
+4. **Take lanes come right after the basics ("M a").** Day one: every pass of an audio loop recording is
+   kept as its own lane, aligned; one click makes a whole pass the take; a range dragged or swiped on a
+   lane goes into the comp ("N b": swiping is in on day one); a lane and the comp can each be heard
+   alone; every edge of a comp has a short fade by default; the choice of takes is saved in the project
+   and does not live in Undo. MIDI passes stay as today. A take a lane refers to counts as used media.
+5. **The Mix View's Align keeps its name ("O a").** Live's Align Delay device is a different thing and
+   keeps its own.
+6. **Marks of keep, maybe and skip on takes wait ("P a")** for the goal of ADR-0268.
+
+### Undo and Redo
+
+7. **One history for the whole project,** as Live's and as ADI has. Views of that one list filtered by a
+   track or by the mixer may be added; a second Undo with its own Ctrl+Z is not.
+8. **A hosted plug-in's own window ("Q a").** A move of a parameter the host can see is one step. What
+   else is done inside the window becomes one step when the window closes, with the state before it taken
+   when the window opens. Opening and closing a window with nothing changed makes no step. Saving while a
+   window is open writes the plug-in's present state. Ctrl+Z inside the window is the plug-in's own. Undo
+   in the project while a window is open first makes that window's step, then undoes.
+9. **The loop's and the punch's positions, and the locators, are undoable ("R a").** Switching the loop or
+   the punch on and off stays outside Undo, like Play. The cue output is no part of this and stays outside.
+10. **No undoable operation reads a value that is outside the journal.** This, not d9, is what answers the
+    fault the review found on 28 November (a time edit read the loop, the Loop switch changed it with no
+    step, and Undo refused for good). Every operation states what it reads and what it changes, and a
+    test fails when an operation reads something it did not state.
+11. **A Redo line that a new edit leaves behind is kept, and the user is told ("S a").** A notice with a
+    way to restore it, and a lasting entry in the history list. Restoring a line is itself one named
+    step that Undo reverses. A restored line brings back its recorded state; nothing is replayed
+    against what has changed since.
+12. **The cap is soft for what is protected ("T a"; amends ADR-0203 d13).** The cap stays 2000 steps or
+    1000 MB, and the oldest plain steps are compacted by themselves. Named snapshots and reachable
+    branches are never compacted. When they alone pass the limit, no edit fails: the user is told and
+    chooses (drop a branch, drop a snapshot, or let it grow). The history list shows where step-by-step
+    Undo ends and which of the two limits holds.
+13. **Mute and solo are undoable and arm is not,** pending a look at Live itself (win's reading, to
+    confirm).
+
+**How Undo is proved.** The stored state compared before an edit, after Undo and after Redo; mixed
+sequences with the controls that make no step clicked in between; a save and a reopen in the middle.
+The review of 28 November (`basics/review-undo-log`) works by this.
+
+**Proposed by the panel and not taken.** Folding Preverb into the Throw (one renders audio, the other
+writes automation); merging Align Delay with the Mix View's Align (d5); dropping the `.amxd` translator
+to an idea (parts of it are built); asking the user each time a branch would be dropped (d12 asks only
+when the protected history alone passes the limit).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0203 d13 | the cap is soft for snapshots and reachable branches, and is shown (d12) |
+| ADR-0212; ADR-0236 | the Mix View's processing has a stated, movable place in a track's chain (d3) |
+| ADR-0243 | the Session View's sheet is agreed for now (d1) |
+| PLAN CT-01 to CT-05 | take lanes come right after the basics; the plan row for the order is owed (d4) |
+| PLAN TM-SV-05 | the window is built from sheet 1 (d1, d2) |
+| `collab/README.md` | ADR 0269 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0270 |
