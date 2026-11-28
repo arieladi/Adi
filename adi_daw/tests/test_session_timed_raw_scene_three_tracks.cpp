@@ -350,7 +350,7 @@ constexpr std::int64_t manyClip(std::size_t track, bool target) {
     return (target ? 400 : 300) + static_cast<std::int64_t>(track);
 }
 
-std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder, std::size_t count) {
+std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder, std::size_t count, bool savedStop) {
     auto store = prepareProject(folder,ThirdCell::Start,false);
     auto& db = store->db();
     {
@@ -382,6 +382,16 @@ std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder
             launch.bind(1,id); launch.bind(2,prototype); launch.exec();
         }
     }
+    if (savedStop) {
+        // Additional tracks may clone the third target. Remove its original
+        // clip only after all of their saved media links have been written.
+        SQLite::Transaction replacement(db);
+        SQLite::Statement stop(db,"UPDATE clip_slots SET clip_id=NULL,has_stop=1 WHERE clip_id=?");
+        stop.bind(1,clips.back()); stop.exec();
+        SQLite::Statement removeTemplate(db,"DELETE FROM clips WHERE id=?");
+        removeTemplate.bind(1,clips.back()); removeTemplate.exec();
+        replacement.commit();
+    }
     store.reset();
     StoreError error{};
     store = Store::open(folder.path() / "scene.adi",error);
@@ -390,13 +400,16 @@ std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder
 }
 
 void exerciseManyTracks(std::size_t count, Outcome outcome) {
-    const bool warm = outcome == Outcome::Warm;
-    const bool coldLast = outcome == Outcome::ColdThird;
-    const bool stop = outcome == Outcome::StopTrack;
+    const bool savedStop = outcome == Outcome::SavedStop || outcome == Outcome::ColdSavedStop ||
+        outcome == Outcome::CompetingSavedStop;
+    const bool warm = outcome == Outcome::Warm || outcome == Outcome::SavedStop;
+    const bool coldLast = outcome == Outcome::ColdThird || outcome == Outcome::ColdSavedStop;
+    const bool stop = outcome == Outcome::StopTrack || outcome == Outcome::CompetingSavedStop;
     constexpr auto end = cut + 3 * blockFrames;
-    constexpr std::size_t stopped = 1;
-    test::TempDirectory folder{"many_raw_timed_scene",warm ? "warm" : coldLast ? "cold-last" : "stop"};
-    auto store = prepareManyTrackProject(folder,count);
+    constexpr std::size_t userStoppedTrack = 1, savedStoppedTrack = 2;
+    const auto* mode = warm ? "warm" : coldLast ? "cold-last" : "stop";
+    test::TempDirectory folder{savedStop ? "many_raw_timed_saved_stop" : "many_raw_timed_scene",mode};
+    auto store = prepareManyTrackProject(folder,count,savedStop);
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
@@ -446,7 +459,7 @@ void exerciseManyTracks(std::size_t count, Outcome outcome) {
         playback.through(cut);
         OpRequest command;
         command.opType = "session.stopTrack";
-        command.payload = {{"track",stopped + 1},{"incarnation",session.launchIncarnation()}};
+        command.payload = {{"track",userStoppedTrack + 1},{"incarnation",session.launchIncarnation()}};
         require(OpJournal(*store).commit(command).ok,"queue audited StopTrack at the old cut opening");
     }
     playback.through(end);
@@ -461,18 +474,22 @@ void exerciseManyTracks(std::size_t count, Outcome outcome) {
                 "one receipt carries the adopted 140 BPM clock at the exact cut");
     } else if (stop) {
         const auto& edge = playback.edges[count];
-        require(edge.track == static_cast<std::int64_t>(stopped + 1) && edge.oldRun == old[stopped].run &&
-                edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
+        require(edge.track == static_cast<std::int64_t>(userStoppedTrack + 1) &&
+                edge.oldRun == old[userStoppedTrack].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
                 "the independent StopTrack alone takes effect on the old Bar");
     }
+    const auto stopsAtCut = [&](std::size_t index) {
+        return (stop && index == userStoppedTrack) || (warm && savedStop && index == savedStoppedTrack);
+    };
     for (std::size_t index = 0; index < count; ++index) {
         if (warm) {
             const auto& edge = playback.edges[count + index];
-            require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut &&
-                    edge.oldRun == old[index].run && edge.newClip == manyClip(index,true) &&
-                    after[index].clip == edge.newClip && after[index].run != old[index].run,
-                    "every warm target starts at the cut with a new run");
-        } else if (stop && index == stopped) {
+            const auto expectedClip = stopsAtCut(index) ? 0 : manyClip(index,true);
+            require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut && edge.tick == bar &&
+                    edge.oldClip == old[index].clip && edge.oldRun == old[index].run && edge.newClip == expectedClip &&
+                    after[index].clip == expectedClip && after[index].run != old[index].run,
+                    "every saved Start and Stop applies at the exact performed sample");
+        } else if (stopsAtCut(index)) {
             require(after[index].clip == 0,"the manually stopped track stays stopped");
         } else {
             require(after[index].clip == old[index].clip && after[index].run == old[index].run,
@@ -482,7 +499,7 @@ void exerciseManyTracks(std::size_t count, Outcome outcome) {
     for (auto sample = std::int64_t{0}; sample < end; ++sample) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < count; ++index) {
-            if (sample < startedAt[index] || (stop && index == stopped && sample >= cut)) continue;
+            if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index))) continue;
             const auto prototype = index % 3 + (warm && sample >= cut ? 3 : 0);
             expected += signal(prototype,sample - startedAt[index] + starts[prototype]);
         }
@@ -490,8 +507,8 @@ void exerciseManyTracks(std::size_t count, Outcome outcome) {
     }
     require(test::sceneClockCallbackAllocations() == initialAllocations && audio::callbackFileIo.load() == initialFileIo,
             "the bounded larger group performs no driver allocation or file reads");
-    std::printf("%zu-track raw Scene %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
-                count,warm ? "warm" : coldLast ? "cold-last" : "stop",playback.edgeCount,playback.sceneCount);
+    std::printf("%zu-track raw Scene %s%s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
+                count,savedStop ? "saved Stop " : "",mode,playback.edgeCount,playback.sceneCount);
 }
 
 } // namespace
@@ -499,7 +516,8 @@ void exerciseManyTracks(std::size_t count, Outcome outcome) {
 namespace adi::test {
 void runThreeTrackTimedRawSceneTests() {
     for (const auto tracks : {std::size_t{4},std::size_t{6}})
-        for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack})
+        for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack,
+                                   Outcome::SavedStop,Outcome::ColdSavedStop,Outcome::CompetingSavedStop})
             exerciseManyTracks(tracks,outcome);
     for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack,Outcome::SavedStop,
                                Outcome::ColdSavedStop,Outcome::CompetingSavedStop,Outcome::ResidentNoStop,Outcome::Continues,

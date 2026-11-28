@@ -667,13 +667,17 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     const std::span actions(timedRawPlan_.data(),timedRawPlan_.size());
     const auto count = driver.launcher_.planTimedSceneActions(candidate,candidateView,*candidate.preparedScene,actions);
     if (!count || *count != actions.size()) return false;
-    const auto startCount = std::ranges::count(actions,TimedSceneActionKind::Start,&TimedSceneAction::kind);
-    const auto inherited = std::ranges::count_if(actions,[](const auto& action) {
+    const auto startCount = static_cast<std::size_t>(
+        std::ranges::count(actions,TimedSceneActionKind::Start,&TimedSceneAction::kind));
+    const auto inherited = static_cast<std::size_t>(std::ranges::count_if(actions,[](const auto& action) {
         return action.kind == TimedSceneActionKind::Start && action.outgoingRun != 0;
-    });
-    if (inherited == 0 || (static_cast<std::size_t>(startCount) != actions.size() &&
-                          (actions.size() != 3 || startCount != 2 || inherited != 2)))
-        return false;
+    }));
+    if (inherited == 0) return false;
+    if (startCount != actions.size()) {
+        if (startCount < 2 || startCount + 1 != actions.size() || inherited != startCount) return false;
+        if (actions.size() != 3 && std::ranges::find(actions,TimedSceneActionKind::Stop,&TimedSceneAction::kind) == actions.end())
+            return false;
+    }
 
     // The complete plan has one action per catalog track in the same order.
     for (std::size_t index = 0; index < actions.size(); ++index) {
