@@ -128,7 +128,6 @@ private:
     static Payload slotAudioImage(Store&, const engine::TempoMap&, const ClipIds&, std::int64_t track,
         std::int64_t media, std::int64_t frames, std::int64_t ticks, std::uint32_t rate);
     static Payload slotMidiImage(Store&, const MidiLinearTake&, clip_edit::CopyIds&);
-    static Payload slotStreamBytes(std::span<const std::byte>);
     std::shared_ptr<Files> files_;
     const Store* owner_=nullptr;
     std::string client_;

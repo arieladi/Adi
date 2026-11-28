@@ -1026,10 +1026,6 @@ Payload RecordingEdit::slotMidiImage(Store& store, const MidiLinearTake& take, c
     return recordedMidiImage(store, take, allocated);
 }
 
-Payload RecordingEdit::slotStreamBytes(std::span<const std::byte> bytes) {
-    return binary(bytes);
-}
-
 RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioRecordingResult* audioTake,
                                            std::span<const ClipIds> ids, std::span<const MidiLinearTake> midi,
                                            double sampleRate, std::int64_t placementOffsetSamples, const StagedTake* staged) {
