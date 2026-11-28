@@ -17,6 +17,7 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
+#include <array>
 #include <cmath>
 #include <map>
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -191,6 +192,136 @@ AudioIo makeIo(Out& o, std::int32_t frames) {
     io.numOut = 2;
     io.frames = frames;
     return io;
+}
+
+class HalfKeyDevice final : public device::DeviceInstance {
+public:
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    std::int32_t sidechainInputChannels() const noexcept override { return 2; }
+    void prepare(double, std::int32_t) override {}
+    void process(const NodeIo &io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            const auto *input = io.in ? io.in[c] : nullptr;
+            const auto *key = io.sidechain ? io.sidechain[c] : nullptr;
+            const auto end = io.blockOffset + io.frames;
+            for (auto i = io.blockOffset; i < end; ++i)
+                io.out[c][i] = 0.5f * ((input ? input[i] : 0.0f) + (key ? key[i] : 0.0f));
+        }
+    }
+private:
+    const device::DeviceIdentity identity_{"internal", "adi.test.half-key", "Half and key", "ADI", "1"};
+};
+
+void testViaMainIsolation() {
+    section("ADR-0221 -- Via Main renders an isolated mix while its detector still listens");
+    const test::TempDirectory scratch("session", "via-main");
+    const auto path = scratch.path() / "mix.adi";
+    StoreError error{};
+    auto source = Store::create(path, error);
+    check(source != nullptr, "create the Via Main fixture");
+    if (!source)
+        return;
+    source->db().exec(
+        "UPDATE project SET sample_rate=48000;"
+        "INSERT INTO tracks(id,kind,name,parent_id) VALUES"
+        "(1,'master','Main',NULL),(10,'group','Selected group',NULL),"
+        "(11,'audio','Included child',10),(12,'audio','Redirected child',10),"
+        "(20,'audio','Key source',NULL),(21,'audio','Key receiver',NULL),"
+        "(22,'audio','Outside audio',NULL),(30,'return','Audible return',NULL),"
+        "(31,'return','Unrelated return',NULL),(32,'return','Cascaded return',NULL);"
+        "INSERT INTO mixer_strip(track_id,delay_samples) VALUES(22,-37);"
+        "INSERT INTO plugin_refs(id,format,uid,name) VALUES(1,'internal','adi.test.half-key','Half and key');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,1),(11,11);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+        "(1,1,0,1,'Main half'),(11,11,0,1,'Include the detector');"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,enabled) VALUES"
+        "(1,'track',12,'track',1,'main',1),(2,'track',20,'track',21,'main',1),"
+        "(3,'track',22,'track',10,'main',1),(4,'track',21,'device',11,'sidechain',1),"
+        "(5,'track',11,'track',30,'send',1),(6,'track',22,'track',30,'send',1),"
+        "(7,'track',30,'track',32,'send',1),(8,'track',11,'track',31,'send',0);"
+        "INSERT INTO routing_send_taps(routing_id,tap) VALUES(5,'post_fx'),(6,'pre_fx'),(7,'post_mixer');");
+    auto reader = Store::open(path, error, true);
+    check(reader && reader->readOnly(), "open the coherent mix fixture read-only");
+    if (!reader)
+        return;
+
+    struct Audition {
+        float main = 0.0f, selectedDirect = 0.0f;
+        std::int64_t mainLatency = 0;
+    };
+    const auto audition = [&](Precision precision, std::optional<std::int64_t> isolated) {
+        const std::array<std::pair<std::int64_t, float>, 6> levels = {{
+            {11, 0.125f}, {12, 0.25f}, {20, 0.0625f}, {21, 0.0625f}, {22, 0.25f}, {31, 0.0625f}}};
+        std::map<std::int64_t, std::unique_ptr<ToneNode>> tones;
+        for (const auto &[id, level] : levels)
+            tones.emplace(id, std::make_unique<ToneNode>(level));
+        Session session;
+        session.setSourcesFor([&](std::int64_t id) {
+            const auto found = tones.find(id);
+            return found == tones.end() ? std::vector<Node *>{} : std::vector<Node *>{found->second.get()};
+        });
+        SessionSpec spec{2, 48000, 64, precision};
+        spec.performanceState = false;
+        spec.offline = true;
+        spec.viaMainTrack = isolated;
+        const auto loader = [](const DeviceRequest &, std::string &) {
+            return std::make_unique<HalfKeyDevice>();
+        };
+        if (!session.load(*reader, loader, spec)) {
+            check(false, "offline fixture failed to load: " + session.error());
+            return Audition{};
+        }
+        const auto main = session.offlineTapOutput(1, Tap::PostFader);
+        const auto direct = session.offlineTapOutput(11, Tap::PostFx);
+        if (!main || !direct) {
+            check(false, "offline Main and direct endpoints are available");
+            return Audition{};
+        }
+        session.transport().play();
+        Out destination(64), stem(64);
+        for (int i = 0; i < 4; ++i)
+            session.process(makeIo(destination, 64));
+        const auto *graph = session.graph().currentGraph();
+        if (!graph || !graph->copyNodeOutput(direct->node, makeIo(stem, 64))) {
+            check(false, "offline graph captures a real post-FX stem");
+            return Audition{};
+        }
+        return Audition{destination.last(), stem.last(), main->latency};
+    };
+    for (const auto precision : {Precision::Float32, Precision::Float64}) {
+        const auto full = audition(precision, std::nullopt);
+        const auto group = audition(precision, 10);
+        const auto direct = audition(precision, 11);
+        check(full.main == 0.78125f && full.mainLatency == 37,
+              "full Main renders all inputs and the longest audible path, got " +
+                  std::to_string(full.main) + " at latency " + std::to_string(full.mainLatency));
+        check(group.main == 0.1875f && direct.main == group.main &&
+                  group.mainLatency == full.mainLatency,
+              "Via Main has only the selected child and two returns, with unchanged compensation");
+        check(group.selectedDirect == 0.125f && direct.selectedDirect == group.selectedDirect,
+              "the unselected feeding chain remains alive at the selected device's Post Mixer key");
+        float sum = 0.0f;
+        for (const auto id : {11, 12, 20, 22, 31})
+            sum += audition(precision, id).main;
+        check(sum == full.main, "linear Via Main sources sum to the same Main output");
+    }
+    source->db().exec("UPDATE tracks SET soloed=1 WHERE id=12;");
+    const auto withSolo = audition(Precision::Float32, 10);
+    check(withSolo.main == 0.1875f && withSolo.selectedDirect == 0.125f,
+          "an unrelated saved solo does not affect the isolated mix, got " +
+              std::to_string(withSolo.main) + " and stem " + std::to_string(withSolo.selectedDirect));
+    SessionSpec invalid;
+    invalid.viaMainTrack = 10;
+    Session live;
+    check(!live.load(*source, {}, invalid) && live.error().find("offline read-only") != std::string::npos,
+          "a live writer cannot load an export isolation override");
+    invalid.performanceState = false;
+    invalid.offline = true;
+    invalid.viaMainTrack = 999;
+    Session missing;
+    check(!missing.load(*reader, {}, invalid) && missing.error().find("regular track") != std::string::npos,
+          "a missing Via Main source is named before audio starts");
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +936,7 @@ int main() {
     testARouteADeviceCannotTake();
     testAPlaceholderWakesOnceInstalled();
     testADeviceKnowsADIRecords();
+    testViaMainIsolation();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

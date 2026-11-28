@@ -48,6 +48,26 @@ private:
     }
 };
 
+class RenderSilence final : public Node {
+public:
+    std::int64_t tailSamples() const noexcept override { return 0; }
+    bool processesDouble() const noexcept override { return true; }
+    EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+    const char *name() const noexcept override { return "offline output isolation"; }
+    void process(const NodeIo &io) noexcept override {
+        const auto clear = [&](auto channels) {
+            for (std::int32_t c = 0; channels && c < io.channels; ++c) {
+                if (channels[c])
+                    std::fill_n(channels[c] + io.blockOffset, io.frames, 0);
+            }
+        };
+        if (io.wide())
+            clear(io.out64);
+        else
+            clear(io.out);
+    }
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -231,6 +251,16 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
     // destination and a plugin on the destination is downstream of the sum.
     // That is the only place the chain shape is visible, and it is why the plan
     // does not need to know about it.
+    // The edge into `to` keeps its source track (connectTrackRoute), with or
+    // without EX-02's silencing gate in front of it.
+    const auto connectOutput = [&](NodeId from, NodeId to, Bus bus, bool muted, std::int64_t sourceTrack) {
+        if (!muted)
+            return r->graph_.connectTrackRoute(from, to, bus, sourceTrack);
+        auto silence = std::make_unique<RenderSilence>();
+        const auto gate = add(*silence);
+        r->owned_.push_back(std::move(silence));
+        return r->graph_.connect(from, gate) && r->graph_.connectTrackRoute(gate, to, bus, sourceTrack);
+    };
     for (const PlannedEdge& e : plan.edges) {
         if (e.from >= plan.nodes.size() || e.to >= plan.nodes.size()) {
             r->problems_.push_back("an edge names a node that is not in the plan");
@@ -355,9 +385,10 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             const NodeId sid = add(*send);
             const NodeId hid = half != nullptr ? add(*half) : kInvalidNode;
             const bool joined = r->graph_.connect(at, sid) &&
-                                (half == nullptr ? r->graph_.connectTrackRoute(sid, to, Bus::Main, srcId)
-                                                 : r->graph_.connect(sid, hid) &&
-                                                   r->graph_.connectTrackRoute(hid, to, Bus::Main, srcId));
+                                (half == nullptr
+                                     ? connectOutput(sid, to, Bus::Main, e.renderSilent, srcId)
+                                     : r->graph_.connect(sid, hid) &&
+                                           connectOutput(hid, to, Bus::Main, e.renderSilent, srcId));
             if (!joined) {
                 r->problems_.push_back(ref + ": the graph refused the send");
                 continue;
@@ -366,23 +397,30 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                        static_cast<std::uint64_t>(e.routingId)},
                                       at, sid, Bus::Main});
             if (half == nullptr) {
-                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, 0}, sid, to, Bus::Main});
+                if (!e.renderSilent)
+                    r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, 0},
+                                              sid, to, Bus::Main});
             } else {
                 // Into the junction keyed by the send it carries, and named
                 // by its wire: a console's, so a rebuild that turns summing
                 // off or on never plays one wire's history as the other's,
                 // and one that changes the flavour keeps it, as a child's does.
                 r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Next, send, 0}, sid, hid, Bus::Main});
-                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, half->wireKind()},
-                                          hid, to, Bus::Main});
+                if (!e.renderSilent)
+                    r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, half->wireKind()},
+                                              hid, to, Bus::Main});
             }
             continue;
         }
-        if (!r->graph_.connectTrackRoute(from, to, e.bus, srcId)) {
+        if (!connectOutput(from, to, e.bus, e.renderSilent, srcId)) {
             r->problems_.push_back(trackRef(srcId) + " -> " + trackRef(dstId) +
                                    ": the graph refused the connection");
             continue;
         }
+        // A silenced leg has its own zero-filled timing path. A rebuild must
+        // not inherit an earlier audible delay line into that path.
+        if (e.renderSilent)
+            continue;
         RealizedGraph::EdgeRecord rec;
         rec.key.fromTrack = srcId;
         rec.key.toTrack = dstId;

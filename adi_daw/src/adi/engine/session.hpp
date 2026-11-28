@@ -116,6 +116,8 @@ struct SessionSpec {
     bool offline = false;
     /// An offline driver prepares clip pages itself between process calls.
     bool synchronousClipReads = false;
+    /// An isolated track or group rendered through Main in a private session.
+    std::optional<std::int64_t> viaMainTrack{};
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -582,6 +584,7 @@ private:
     SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
+    [[nodiscard]] HearingFlags hearingFlags(const CueSettings &) const noexcept;
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its

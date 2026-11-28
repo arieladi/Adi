@@ -83,6 +83,9 @@ struct PlannedEdge {
     // by Graph. Track-level cycle arithmetic must not invent a junction edge.
     std::int64_t keyDevice = 0;
     double keyGainDb = 0, keyPan = 0;
+    // Offline output isolation keeps this edge's timing, but gates its audio
+    // and notes before they enter the audible mix.
+    bool renderSilent = false;
 };
 
 struct GraphPlan {
@@ -116,5 +119,9 @@ struct GraphPlan {
 /// because ADR-0021's oracle compares bytes and a plan that depended on row
 /// order would make the graph depend on how SQLite happened to return rows.
 [[nodiscard]] GraphPlan planGraph(const rows::Model&);
+/// Isolate a selected source in a private Via Main render (ADR-0221).
+/// Keeps sidechain dependencies and the original compensation topology.
+/// Throws if the source or an eligible path to Main is unavailable.
+void isolateViaMain(GraphPlan &, const rows::Model &, std::int64_t sourceTrack);
 
 }  // namespace adi::engine

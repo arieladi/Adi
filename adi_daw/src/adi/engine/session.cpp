@@ -896,17 +896,29 @@ private:
     std::uint64_t serial_;
     bool releasePending_ = false;
 };
+HearingFlags Session::hearingFlags(const CueSettings &cue) const noexcept {
+    HearingFlags flags;
+    flags.soloInPlace = cue.soloInPlace;
+    flags.soloIsCue = spec_.performanceState && cue.cueMode;
+    flags.referenceTrack = cue.projectReferenceTrack;
+    flags.ignoreSolo = spec_.viaMainTrack.has_value();
+    return flags;
+}
 
 void Session::attach(std::shared_ptr<const TimingView> timing) {
     device::DeviceHost::RebuildSpec rs;
     rs.transportState=timing;
     rs.model = [this] { return &model_; };
-    if (!frozenGroupChildren_.empty())
+    if (!frozenGroupChildren_.empty() || spec_.viaMainTrack)
         rs.transformPlan = [this](GraphPlan &plan) {
-            std::set<std::int64_t> roots;
-            for (const auto &source : frozenSources_)
-                roots.insert(source.first);
-            freeze::pruneGroupPlan(plan, frozenGroupChildren_, roots);
+            if (!frozenGroupChildren_.empty()) {
+                std::set<std::int64_t> roots;
+                for (const auto &source : frozenSources_)
+                    roots.insert(source.first);
+                freeze::pruneGroupPlan(plan, frozenGroupChildren_, roots);
+            }
+            if (spec_.viaMainTrack)
+                isolateViaMain(plan, model_, *spec_.viaMainTrack);
         };
     rs.channels = spec_.channels;
     rs.sampleRate = spec_.sampleRate;
@@ -1526,9 +1538,8 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    HearingFlags hearingFlags;hearingFlags.soloInPlace=cueSettings_.soloInPlace;
-    hearingFlags.soloIsCue=spec_.performanceState && cueSettings_.cueMode;hearingFlags.referenceTrack=cueSettings_.projectReferenceTrack;
-    strips_.sync(model_, &transport_, stripAutomation_,spec_.delayCompensation,hearingFlags);   // ADR-0163: before the graph names them
+    // ADR-0163: before the graph names them.
+    strips_.sync(model_, &transport_, stripAutomation_, spec_.delayCompensation, hearingFlags(cueSettings_));
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
     cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
@@ -1947,6 +1958,10 @@ bool Session::prepareLoad(const Store& store, DeviceLoader loader, SessionSpec s
     if(spec.externalTempoBpm && (!spec.performanceState || !std::isfinite(*spec.externalTempoBpm) ||
        *spec.externalTempoBpm<20 || *spec.externalTempoBpm>999)) {
         error_="external tempo needs a performance generation and finite 20..999 BPM";
+        return false;
+    }
+    if (spec.viaMainTrack && (!spec.offline || spec.performanceState || !store.readOnly())) {
+        error_ = "Via Main needs an offline read-only session without performance controls";
         return false;
     }
     loader_ = std::move(loader);

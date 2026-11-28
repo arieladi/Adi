@@ -464,7 +464,9 @@ Hearing hearing(const rows::Model& model, const GraphPlan& plan, const HearingFl
         // would solo nothing and silence the rest. Both are ignored rather
         // than refused.
         const PlannedKind kind = plan.nodes[i].kind;
-        soloed[i] = it->second->soloed && !flags.soloIsCue && plan.nodes[i].trackId!=flags.referenceTrack && kind != PlannedKind::Master && kind != PlannedKind::Vca;
+        soloed[i] = it->second->soloed && !flags.soloIsCue && !flags.ignoreSolo &&
+                    plan.nodes[i].trackId != flags.referenceTrack && kind != PlannedKind::Master &&
+                    kind != PlannedKind::Vca;
         anySolo = anySolo || soloed[i];
     }
 
