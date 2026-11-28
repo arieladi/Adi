@@ -1,13 +1,13 @@
 // Original diagnostic code from the director's research. MIT.
 #pragma once
-#include <windows.h>
+#include "../../platform.h"
 #include <cstdint>
 #include <cstring>
 constexpr uint64_t TIME_CAP=16384;
 struct TimeMarker { int32_t offset,reserved; double value; };
 struct TimeParameter { uint32_t id; int32_t offset; double value; };
 struct alignas(8) TimeRecord {
- volatile LONG64 committed;
+ volatile adi_platform::Atomic64 committed;
  int64_t qpc,project_samples,continuous_samples,system_ns;
  double sample_rate,project_music,bar_music,cycle_start_music,cycle_end_music,tempo;
  double gain_before,gain_after;
@@ -18,18 +18,19 @@ struct alignas(8) TimeRecord {
  TimeMarker input[32],output[32];
  TimeParameter parameters[64];
 };
-struct alignas(8) TimeHeader { char magic[8]; uint32_t version,record_size;uint64_t capacity;volatile LONG64 next,lost;volatile LONG enabled,reserved;int64_t frequency;};
+struct alignas(8) TimeHeader { char magic[8]; uint32_t version,record_size;uint64_t capacity;volatile adi_platform::Atomic64 next,lost;volatile adi_platform::Atomic32 enabled,reserved;int64_t frequency;};
 constexpr size_t TIME_HEADER_BYTES=4096,TIME_MAP_BYTES=TIME_HEADER_BYTES+TIME_CAP*sizeof(TimeRecord);
+static_assert(sizeof(TimeHeader)==56&&offsetof(TimeHeader,enabled)==40);
+static_assert(sizeof(TimeRecord)==2488&&offsetof(TimeRecord,raw_context)==184&&offsetof(TimeRecord,input)==440);
 struct TimeTrace {
- HANDLE map=nullptr;TimeHeader*h=nullptr;
- bool open(){wchar_t name[256];if(!GetEnvironmentVariableW(L"ADI_TIME_MAP",name,256))return false;
- map=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);if(!map)return false;
- h=(TimeHeader*)MapViewOfFile(map,FILE_MAP_ALL_ACCESS,0,0,TIME_MAP_BYTES);
- return h&&!memcmp(h->magic,"ADITIME1",8)&&h->record_size==sizeof(TimeRecord);}
- void close(){if(h)UnmapViewOfFile(h);if(map)CloseHandle(map);h=nullptr;map=nullptr;}
- bool enabled()const{return h&&h->enabled;}
- void record(TimeRecord&r){auto n=InterlockedIncrement64(&h->next)-1;if(n>=static_cast<LONG64>(h->capacity)){InterlockedIncrement64(&h->lost);return;}
- r.pid=GetCurrentProcessId();r.tid=GetCurrentThreadId();r.cpu=GetCurrentProcessorNumber();r.committed=0;
- auto*p=(TimeRecord*)((char*)h+TIME_HEADER_BYTES)+n;memcpy(p,&r,sizeof(r));InterlockedExchange64(&p->committed,n+1);}
+ adi_platform::Mapping map;TimeHeader*h=nullptr;
+ bool open(){if(h)return true;if(!map.openEnvironment("ADI_TIME_MAP",TIME_MAP_BYTES))return false;
+ h=static_cast<TimeHeader*>(map.data());
+ if(memcmp(h->magic,"ADITIME1",8)||h->version!=1||h->record_size!=sizeof(TimeRecord)||h->capacity!=TIME_CAP){close();return false;}return true;}
+ void close(){h=nullptr;map.close();}
+ bool enabled()const{return h&&adi_platform::acquire(&h->enabled);}
+ void record(TimeRecord&r){if(!h)return;auto n=adi_platform::fetchAdd(&h->next,1);if(n<0||static_cast<uint64_t>(n)>=h->capacity){adi_platform::fetchAdd(&h->lost,1);return;}
+ r.pid=adi_platform::pid();r.tid=adi_platform::tid();r.cpu=adi_platform::cpu();r.committed=0;
+ auto*p=adi_platform::mappedAt<TimeRecord,TIME_HEADER_BYTES>(h)+n;memcpy(p,&r,sizeof(r));adi_platform::publish(&p->committed,n+1);}
 };
 

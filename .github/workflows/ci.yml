@@ -1067,14 +1067,22 @@ jobs:
           ctest --test-dir adi_daw/build-juce -C Debug --output-on-failure --no-tests=error \
                 -R '^adi_acceptance_wts01_vst3$'
 
-      - name: Build and check research diagnostics and transport oracle
+      - name: Build and check research diagnostics
+        run: |
+          set -euo pipefail
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_research_probe_targets --parallel "$ADI_JOBS"
+          ctest --test-dir adi_daw/build-juce -C Debug --output-on-failure --no-tests=error \
+                -R '^adi_research_(clap|vst3|time)_selftest$'
+
+      - name: Build and check Windows transport acceptance gate
         if: runner.os == 'Windows'
         run: |
           set -euo pipefail
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_research_probe_targets adi_df_e21_acceptance --parallel "$ADI_JOBS"
+                --target adi_df_e21_acceptance --parallel "$ADI_JOBS"
           ctest --test-dir adi_daw/build-juce -C Debug --output-on-failure --no-tests=error \
-                -R '^(adi_research_(clap|vst3|time)_selftest|adi_df_e21_(oracle|host_acceptance))$'
+                -R '^adi_df_e21_(oracle|host_acceptance)$'
 
       - name: Locate the probe
         run: |

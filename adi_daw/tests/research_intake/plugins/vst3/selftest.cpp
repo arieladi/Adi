@@ -12,15 +12,17 @@
 #include "pluginterfaces/vst/ivstprefetchablesupport.h"
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
+#include "../platform_selftest.h"
 #include <algorithm>
 using namespace Steinberg;using namespace Steinberg::Vst;
 static int checks=0;
-static void check(bool b,const char *why){++checks;if(!b){printf("FAIL: %s\n",why);exit(1);}}
+static void check(bool b,const char *why){++checks;if(!b){printf("FAIL: %s\n",why);throw std::runtime_error("diagnostic assertion failed");}}
 #define TEST_UNKNOWN tresult PLUGIN_API queryInterface(const TUID,void **p) override{if(p)*p=nullptr;return kNoInterface;} uint32 PLUGIN_API addRef()override{return 1;} uint32 PLUGIN_API release()override{return 1;}
 struct Stream:IBStream{
  TEST_UNKNOWN char data[128]{};int pos=0,used=0;
- tresult PLUGIN_API read(void *p,int32 n,int32 *got)override{int k=std::max(0,std::min(n,used-pos));memcpy(p,data+pos,k);pos+=k;if(got)*got=k;return k==n?kResultOk:kResultFalse;}
- tresult PLUGIN_API write(void *p,int32 n,int32 *got)override{int k=std::max(0,std::min(n,128-pos));memcpy(data+pos,p,k);pos+=k;used=std::max(used,pos);if(got)*got=k;return k==n?kResultOk:kResultFalse;}
+ tresult PLUGIN_API read(void *p,int32 n,int32 *got)override{int k=std::max(0,std::min(n,used-pos));memcpy(p,data+pos,static_cast<size_t>(k));pos+=k;if(got)*got=k;return k==n?kResultOk:kResultFalse;}
+ tresult PLUGIN_API write(void *p,int32 n,int32 *got)override{int k=std::max(0,std::min(n,128-pos));memcpy(data+pos,p,static_cast<size_t>(k));pos+=k;used=std::max(used,pos);if(got)*got=k;return k==n?kResultOk:kResultFalse;}
  tresult PLUGIN_API seek(int64 p,int32 mode,int64 *res)override{int64 np=mode==kIBSeekSet?p:mode==kIBSeekCur?pos+p:used+p;if(np<0||np>used)return kInvalidArgument;pos=(int)np;if(res)*res=pos;return kResultOk;}
  tresult PLUGIN_API tell(int64 *p)override{if(!p)return kInvalidArgument;*p=pos;return kResultOk;}
 };
@@ -37,12 +39,17 @@ struct Changes:IParameterChanges{TEST_UNKNOWN Queue q;
  IParamValueQueue *PLUGIN_API addParameterData(const ParamID&,int32&)override{return nullptr;}
 };
 int main(int argc,char **argv){
- wchar_t mapname[128];swprintf_s(mapname,L"Local\\ADI_VST3_SELFTEST_%lu",GetCurrentProcessId());SetEnvironmentVariableW(L"ADI_ENGINE_MAP",mapname);
- HANDLE hm=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,(DWORD)(ADI_MAP_BYTES>>32),(DWORD)ADI_MAP_BYTES,mapname);check(hm!=nullptr,"shared mapping");
- auto *h=(ADIHeader*)MapViewOfFile(hm,FILE_MAP_ALL_ACCESS,0,0,ADI_MAP_BYTES);check(h!=nullptr,"mapping view");memcpy(h->magic,"ADIENG01",8);h->record_size=sizeof(ADIRecord);h->capacity=ADI_CAPACITY;h->enabled=2;
- wchar_t pcmname[128];swprintf_s(pcmname,L"%ls_PCM",mapname);HANDLE pm=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,(DWORD)ADI_PCM_MAP_BYTES,pcmname);check(pm!=nullptr,"PCM mapping");auto *ph=(ADIPCMHeader*)MapViewOfFile(pm,FILE_MAP_ALL_ACCESS,0,0,ADI_PCM_MAP_BYTES);check(ph!=nullptr,"PCM mapping view");memcpy(ph->magic,"ADIPCM01",8);ph->version=1;ph->chunk_size=sizeof(ADIPCMChunk);ph->capacity_frames=ADI_PCM_FRAMES;ph->capacity_chunks=ADI_PCM_CHUNKS;ph->enabled=1;
- HMODULE dll=LoadLibraryA(argc>1?argv[1]:"ADIEngineProbe.vst3");check(dll!=nullptr,"LoadLibrary VST3 binary");
- auto get=(IPluginFactory*(PLUGIN_API*)())GetProcAddress(dll,"GetPluginFactory");check(get!=nullptr,"factory export");auto *f=get();check(f->countClasses()==3,"three variants");
+ try{
+ adi_platform_selftest(check);
+ adi_platform::Environment saved("ADI_ENGINE_MAP");
+ const auto mapname=std::string("Local\\ADI_VST3_SELFTEST_")+std::to_string(adi_platform::pid());
+ check(adi_platform::setEnvironment("ADI_ENGINE_MAP",mapname),"mapping environment");
+ adi_platform::Mapping hm;check(hm.open(mapname,ADI_MAP_BYTES,true),"exclusive mapping");
+ auto*h=static_cast<ADIHeader*>(hm.data());memcpy(h->magic,"ADIENG01",8);h->version=1;h->record_size=sizeof(ADIRecord);h->capacity=ADI_CAPACITY;h->qpc_frequency=adi_platform::frequency();h->enabled=2;
+ adi_platform::Mapping pm;check(pm.open(mapname+"_PCM",ADI_PCM_MAP_BYTES,true),"exclusive PCM mapping");
+ auto*ph=static_cast<ADIPCMHeader*>(pm.data());memcpy(ph->magic,"ADIPCM01",8);ph->version=1;ph->chunk_size=sizeof(ADIPCMChunk);ph->capacity_frames=ADI_PCM_FRAMES;ph->capacity_chunks=ADI_PCM_CHUNKS;ph->qpc_frequency=adi_platform::frequency();ph->enabled=1;
+ adi_platform::Module dll;check(dll.open(argc>1?argv[1]:"ADIEngineProbe.vst3",true),"load VST3 module and platform entry");
+ auto get=reinterpret_cast<IPluginFactory*(PLUGIN_API*)()>(dll.symbol("GetPluginFactory"));check(get!=nullptr,"factory export");auto*f=get();check(f&&f->countClasses()==3,"three variants");
  for(int variant=0;variant<3;++variant){PClassInfo ci{};check(f->getClassInfo(variant,&ci)==kResultOk,"class enumeration");IComponent *c=nullptr;check(f->createInstance(ci.cid,IComponent_iid,(void**)&c)==kResultOk&&c,"component construction");check(c->initialize(nullptr)==kResultOk,"component initialize");
   IAudioProcessor *a=nullptr;IEditController *e=nullptr;check(c->queryInterface(IAudioProcessor_iid,(void**)&a)==kResultOk,"audio interface");check(c->queryInterface(IEditController_iid,(void**)&e)==kResultOk,"single-component controller");
   IPrefetchableSupport *pre=nullptr;auto pr=c->queryInterface(IPrefetchableSupport_iid,(void**)&pre);if(variant==2)check(pr==kNoInterface&&pre==nullptr,"absent prefetch interface");else{check(pr==kResultOk&&pre,"present prefetch interface");PrefetchableSupport support=99;check(pre->getPrefetchableSupport(support)==kResultOk&&support==static_cast<PrefetchableSupport>(variant==1?kIsNeverPrefetchable:kIsYetPrefetchable),"prefetch result");pre->release();}
@@ -63,9 +70,10 @@ int main(int argc,char **argv){
   if(variant==0){h->enabled=0;e->setParamNormalized(0,100.0/4095);check(a->process(d)==kResultOk&&ph->next_chunk==2,"PCM float64 capture");ph->enabled=0;check(a->process(d)==kResultOk&&ph->next_chunk==2,"PCM disabled no writes");ph->enabled=1;e->setParamNormalized(0,20.0/4095);h->enabled=2;}
   a->setProcessing(false);c->setActive(false);c->terminate();e->release();a->release();c->release();
  }
- auto *records=(ADIRecord*)((char*)h+ADI_HEADER_BYTES);int process=0,lifecycle=0,prefetchqueries=0;for(LONG64 n=0;n<h->next;++n){auto &r=records[n];check(r.committed==n+1,"record committed");check(r.pid==GetCurrentProcessId()&&r.tid==GetCurrentThreadId(),"record thread/process");if(r.kind==4){++process;check(r.rt==-1&&r.heard==-1&&r.decode==-1,"unknown REAPER APIs sentinel");check(r.rate==48000&&r.transport==1.0&&r.steady==64000,"context fields");check(r.qpc1>=r.qpc0&&r.id>=20&&r.id<=22,"timing and identity");}else if(r.kind==7){++lifecycle;if(r.events==6)++prefetchqueries;}}
+ auto *records=adi_platform::mappedAt<ADIRecord,ADI_HEADER_BYTES>(h);int process=0,lifecycle=0,prefetchqueries=0;for(adi_platform::Atomic64 n=0;n<h->next;++n){auto &r=records[n];check(adi_platform::acquire(&r.committed)==n+1,"record committed");check(r.pid==adi_platform::pid()&&r.tid==adi_platform::tid(),"record thread/process");if(r.kind==4){++process;check(r.rt==-1&&r.heard==-1&&r.decode==-1,"unknown REAPER APIs sentinel");check(r.rate==48000&&r.transport==1.0&&r.steady==64000,"context fields");check(r.qpc1>=r.qpc0&&r.id>=20&&r.id<=22,"timing and identity");}else if(r.kind==7){++lifecycle;if(r.events==6)++prefetchqueries;}}
  check(process==15,"five processing calls per variant");check(prefetchqueries==2,"two prefetch support queries");check(h->lost==0,"no trace overflow");
- check(ph->next_chunk==2&&ph->next_frame==128&&ph->lost_frames==0&&ph->lost_chunks==0,"PCM counts");auto *pc=(ADIPCMChunk*)((char*)ph+ADI_PCM_HEADER_BYTES);auto *pd=(double*)((char*)ph+ADI_PCM_DATA_OFFSET);for(int i=0;i<128;++i)check(std::abs(pd[i]-(i<64?0.05:0.1))<1e-8,"PCM sample data");check(pc[0].committed==1&&pc[1].committed==2&&pc[0].start_frame==0&&pc[1].start_frame==64,"PCM commit/offset");check(pc[0].mode==kPrefetch&&pc[1].mode==kOffline&&pc[0].transport==1&&pc[1].frames==64&&pc[0].qpc1>=pc[0].qpc0,"PCM metadata");
+ check(ph->next_chunk==2&&ph->next_frame==128&&ph->lost_frames==0&&ph->lost_chunks==0,"PCM counts");auto *pc=adi_platform::mappedAt<ADIPCMChunk,ADI_PCM_HEADER_BYTES>(ph);auto *pd=adi_platform::mappedAt<double,ADI_PCM_DATA_OFFSET>(ph);for(int i=0;i<128;++i)check(std::abs(pd[i]-(i<64?0.05:0.1))<1e-8,"PCM sample data");check(pc[0].committed==1&&pc[1].committed==2&&pc[0].start_frame==0&&pc[1].start_frame==64,"PCM commit/offset");check(pc[0].mode==kPrefetch&&pc[1].mode==kOffline&&pc[0].transport==1&&pc[1].frames==64&&pc[0].qpc1>=pc[0].qpc0,"PCM metadata");
  ADIPCMTrace overflow;check(overflow.open(),"PCM extra reader/writer mapping");ph->next_frame=ADI_PCM_FRAMES-10;pd[ADI_PCM_FRAMES-1]=123.0;float excess[64]{};ADIPCMChunk meta{};overflow.append(excess,64,meta);check(ph->lost_frames==64&&ph->lost_chunks==1&&pd[ADI_PCM_FRAMES-1]==123.0,"PCM overflow whole-block drop");overflow.close();
- f->release();FreeLibrary(dll);printf("PASS: %d checks; process_records=%d lifecycle_records=%d prefetch_queries=%d lost=%lld; PCM2chunks128frames and bounded-overflow verified\n",checks,process,lifecycle,prefetchqueries,h->lost);UnmapViewOfFile(ph);CloseHandle(pm);UnmapViewOfFile(h);CloseHandle(hm);return 0;
+ f->release();dll.close();printf("PASS: %d checks; process_records=%d lifecycle_records=%d prefetch_queries=%d lost=%lld; PCM2chunks128frames and bounded-overflow verified\n",checks,process,lifecycle,prefetchqueries,static_cast<long long>(h->lost));pm.close();hm.close();return 0;
+ }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

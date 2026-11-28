@@ -5,8 +5,10 @@
 #include "adi/render/queue.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
+#include "juce/clap_host.hpp"
 #include "juce/vst3_host.hpp"
 #include "temp_directory.hpp"
+#include "../plugins/probe_shared.h"
 #include "../plugins/time/probe/time_shared.h"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -99,6 +101,8 @@ private:
 struct Catalog {
     test::TempDirectory dir{"df_e21","discovery"};
     device::Vst3Host host;
+    device::ClapHost clap;
+    device::ClapPluginRef clapObserver;
     juce::PluginDescription observer,delay1024,delay4800;
     Catalog() {
         scan::Config config;
@@ -114,9 +118,26 @@ struct Catalog {
             if(description.name=="ADI Pure Delay 4800"){delay4800=description;seen4800=true;}
         }
         require(seenObserver&&seen1024&&seen4800,"all three owned VST3 classes discovered");
+        std::string error;
+        auto scanner = scan::Scanner::open(config, error);
+        require(scanner != nullptr, "open isolated CLAP fixture scanner: " + error);
+        const auto clapResult = scanner->probe("clap", ADI_DF_E21_CLAP_PATH);
+        require(clapResult.state == scan::State::Ready, "owned CLAP discovery: " + clapResult.error);
+        for (const auto& description : clapResult.plugins) {
+            if (description.id != "org.adi.research.engine-probe") continue;
+            clapObserver = {clapResult.path, description.id, description.name, description.vendor,
+                            description.version, description.features, description.instrument};
+        }
+        require(!clapObserver.id.empty(), "isolated scanner found the exact CLAP observer class");
     }
     engine::DeviceLoader loader(int latency) {
         return [this,latency](const engine::DeviceRequest& request,std::string& error) {
+            if (request.ref && request.ref->uid == clapObserver.id) {
+                auto instance = clap.makeDevice(clapObserver, request.sampleRate, request.maxFrames, error);
+                require(instance && instance->loaded() && instance->latencySamples() == 0,
+                        "real zero-latency CLAP observer loaded: " + error);
+                return instance;
+            }
             const bool isObserver=request.ref&&request.ref->uid=="fixture.observer";
             const auto& description=isObserver?observer:(latency==1024?delay1024:delay4800);
             auto instance=host.makeDevice(description,request.sampleRate,request.maxFrames,error);
@@ -143,7 +164,7 @@ struct Fixture {
     test::TempDirectory dir{"df_e21","session"};
     std::unique_ptr<Store> store;
     Source source;engine::Session session;
-    explicit Fixture(bool change) {
+    explicit Fixture(bool change, bool clap = false) {
         StoreError error{};store=Store::createEmpty(dir.path()/"test.adi",error);
         require(store!=nullptr,"create isolated project");
         store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'DF-E21',48000);"
@@ -154,6 +175,8 @@ struct Fixture {
             "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
             "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) "
             "VALUES(1,1,0,1,'Delay',1),(2,1,1,2,'Observer',1);");
+        if (clap) store->db().exec("UPDATE plugin_refs SET format='clap',"
+                                   "uid='org.adi.research.engine-probe' WHERE id=2");
         if(change)store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,"+
             std::to_string(2*textproj::kPPQ)+",90);");
         session.graph().setFadeFrames(0);
@@ -243,11 +266,139 @@ void realtime(Catalog& catalog,int latency,const std::string& scenario) {
     if(change)require(sawTempoAfter,"tempo change was reached");
 }
 
+class ClapCapture {
+public:
+    ClapCapture() {
+        const auto name = "Local\\ADI_DFE21_CLAP_" + std::to_string(adi_platform::pid()) +
+                          "_" + std::to_string(adi_platform::ticks());
+        require(mapping_.open(name, ADI_MAP_BYTES, true), "create private CLAP trace");
+        header_ = new(mapping_.data()) ADIHeader{};
+        std::memcpy(header_->magic, "ADIENG01", 8);
+        header_->version = 1;
+        header_->record_size = static_cast<std::uint32_t>(sizeof(ADIRecord));
+        header_->capacity = ADI_CAPACITY;
+        require(adi_platform::setEnvironment("ADI_ENGINE_MAP", name), "publish private CLAP trace name");
+    }
+
+    void begin() {
+        adi_platform::publish(&header_->next, 0);
+        adi_platform::publish(&header_->lost, 0);
+        adi_platform::publish(&header_->enabled, 2);
+    }
+
+    std::vector<ADIRecord> finish() {
+        adi_platform::publish(&header_->enabled, 0);
+        const auto count = adi_platform::acquire(&header_->next);
+        require(adi_platform::acquire(&header_->lost) == 0 && count >= 0 &&
+                static_cast<std::uint64_t>(count) <= ADI_CAPACITY, "CLAP trace bounds");
+        std::vector<ADIRecord> records;
+        const auto* first = adi_platform::mappedAt<ADIRecord, ADI_HEADER_BYTES>(header_);
+        for (std::int64_t index = 0; index < count; ++index) {
+            require(adi_platform::acquire(&first[index].committed) == index + 1, "committed CLAP record");
+            if (first[index].kind == 3) records.push_back(first[index]);
+        }
+        return records;
+    }
+
+private:
+    adi_platform::Environment environment_{"ADI_ENGINE_MAP"};
+    adi_platform::Mapping mapping_;
+    ADIHeader* header_ = nullptr;
+};
+
+void realtimeClap(Catalog& catalog, int latency, bool pdc, bool loop) {
+    ClapCapture trace;
+    Fixture fixture(false, true);
+    fixture.load(catalog, latency, pdc);
+    auto& transport = fixture.session.transport();
+    constexpr std::int64_t loopBegin = 997, loopEnd = 2528;
+    transport.locate(loop ? loopBegin : 0);
+    transport.play();
+    if (loop) {
+        transport.loop(loopBegin, loopEnd, true);
+        for (int index = 0; index < 12; ++index) fixture.render();
+    }
+    auto timeline = transport.position();
+    for (int callback = 0; callback < 8; ++callback) {
+        if (!loop && callback == 3) {
+            timeline = 54321;
+            transport.locate(timeline);
+        }
+        require(transport.position() == timeline, "independent CLAP driver position");
+        trace.begin();
+        fixture.render();
+        std::int64_t frames = 0;
+        for (const auto& record : trace.finish()) {
+            auto position = timeline + frames - (pdc ? latency : 0);
+            if (loop) position = wrap(position, loopBegin, loopEnd);
+            constexpr auto valid = CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
+                                   CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_IS_PLAYING;
+            require((record.flags & valid) == valid, "DF-E21: CLAP transport is missing required flags");
+            require(record.rate == rate && record.mode == CLAP_RENDER_REALTIME, "CLAP process rate and mode");
+            require(withinTolerance(record.transport, static_cast<double>(position) / rate),
+                    "CLAP seconds match the sample time at the observer input");
+            require(((record.flags & CLAP_TRANSPORT_IS_LOOP_ACTIVE) != 0) == loop, "CLAP loop flag");
+            if (loop) require(position + record.frames <= loopEnd, "CLAP callback splits at its own loop boundary");
+            frames += record.frames;
+        }
+        require(frames == block, "CLAP observer covers the whole driver callback");
+        timeline += block;
+        if (loop) timeline = wrap(timeline, loopBegin, loopEnd);
+    }
+}
+
+void verifySparseOutput(const render::Result& result) {
+    audio::WavReader output(result.output);
+    require(output.frames() == 96000, "export frame count");
+    std::vector<float> samples(192000);
+    require(output.read(samples.data(), 96000) == 96000, "read actual exported PCM");
+    for (std::int64_t sample = 0; sample < 96000; ++sample) {
+        const auto expected = sample > 0 && sample % 997 == 0
+            ? static_cast<float>(0.125 + static_cast<double>(sample / 997) / 1024.0) : 0.0f;
+        const auto index = static_cast<std::size_t>(sample) * 2;
+        require(samples[index] == expected && samples[index + 1] == -expected,
+                "offline PCM aligned, including zeros");
+    }
+}
+
+render::Job offlineJob(const Fixture& fixture) {
+    render::Job job;
+    job.project = fixture.store->path();
+    job.directory = fixture.dir.path() / "out";
+    job.nameTemplate = "DF-E21";
+    job.beginSample = 0;
+    job.endSample = 96000;
+    job.session.sampleRate = rate;
+    job.session.maxFrames = block;
+    job.encoding.format = audio::WavFormat::Float32;
+    return job;
+}
+
+void offlineClap(Catalog& catalog, int latency) {
+    ClapCapture trace;
+    Fixture fixture(true, true);
+    fixture.makeOfflineMedia();
+    const auto job = offlineJob(fixture);
+    trace.begin();
+    const auto result = render::renderWav(job, catalog.loader(latency));
+    const auto records = trace.finish();
+    require(result.state == render::JobState::Completed, "CLAP export completed: " + result.error);
+    std::int64_t position = -latency;
+    for (const auto& record : records) {
+        constexpr auto valid = CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_IS_PLAYING;
+        require((record.flags & valid) == valid, "CLAP export has playing transport");
+        require(record.mode == CLAP_RENDER_OFFLINE, "CLAP process mode is offline");
+        require(withinTolerance(record.transport, static_cast<double>(position) / rate),
+                "offline CLAP seconds match independent input-sample position");
+        position += record.frames;
+    }
+    require(position == job.endSample, "CLAP export processes the complete compensated input window");
+    verifySparseOutput(result);
+}
+
 void offline(Catalog& catalog,int latency) {
     Capture trace;Fixture fixture(true);fixture.makeOfflineMedia();
-    render::Job job;job.project=fixture.store->path();job.directory=fixture.dir.path()/"out";
-    job.nameTemplate="DF-E21";job.beginSample=0;job.endSample=96000;
-    job.session.sampleRate=rate;job.session.maxFrames=block;job.encoding.format=audio::WavFormat::Float32;
+    const auto job = offlineJob(fixture);
     trace.begin();const auto result=render::renderWav(job,catalog.loader(latency));const auto records=trace.finish();
     require(result.state==render::JobState::Completed,"real export completed: "+result.error);
     // Anchor sample identity to original input audio, never to a reported context.
@@ -282,13 +433,7 @@ void offline(Catalog& catalog,int latency) {
         }
     }
     require(calls>0&&markers==96,"offline observer actually processed all original source markers");
-    audio::WavReader output(result.output);require(output.frames()==96000,"export frame count");
-    std::vector<float> samples(192000);
-    require(output.read(samples.data(),96000)==96000,"read actual exported PCM");
-    for(std::int64_t n=0;n<96000;++n) {
-        const auto expected=n>0&&n%997==0?static_cast<float>(0.125+static_cast<double>(n/997)/1024.0):0.0f;
-        require(samples[static_cast<std::size_t>(n)*2]==expected&&samples[static_cast<std::size_t>(n)*2+1]==-expected,"offline PCM aligned, including zeros");
-    }
+    verifySparseOutput(result);
 }
 
 void selfTest() {
@@ -314,6 +459,17 @@ int main(int argc,char** argv) {
                 if(std::string(scenario)=="offline")offline(catalog,latency);else realtime(catalog,latency,scenario);
                 std::printf("PASS %s latency=%d\n",scenario,latency);
             }catch(const std::exception& error){++failures;std::printf("FAIL %s latency=%d: %s\n",scenario,latency,error.what());}
+        }
+        for (const int latency : {1024, 4800}) for (const auto* scenario : {"clock", "loop", "pdc-off", "offline"}) {
+            try {
+                if (std::strcmp(scenario, "offline") == 0) offlineClap(catalog, latency);
+                else realtimeClap(catalog, latency, std::strcmp(scenario, "pdc-off") != 0,
+                                  std::strcmp(scenario, "loop") == 0);
+                std::printf("PASS CLAP %s latency=%d\n", scenario, latency);
+            } catch (const std::exception& error) {
+                ++failures;
+                std::printf("FAIL CLAP %s latency=%d: %s\n", scenario, latency, error.what());
+            }
         }
         std::printf("DF-E21: %d checks, %d failing cases\n",checks,failures);return failures?1:0;
     }catch(const std::exception& error){std::fprintf(stderr,"FAIL DF-E21 setup: %s\n",error.what());return 1;}

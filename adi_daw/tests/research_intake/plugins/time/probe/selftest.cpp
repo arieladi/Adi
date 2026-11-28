@@ -10,17 +10,19 @@
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
+#include "../../platform_selftest.h"
 #include <vector>
 #include <algorithm>
 using namespace Steinberg;using namespace Steinberg::Vst;
-static int checks=0;void check(bool x,const char*s){++checks;if(!x){printf("FAIL %s\n",s);exit(1);}}
+static int checks=0;void check(bool x,const char*s){++checks;if(!x){printf("FAIL %s\n",s);throw std::runtime_error("diagnostic assertion failed");}}
 #define UNKNOWN tresult PLUGIN_API queryInterface(const TUID,void**p)override{if(p)*p=nullptr;return kNoInterface;} uint32 PLUGIN_API addRef()override{return 1;}uint32 PLUGIN_API release()override{return 1;}
 struct Queue:IParamValueQueue{UNKNOWN ParamID PLUGIN_API getParameterId()override{return 1;}int32 PLUGIN_API getPointCount()override{return 1;}tresult PLUGIN_API getPoint(int32 i,int32&o,ParamValue&v)override{if(i)return kInvalidArgument;o=3;v=.25;return kResultOk;}tresult PLUGIN_API addPoint(int32,ParamValue,int32&)override{return kNotImplemented;}};
 struct Changes:IParameterChanges{UNKNOWN Queue q;int32 PLUGIN_API getParameterCount()override{return 1;}IParamValueQueue*PLUGIN_API getParameterData(int32 i)override{return i?nullptr:&q;}IParamValueQueue*PLUGIN_API addParameterData(const ParamID&,int32&)override{return nullptr;}};
 double sample(int i){return i>=0&&i%137==17?.1+.001*((i/137)%97):0.;}
 template<class T>void run(IComponent*c,IAudioProcessor*a,IEditController*e,int delay,int format,int mode){
  ProcessSetup setup{mode,format,8192,48000};check(a->setupProcessing(setup)==kResultOk,"setup");check(c->setActive(1)==kResultOk,"active");a->setProcessing(1);e->setParamNormalized(1,1);
- std::vector<T>l(8192),r(8192),ol(8192),orr(8192);T*ip[2]{l.data(),r.data()},*op[2]{ol.data(),orr.data()};
+ std::vector<T>storageL(8192),storageR(8192),storageOL(8192),storageOR(8192);T*l=storageL.data(),*r=storageR.data(),*ol=storageOL.data(),*orr=storageOR.data();T*ip[2]{l,r},*op[2]{ol,orr};
  AudioBusBuffers in{},out{};in.numChannels=out.numChannels=2;if constexpr(sizeof(T)==4){in.channelBuffers32=ip;out.channelBuffers32=op;}else{in.channelBuffers64=ip;out.channelBuffers64=op;}
  ProcessContext ctx{};ctx.state=ProcessContext::kPlaying|ProcessContext::kProjectTimeMusicValid|ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kBarPositionValid|ProcessContext::kCycleValid|ProcessContext::kContTimeValid;
  ctx.sampleRate=48000;ctx.tempo=120;ctx.timeSigNumerator=7;ctx.timeSigDenominator=8;ctx.projectTimeMusic=-.25;ctx.barPositionMusic=-3.5;ctx.cycleStartMusic=2;ctx.cycleEndMusic=6;ctx.continousTimeSamples=123456;
@@ -34,7 +36,7 @@ template<class T>void run(IComponent*c,IAudioProcessor*a,IEditController*e,int d
  }
  a->setProcessing(0);c->setActive(0);
  if(!delay){
-  c->setActive(1);a->setProcessing(1);e->setParamNormalized(1,1);d.numSamples=16;std::fill_n(l.data(),16,T(1));std::fill_n(r.data(),16,T(1));Changes changes;d.inputParameterChanges=&changes;check(a->process(d)==kResultOk,"automation");
+  c->setActive(1);a->setProcessing(1);e->setParamNormalized(1,1);d.numSamples=16;std::fill_n(l,16,T(1));std::fill_n(r,16,T(1));Changes changes;d.inputParameterChanges=&changes;check(a->process(d)==kResultOk,"automation");
   for(int i=0;i<16;++i)check(ol[i]==T(i<3?1:.25),"exact parameter offset");
   a->setProcessing(0);c->setActive(0);
  }
@@ -44,11 +46,11 @@ template<class T>void run(IComponent*c,IAudioProcessor*a,IEditController*e,int d
 template<class T>void markerTest(IComponent*c,IAudioProcessor*a,IEditController*e,int delay,int format,TimeHeader*h){
  ProcessSetup setup{kRealtime,format,8192,48000};check(a->setupProcessing(setup)==kResultOk,"marker setup");
  check(c->setActive(1)==kResultOk,"marker active");check(a->setProcessing(1)==kResultOk,"marker processing");e->setParamNormalized(1,1);
- std::vector<T>l(8192),r(8192),ol(8192),orr(8192);T*ip[2]{l.data(),r.data()},*op[2]{ol.data(),orr.data()};
+ std::vector<T>storageL(8192),storageR(8192),storageOL(8192),storageOR(8192);T*l=storageL.data(),*r=storageR.data(),*ol=storageOL.data(),*orr=storageOR.data();T*ip[2]{l,r},*op[2]{ol,orr};
  AudioBusBuffers in{},out{};in.numChannels=out.numChannels=2;
  if constexpr(sizeof(T)==4){in.channelBuffers32=ip;out.channelBuffers32=op;}else{in.channelBuffers64=ip;out.channelBuffers64=op;}
  ProcessData d{};d.processMode=kRealtime;d.symbolicSampleSize=format;d.numInputs=d.numOutputs=1;d.inputs=&in;d.outputs=&out;d.numSamples=128;
- auto*records=(TimeRecord*)((char*)h+TIME_HEADER_BYTES);auto before=h->next;
+ auto*records=adi_platform::mappedAt<TimeRecord,TIME_HEADER_BYTES>(h);auto before=h->next;
  check(a->process(d)==kResultOk,"silence process");check(h->next==before+1,"silence record");auto&z=records[before];
  check(z.committed==before+1&&z.input_count==0&&z.input_total==0&&z.output_count==0&&z.output_total==0,"silence no sparse markers");
  check(out.silenceFlags==3,"silence flags exact zero");
@@ -77,10 +79,15 @@ template<class T>void markerTest(IComponent*c,IAudioProcessor*a,IEditController*
 }
 
 int main(int argc,char**argv){
- wchar_t name[128];swprintf_s(name,L"Local\\ADI_TIME_SELFTEST_%lu",GetCurrentProcessId());SetEnvironmentVariableW(L"ADI_TIME_MAP",name);
- HANDLE map=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,(DWORD)TIME_MAP_BYTES,name);check(map!=nullptr,"mapping");
- auto*h=(TimeHeader*)MapViewOfFile(map,FILE_MAP_ALL_ACCESS,0,0,TIME_MAP_BYTES);check(h!=nullptr,"view");memcpy(h->magic,"ADITIME1",8);h->version=1;h->record_size=sizeof(TimeRecord);h->capacity=TIME_CAP;h->enabled=1;
- auto dll=LoadLibraryA(argc>1?argv[1]:"ADITimeProbe.vst3");check(dll!=nullptr,"load");auto f=((IPluginFactory*(PLUGIN_API*)())GetProcAddress(dll,"GetPluginFactory"))();check(f->countClasses()==3,"classes");
+ try{
+ adi_platform_selftest(check);
+ adi_platform::Environment saved("ADI_TIME_MAP");
+ const auto name=std::string("Local\\ADI_TIME_SELFTEST_")+std::to_string(adi_platform::pid());
+ check(adi_platform::setEnvironment("ADI_TIME_MAP",name),"mapping environment");
+ adi_platform::Mapping map;check(map.open(name,TIME_MAP_BYTES,true),"exclusive mapping");
+ auto*h=static_cast<TimeHeader*>(map.data());memcpy(h->magic,"ADITIME1",8);h->version=1;h->record_size=sizeof(TimeRecord);h->capacity=TIME_CAP;h->frequency=adi_platform::frequency();h->enabled=1;
+ adi_platform::Module dll;check(dll.open(argc>1?argv[1]:"ADITimeProbe.vst3",true),"load VST3 module and platform entry");
+ auto get=reinterpret_cast<IPluginFactory*(PLUGIN_API*)()>(dll.symbol("GetPluginFactory"));check(get!=nullptr,"factory export");auto*f=get();check(f&&f->countClasses()==3,"classes");
  for(int v=0;v<3;++v){
   PClassInfo info{};f->getClassInfo(v,&info);IComponent*c=nullptr;check(f->createInstance(info.cid,IComponent_iid,(void**)&c)==kResultOk,"create");c->initialize(nullptr);
   IAudioProcessor*a=nullptr;IEditController*e=nullptr;c->queryInterface(IAudioProcessor_iid,(void**)&a);c->queryInterface(IEditController_iid,(void**)&e);check(a&&e,"interfaces");
@@ -88,9 +95,9 @@ int main(int argc,char**argv){
   run<float>(c,a,e,delay,kSample32,kRealtime);run<double>(c,a,e,delay,kSample64,kOffline);
   e->release();a->release();c->terminate();c->release();
  }
- auto*records=(TimeRecord*)((char*)h+TIME_HEADER_BYTES);check(h->next==122,"process count");check(h->lost==0,"no loss");
+ auto*records=adi_platform::mappedAt<TimeRecord,TIME_HEADER_BYTES>(h);check(h->next==122,"process count");check(h->lost==0,"no loss");
  bool parameters=false,negative=false;
- for(LONG64 i=0;i<h->next;++i){auto&r=records[i];check(r.committed==i+1,"commit");check(r.context_present&&r.context_bytes==sizeof(ProcessContext),"context presence/size");check(r.tempo==120&&r.numerator==7&&r.denominator==8&&r.project_music==-.25&&r.continuous_samples==123456,"raw musical context");
+ for(adi_platform::Atomic64 i=0;i<h->next;++i){auto&r=records[i];check(adi_platform::acquire(&r.committed)==i+1,"commit");check(r.context_present&&r.context_bytes==sizeof(ProcessContext),"context presence/size");check(r.tempo==120&&r.numerator==7&&r.denominator==8&&r.project_music==-.25&&r.continuous_samples==123456,"raw musical context");
  if(r.project_samples==-99)negative=true;if(r.param_count){check(r.parameters[0].id==1&&r.parameters[0].offset==3&&r.parameters[0].value==.25,"parameter record");parameters=true;}}
  check(parameters&&negative,"parameter and negative clock evidence");
 
@@ -103,7 +110,8 @@ int main(int argc,char**argv){
  }
  check(h->next==134&&h->lost==0,"all marker cases committed without loss");
 
- printf("PASS checks=%d records=%lld record_bytes=%zu context_bytes=%zu header_bytes=%zu map_bytes=%zu\n",checks,h->next,sizeof(TimeRecord),sizeof(ProcessContext),sizeof(TimeHeader),TIME_MAP_BYTES);
- f->release();FreeLibrary(dll);UnmapViewOfFile(h);CloseHandle(map);return 0;
+ printf("PASS checks=%d records=%lld record_bytes=%zu context_bytes=%zu header_bytes=%zu map_bytes=%zu\n",checks,static_cast<long long>(h->next),sizeof(TimeRecord),sizeof(ProcessContext),sizeof(TimeHeader),TIME_MAP_BYTES);
+ f->release();dll.close();map.close();return 0;
+ }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }
 

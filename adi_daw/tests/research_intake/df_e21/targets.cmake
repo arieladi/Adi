@@ -6,9 +6,9 @@ if(NOT WIN32 OR NOT ADI_WITH_JUCE)
     endif()
     return()
 endif()
-if(NOT TARGET adi_research_time_probe)
+if(NOT TARGET adi_research_time_probe OR NOT TARGET adi_research_clap_probe)
     if(ADI_ENABLE_DF_E21_ACCEPTANCE)
-        message(FATAL_ERROR "DF-E21 acceptance requires adi_research_time_probe")
+        message(FATAL_ERROR "DF-E21 acceptance requires the time and CLAP probe modules")
     endif()
     return()
 endif()
@@ -26,6 +26,7 @@ target_include_directories(adi_df_e21_acceptance SYSTEM PRIVATE
     "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
 target_compile_definitions(adi_df_e21_acceptance PRIVATE
     ADI_DF_E21_PROBE_PATH="$<TARGET_FILE:adi_research_time_probe>"
+    ADI_DF_E21_CLAP_PATH="$<TARGET_FILE:adi_research_clap_probe>"
     ADI_DF_E21_SCANNER_PATH="$<TARGET_FILE:adi_plugin_scanner>"
     JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_DISPLAY_SPLASH_SCREEN=0
@@ -41,7 +42,7 @@ set_source_files_properties(${_adi_df_sources} PROPERTIES
 if(MSVC)
     set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/host_acceptance.cpp" APPEND PROPERTY COMPILE_OPTIONS /WX)
 endif()
-add_dependencies(adi_df_e21_acceptance adi_research_time_probe adi_plugin_scanner)
+add_dependencies(adi_df_e21_acceptance adi_research_time_probe adi_research_clap_probe adi_plugin_scanner)
 add_test(NAME adi_df_e21_oracle COMMAND adi_df_e21_acceptance --self-test)
 if(ADI_ENABLE_DF_E21_ACCEPTANCE)
     add_test(NAME adi_df_e21_host_acceptance COMMAND adi_df_e21_acceptance --acceptance)

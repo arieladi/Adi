@@ -19,7 +19,8 @@ effects or production plug-ins. No reference-host result is distributed here.
 - `scanner/`: metadata-only two-class VST3 factory; no working audio instance. Null factory,
   owned-child exit and bounded sleep modes test isolation. See `cases.json` before use.
 
-Build all from a Windows x64 MSVC developer terminal with `build.py`. Run all three self-tests
+The standalone `build.py` remains a Windows x64 MSVC developer-terminal builder
+(C++20). The project CMake targets support Windows, macOS and Linux. Run all three self-tests
 from the output directory. They load only these owned diagnostic modules. The time test
 checks exact delays across irregular blocks, 32/64-bit samples, automation offset and raw
 transport fields. Passing does not prove a DAW's compensation or transport policy.
@@ -51,17 +52,23 @@ isolated scanner tests, not to an audio self-test.
 Windows hosts and acceptance harnesses must use
 `$<TARGET_FILE:adi_research_time_probe>` (also exposed as
 `ADI_RESEARCH_TIME_PROBE_PATH`), a flat PE VST3 module. Never assume a single-config
-output directory. The three class IDs, shared trace layout and marker threshold are
-unchanged by this build integration.
+output directory. The three class identities, shared trace layout and marker threshold are
+unchanged by this build integration. macOS emits `.vst3`/`.clap` bundles with
+`Contents/Info.plist` and `Contents/MacOS/<executable>`; self-tests receive the
+actual executable path and invoke the appropriate VST3 bundle entry/exit.
 
-The current trace platform layer and self-test loaders require Windows. On other
-platforms the include reports the limitation, sets `ADI_RESEARCH_PROBES_AVAILABLE`
-false and does not create empty placeholder targets. A functioning macOS/Unix port
-still needs named shared-memory ownership, equivalent atomic commit/counter operations,
-monotonic clocks and process/thread IDs, environment handling, dynamic-loader wrappers,
-and the platform's real VST3 bundle/entry points. It must preserve the trace ABI and
-pass the actual-module tests; a header-only build is not portability evidence.
+`platform.h` implements Windows named mappings and POSIX `shm_open`/`mmap`,
+exclusive keeper ownership, open-existing recorders, release/acquire publication,
+monotonic clocks and real module loaders. The ABI rejects non-little-endian or
+non-64-bit platforms and requires lock-free shared counters. Self-tests verify
+invalid and missing maps, ownership cleanup, bounded overflow and actual module
+trace records. See [PORTABILITY.md](PORTABILITY.md) for the name/clock contracts
+and the distinction between implemented support and native validation. CI builds
+and runs these diagnostics on both hosting legs; the DF-E21 host-level acceptance
+gate remains Windows-only.
 
+The historical Python capture helpers remain **Windows-only**; the C++ port does
+not claim to port those external recording workflows.
 `time/time_capture.py serve --name NAME --stop-file FILE` creates a bounded mapping before
 the host starts. Set `ADI_TIME_MAP` to the same NAME in the host's environment. In another
 terminal, `capture --name NAME --seconds 8 --output DIR --label CASE` arms and saves it.
