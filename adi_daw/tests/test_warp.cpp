@@ -89,6 +89,65 @@ void markerCodec() {
           callbackAllocations.load()==allocations+cost && audio::callbackFileIo.load()==io,"marker preparation refuses on callback before allocating or doing I/O");
 }
 
+void markerEditing() {
+    using audio::WarpMapError;
+    const std::array<WarpMarker, 4> markers{{{0, 0}, {20, 500}, {80, 1000}, {100, 1500}}};
+    auto original = writeStream<WarpMarker>(FourCC::WarpMap, markers, 1, 0);
+    const std::array trailer{std::byte{0xf0}, std::byte{0}, std::byte{3}};
+    original.insert(original.end(), trailer.begin(), trailer.end());
+    const auto before = original;
+    const auto inserted = audio::editWarpMarker(original, 100, {}, WarpMarker{45, 630});
+    const auto moved = audio::editWarpMarker(inserted.bytes, 100, WarpMarker{45, 630},
+                                             WarpMarker{56, 880});
+    const auto removed = audio::editWarpMarker(moved.bytes, 100, WarpMarker{56, 880}, {});
+    const auto decoded = audio::readWarpMap(moved.bytes, 100);
+    const auto expected = std::vector<WarpMarker>{{0, 0}, {20, 500}, {56, 880}, {80, 1000}, {100, 1500}};
+    check(inserted && moved && decoded && decoded.markers == expected && original == before,
+          "interior insert and move replace only the explicitly addressed material");
+    check(removed && removed.bytes == before,
+          "interior remove restores exact original map flags, neighbor bytes and trailer");
+    const auto noop = audio::editWarpMarker(original, 100, markers[1], markers[1]);
+    check(noop && noop.bytes == before, "same-marker move produces exact original bytes");
+    check(audio::editWarpMarker(original, 100, WarpMarker{20, 499}, {}).error ==
+              WarpMapError::StaleMarker &&
+              audio::editWarpMarker(original, 100, WarpMarker{19, 500}, markers[1]).error ==
+                  WarpMapError::StaleMarker,
+          "existing marker operations require the original frame and tick");
+    check(audio::editWarpMarker(original, 100, {}, WarpMarker{20, 600}).error == WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, {}, WarpMarker{50, 500}).error == WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, markers[1], WarpMarker{85, 900}).error ==
+                  WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, markers[1], WarpMarker{30, 1100}).error ==
+                  WarpMapError::Order,
+          "duplicates and crossings on either clock refuse before generating bytes");
+    check(audio::editWarpMarker(original, 100, markers.front(), {}).error == WarpMapError::Bounds &&
+              audio::editWarpMarker(original, 100, markers.back(), WarpMarker{90, 1490}).error ==
+                  WarpMapError::Bounds &&
+              audio::editWarpMarker(original, 100, {}, WarpMarker{100, 1600}).error ==
+                  WarpMapError::Bounds,
+          "origin and terminal coverage remain fixed");
+    auto future = original;
+    auto header = StreamHeader{};
+    std::memcpy(&header, future.data(), sizeof header);
+    header.version = 2;
+    std::memcpy(future.data(), &header, sizeof header);
+    const auto futureEdit = audio::editWarpMarker(future, 100, markers[1], {});
+    const auto wrongCoverage = audio::editWarpMarker(original, 99, markers[1], {});
+    check(futureEdit.error == WarpMapError::FutureLayout && futureEdit.bytes.empty() &&
+              !wrongCoverage && wrongCoverage.bytes.empty(),
+          "unknown version and incompatible source coverage refuse without a partial map");
+    const auto cost = emptyResultCost<audio::WarpMapWrite>();
+    const auto allocations = callbackAllocations.load(), io = audio::callbackFileIo.load();
+    audio::WarpMapWrite refused;
+    {
+        audio::CallbackScope callback;
+        refused = audio::editWarpMarker(original, 100, markers[1], {});
+    }
+    check(refused.error == WarpMapError::Realtime && callbackAllocations.load() == allocations + cost &&
+              audio::callbackFileIo.load() == io,
+          "marker edit refuses on callback before decoding, allocation or file I/O");
+}
+
 void renderModes() {
     for(const std::uint32_t sourceRate:{44100u,48000u})for(const auto mode:{audio::WarpMode::Tones,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
         test::TempDirectory temporary{"warp","r3"};const auto source=temporary.path()/"source.wav";
@@ -385,4 +444,4 @@ void guardsAndLifetime() {
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeInterpolation();beatsMidpointLoops();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{markerCodec();markerEditing();renderModes();rePitch();nativeInterpolation();beatsMidpointLoops();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 namespace adi {
 /// AWRP v1, 16 bytes: source-window frame followed by source musical tick.
 struct WarpMarker {
@@ -13,7 +14,7 @@ struct WarpMarker {
 static_assert(sizeof(WarpMarker)==16 && offsetof(WarpMarker,sourceFrame)==0 && offsetof(WarpMarker,tick)==8);
 template<>struct StreamTraits<WarpMarker>{static constexpr std::array<std::size_t,1> released={16};};
 namespace audio {
-enum class WarpMapError {None,Realtime,Header,Count,Bounds,Order,Coverage};
+enum class WarpMapError {None,Realtime,Header,Count,Bounds,Order,Coverage,FutureLayout,StaleMarker};
 struct WarpMapRead {
     WarpMapError error=WarpMapError::None;
     bool futureLayout=false;
@@ -32,5 +33,13 @@ struct WarpMapWrite {
 /// are skipped when reading; keep their original BLOB for a later save/edit.
 [[nodiscard]] WarpMapRead readWarpMap(std::span<const std::byte>,std::uint64_t sourceFrames);
 [[nodiscard]] WarpMapWrite writeWarpMap(std::span<const WarpMarker>,std::uint64_t sourceFrames);
+/// Insert, move or remove one interior marker on an existing AWRP v1 map.
+/// Insert has only a replacement, remove only an expected marker, and move
+/// has both. A move and remove require an exact frame/tick match. A move
+/// stays between its original neighbors. The original flags and trailer
+/// survive, and unknown record layouts refuse before encoding.
+[[nodiscard]] WarpMapWrite editWarpMarker(std::span<const std::byte>, std::uint64_t sourceFrames,
+                                         std::optional<WarpMarker> expected,
+                                         std::optional<WarpMarker> replacement);
 }
 }
