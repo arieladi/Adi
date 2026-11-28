@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-28, before dawn — #830 on main: the tenth stack and the fixes for the director's own test
+
+**Landed:** #830, 25 checks green on the three systems. Two more faults showed on GitHub after the entry below and were fixed on the stack. Linux: the acceptance walk's four-bar recording was cut short, because its driver runs as fast as the engine renders and, since a new song has no returns (SC-437), outran the recorder's writer and filled its two-second ring; the driver now gives the writer a turn while a take is recorded. A device cannot do this, it calls once per block of real time. macOS: the two faults named below. #831: the entry below.
+
+**The register:** seventeen rows of the director's own test are marked on main (#830). SC-441 is not: its Loop half is fixed, its silent click was not reproduced and waits for his retest. The marks for #818, #822 and the rest of #830 are still owed.
+
+**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-447.
+
+---
+
 ## 2026-11-28, night — the ninth stack on main; the director's own test, and its fixes stacked on the tenth (#830); the review's findings; what the window suite hid on Windows and macOS
 
 **Landed since the last entry.** #822, the ninth basics stack: `basics/integrate-1` (eight chains, about 200 commits), the gemini seat's 18 findings fixed by the integrator, and ADR-0263. Win's fixes on it: a local in the Settings folder chooser that hid a JUCE member (MSVC C4458); Save a Copy keeping a sample's relative path when Windows spells the folder two ways (seen only on GitHub's Windows, whose temporary folder is reached through a short name; reproduced on the second PC by running the suite with such a name); the Warp result published through a flag where Apple's standard library has no atomic shared pointer; the library suite run on its own. #823 to #828: reservations and the records below.
