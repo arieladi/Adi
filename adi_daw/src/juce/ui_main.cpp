@@ -2265,6 +2265,21 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
+        root->promptInsertSilence = [owner = root.get()](AdiRootComponent::InsertSilenceReply reply) {
+            auto *prompt = new juce::AlertWindow("Set Time to Insert", "Enter bars, beats and sixteenths.",
+                                                 juce::MessageBoxIconType::NoIcon, owner);
+            prompt->addTextEditor("length", "0.0.0", "Length");
+            prompt->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            prompt->enterModalState(
+                true, juce::ModalCallbackFunction::create([prompt, reply = std::move(reply)](int chosen) {
+                    if (chosen == 1)
+                        reply(prompt->getTextEditorContents("length").toStdString());
+                    else
+                        reply(std::nullopt);
+                }),
+                true);
+        };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
         root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
                                       const std::string &label) {

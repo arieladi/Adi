@@ -7225,6 +7225,40 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo Insert Silence");
     root.frame();
     check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar, "as before");
+
+    AdiRootComponent::InsertSilenceReply answer;
+    root.promptInsertSilence = [&](AdiRootComponent::InsertSilenceReply reply) { answer = std::move(reply); };
+    select(bar, bar);
+    juce::ApplicationCommandInfo insertInfo(AppCommands::InsertSilence);
+    commands.getCommandInfo(AppCommands::InsertSilence, insertInfo);
+    check((insertInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && root.keyPressed(insertKey) && answer,
+          "SC-187: Ctrl/Cmd+I at the insert marker asks for a duration");
+    if (answer) {
+        answer(std::nullopt);
+        answer = {};
+    }
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar && sel.start == sel.end,
+          "SC-187: Cancel leaves the Arrangement and marker in place");
+    check(root.keyPressed(insertKey) && answer, "SC-187: the point can ask again after cancellation");
+    if (answer) {
+        answer("0.0.0");
+        answer = {};
+    }
+    check(!root.error().empty() && clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar,
+          "SC-187: a zero duration is refused without an edit");
+    check(root.keyPressed(insertKey) && answer, "SC-187: ask for a positive duration");
+    if (answer)
+        answer("1.0.0");
+    answer = {};
+    root.promptInsertSilence = {};
+    root.frame();
+    check(clipsOf(2) == Clips{{3 * bar, bar}} && clipsOf(3) == Clips{{5 * bar, bar}} && locator() == 5 * bar &&
+              loopStart() == 5 * bar && sel.start == bar && sel.end == 2 * bar,
+          "SC-187: confirming one bar inserts it across tracks and selects the new time");
+    check(root.command(AppCommands::Undo), "SC-187: undo the insertion in one step");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar, "SC-187: Undo restores the material");
+
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
     const auto picture = [&](const char *name) {
         const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
@@ -16301,15 +16335,97 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(located().size() == 1 && located()[0].pos == 2 * bar, "undo brings it back");
+    {
+        const auto savedStep = step();
+        const auto existing = located();
+        const auto existingId = existing.empty() ? 0 : existing.front().id;
+        const auto hasLocator = [&](std::int64_t id) { return locatorById(located(), id) != nullptr; };
+        const auto hasLocatorAt = [&](std::int64_t tick) { return locatorAt(located(), tick) != nullptr; };
+        const auto undoAdds = [&] {
+            for (int i = 0; i < 3 && step() != savedStep; ++i) {
+                check(root.command(AppCommands::Undo), "SC-354: undo the locator edit");
+                root.frame();
+            }
+            check(step() == savedStep && hasLocator(existingId) && located().size() == 1,
+                  "SC-354: restore the original locator and Undo head");
+        };
+        auto &mailbox = document->mailbox();
+        const auto savedPosition = mailbox.position();
+        const auto savedRate = mailbox.sampleRate();
+        engine::Transport driver;
+        mailbox.setSampleRate(48000.);
+        mailbox.drain(driver);
+        const auto showSongPosition = [&](std::int64_t tick) {
+            const auto seconds = root.current()->tempo->ticksToSeconds(tick);
+            driver.locate(static_cast<std::int64_t>(seconds * mailbox.sampleRate()));
+            mailbox.publish(driver);
+            root.frame();
+        };
+
+        arrangement.selectedLocator = existingId;
+        showSongPosition(2 * bar);
+        const bool duplicate = root.command(AppCommands::AddLocator);
+        root.frame();
+        check(!duplicate && hasLocator(existingId) && step() == savedStep,
+              "SC-354: repeating Add at the same position leaves the selected locator intact");
+        undoAdds();
+
+        arrangement.selectedLocator = existingId;
+        showSongPosition(3 * bar);
+        check(!root.playing() && sel.insert == 2 * bar && root.timelineTick() == 3 * bar,
+              "SC-354 fixture separates the stopped song position and insert marker");
+        check(root.command(AppCommands::AddLocator), "SC-354: Add Locator with an earlier locator selected");
+        root.frame();
+        const auto added = located();
+        const auto *newLocator = locatorAt(added, 3 * bar);
+        check(added.size() == 2 && hasLocator(existingId) && newLocator != nullptr &&
+                  arrangement.selectedLocator == newLocator->id && sel.insert == 2 * bar,
+              "SC-354: stopped Add uses the song position and selects the new locator");
+        undoAdds();
+
+        const auto oldMarker = sel;
+        sel.insert = sel.start = sel.end = 4 * bar;
+        arrangement.selectedLocator = existingId;
+        showSongPosition(5 * bar);
+        click(ArrangementView::TopButton::Set);
+        check(located().size() == 2 && hasLocator(existingId) && hasLocatorAt(4 * bar),
+              "SC-354: stopped Set uses the insert marker when the selected locator is elsewhere");
+        undoAdds();
+        sel = oldMarker;
+
+        arrangement.selectedLocator = existingId;
+        driver.play();
+        showSongPosition(6 * bar);
+        check(root.playing() && root.command(AppCommands::AddLocator), "SC-354: Add Locator during playback");
+        root.frame();
+        showSongPosition(7 * bar);
+        check(root.command(AppCommands::AddLocator), "SC-354: Add Locator again during playback");
+        root.frame();
+        check(located().size() == 3 && hasLocator(existingId) && hasLocatorAt(6 * bar) && hasLocatorAt(7 * bar),
+              "SC-354: both playing Add actions preserve the earlier locator");
+        const auto selectedWhilePlaying = arrangement.selectedLocator;
+        showSongPosition(8 * bar);
+        click(ArrangementView::TopButton::Set);
+        check(located().size() == 4 && hasLocator(existingId) && hasLocatorAt(6 * bar) &&
+                  hasLocatorAt(7 * bar) && hasLocatorAt(8 * bar) && selectedWhilePlaying != 0 &&
+                  arrangement.selectedLocator == selectedWhilePlaying,
+              "SC-354: Set adds while playing and leaves the previous locator selected");
+
+        driver.play(false);
+        driver.locate(savedPosition);
+        mailbox.setSampleRate(savedRate);
+        mailbox.publish(driver);
+        root.frame();
+        undoAdds();
+    }
     // A time selection's start, while stopped.
     arrangement.selectedLocator = 0;
     sel.start = 5 * bar;
     sel.end = 6 * bar;
     sel.insert = 5 * bar;
-    check(root.command(AppCommands::AddLocator), "Add Locator, the Create menu's");
-    root.frame();
+    click(ArrangementView::TopButton::Set);
     check(located().size() == 2 && located()[1].pos == 5 * bar && located()[1].name == "2",
-          "Add Locator over a time selection: at its start, named 2");
+          "Set over a time selection: at its start, named 2");
 
     // Previous and Next.
     arrangement.selectedLocator = 0;

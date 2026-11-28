@@ -1948,6 +1948,8 @@ void AdiRootComponent::frame() noexcept {
         // Follow starts again whenever playback starts or stops (§6.2).
         if (playing != playing_)
             arrangement.followPaused = false;
+        if (arrangement.selectedLocator != 0 && (playing != playing_ || !playing))
+            arrangement.repaint(arrangement.topButton(ArrangementView::TopButton::Set).getSmallestIntegerContainer());
         sampleRate_ = rate;
         playing_ = playing;
         position_ = position;
@@ -3545,7 +3547,26 @@ bool AdiRootComponent::canTimeCommand(int id) const {
         return (std::holds_alternative<clip_edit::TimeCopy>(held) || (range && range->clearsRange)) &&
                (sel.marked || sel.start != sel.end);
     }
+    if (id == AppCommands::InsertSilence && sel.marked && promptInsertSilence)
+        return true;
     return sel.start != sel.end;
+}
+bool AdiRootComponent::insertSilence(std::int64_t at, std::int64_t length) {
+    if (at < 0 || length <= 0 || at > std::numeric_limits<std::int64_t>::max() - length)
+        return fail("Enter a positive time in bars, beats and sixteenths.");
+    if (!commitEdit(clip_edit::prepareInsertSilence(submitter_.store(), at, length, editRate())))
+        return false;
+    auto &sel = arrangement.geometry.selection;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.insert = sel.start = at;
+    sel.end = at + length;
+    sel.marked = true;
+    error_.clear();
+    dirty_.mark(DirtySet::Status);
+    commands_.manager.commandStatusChanged();
+    arrangement.changed();
+    return true;
 }
 bool AdiRootComponent::timeCommand(int id) {
     const auto current = view_.current();
@@ -3557,6 +3578,22 @@ bool AdiRootComponent::timeCommand(int id) {
     const auto rate = editRate();
     const auto from = std::max<std::int64_t>(0, std::min(sel.start, sel.end)), to = std::max(sel.start, sel.end);
     const auto length = to - from;
+    if (id == AppCommands::InsertSilence && length == 0 && sel.marked && promptInsertSilence) {
+        promptInsertSilence([self = SafePointer<AdiRootComponent>(this), at = sel.insert](auto answer) {
+            if (self == nullptr || !answer)
+                return;
+            const auto snapshot = self->current();
+            if (!snapshot)
+                return;
+            const auto duration = parseLength(*answer);
+            if (!duration) {
+                self->fail("Enter a positive time in bars, beats and sixteenths, such as 1.0.0.");
+                return;
+            }
+            self->insertSilence(at, lengthTicks(at, *duration, snapshot->meters));
+        });
+        return true;
+    }
     if (id != AppCommands::PasteTime && length <= 0)
         return fail("Select the time to act on first: drag across the lanes.");
     // The selection after an edit: a span of time on the tracks it was on, or the marker.
@@ -3631,13 +3668,9 @@ bool AdiRootComponent::timeCommand(int id) {
         select(from, from);
         return done();
     }
-    case AppCommands::InsertSilence: {
+    case AppCommands::InsertSilence:
         // The selection's length at its start (manual 6.11); the silence stays selected.
-        if (!commitEdit(clip_edit::prepareInsertSilence(store, from, length, rate)))
-            return false;
-        select(from, to);
-        return done();
-    }
+        return insertSilence(from, length);
     default:
         return false;
     }
@@ -5832,7 +5865,7 @@ bool AdiRootComponent::jumpTo(std::int64_t tick) {
     arrangement.placeInsertMarker(tick, true);
     return true;
 }
-bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
+bool AdiRootComponent::addLocatorAt(std::int64_t pos, bool select) {
     const auto current = view_.current();
     if (!current)
         return fail("Locators need an open project.");
@@ -5841,21 +5874,33 @@ bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
         return false;
-    arrangement.selectedLocator = edit.id;
-    arrangement.selectedMeter = -1;
-    arrangement.loopSelected = false; // the new locator is the selection; the arrows go to it
+    if (select) {
+        arrangement.selectedLocator = edit.id;
+        arrangement.selectedMeter = -1;
+        arrangement.loopSelected = false;
+    }
     arrangement.scrub.repaint();
     return true;
 }
-bool AdiRootComponent::setLocator() {
-    // Set Locator (manual 6.4): "the Set Locator button becomes the Delete Locator button for any
-    // selected locators". Live quantizes it to the global launch quantization, which arrives with
-    // the Session View's launch settings (ADR-0203 d10): unquantized here.
-    if (arrangement.selectedLocator != 0)
-        return deleteLocator(arrangement.selectedLocator);
+std::int64_t AdiRootComponent::stoppedSetLocatorTick() const noexcept {
     const auto &sel = arrangement.geometry.selection;
-    const auto at = playing_ ? timelineTick() : sel.start != sel.end ? std::min(sel.start, sel.end) : sel.insert;
-    return addLocatorAt(at);
+    return sel.start != sel.end ? std::min(sel.start, sel.end) : sel.insert;
+}
+bool AdiRootComponent::setLocatorDeletes() const noexcept {
+    if (playing_ || arrangement.selectedLocator == 0)
+        return false;
+    const auto *snapshot = reader_->get();
+    const auto *marker = snapshot != nullptr ? snapshot->findMarker(arrangement.selectedLocator) : nullptr;
+    // A locator selected at a former play position can stay highlighted after Stop.
+    return marker != nullptr && marker->kind == "position" && marker->timeBase == 0 && marker->posTicks &&
+           (*marker->posTicks == stoppedSetLocatorTick() || *marker->posTicks == timelineTick());
+}
+bool AdiRootComponent::setLocator() {
+    if (setLocatorDeletes())
+        return deleteLocator(arrangement.selectedLocator);
+    // The running button marks the playhead and keeps the current selection. Global launch
+    // quantization arrives with the Session View's launch settings (ADR-0203 d10).
+    return playing_ ? addLocatorAt(timelineTick(), false) : addLocatorAt(stoppedSetLocatorTick());
 }
 bool AdiRootComponent::jumpLocator(bool forward) {
     const auto current = view_.current();
@@ -6806,7 +6851,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::SelectLoop:
         return arrangement.selectLoop();
     case AppCommands::AddLocator:
-        return setLocator(); // the Create menu's Add Locator, at the play position as Set
+        return addLocatorAt(timelineTick());
     case AppCommands::DeleteLocator:
         return deleteLocator(arrangement.selectedLocator);
     case AppCommands::EditInfoText:

@@ -589,6 +589,9 @@ class AdiRootComponent final : public juce::Component,
     // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
     // render range the selection, else the loop, else the whole song. Unset outside the application.
     std::function<void(const ExportChoices &)> exportAudio;
+    // Ask for bars, beats and sixteenths when Insert Silence starts at a point.
+    using InsertSilenceReply = std::function<void(std::optional<std::string>)>;
+    std::function<void(InsertSilenceReply)> promptInsertSilence;
     // Opens a Help target (WIN-09): the manual's address, or the keyboard reference's file. Empty, the
     // system's browser opens it; a test puts its own here.
     std::function<bool(const juce::URL &)> openHelp;
@@ -893,6 +896,7 @@ class AdiRootComponent final : public juce::Component,
     // says whether there is something to act on.
     bool timeCommand(int commandId);
     bool canTimeCommand(int commandId) const;
+    bool insertSilence(std::int64_t at, std::int64_t length);
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
@@ -1054,16 +1058,18 @@ class AdiRootComponent final : public juce::Component,
     bool setLoopStartAt(const std::string &text);
     bool setLoopLengthAt(const std::string &text);
     // Live's locators (manual 6.4; N25, #385), from the CURRENT cell (ADR-0201), each edit one undo
-    // step. Set Locator: on a selected locator, Delete Locator; else a locator at the playhead while
-    // playing, at the time selection's start or the insert marker while stopped. Previous and Next
+    // step. While playing, Set adds at the playhead and retains the selection. While stopped, it
+    // adds at the selection start or insert marker, or deletes the selected locator at the current
+    // position. Previous and Next
     // jump to the locator before or after the play position, past the first or the last to the
     // arrangement's start or end. A jump while playing moves playback there; while stopped, the
     // insert marker. Add, delete, move, rename and Edit Info Text (the marker's note) act on one
     // locator; Loop to Next Locator loops from a locator to the next, or to the arrangement's end.
     bool setLocator();
+    bool setLocatorDeletes() const noexcept;
     bool jumpLocator(bool forward);
     bool jumpTo(std::int64_t tick);
-    bool addLocatorAt(std::int64_t pos);
+    bool addLocatorAt(std::int64_t pos, bool select = true);
     bool deleteLocator(std::int64_t id);
     bool moveLocator(std::int64_t id, std::int64_t to);
     bool renameLocator(std::int64_t id, const std::string &name);
@@ -1112,6 +1118,7 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    std::int64_t stoppedSetLocatorTick() const noexcept;
     bool restoreHistoryHead(std::optional<std::int64_t> head);
     bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     clip_edit::MidiConsolidation prepareMidiConsolidation() const;
