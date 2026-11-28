@@ -19,6 +19,7 @@
 #include "adi/control/service.hpp"
 #include "adi/store_rows.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,22 @@ struct TelemetryFrame;
 struct ReadSnapshot {
     rows::Model model;
     std::optional<std::int64_t> head;
+};
+
+/// Where a proposal's base head stands against the project now (ADR-0261 d7:
+/// "how many edits came after, and that undoing back makes it current").
+enum class Freshness {
+    Current,     ///< the head is the base: Apply can write it
+    Behind,      ///< the base is on the undo path: `steps` Undos make it current
+    Ahead,       ///< the base is on the redo line: `steps` Redos make it current
+    Elsewhere,   ///< on another branch, or past a compacted root: Ask again
+    Unknown,     ///< the history could not be read here
+};
+[[nodiscard]] std::string_view toString(Freshness);
+
+struct ProposalFreshness {
+    Freshness state = Freshness::Unknown;
+    std::size_t steps = 0;   ///< undo or redo steps between the head and the base
 };
 
 class ProjectAccess {
@@ -80,6 +97,12 @@ public:
     /// The owner thread: whether a changeset carrying this actor detail was
     /// applied (its agent_requests row exists).
     [[nodiscard]] virtual bool wasApplied(const std::string& actorDetail) = 0;
+    /// The owner thread: how far the head is from a proposal's base, read
+    /// from the history tree. Unknown where no history is reachable here.
+    [[nodiscard]] virtual ProposalFreshness freshness(std::optional<std::int64_t> baseHead) {
+        (void)baseHead;
+        return {};
+    }
 
     /// True when an audio engine runs for this project (the app).
     [[nodiscard]] virtual bool live() const = 0;

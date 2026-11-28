@@ -421,6 +421,53 @@ std::optional<std::vector<AgentLogEntry>> AppControl::agentHistory(
     return impl_->history.read(active->projectUuid(), afterSequence, maximum);
 }
 
+std::vector<ProposalCard> AppControl::reviewCards(std::string_view project) const {
+    std::vector<ProposalCard> cards;
+    const auto bound = impl_->projects.find(project);
+    if (!bound) return cards;
+    for (const auto& entry : proposals()) {
+        const auto attached = entry.projectAccess.lock();
+        if (attached != bound) continue;
+        ProposalCard card;
+        card.id = entry.id;
+        card.request = entry.changeset.request;
+        card.fromAdiAgent = entry.credential == impl_->agentCredential;
+        card.client = card.fromAdiAgent ? std::string("ADI agent") : entry.clientLabel;
+        card.origin = entry.origin;
+        card.whyWaits = entry.reviewReasons.empty() ? std::vector<std::string>{"tier"} : entry.reviewReasons;
+        card.changeCount = entry.changeset.ops.size();
+        if (const auto changes = entry.proposal.find("changes"); changes != entry.proposal.end())
+            card.changes = *changes;
+        card.changesTruncated = entry.proposal.value("changesTruncated", false);
+        if (const auto diff = entry.proposal.find("diff"); diff != entry.proposal.end() && diff->is_string())
+            card.diff = diff->get_ref<const std::string&>();
+        card.freshness = attached->freshness(entry.changeset.baseHead);
+        cards.push_back(std::move(card));
+    }
+    return cards;
+}
+
+AgentRunResult AppControl::askAgain(const AgentLaunch& launch, std::string_view id) {
+    auto entries = proposals();
+    const auto entry = std::find_if(entries.begin(), entries.end(), [id](const QueuedChangeset& e) {
+        return e.id == id;
+    });
+    if (entry == entries.end()) return {{}, {}, "not_waiting"};
+    if (impl_->agentCredential.empty() || entry->credential != impl_->agentCredential)
+        return {{}, {}, "not_adi_agent"};
+    const auto project = entry->projectAccess.lock();
+    if (!project || !impl_->projects.contains(project)) return {{}, {}, "project_unavailable"};
+    // Any thread: the read-only connection's head. One that cannot be read
+    // leaves the card alone.
+    std::string headError;
+    const auto headNow = project->head(headError);
+    if (!headError.empty()) return {{}, {}, "project_unavailable"};
+    if (headNow == entry->changeset.baseHead) return {{}, {}, "current"};
+    if (!impl_->queue.rejectAwaiting(entry->id, entry->credential, "user", "ask again"))
+        return {{}, {}, "not_waiting"};
+    return runAgent(launch, project->handle(), entry->changeset.request, entry->origin);
+}
+
 agent::ApplyResult AppControl::review(std::string_view id, bool approve) {
     if (approve && agentStopped()) return {false, agent::Refusal::Invalid, "agent writes are stopped"};
     auto entries = proposals();

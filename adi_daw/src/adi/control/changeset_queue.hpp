@@ -14,6 +14,7 @@
 
 #include "adi/changeset.hpp"
 #include "adi/control/jsonrpc.hpp"
+#include "adi/control/service.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +49,13 @@ struct QueuedChangeset {
     /// Mandatory review even when the effective tier is Apply (ADR-0261 d8).
     bool requiresReview = false;
     std::string projectUuid;      ///< machine-local log routing, never shown on the wire
+    /// What the client calls itself (Principal::label, cut): who proposed it, for the card.
+    std::string clientLabel;
+    /// A marker's prompt or a direct request: Ask again keeps the origin.
+    RunOrigin origin = RunOrigin::Direct;
+    /// Why it waits even at the Apply tier, each once: "marker", "bulk",
+    /// "egress", "remark" (AGT-09). Empty: it waits because of the tier.
+    std::vector<std::string> reviewReasons;
     std::weak_ptr<ProjectAccess> projectAccess;  ///< exactly the attachment that previewed the edit
 };
 
@@ -90,6 +98,10 @@ public:
     /// Moves an owned entry to `state`; false when there is none to move.
     bool setState(std::string_view id, const std::string& credential, Review state,
                   std::string_view actor = "system", std::string_view source = "control");
+    /// Rejects an owned entry only while it still awaits review (Ask again):
+    /// false, and nothing recorded, when it was applied or settled meanwhile.
+    bool rejectAwaiting(std::string_view id, const std::string& credential, std::string_view actor,
+                        std::string_view source);
     /// Awaiting entries older than the review window become expired.
     void expire(std::int64_t nowMs);
     [[nodiscard]] std::size_t size() const;

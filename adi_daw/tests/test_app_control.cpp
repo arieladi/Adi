@@ -160,6 +160,141 @@ int bindingHelper() {
     return 0;
 }
 
+/// A faux helper that does real work: it reads the project and proposes one
+/// rename on the head it read. Run twice, it proposes on whatever head is current.
+int proposingHelper() {
+    const auto start = helperReceive();
+    if (!start.is_object()) return 2;
+    const auto id = start.value("id", std::string{});
+    if (start.value("type", std::string{}) == "check") {
+        helperSend({{"type", "ready"}, {"id", id}, {"ok", true}});
+        return 0;
+    }
+    if (start.value("type", std::string{}) != "run") return 3;
+    const auto tool = [&](const char* call, const char* name, const Json& args) {
+        helperSend({{"type", "tool"}, {"id", id}, {"call", call}, {"name", name}, {"args", args}});
+        const auto reply = helperReceive();
+        return reply.is_object() && reply.value("call", std::string{}) == call && reply.contains("result")
+            ? reply.at("result") : Json(nullptr);
+    };
+    const auto read = tool("read", "project_read", Json::object());
+    if (!read.is_object() || !read.contains("head")) {
+        helperSend({{"type", "ended"}, {"id", id}, {"reason", "fixture_read_failed"}});
+        return 0;
+    }
+    const Json edit = {{"baseHead", read.at("head")}, {"request", "replaced by the host"},
+                       {"ops", Json::array({{{"op", "track.rename"},
+                                             {"payload", {{"id", 101}, {"name", "Agent name"}}}}})}};
+    const auto proposed = tool("propose", "changeset_propose", edit);
+    if (!proposed.is_object() || proposed.value("status", std::string{}) != "awaiting_review") {
+        helperSend({{"type", "ended"}, {"id", id}, {"reason", "fixture_propose_failed"}});
+        return 0;
+    }
+    helperSend({{"type", "answer"}, {"id", id}, {"text", "One change waits for your review"}});
+    helperSend({{"type", "ended"}, {"id", id}, {"reason", "completed"}, {"steps", 2}});
+    return 0;
+}
+
+/// AGT-05's engine side for the AI mode's cards (ADR-0261 d7, ADR-0262 d2):
+/// what waits and why, its full list, how far the song moved since, that Undo
+/// makes it current again, and Ask again on a fresh read. Then the applied
+/// step's name in the Edit menu (AGT-12). Headless, through the owner seams.
+void testReviewCards(const std::filesystem::path& executable) {
+    test::TempDirectory temp("app_control", "cards");
+    useTestHome(temp.path() / "home");
+    std::string error;
+    auto document = ui::ProjectDocument::open(temp.path() / "Cards.adi", true, {}, error);
+    if (!document) throw std::runtime_error("open test document: " + error);
+    const auto submit = [&](const char* type, Json payload) {
+        OpRequest edit;
+        edit.opType = type;
+        edit.payload = std::move(payload);
+        return document->ops().submit(std::move(edit)).ok;
+    };
+    require(submit("track.create", {{"id", 101}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}),
+            "give the cards' document one track");
+    const auto uuid = document->store().projectUuid();
+
+    OwnerTurns owner;
+    AppControlOptions options;
+    options.tier = Tier::Propose;
+    AppControl app([&owner](Task task) { owner.post(std::move(task)); }, std::move(options));
+    app.attach(document.get());
+    AgentLaunch launch;
+    launch.command.executable = executable;
+    launch.command.arguments = {"--proposing-helper"};
+    launch.provider.kind = AgentProviderKind::Faux;
+    launch.provider.model = "fixture-model";
+    require(app.checkAgent(launch, uuid).canAnswer(), "the proposing faux helper answers its check");
+    const auto run = owner.roundTrip([&] { return app.runAgent(launch, uuid, "Name the track"); });
+    require(run.reason == "completed" && run.answer == "One change waits for your review",
+            "the agent read the project and proposed one change");
+
+    const auto cardsNow = [&] { return app.reviewCards(uuid); };
+    auto cards = cardsNow();
+    require(cards.size() == 1, "one card waits in the AI mode");
+    const auto first = cards.front();
+    require(first.request == "Name the track" && first.fromAdiAgent && first.client == "ADI agent" &&
+                first.origin == RunOrigin::Direct && first.whyWaits == std::vector<std::string>{"tier"},
+            "the card says what was asked, by whom, and that it waits because the agent may only propose");
+    require(first.changeCount == 1 && first.changes.size() == 1 && !first.changesTruncated &&
+                first.changes[0].at("op") == "track.rename" && first.changes[0].at("before").dump().find("Keys") !=
+                std::string::npos && first.changes[0].at("after").dump().find("Agent name") != std::string::npos &&
+                first.diff.find("Agent name") != std::string::npos,
+            "the full list carries each change before and after, for the floating window");
+    require(first.freshness.state == Freshness::Current && first.freshness.steps == 0,
+            "a card made on the head is current");
+
+    require(submit("track.rename", {{"id", 101}, {"name", "User one"}}) &&
+                submit("track.rename", {{"id", 101}, {"name", "User two"}}),
+            "the user goes on editing");
+    cards = cardsNow();
+    require(cards.size() == 1 && cards[0].freshness.state == Freshness::Behind && cards[0].freshness.steps == 2,
+            "the card counts the two edits made after it");
+    require(app.review(first.id, true).refusal == agent::Refusal::Stale &&
+                document->view().committed()->findTrack(101)->name == "User two",
+            "Apply refuses the moved head and writes nothing");
+    require(document->ops().undo().ok && cardsNow().at(0).freshness.steps == 1 && document->ops().undo().ok,
+            "each Undo brings the card one step closer");
+    require(cardsNow().at(0).freshness.state == Freshness::Current, "undoing back makes the card current");
+    require(document->ops().undo().ok && cardsNow().at(0).freshness.state == Freshness::Ahead &&
+                cardsNow().at(0).freshness.steps == 1,
+            "undoing past it says one Redo makes it current");
+    require(document->ops().redo().ok && cardsNow().at(0).freshness.state == Freshness::Current,
+            "and the Redo does");
+
+    require(submit("track.rename", {{"id", 101}, {"name", "User three"}}) &&
+                cardsNow().at(0).freshness.state == Freshness::Behind,
+            "a new edit on a fresh branch moves the song on again");
+    const auto again = owner.roundTrip([&] { return app.askAgain(launch, first.id); });
+    require(again.reason == "completed", "Ask again runs the same request on a fresh read");
+    cards = cardsNow();
+    require(cards.size() == 1 && cards[0].id != first.id && cards[0].request == "Name the track" &&
+                cards[0].freshness.state == Freshness::Current &&
+                cards[0].changes[0].at("before").dump().find("User three") != std::string::npos,
+            "the old card is gone and the new one is built on the song as it is now");
+    const auto log = app.agentHistory(uuid);
+    require(log && std::any_of(log->begin(), log->end(), [&](const AgentLogEntry& entry) {
+                return entry.event.kind == AgentLogKind::ProposalOutcome && entry.event.id == first.id &&
+                       entry.event.state == "rejected" && entry.event.actor == "user" &&
+                       entry.event.source == "ask again";
+            }), "the agent's log records that the user asked again in place of the old proposal");
+
+    const auto second = cards[0].id;
+    require(owner.roundTrip([&] { return app.askAgain(launch, second); }).reason == "current" &&
+                cardsNow().size() == 1,
+            "a current card is applied, not asked again");
+    const auto applied = app.review(second, true);
+    require(applied.ok && document->view().committed()->findTrack(101)->name == "Agent name",
+            "Apply on the current card writes it");
+    const auto step = document->ops().nextUndo();
+    require(step && step->label == "Name the track" && step->actor == "agent",
+            "the Edit menu's undo step is named from the request and says the agent made it (AGT-12)");
+    require(owner.roundTrip([&] { return app.askAgain(launch, second); }).reason == "not_waiting" &&
+                app.reviewCards(uuid).empty(),
+            "an applied card cannot be asked again");
+}
+
 void testAppControl(const std::filesystem::path& executable) {
     test::TempDirectory temp("app_control", "live");
     useTestHome(temp.path() / "home");
@@ -391,7 +526,9 @@ void testAppControl(const std::filesystem::path& executable) {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--binding-helper") return bindingHelper();
+        if (argc == 2 && std::string_view(argv[1]) == "--proposing-helper") return proposingHelper();
         testAppControl(std::filesystem::absolute(argv[0]));
+        testReviewCards(std::filesystem::absolute(argv[0]));
         std::puts("PASS -- loopback app control, consent, review, Stop Agent and shutdown");
         return 0;
     } catch (const std::exception& exception) {

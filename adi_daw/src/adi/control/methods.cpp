@@ -895,14 +895,23 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
             entry.createdMs = ctx.steadyMs();
+            entry.clientLabel = label;
+            entry.origin = call.meta.runOrigin;
             const auto run = call.meta.runPolicy;
-            bool requiresReview = markerRun || pv.bulkClipEdit.value_or(limits.measureClipImpact) ||
-                                  (run && (run->egress || run->readRemarks.load())) ||
-                                  (call.meta.readDestination && leavesMachine(*call.meta.readDestination));
+            // AGT-09's always-confirm rules, each kept by name so the review
+            // card can say why this one waits.
+            auto& reasons = entry.reviewReasons;
+            if (markerRun) reasons.emplace_back("marker");
+            if (pv.bulkClipEdit.value_or(limits.measureClipImpact)) reasons.emplace_back("bulk");
+            if ((run && run->egress) || (call.meta.readDestination && leavesMachine(*call.meta.readDestination)))
+                reasons.emplace_back("egress");
+            bool readRemarks = run && run->readRemarks.load();
             if (!run) {
                 std::lock_guard lock(ctx.remarkMutex);
-                requiresReview = requiresReview || ctx.clientsThatReadRemarks.contains(call.who.credential);
+                readRemarks = ctx.clientsThatReadRemarks.contains(call.who.credential);
             }
+            if (readRemarks) reasons.emplace_back("remark");
+            const bool requiresReview = !reasons.empty();
             entry.requiresReview = requiresReview;
 
             const auto latestGrant = service.grants().tierOf(call.who.credential);

@@ -3,6 +3,8 @@
 #include "adi/control/live_project.hpp"
 
 #include "adi/control/headless_project.hpp"
+#include "adi/control/proposal_freshness.hpp"
+#include "adi/history.hpp"
 #include "adi/ui/project_document.hpp"
 
 #include <utility>
@@ -97,6 +99,12 @@ agent::ApplyResult LiveProject::applyChangeset(const agent::Changeset& changeset
 
 bool LiveProject::wasApplied(const std::string& actorDetail) {
     return ownerDocument() && reader_->wasApplied(actorDetail);
+}
+
+ProposalFreshness LiveProject::freshness(std::optional<std::int64_t> baseHead) {
+    auto* document = ownerDocument();
+    if (!document) return {};
+    return proposalFreshness(History(document->store()).readTimeline(), baseHead);
 }
 
 bool LiveProject::live() const { return attached_.load(std::memory_order_acquire); }

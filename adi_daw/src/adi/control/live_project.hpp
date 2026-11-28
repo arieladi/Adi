@@ -41,6 +41,7 @@ public:
     [[nodiscard]] bool allowsAutomaticApply() const override;
     [[nodiscard]] agent::ApplyResult applyChangeset(const agent::Changeset&, const agent::Limits&) override;
     [[nodiscard]] bool wasApplied(const std::string& actorDetail) override;
+    [[nodiscard]] ProposalFreshness freshness(std::optional<std::int64_t> baseHead) override;
     [[nodiscard]] bool live() const override;
     [[nodiscard]] std::shared_ptr<const TelemetryFrame> telemetry() const override;
     [[nodiscard]] std::string applyHint() const override;

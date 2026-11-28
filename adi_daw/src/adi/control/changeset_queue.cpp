@@ -125,6 +125,19 @@ bool ChangesetQueue::setState(std::string_view id, const std::string& credential
     return false;
 }
 
+bool ChangesetQueue::rejectAwaiting(std::string_view id, const std::string& credential, std::string_view actor,
+                                    std::string_view source) {
+    std::lock_guard lock(mutex_);
+    for (auto& e : entries_) {
+        if (e.id != id || e.credential != credential) continue;
+        if (e.state != Review::AwaitingReview) return false;
+        e.state = Review::Rejected;
+        if (observer_) observer_(e, false, actor, source);
+        return true;
+    }
+    return false;
+}
+
 void ChangesetQueue::expire(std::int64_t nowMs) {
     std::lock_guard lock(mutex_);
     for (auto& e : entries_) {

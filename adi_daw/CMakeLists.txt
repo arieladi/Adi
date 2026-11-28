@@ -886,6 +886,7 @@ add_library(adi_control STATIC
     src/adi/control/service.cpp
     src/adi/control/telemetry.cpp
     src/adi/control/project_access.cpp
+    src/adi/control/proposal_freshness.cpp
     src/adi/control/headless_project.cpp
     src/adi/control/projection.cpp
     src/adi/control/changeset_queue.cpp
