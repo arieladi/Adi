@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 18:42 IST — seats/stretcher-chain `979ea5af98a4f04b4aacefed619ee714dba65b25`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
+The exact `warp_projection.cpp` passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers.
+
 ### 28 November 2026, 18:28 IST — seats/stretcher-chain `7619ef63a19f1423491cb6368b0d7e42c7c57893`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
