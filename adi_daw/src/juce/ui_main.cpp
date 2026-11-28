@@ -1580,6 +1580,8 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.removeChangeListener(this);
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
+        if (document_)
+            (void)document_->endTapTempo(); // Quit: the run is a step of the file
         const bool takeSettled = !document_ || document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
         floating_.reset();
@@ -1798,6 +1800,9 @@ class AdiApplication final : public juce::JUCEApplication,
         samplePreview_.select({});
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
+        // A Tap Tempo run is a step of the project it was tapped in (HI-01).
+        if (document_ && !afterHistoryReload && !document_->endTapTempo())
+            report(document_->error());
         const bool takeSettled = afterHistoryReload || !document_ || document_->settleRecording();
         if (document_ && !afterHistoryReload) {
             if (!takeSettled)
@@ -2305,6 +2310,18 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->cancelMixerDrag = [this] { document_->cancelMixerDrag(); };
+        root->endTapTempoGesture = [this] {
+            const bool ok = document_->endTapTempo();
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->tapTempoGesture = [this](double bpm, std::int64_t eventTick, std::int64_t nowMs) {
+            const bool ok = document_->tapTempo(bpm, eventTick, static_cast<std::uint64_t>(nowMs));
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
@@ -3704,6 +3721,9 @@ class AdiApplication final : public juce::JUCEApplication,
             refreshRecordingPreview();
             refreshSamplePreview();
             root_->transport.capture.setEnabled(document_->canCaptureMidi());
+            // A Tap Tempo run ends once the taps stop (HI-01), on the taps' clock; a refused end says why.
+            if (!document_->pollTapTempo(juce::Time::getMillisecondCounter()))
+                root_->say(document_->error());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 if (projectSave_ && projectSave_->kind != SaveKind::copy && !landed->ok)

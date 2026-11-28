@@ -26,6 +26,7 @@
 #include "adi/library/index.hpp"
 #include "adi/sample_defaults.hpp"
 #include "juce/builtin_samples.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -762,6 +763,7 @@ std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinu
 bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave, StoreFileCollision collision,
                              const media::FileIdentity *expectedTarget) {
     warning_.clear();
+    (void)endTapTempo(); // a Tap Tempo run is a step of the file it was tapped in
     // The unconfirmed path checks before stopping a recording. The store also checks when publishing.
     std::error_code ignored;
     if (collision == StoreFileCollision::Fail &&
@@ -851,6 +853,7 @@ bool refuseExisting(const std::filesystem::path &path, const char *what, std::st
 }
 } // namespace
 bool ProjectDocument::saveCopy(const std::filesystem::path &path, bool keepUndoHistory) {
+    (void)endTapTempo(); // the copy holds the tempo heard
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
@@ -871,6 +874,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path, bool keepUndoH
 bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind, StoreFileCollision collision,
                                 const media::FileIdentity *expectedTarget, bool keepUndoHistory) {
     if (saveJob_) return false;
+    (void)endTapTempo(); // a Tap Tempo run is a step of the file it was tapped in; a copy holds the tempo heard
     warning_.clear();
     const bool switching = kind != SaveKind::copy;
     if (collision == StoreFileCollision::Fail && refuseExisting(path, switching ? "Save As" : "Save a Copy", error_))
@@ -3357,6 +3361,81 @@ bool ProjectDocument::commitParameterAutomation(std::int64_t id,const std::strin
     return commitAutomation(std::move(passes));
 }
 
+bool ProjectDocument::tapTempo(double bpm, std::int64_t eventTick, std::uint64_t nowMs) {
+    const auto value = [&]() -> std::unique_ptr<const gesture::Input> {
+        if (tapInserts_)
+            return std::make_unique<gesture::TempoInsertInput>(bpm, 0);
+        return std::make_unique<gesture::TempoInput>(bpm);
+    };
+    if (tap_) {
+        auto updated = tap_->update(value(), nowMs);
+        if (updated.status.ok()) {
+            error_.clear();
+            return true;
+        }
+        // A tap after the run's quiet end, before the tick saw it: that run ends, and this tap begins another.
+        if (!endTapTempo())
+            return false;
+    }
+    auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+    if (!attached.status.ok() || !attached.value) {
+        error_ = "Tap Tempo cannot be heard live: " + attached.status.message;
+        return false;
+    }
+    tapCoordinator_ = std::move(attached.value);
+    // Tempo has no live-value path: the gesture previews it structurally, the snapshot rebuilt per tap.
+    gesture::Spec spec;
+    spec.strategy = gesture::Strategy::Structural;
+    spec.label = "Tap Tempo";
+    // The event's row, else (none at that position) an inserted one.
+    tapInserts_ = false;
+    auto begun = tapCoordinator_->begin(spec, gesture::tempoProducer(eventTick));
+    if (!begun.status.ok() || !begun.session) {
+        tapInserts_ = true;
+        begun = tapCoordinator_->begin(spec, gesture::tempoInsertProducer(eventTick));
+    }
+    if (!begun.status.ok() || !begun.session) {
+        error_ = begun.status.message.empty() ? "Tap Tempo could not begin." : begun.status.message;
+        return false;
+    }
+    tap_ = std::make_unique<gesture::QuietSession>(std::move(begun.session),
+                                                   static_cast<std::uint64_t>(TapTempo::kPauseMs));
+    const auto updated = tap_->update(value(), nowMs);
+    if (!updated.status.ok()) {
+        error_ = updated.status.message;
+        (void)tap_->cancel();
+        tap_.reset();
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::pollTapTempo(std::uint64_t nowMs) {
+    if (!tap_)
+        return true;
+    const auto polled = tap_->poll(nowMs);
+    if (!polled.ended)
+        return true;
+    tap_.reset();
+    synchronise();
+    if (!polled.ended->status.ok()) {
+        error_ = "Tap Tempo was not kept: " + polled.ended->status.message;
+        return false;
+    }
+    return true;
+}
+bool ProjectDocument::endTapTempo() {
+    if (!tap_)
+        return true;
+    const auto ended = tap_->end();
+    tap_.reset();
+    synchronise();
+    if (!ended.status.ok()) {
+        error_ = ended.status.message;
+        return false;
+    }
+    return true;
+}
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)

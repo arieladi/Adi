@@ -5709,6 +5709,7 @@ bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &re
                                      const std::function<bool()> &reload) {
     if (recordingHoldsHistory())
         return fail(kRecordingHistoryMessage);
+    endTapRun();
     if (settleEdits && !settleEdits())
         return false;
     const auto result = restore();
@@ -6065,6 +6066,11 @@ bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
         return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
     return submitEdits(std::move(edit.ops));
 }
+void AdiRootComponent::endTapRun() {
+    tapBpm_ = 0;
+    if (endTapTempoGesture)
+        (void)endTapTempoGesture();
+}
 bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const auto bpm = tap_.tap(nowMs);
     if (!bpm) {
@@ -6073,12 +6079,28 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         return true;
     }
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
-    if (std::abs(value - tapBpm_) < .005)
+    // A tap that gives the same tempo still keeps the run going, as one gesture (HI-01).
+    if (std::abs(value - tapBpm_) < .005 && !tapTempoGesture)
         return true;
-    // The run's step gives way to this tap's, while it is still the latest: one step for the run. A
-    // knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    // A knob edit still held commits first (DF-W29), before the run's gesture or its step.
     if (settleEdits)
         settleEdits();
+    if (tapTempoGesture) {
+        // The event in force at the playhead, as Change Tempo picks it; the gesture keeps it for the run.
+        const auto current = view_.current();
+        if (!current || !current->tempo)
+            return fail("The tempo needs an open project.");
+        std::int64_t eventTick = 0;
+        const auto at = timelineTick();
+        for (const auto &event : current->tempo->events)
+            if (event.posTicks <= at)
+                eventTick = std::max(eventTick, event.posTicks);
+        if (!tapTempoGesture(value, eventTick, nowMs))
+            return false;
+        tapBpm_ = value;
+        return true;
+    }
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
     if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
         const bool paused = arrangement.followPaused;
         command(AppCommands::Undo);
@@ -6323,6 +6345,7 @@ bool AdiRootComponent::command(int id) {
             return fail(kRecordingHistoryMessage);
         mixViewPanel.stack.cancelInteractions();
         devices.cancelFunctionInteractions();
+        endTapRun();
     }
     if (mixViewPanel.stack.hasDeviceContext()) {
         if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
