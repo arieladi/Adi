@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace adi::gesture {
 namespace detail {
@@ -96,8 +97,9 @@ struct Entry {
     Status status;
     PresentationStatus presentationStatus;
     std::uint64_t revision = 0;
-    // The Store's write counters when the preview of `verifiedRevision` was last found current.
-    std::optional<std::array<std::int64_t, 4>> verified;
+    // The Store's write counters when the preview of `verifiedRevision` was
+    // last found current, or when the initial committed base was adopted.
+    std::optional<StoreWriteStamp> verified;
     std::uint64_t verifiedRevision = 0;
     bool dirty = false, abandoned = false, callbackOrigin = false, provisional = false;
 };
@@ -378,6 +380,13 @@ StateProducerFence::Watermarks StateProducerFence::watermarks() const noexcept {
 }
 Status StateProducerFence::acknowledgePrefix(const PendingCapture& capture, std::uint64_t prefix) {
     if (!data_ || !matchingLease(capture, data_->domain)) return fail(Error::TargetConflict, "state acknowledgement needs source lease");
+    return consumePrefix(prefix);
+}
+Status StateProducerFence::discardStalePrefix(std::uint64_t prefix) {
+    return consumePrefix(prefix);
+}
+Status StateProducerFence::consumePrefix(std::uint64_t prefix) {
+    if (!data_) return fail(Error::SourceLost, "state producer source is unavailable");
     if (data_->domain->thread != std::this_thread::get_id()) return fail(Error::WrongThread, "state acknowledgement requires owner thread");
     const auto consumed = data_->consumed.load(std::memory_order_acquire);
     if (prefix < consumed || prefix > data_->published.load(std::memory_order_acquire)) return fail(Error::InvalidInput, "state prefix is not published");
@@ -407,6 +416,19 @@ StateFenceResult registerStateProducer(Store& store, std::size_t capacity) {
 StateFenceResult registerStateProducer(const AppliedSource& source, std::size_t capacity) {
     if (auto* store = adi::detail::appliedSourceStore(source)) return registerStateProducer(*store, capacity);
     return {fail(source.alive() ? Error::WrongThread : Error::SourceLost, "state producer source is unavailable"), {}};
+}
+
+std::optional<StoreWriteStamp> storeWriteStamp(const Store& store) noexcept {
+    try {
+        const auto& db = store.db();
+        const auto pragma = [&db](const char* sql) {
+            SQLite::Statement query(db, sql);
+            if (!query.executeStep()) throw std::runtime_error("failed to read SQLite version");
+            return query.getColumn(0).getInt64();
+        };
+        return StoreWriteStamp{sqlite3_total_changes64(db.getHandle()), pragma("PRAGMA data_version"),
+            pragma("PRAGMA main.schema_version"), pragma("PRAGMA temp.schema_version")};
+    } catch (...) { return std::nullopt; }
 }
 
 namespace {
@@ -466,11 +488,12 @@ void stamp(Proposal& proposal, const Spec& spec) {
         request.capturedTransaction.reset();
     }
 }
-Status guardCurrent(const std::shared_ptr<Domain>& domain, const Base& base, const Proposal& proposal) {
+Status guardCurrent(const std::shared_ptr<Domain>& domain, const Base& base, const Proposal& proposal,
+                    bool imageVerified = false) {
     if (!base.source.sameConnection(domain->source) || !sameBase(base, currentBase(domain)))
         return fail(Error::StaleBase, "gesture committed base changed");
     std::string error;
-    if (!adi::detail::validateOpPresentationImage(*domain->store, proposal.presentationImage, error) ||
+    if ((!imageVerified && !adi::detail::validateOpPresentationImage(*domain->store, proposal.presentationImage, error)) ||
         !adi::detail::validateOpRowGuards(*domain->store, proposal.rowGuards, error) ||
         !adi::detail::validateOpRowSetGuards(*domain->store, proposal.rowSetGuards, error))
         return fail(Error::StaleBase, std::move(error));
@@ -484,22 +507,13 @@ bool acceptedStillCurrent(const std::shared_ptr<Entry>& entry, const std::shared
         read.rollback(); return status.ok();
     } catch (...) { return false; }
 }
-// Every write through the connection, a commit by another one and any schema change move one of these
-// (as freeze_state.cpp's validation stamp).
-std::optional<std::array<std::int64_t, 4>> storeStamp(Store& store) noexcept {
-    try {
-        auto& db = store.db();
-        return std::array<std::int64_t, 4>{sqlite3_total_changes64(db.getHandle()),
-            db.execAndGet("PRAGMA data_version").getInt64(), db.execAndGet("PRAGMA schema_version").getInt64(),
-            db.execAndGet("PRAGMA temp.schema_version").getInt64()};
-    } catch (...) { return std::nullopt; }
-}
 // The idle drain's check (walk-A A20). The full guard reads the whole presentation image: every material
 // table with the samples' and plug-ins' state. Run by each drain, twice in every 20 ms tick of the message
 // thread, a full project's image outlasted the tick and the window took no more input, so the drag that
 // held the gesture never ended. A preview found current stays current until the Store is written.
 bool acceptedUnchanged(const std::shared_ptr<Entry>& entry, const std::shared_ptr<Domain>& domain) {
-    const auto stamp = storeStamp(*domain->store);
+    if (!entry->preview || sqlite3_get_autocommit(domain->store->db().getHandle()) == 0) return false;
+    const auto stamp = storeWriteStamp(*domain->store);
     if (stamp && entry->verified == stamp && entry->verifiedRevision == entry->preview->revision() &&
         sameBase(entry->preview->base(), currentBase(domain))) return true;
     if (!acceptedStillCurrent(entry, domain)) return false;
@@ -552,6 +566,7 @@ Status initializeOrigin(const std::shared_ptr<Entry>& entry, const std::shared_p
     if (!entry->presentation || !entry->producer) return fail(Error::InvalidInput, "gesture requires a producer and presentation");
     if (sqlite3_get_autocommit(domain->store->db().getHandle()) == 0) return fail(Error::ActiveSqlTransaction, "gesture cannot capture inside caller transaction");
     try {
+        const auto stamp = storeWriteStamp(*domain->store);
         entry->base = currentBase(domain);
         entry->presentationStatus = entry->presentation->adoptCommitted(*domain->store, entry->base, nullptr);
         if (entry->presentationStatus.state != PresentationState::Current) return presentationFailure(entry->presentationStatus);
@@ -573,6 +588,7 @@ Status initializeOrigin(const std::shared_ptr<Entry>& entry, const std::shared_p
             if (!entry->callbackOrigin) { entry->originBase.headAtCapture.emplace(entry->base.head); entry->originBase.sequenceAtCapture = entry->base.sequence; }
         }
         if (ownsConflict(domain, entry)) return fail(Error::TargetConflict, "gesture target is already owned by another gesture");
+        if (stamp && stamp == storeWriteStamp(*domain->store)) entry->verified = stamp;
         return {};
     } catch (const std::exception& exception) { return fail(Error::CaptureFailed, exception.what()); }
 }
@@ -591,12 +607,22 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
             if (!initialized.ok()) { entry->state = State::Suspended; return reject(entry, domain, initialized); }
         }
         const Base base = currentBase(domain);
-        if (!sameBase(entry->base, base) || entry->dirty || !entry->preview) {
+        const auto beforeAdoption = storeWriteStamp(*domain->store);
+        if (!sameBase(entry->base, base) || entry->dirty ||
+            (!entry->preview && (!beforeAdoption || entry->verified != beforeAdoption))) {
             entry->presentationStatus = entry->presentation->adoptCommitted(*domain->store, base, nullptr);
             if (entry->presentationStatus.state != PresentationState::Current)
                 return reject(entry, domain, presentationFailure(entry->presentationStatus));
         }
         if (ownsConflict(domain, entry)) return reject(entry, domain, fail(Error::TargetConflict, "gesture target is already owned"));
+        const auto startingStamp = storeWriteStamp(*domain->store);
+        std::optional<OpPresentationImageGuard> verifiedImage;
+        if (startingStamp && entry->verified == startingStamp && sameBase(entry->base, base)) {
+            if (entry->preview && entry->verifiedRevision == entry->preview->revision())
+                verifiedImage = CaptureAccess::proposal(*entry->preview).presentationImage;
+            else if (entry->verifiedRevision == 0)
+                verifiedImage = entry->presentation->adoptedImage(base);
+        }
         auto prepared = entry->producer->prepare(*domain->store, base, *entry->origin, input);
         if (!prepared.status.ok()) return reject(entry, domain, prepared.status);
         stamp(prepared.value, entry->spec);
@@ -604,6 +630,12 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
         if (!screened.ok()) return reject(entry, domain, screened);
         auto resources = inputsFor(prepared.value);
         CaptureResult capture;
+        const bool fader = verifiedImage && verifiedImage->image && entry->spec.strategy == Strategy::LiveValues &&
+            resources.stateBlobs.empty() && !resources.presentationImage &&
+            std::all_of(prepared.value.requests.begin(), prepared.value.requests.end(),
+                        [](const auto& request) { return request.opType == "mixer.setVolume"; });
+        auto expectedStamp = startingStamp;
+        bool scopedFader = false;
         {
             RollbackScope scratch(*domain->store);
             const auto guarded = guardCurrent(domain, base, prepared.value);
@@ -613,6 +645,7 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
                 scratch.rollback(); return reject(entry, domain, fail(Error::InvalidInput, std::move(error)));
             }
             OpContext context{*domain->store, domain->store->db()};
+            const bool isolatedFader = fader && storeWriteStamp(*domain->store) == startingStamp;
             for (const auto& request : prepared.value.requests) {
                 const auto* descriptor = OpRegistry::instance().find(request.opType); Payload inverse;
                 if (!descriptor->buildInverse(context, request.payload, inverse, error) || !descriptor->apply(context, request.payload, error)) {
@@ -620,7 +653,19 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
                 }
             }
             freeze::validate(*domain->store);
-            capture = entry->presentation->capture(*domain->store, base, entry->owner, entry->spec.strategy, prepared.value.requests);
+            // The rolled-back writes advance total_changes, but their rows do
+            // not survive. Every other stamp component must still agree.
+            if (isolatedFader) {
+                const auto changes = sqlite3_total_changes64(context.db.getHandle());
+                scopedFader = std::cmp_equal(changes - startingStamp->front(), prepared.value.requests.size());
+                expectedStamp->front() = changes;
+            }
+            if (scopedFader)
+                capture = entry->presentation->captureVerified(*domain->store, base, entry->owner, entry->spec.strategy,
+                    prepared.value.requests, *verifiedImage);
+            else
+                capture = entry->presentation->capture(*domain->store, base, entry->owner, entry->spec.strategy,
+                    prepared.value.requests);
             scratch.rollback();
         }
         if (sqlite3_get_autocommit(domain->store->db().getHandle()) == 0)
@@ -631,10 +676,14 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
         auto ready = entry->presentation->prepare(std::move(capture.value));
         if (!ready.status.ok() || !ready.value)
             return reject(entry, domain, ready.status.ok() ? fail(Error::PreparationFailed, "presentation returned no prepared value") : ready.status);
-        const auto stamp = storeStamp(*domain->store);
+        const auto stamp = storeWriteStamp(*domain->store);
         {
             RollbackScope read(*domain->store);
-            const auto guarded = guardCurrent(domain, base, prepared.value);
+            // Recheck after prepare, which may run user callbacks. Years of
+            // material in a stable image need no second SQL walk for a fader.
+            const bool exactImage = scopedFader && stamp == expectedStamp && storeWriteStamp(*domain->store) == stamp &&
+                prepared.value.presentationImage && prepared.value.presentationImage->image == verifiedImage->image;
+            const auto guarded = guardCurrent(domain, base, prepared.value, exactImage);
             read.rollback(); if (!guarded.ok()) return reject(entry, domain, guarded);
         }
         if (entry->revision == std::numeric_limits<std::uint64_t>::max()) return reject(entry, domain, fail(Error::Busy, "gesture preview revision exhausted"));
@@ -847,9 +896,9 @@ CapturedOffer offerCaptured(Session& session) {
     if (entry->offered) {
         if (entry->offered->phase() != CapturedSubmissionPhase::Offered)
             return {fail(Error::CommitRefused, "captured submission requires explicit retry"), {}, entry->offered};
-        if (!acceptedStillCurrent(entry, domain)) return {fail(Error::StaleBase, "captured offer base changed; retry is required"), {}, entry->offered};
+        if (!acceptedUnchanged(entry, domain)) return {fail(Error::StaleBase, "captured offer base changed; retry is required"), {}, entry->offered};
     } else {
-        if (!acceptedStillCurrent(entry, domain)) return {fail(Error::StaleBase, "gesture preview base changed"), {}, {}};
+        if (!acceptedUnchanged(entry, domain)) return {fail(Error::StaleBase, "gesture preview base changed"), {}, {}};
         const auto& proposal = CaptureAccess::proposal(*entry->preview);
         if (proposal.requests.empty()) return {{}, {}, {}};
         entry->offered = CapturedTransactionAccess::seal(domain->source, entry->preview->base().head, proposal.requests, inputsFor(proposal));
@@ -915,7 +964,7 @@ CommitOutcome Session::commit() {
     if (sqlite3_get_autocommit(domain->store->db().getHandle()) == 0) {
         result.status = {Error::ActiveSqlTransaction, "gesture commit needs committed SQL"}; return result;
     }
-    if (entry->input && !detail::acceptedStillCurrent(entry, domain)) {
+    if (entry->input && !detail::acceptedUnchanged(entry, domain)) {
         const auto updated = detail::evaluate(entry, *entry->input);
         if (!updated.status.ok()) { result.status = updated.status; return result; }
     }

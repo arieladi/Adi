@@ -145,7 +145,7 @@ struct FloatingHost::Entry {
             }
             if (e.key == "Mix View" && (id == AppCommands::FocusBrowser || id == AppCommands::SearchBrowser))
                 return h.root_.mixViewPanel.focusChannelSearch();
-            return h.commands_.key(k, h.root_);
+            return h.commands_.key(k, h.root_, !e.ownedKind);
         }
         // A key held from here comes up here: the main window lets it go.
         bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
@@ -609,6 +609,7 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     const auto &settings = root.mixViewPanel.analysis.detail;
     pane->view.setClassicControls(settings.view.classicControls());
     pane->setMode(settings.mode());
+    pane->view.setFilledSpectrumCurve(settings.view.filledSpectrumCurve());
     pane->setPoint(settings.point());
     pane->view.setChannel(settings.view.channel());
     pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <cstdint>
@@ -29,6 +30,17 @@ struct FileIdentity {
 // an open-file lease. Failure retains the native error (no path-only fallback).
 [[nodiscard]] std::optional<FileIdentity> readFileIdentity(const std::filesystem::path&,
                                                           std::error_code&) noexcept;
+/// Revision of one regular file from the same native stat or handle. Change
+/// time catches in-place edits even when a writer restores modification time.
+struct FileRevision {
+    FileIdentity identity;
+    std::uint64_t size;
+    std::array<std::int64_t,2> modified, changed;
+    friend bool operator==(const FileRevision&,const FileRevision&) = default;
+};
+/// Like readFileIdentity, but refuses a final symlink or reparse point.
+[[nodiscard]] std::optional<FileRevision> readFileRevision(const std::filesystem::path&,
+                                                          std::error_code&) noexcept;
 // Roll back one exposed publication only when a Windows DELETE handle proves
 // its expected identity. The handle denies concurrent opens/rename/delete and
 // never follows a final reparse point. Missing paths are already clean.
@@ -37,6 +49,7 @@ struct FileIdentity {
 // This verifies object identity, not unchanged contents; owner/off-callback.
 [[nodiscard]] std::error_code removePublishedFile(const std::filesystem::path&,
                                                   const FileIdentity&) noexcept;
+[[nodiscard]] std::error_code syncPublishedDirectory(const std::filesystem::path&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a
@@ -52,8 +65,12 @@ public:
     static std::shared_ptr<ProjectFileLease> openExclusive(const std::filesystem::path&, std::error_code&) noexcept;
     FileIdentity identity() const noexcept;
     const std::filesystem::path& path() const noexcept;
+    // Remove a closed project under an exclusive lease if its revision still matches.
+    bool removeExclusive(const FileRevision&, std::error_code&,
+                         const std::function<std::error_code()>& validate) noexcept;
     // Failed creation only; never removes a different file now at that name.
-    bool removeCreated(std::error_code&) noexcept;
+    bool removeCreated(std::error_code&,
+                       const std::function<std::error_code()>& validate = {}) noexcept;
 private:
     struct Impl;
     explicit ProjectFileLease(std::unique_ptr<Impl>);

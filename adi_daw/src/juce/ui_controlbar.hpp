@@ -36,6 +36,8 @@ class BarItem : public juce::Button {
     void paintButton(juce::Graphics &, bool over, bool down) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    void clicked(const juce::ModifierKeys &) override;
+    std::function<void(const juce::ModifierKeys &)> onModifiedClick;
     void focusGained(FocusChangeType) override;
     void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);
@@ -142,7 +144,7 @@ class TransportBar final : public juce::Component {
         punchIn{{}, BarItem::Glyph::PunchIn}, loop{{}, BarItem::Glyph::Loop},
         punchOut{{}, BarItem::Glyph::PunchOut},
         draw{{}, BarItem::Glyph::Draw}, keyboard{{}, BarItem::Glyph::Keyboard}, key{"Key"},
-        midi{"MIDI"}, cpu{{}, BarItem::Glyph::None, true, true}, indicators{{}},
+        midi{"MIDI"}, cpu{{}, BarItem::Glyph::None, true, true}, indicators{"In"}, midiOutIndicator{"Out"},
         arrangementPage{"Arrangement"}, mix{"Mix View"};
 
   private:

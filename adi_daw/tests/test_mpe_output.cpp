@@ -520,6 +520,28 @@ void testPlainRoute() {
           "a second finger on the same key, collapsed onto channel 0, is counted");
 }
 
+void testChannelPitchWheel() {
+    section("An ordinary pitch wheel stays a channel message on every route");
+    for (const auto mode : {ExpressionRoute::Plain, ExpressionRoute::NoteExpression, ExpressionRoute::MpeMidi}) {
+        MpeRouter router;
+        ExpressionCaps caps;
+        caps.bendParam[4] = 21;
+        router.configure(mode, caps);
+        auto wheel = expr(7, 0, ExpressionDim::Pitch, 1.0);
+        wheel.channel = 4;
+        const Event authored{8, EventType::Controller, 4, 0, 123, kCtrlPitchBend, .5};
+        Out output;
+        route(router, {wheel, authored}, output);
+        const auto bend = controls(output.all(), 4, kCtrlPitchBend);
+        check(bend.size() == 2 && bend[0].frame == 7 && bend[0].word == 12288 && bend[0].paramId == 21 &&
+                  bend[0].noteId == 0 && bend[0].fromControllerEvent && router.unknownNotes() == 0,
+              "the wheel keeps its channel and frame and uses the standard channel bend range");
+        check(bend.size() == 2 && bend[1].frame == 8 && bend[1].word == 8192 && bend[1].paramId == 21 &&
+                  bend[1].noteId == 0 && !bend[1].fromControllerEvent,
+              "the normalized envelope center reaches the same channel route without a note identity");
+    }
+}
+
 // SC-312: the pitch wheel, channel pressure and CC74 played for the whole channel (an expression on note
 // 0, as ADI's MIDI input makes a pitch wheel) reach a synth as the channel's own messages on EVERY
 // route, as Live sends them: the bend through the plug-in's map at MIDI's master range (2 semitones, the
@@ -539,8 +561,8 @@ void testChannelWideExpressionIsAChannelMessage() {
         MpeRouter r;
         r.configure(way, caps);
         Out o;
-        route(r, {on(0, 1, 60), expr(5, 0, ExpressionDim::Pitch, 2.0, 1), expr(6, 0, ExpressionDim::Pressure, 0.4, 1),
-                    expr(7, 0, ExpressionDim::Timbre, 0.6, 1), expr(8, 0, ExpressionDim::Pitch, -1.0, 1)},
+        route(r, {on(0, 1, 60), expr(5, 0, ExpressionDim::Pitch, 2.0, 0), expr(6, 0, ExpressionDim::Pressure, 0.4, 1),
+                    expr(7, 0, ExpressionDim::Timbre, 0.6, 1), expr(8, 0, ExpressionDim::Pitch, -1.0, 0)},
                 o);
         const auto v = o.all();
         const auto bend = controls(v, 0, kCtrlPitchBend);
@@ -616,7 +638,7 @@ void testUnassignedIdsAndCapacity() {
     check(v.size() == 1 && v[0].channel == 2 && v[0].key == 62,
           "notes with id 0 are matched by key: 62 ends on ITS channel, 2");
     Out o3;
-    route(r, {expr(6, 0, ExpressionDim::Pitch, 1.0)}, o3);
+    route(r, {expr(6, 0, ExpressionDim::Pitch, 1.0, 0)}, o3);
     // SC-312: id 0 is how ADI's MIDI input marks an expression for the whole channel (the pitch wheel), so
     // it is still never guessed onto a note: it is the channel's own bend, on the master channel 0.
     const auto wheel = o3.all();
@@ -935,6 +957,7 @@ int main() {
     testParameterPath();
     testPlainRoute();
     testChannelWideExpressionIsAChannelMessage();
+    testChannelPitchWheel();
     testSwitchingRoutesEndsNotesWhereTheyStarted();
     testUnassignedIdsAndCapacity();
     testFullOutputListPreservesState();

@@ -8,6 +8,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/project_view.hpp"
+#include "adi/engine/midi_hardware.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/gesture_presentation.hpp"
 #include "adi/gesture_producers.hpp"
@@ -116,17 +117,31 @@ public:
     AuditPresentation(Store& store, ProjectView& view, engine::Session& session)
         : store_(store), native_(view, session) {}
     int captures = 0, preparations = 0, publications = 0;
+    int verifiedCaptures = 0;
     bool captureInTransaction = true, laterAutocommit = true;
     std::function<void()> afterPrepare;
     g::PresentationStatus adoptCommitted(const Store& store, const g::Base& base,
                                         const AppliedBatch* batch) override {
         outside(); return native_.adoptCommitted(store, base, batch);
     }
+    std::optional<OpPresentationImageGuard> adoptedImage(const g::Base& base) const noexcept override {
+        return native_.adoptedImage(base);
+    }
     g::CaptureResult capture(const Store& store, const g::Base& base, const g::OwnerToken& owner,
                              g::Strategy strategy, std::span<const OpRequest> requests) override {
+        insideCapture();
+        return native_.capture(store, base, owner, strategy, requests);
+    }
+    g::CaptureResult captureVerified(const Store& store, const g::Base& base, const g::OwnerToken& owner,
+                                     g::Strategy strategy, std::span<const OpRequest> requests,
+                                     const OpPresentationImageGuard& verifiedImage) override {
+        insideCapture();
+        ++verifiedCaptures;
+        return native_.captureVerified(store, base, owner, strategy, requests, verifiedImage);
+    }
+    void insideCapture() {
         ++captures;
         captureInTransaction = captureInTransaction && sqlite3_get_autocommit(store_.db().getHandle()) == 0;
-        return native_.capture(store, base, owner, strategy, requests);
     }
     g::PrepareResult prepare(std::unique_ptr<const g::CapturedPresentation> captured) override {
         ++preparations; outside();
@@ -225,10 +240,12 @@ struct Fixture {
         check(result.status.ok() && result.preview && gesture.state() == g::State::Previewed,
               label + ": actual native preview accepted: " + result.status.message);
     }
-    void block(double left, double right, bool verify, const std::string& label) {
+    void block(double left, double right, bool verify, const std::string& label,
+               const MidiHardwareSink* hardware = nullptr) {
         std::array<float, 64> a{}, b{}; std::array<double, 64> aw{}, bw{};
         float* outputs[]{a.data(), b.data()}; double* wide[]{aw.data(), bw.data()};
         AudioIo io; io.out = outputs; io.numOut = 2; io.frames = 64; io.streamTimeSamples = clock;
+        io.midiHardware = hardware;
         if (precision == Precision::Float64) io.out64 = wide;
         probe->clock = clock; session.process(io); clock += 64;
         if (!verify) return;
@@ -637,8 +654,12 @@ void relativeScalarAtomicFailure(Precision precision) {
     Fixture f(precision);
     auto gesture =
         f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}}));
+    f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-5),
+             "seed grouped preview before testing the stable fader path");
+    const auto verified = f.presentation->verifiedCaptures;
     f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-10),
-             "healthy grouped preview before trigger");
+             "healthy grouped fader update before trigger");
+    check(f.presentation->verifiedCaptures == verified + 1, "grouped fader used its verified committed image before the TEMP trigger");
     const auto head = OpJournal(*f.store).headSeq();
     const auto digest = digestProject(*f.store).text;
     const auto sequence = appliedSource(*f.store).sequence();
@@ -785,6 +806,54 @@ void structure(Precision precision) {
     f.clean("structural native gate");
 }
 
+void hardwareThroughStructure(Precision precision) {
+    Fixture f(precision, true);
+    OpRequest route;
+    route.opType = "routing.connect";
+    route.payload = {{"id", 4}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "hw_out"},
+                     {"dst", 0}, {"kind", "main"}, {"midiPort", "out:fixture"}, {"midiChannel", 7}};
+    require(OpJournal(*f.store).commit(route).ok && f.coordinator->drain(0).status.ok(),
+            "adopt the committed hardware MIDI route");
+
+    struct Hardware {
+        std::int64_t onset = -1;
+        int notes = 0;
+        int resets = 0;
+    } seen;
+    const MidiHardwareSink sink{&seen,
+        [](void* context, std::uint64_t port, std::int64_t track, std::int64_t sample, std::uint32_t word) noexcept {
+            auto& result = *static_cast<Hardware*>(context);
+            if (port == midiPortKey("out:fixture") && track == 1 && word == 0x20963c64u) {
+                result.onset = sample;
+                ++result.notes;
+            }
+        },
+        [](void* context) noexcept { ++static_cast<Hardware*>(context)->resets; }};
+    const auto play = [&](std::int64_t expected, const char* label) {
+        seen.notes = 0;
+        const auto start = f.clock;
+        f.session.transport().locate(0);
+        for (int block = 0; block < 8; ++block)
+            f.block(0, 0, false, {}, &sink);
+        check(seen.notes == 1 && seen.onset == start + expected && f.probe->notes == 0, label);
+    };
+    play(100, "committed hardware MIDI plays before the local instrument");
+    const auto resets = seen.resets;
+    auto tempo = f.begin(g::tempoProducer(0), g::Strategy::Structural);
+    f.update(*tempo, std::make_unique<g::TempoInput>(60), "hardware MIDI tempo preview");
+    play(200, "hardware MIDI follows the structural preview");
+    const auto kept = tempo->commit();
+    check(kept.status.ok() && kept.durable && kept.durable->ok, "hardware MIDI tempo preview promotes");
+    play(200, "hardware MIDI survives promotion to committed playback");
+    const auto* readers = f.session.midiClips();
+    auto delay = f.begin(g::scalarProducer({g::ScalarKind::TrackDelay, 2}), g::Strategy::Structural);
+    f.update(*delay, std::make_unique<g::ScalarInput>(7), "compatible hardware MIDI delay preview");
+    check(f.session.midiClips() == readers, "a compatible preview retains the hardware MIDI reader");
+    f.cancel(*delay, "restore hardware MIDI reader after preview");
+    play(200, "hardware MIDI survives restoring the retained reader");
+    check(seen.resets == resets, "unchanged hardware routing does not reset held hardware voices");
+}
+
 void automationPreview(Precision precision) {
     Fixture f(precision, false, true);
     const auto digest = digestProject(*f.store).text;
@@ -863,9 +932,11 @@ void nativeMaterialGuard(Precision precision) {
     Fixture f(precision);
     f.sound(0.25, 0.5, "native material guard baseline");
     auto volume = f.begin(g::scalarProducer({g::ScalarKind::TrackVolume, 1}));
+    f.update(*volume, std::make_unique<g::ScalarInput>(-10), "seed a stable fader revision");
     const auto head = OpJournal(*f.store).headSeq();
     const auto sequence = appliedSource(*f.store).sequence();
     const auto publications = f.presentation->publications;
+    const auto verified = f.presentation->verifiedCaptures;
     bool changed = false;
     f.presentation->afterPrepare = [&] {
         f.store->db().exec("UPDATE tempo_map SET bpm=90 WHERE id=37");
@@ -873,6 +944,7 @@ void nativeMaterialGuard(Precision precision) {
     };
     const auto result = volume->update(std::make_unique<g::ScalarInput>(-20));
     f.presentation->afterPrepare = {};
+    check(f.presentation->verifiedCaptures == verified + 1, "same-head write interrupts a fader update using a verified image");
     check(changed && result.status.error == g::Error::StaleBase && !result.preview,
           "real native captured image refuses unrelated same-head tempo change after preparation");
     check(f.presentation->publications == publications,
@@ -1239,7 +1311,7 @@ int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
         try { trackDelay(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected Track Delay fixture exception: ") + exception.what()); }
-        try { scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); idleDrainReadsNoImage(precision); referenceAndCue(precision); }
+        try { hardwareThroughStructure(precision); scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); idleDrainReadsNoImage(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }
     try { endpointLifetimes(); } catch (const std::exception& exception) { check(false, std::string("unexpected endpoint fixture exception: ") + exception.what()); }

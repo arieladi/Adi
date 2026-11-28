@@ -149,12 +149,14 @@ class SampleTile final : public juce::Component,
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
-class DevicePanelView final : public juce::Component, public juce::FileDragAndDropTarget {
+class DevicePanelView final : public juce::Component,
+                              public juce::FileDragAndDropTarget,
+                              public juce::DragAndDropTarget,
+                              public juce::TooltipClient {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
-    // Samples are "dragged into Simpler" (Live 12 manual 30.11), not into one well: a file from the
-    // desktop dropped off the tile, on the controls or the title, goes to the tile's slot.
+    // A sample dropped on the tile, controls or title goes to the tile's selected slot.
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return sample && !files.isEmpty(); }
     void fileDragEnter(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->fileDragEnter(files, x, y);
@@ -163,7 +165,22 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void filesDropped(const juce::StringArray &files, int x, int y) override {
         if (sample) sample->filesDropped(files, x, y);
     }
+    bool isInterestedInDragSource(const SourceDetails &details) override {
+        auto *tile = samplerTile();
+        return tile && tile->isInterestedInDragSource(details);
+    }
+    void itemDragEnter(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDragEnter(details);
+    }
+    void itemDragExit(const SourceDetails &details) override {
+        if (sample) sample->itemDragExit(details);
+    }
+    void itemDropped(const SourceDetails &details) override {
+        if (auto *tile = samplerTile()) tile->itemDropped(details);
+    }
     void present(const DevicePanelData &);
+    [[nodiscard]] bool hasPlaybackProblem() const noexcept;
+    juce::String getTooltip() override;
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
     void releaseEqSpectrum();
     void frameLimiterReduction(
@@ -208,6 +225,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     static constexpr int kTitleHeight = 17, kFoldedWidth = 22;
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
+    juce::TextButton parameterList{"Parameter List"};
     ActivatorButton enabled;
     WrenchButton wrench;
     HotSwapButton hotSwapButton;
@@ -253,7 +271,14 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void cancelInteractions();
 
   private:
+    SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
+    void showParameterList();
+    void closeConfigure();
+    void queueConfigureTouch(const DevicePanelData &);
+    void applyConfigureTouches();
+    bool panelTargetCurrent(const DevicePanelData &);
+    void chooseLastTouch(const DevicePanelData &, bool showAutomation);
     bool canHotSwap() const;
     bool requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot, std::uint64_t epoch);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
@@ -271,10 +296,20 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     [[nodiscard]] bool previewVisible(juce::Rectangle<int>) const;
     void paintLimiterReduction(juce::Graphics &, juce::Rectangle<int>) const;
     void layoutCompactControls(int top);
+    void layoutTitle(bool folded);
+    void updateTitleTooltip();
+    bool refreshPlaybackProblem();
+    bool playbackProblemPresented_ = false;
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
+    struct ConfigureSession {
+        DevicePanelData expected;
+        std::uint64_t observed = 0;
+        std::vector<std::string> pending;
+    };
+    std::optional<ConfigureSession> configureSession_;
     std::optional<DevicePanelData> dragTarget_;
     std::vector<DevicePanelData> draggedDevices_;
     bool selectOnRelease_ = false;
@@ -308,13 +343,18 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
 };
 class DeviceChainStrip final : public juce::Component,
                                public juce::DragAndDropTarget,
-                               public juce::FileDragAndDropTarget {
+                               public juce::FileDragAndDropTarget,
+                               private juce::AsyncUpdater {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     ~DeviceChainStrip() override;
     void suspendParameters(bool);
     bool parametersSuspended() const noexcept { return parametersSuspended_; }
     void frame(std::int64_t track);
+    void settleParameterTouches() { handleUpdateNowIfNeeded(); }
+    // The engine projection supplies sorted, unique device IDs.
+    void setPlaybackProblemIds(std::vector<std::int64_t> ids);
+    [[nodiscard]] bool hasPlaybackProblem(std::int64_t id) const noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;
     void paintOverChildren(juce::Graphics &) override;
@@ -325,6 +365,7 @@ class DeviceChainStrip final : public juce::Component,
     bool editPairExpected(const DevicePanelData &, const engine::ParameterPair &, engine::ParameterPairEvent,
                           std::shared_ptr<const gesture::OwnerToken> &);
     bool validExpected(const DevicePanelData &) const;
+    bool addLastTouchedParameter(const DevicePanelData &expected);
     bool action(const std::string &, Payload);
     // Native functions remove with Undo; ordinary plug-ins retain bypass.
     bool setEnabledExpected(const DevicePanelData &, bool);
@@ -337,23 +378,24 @@ class DeviceChainStrip final : public juce::Component,
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     juce::TextButton addTab{"+"};
-    // Moves the focus from a device to its neighbour; at either end it stays.
+    // Moves focus to a neighbour or past the last device to the insertion point.
     bool focusNext(std::int64_t from, bool forward);
     // Live's device clipboard (manual 23.2.1; N18): Cut, Copy, Paste and Duplicate on `device`, or
     // on the device with the focus. Paste goes in front of that device, or at the chain's end after
-    // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
+    // choosing the strip's empty space; Duplicate goes in front of the next device in its chain
     // and leaves the clipboard as it was. False when there is nothing to act on.
     enum class Clip { Cut, Copy, Paste, Duplicate };
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
     std::optional<std::int64_t> focusedDevice() const;
+    bool hasHotSwapContext() const;
+    bool hotSwapFocused();
     bool deleteDevices(std::optional<std::int64_t> device = {});
-    // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
-    // last device.
+    // The strip itself has focus when the insertion point after the last device is chosen.
     bool endChosen() const { return hasKeyboardFocus(false); }
     // Where a device loaded from the browser goes (manual 4.10): in front of the device chosen
-    // last in the strip, though the browser now has the focus; at the chain's end after a click
-    // past the last device, or when none is chosen.
+    // last in the strip, though the browser now has the focus; at the chain's end when no device
+    // is chosen.
     std::optional<std::int64_t> insertPoint() const;
     void chose(std::int64_t device) { chosen_ = device; }
     // A browser device loads here. An existing device moves to this position in the chain.
@@ -371,10 +413,15 @@ class DeviceChainStrip final : public juce::Component,
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void focusGained(FocusChangeType) override { repaint(); }
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
+    // Optional presenter for the empty-space context menu.
+    std::function<void(juce::PopupMenu)> onEndMenu;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
+    // Publish native gestures already waiting when a Configure session opens.
+    std::function<void()> pollParameterEdits;
     std::function<void(const void *, const std::vector<std::int64_t> &)> parameterDemand;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
@@ -386,6 +433,7 @@ class DeviceChainStrip final : public juce::Component,
     std::function<bool(const std::string &, Payload)> submit;
     // The application names and saves a preset for this exact loaded device.
     std::function<void(const DevicePanelData &)> savePreset;
+    std::function<void(const DevicePanelData &)> saveDefaultPreset;
     // A slot is present when the Browser should offer samples for this device slot.
     std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
@@ -426,6 +474,9 @@ class DeviceChainStrip final : public juce::Component,
     std::vector<OutputMeter> outputMeters_;
     std::weak_ptr<SharedAnalysis> outputMeterBroker_;
     void setDropPreview(std::optional<int>);
+    void handleAsyncUpdate() override;
+    void cancelConfigureTouches();
+    std::shared_ptr<const ParameterPublication> latestPublication() const;
     struct PickedDevice {
         std::int64_t id, track, chain;
         std::uint64_t instance;
@@ -435,14 +486,18 @@ class DeviceChainStrip final : public juce::Component,
     bool selectionActsOn(std::int64_t) const;
     void selectTitle(const DevicePanelView &, bool extend);
     void clearSelection();
+    void chooseEnd();
+    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
+    DevicePanelView *focusedHotSwapPanel() const;
     DevicePanelView *moveSource(const SourceDetails &) const;
     bool acceptsSample() const;
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);
     std::vector<std::int64_t> demandedDevices_;
+    std::vector<std::int64_t> playbackProblemIds_;
     bool parametersSuspended_ = false;
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;

@@ -108,19 +108,27 @@ void backup(Store &source, const fs::path &path, const std::set<std::int64_t> &s
         mute.reset();
     }
     const auto folder = media::projectFolder(source);
-    SQLite::Statement files(copy,
-                            "SELECT id,rel_path,abs_path_hint FROM media_files WHERE rel_path IS NOT NULL");
+    SQLite::Statement files(copy, "SELECT id,rel_path,abs_path_hint,orig_name,hash_blake3 "
+                                  "FROM media_files WHERE rel_path IS NOT NULL");
     while (files.executeStep()) {
-        const auto original = folder / media::pathFromUtf8(files.getColumn(1).getString());
-        // Keep the source project's fallback, rather than rebasing relative
-        // media against the private backup's staging directory.
-        std::error_code inspection;
-        const auto chosen = fs::exists(original, inspection) || files.getColumn(2).isNull()
-                                ? original
-                                : media::pathFromUtf8(files.getColumn(2).getString());
+        const auto id = files.getColumn(0).getInt64();
+        const auto relative = media::pathFromUtf8(files.getColumn(1).getString());
+        const auto original = folder / relative;
+        // Resolve both paths against the source project before pinning the file
+        // in the private backup.
+        auto chosen = original;
+        if (!files.getColumn(2).isNull()) {
+            const auto hint = media::pathFromUtf8(files.getColumn(2).getString());
+            if (original.lexically_normal() != hint.lexically_normal()) {
+                std::string error;
+                const auto verified = media::resolveMedia(folder, relative, hint,
+                    files.getColumn(3).getString(), files.getColumn(4).getString(), error, stop);
+                if (!verified.empty()) chosen = verified;
+            }
+        }
         SQLite::Statement update(copy, "UPDATE media_files SET rel_path=NULL,abs_path_hint=? WHERE id=?");
         update.bind(1, media::pathUtf8(fs::absolute(chosen)));
-        update.bind(2, files.getColumn(0).getInt64());
+        update.bind(2, id);
         update.exec();
     }
     // Pin the selected audio assets and existing caches into the private generation before
@@ -276,6 +284,12 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                 why += "; " + problem;
             throw std::runtime_error(why);
         }
+        if (!session.clips()->waitForWarp(control.stop)) {
+            cancellation(control);
+            std::string why = "freeze Warp preparation failed";
+            for (const auto &problem : session.clips()->decodeProblems()) why += "; " + problem;
+            throw std::runtime_error(why);
+        }
         auto *graph = session.graph().currentGraph();
         if (!graph)
             throw std::runtime_error("freeze has no prepared graph");
@@ -413,8 +427,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         };
         for (std::int64_t at = 0; at < lastFrame;) {
             service();
-            if (!session.clips()->prime())
+            if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
+                cancellation(control);
                 throw std::runtime_error("freeze clip read timed out");
+            }
             const auto frames =
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;

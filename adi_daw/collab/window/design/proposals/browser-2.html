@@ -1,0 +1,159 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Browser sheet, proposal 2</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, the Browser, proposal 2 (27 November 2026). DF-W61, after ADR-0261: the AI label and its mode, the
+// filters by what a sound measures, the preview row that waits, the Info box in the column, a server's
+// mark, and the floating search as the Mac's own search. ADI's own drawing. Every name here is invented.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=T(20,30,'ADI  ·  the Browser and the floating search',{z:17,w:700});
+s+=T(20,48,'Four states of the same column, then the floating search. Numbers refer to the notes below.',{z:11.5,f:C.dim});
+s+=R(1716,12,190,22,C.acc,{r:5});s+=T(1811,27,'BROWSER SHEET  ·  proposal 2',{z:11.5,w:700,a:'middle',f:C.ink});
+const MARK=[];
+const para=(x,y,lines,o={})=>lines.map((t,k)=>T(x,y+k*(o.lh||14),t,{z:o.z||11,f:o.f||C.text,w:o.w||400,a:o.a||'start'})).join('');
+const wavePath=(x,y,w,h,seed,env)=>{const r=rng(seed);let up='',dn='';const n=Math.floor(w/1.5);for(let k=0;k<=n;k++){const u=k/n,v=Math.min(1,env(u)*(0.75+0.25*r()));up+=(k?'L':'M')+(x+k*1.5).toFixed(1)+' '+(y+h/2-v*(h/2-1)).toFixed(1);dn=`L${(x+k*1.5).toFixed(1)} ${(y+h/2+v*(h/2-1)).toFixed(1)}`+dn}return up+dn+'Z'};
+const hit=u=>0.03+0.95*Math.exp(-u*7);
+const loop=u=>{const p=(u*8)%1;return 0.06+0.8*Math.exp(-p*5)*(Math.floor(u*8)%2?0.6:1)};
+const spark=(x,y,r,c)=>P(`M${x} ${y-r}Q${x} ${y} ${x+r} ${y}Q${x} ${y} ${x} ${y+r}Q${x} ${y} ${x-r} ${y}Q${x} ${y} ${x} ${y-r}Z`,{f:c});
+const plug=(x,y,c)=>R(x-3,y-4.5,7.5,9,'none',{r:1.6,s:c,sw:1.3})+P(`M${x-7.5} ${y}h4.5M${x+4.5} ${y-2}h3M${x+4.5} ${y+2}h3`,{s:c,sw:1.3});
+const wav=(x,y,c)=>P(`M${x-7} ${y}h2l1.5 -4l2 8l2 -6l1.5 4h3`,{s:c,sw:1.3});
+const server=(x,y,c)=>R(x-5,y-5,10,4,'none',{r:1,s:c,sw:1.1})+R(x-5,y+1,10,4,'none',{r:1,s:c,sw:1.1})+CI(x-2.5,y-3,0.8,c)+CI(x-2.5,y+3,0.8,c);
+
+// ---------------- one Browser column ----------------
+function browser(x,title,o){const w=o.w||326,y=74,h=742,cw=116;
+  s+=T(x+2,y-8,title,{z:12.5,w:700,f:C.text});
+  s+=R(x,y,w,h,C.panel,{r:6});
+  // the bar: it searches, or under AI it asks
+  s+=R(x+8,y+8,w-54,24,C.well,{r:5,s:o.ai?C.acc:'#3a3a3a'});
+  if(o.ai)s+=spark(x+21,y+20,6,C.acc);else s+=CI(x+20,y+19,4.2,'none',{s:C.faint,sw:1.5})+L(x+23,y+22,x+26,y+25,C.faint,1.5,{cap:'round'});
+  s+=T(x+33,y+24,o.bar,{z:11.5,f:o.typed?C.text:C.faint});
+  s+=R(x+w-38,y+8,30,24,o.filters?C.acc:C.ctl,{r:5,s:o.filters?null:C.edge});s+=P(`M${x+w-30} ${y+16}h14M${x+w-27} ${y+20}h8M${x+w-25} ${y+24}h4`,{s:o.filters?C.ink:C.dim,sw:1.7});
+  // the left list
+  let yy=y+56;const sel=o.sel;
+  const cat=(t,q={})=>{const on=t===sel;if(on)s+=R(x+4,yy-13,cw-4,19,q.ai?C.acc:'#44444a',{r:4});
+    if(q.c)s+=CI(x+17,yy-4,4,q.c);else if(q.ai)s+=spark(x+17,yy-4,5.5,on?C.ink:C.acc);else s+=CI(x+17,yy-4,2.2,on?C.text:C.dim);
+    s+=T(x+29,yy,t,{z:11.5,f:on?(q.ai?C.ink:C.text):'#bdbdbd',w:on?700:400});yy+=20};
+  const sect=t=>{s+=T(x+10,yy,t,{z:10.5,f:C.faint});yy+=20};
+  sect('Collections');cat('Favorites',{c:C.rec});cat('Mix tools',{c:C.acc});yy+=8;
+  sect('Categories');['All','Sounds','Drums','Instruments','Audio Effects','MIDI Effects','Plug-Ins','Clips','Samples','Grooves','Templates'].forEach(t=>cat(t));
+  const aiY=yy;cat('AI',{ai:1});if(o.markAI)MARK.push([x+cw-14,aiY-4,o.markAI]);yy+=8;
+  sect('Places');['User Library','Current Project','Sessions','Add Folder...'].forEach(t=>cat(t));
+  const ih=150,iy=y+h-ih-4;                          // the Info box, part of the column
+  s+=L(x+cw,y+40,x+cw,iy-6,'#1c1c1c');
+  s+=R(x+4,iy,w-8,ih,C.well,{r:5});s+=T(x+14,iy+18,'Info',{z:11,w:600});s+=T(x+w-14,iy+18,'Filled Spectrum',{z:10,f:C.dim,a:'end'});
+  {const r=rng(5);let d=`M${x+12} ${iy+ih-12}`;const n=60;for(let k=0;k<=n;k++){const u=k/n;d+=`L${(x+12+u*(w-24)).toFixed(1)} ${(iy+ih-14-(0.25+0.6*Math.exp(-Math.pow((u-0.22)*3.2,2))+0.25*Math.exp(-Math.pow((u-0.6)*5,2)))*(ih-52)*(0.85+0.15*r())).toFixed(1)}`}
+   d+=`L${x+w-12} ${iy+ih-12}Z`;s+=P(d,{f:C.val,op:0.35});s+=P(d.replace(/Z$/,''),{s:C.val,sw:1.2})}
+  if(o.markInfo)MARK.push([x+w-22,iy+38,o.markInfo]);
+  const cx0=x+cw,cr=x+w-8;let ty=y+40;const pvH=o.preview?50:0,listBot=iy-6-pvH;
+  if(o.mode==='samples'){
+    // the filter panel: Live's Filter View, with the six measured groups
+    const pills=(label,arr)=>{s+=T(cx0+10,ty+12,label,{z:10,f:C.dim});let tx=cx0+58;arr.forEach(([t,on])=>{const pw=12+t.length*5.4;s+=pill(tx,ty,pw,17,t,{on:on,z:9.5});tx+=pw+4});ty+=22};
+    pills('Type',[['One-shot',1],['Loop',0]]);pills('Length',[['Short',1],['Mid',0],['Long',0]]);
+    pills('Key',[['Any',0],['A min',0]]);pills('Tempo',[['Any',0],['120-128',0]]);
+    pills('Tone',[['Dark',0],['Bright',0]]);pills('Hits',[['Sparse',0],['Dense',0]]);
+    if(o.markF)MARK.push([cr-10,y+52,o.markF]);
+    s+=L(cx0+6,ty,cr+2,ty,'#3a3a3a');ty+=4;
+    s+=R(cx0+1,ty,w-cw-2,20,C.head);s+=T(cx0+10,ty+14,'Name',{z:10.5,w:600});s+=T(cr-58,ty+14,'Len',{z:10,f:C.dim,a:'end'});s+=T(cr-28,ty+14,'BPM',{z:10,f:C.dim,a:'end'});s+=T(cr,ty+14,'Key',{z:10,f:C.dim,a:'end'});ty+=22;
+    const rows=[['Kick Short 01','0.21',' ','C'],['Kick Dry Tight','0.18',' ','D'],['Kick 808 Clip','0.34',' ','F'],['Kick Paper','0.15',' ','-'],['Kick Round 04','0.29',' ','G'],['Kick Wood','0.22',' ','-'],['Kick Stub','0.12',' ','A']];
+    rows.forEach((r,k)=>{if(ty+21>listBot)return;if(k===2){s+=R(cx0+3,ty,w-cw-6,20,'#3f5866',{r:4})}
+      s+=wav(cx0+16,ty+10,k===2?C.text:C.dim);s+=T(cx0+28,ty+14,r[0],{z:11,f:C.text,w:k===2?600:400});s+=T(cr-58,ty+14,r[1],{z:10,f:C.dim,a:'end'});s+=T(cr-28,ty+14,r[2],{z:10,f:C.dim,a:'end'});s+=T(cr,ty+14,r[3],{z:10,f:C.dim,a:'end'});ty+=21});
+    s+=T(cx0+10,listBot-8,'7 of 2,418 samples',{z:9.5,f:C.dim});
+  }
+  if(o.mode==='plugins'){
+    s+=R(cx0+1,ty,w-cw-2,20,C.head);s+=T(cx0+10,ty+14,'Name',{z:10.5,w:600});s+=T(cr,ty+14,'35 results',{z:10,f:C.dim,a:'end'});ty+=22;
+    const rows=[['Glass Piano','Instrument',0],['Plate 140','Audio Effect',0,1],['Plate 140','Audio Effect',1],['Saturator X','Audio Effect',0],['Tape Echo 2','Audio Effect',1],['Arc Synth','Instrument',0],['Chord Arp','MIDI Effect',0],['Drift Pad','Instrument',0]];
+    rows.forEach((r,k)=>{if(r[3])s+=R(cx0+3,ty,w-cw-6,20,'#3f5866',{r:4});s+=plug(cx0+17,ty+10,r[3]?C.text:C.dim);s+=T(cx0+30,ty+14,r[0],{z:11,w:r[3]?600:400});
+      if(r[2]){s+=server(cx0+30+r[0].length*6.1+12,ty+10,C.val);if(k===2&&o.markS)MARK.push([cx0+30+r[0].length*6.1+34,ty+10,o.markS])}
+      s+=T(cr,ty+14,r[1],{z:9.5,f:C.dim,a:'end'});ty+=21});
+    s+=T(cx0+10,ty+20,'No preview row here:',{z:10,f:C.dim});s+=T(cx0+10,ty+34,'a device cannot be previewed.',{z:10,f:C.dim});
+    if(o.markNoPv)MARK.push([cr-14,ty+24,o.markNoPv]);
+  }
+  if(o.mode==='ai'){
+    const pw=w-cw-14,px=cx0+8;
+    s+=T(px,ty+10,'Agent  ·  asks first  ·  local model',{z:9.5,f:C.dim});if(o.markHead)MARK.push([cr-10,ty+6,o.markHead]);ty+=20;
+    const me=(lines)=>{const bh=8+lines.length*13;s+=R(px+18,ty,pw-18,bh,'#3a3a40',{r:6});s+=para(px+26,ty+14,lines,{z:10.5,lh:13});ty+=bh+8};
+    const ag=(lines)=>{s+=spark(px+6,ty+8,5,C.acc);s+=para(px+16,ty+12,lines,{z:10.5,lh:13,f:'#cfcfcf'});ty+=lines.length*13+8};
+    const wide=w>380;
+    me(wide?['tighten the drums in the chorus']:['tighten the drums in the','chorus']);
+    ag(wide?['14 late hits on Kick and Percussion, bars 25 to 33.']:['14 late hits on Kick and','Percussion, bars 25 to 33.']);
+    // a proposal card
+    {const ch=wide?74:88;s+=R(px,ty,pw,ch,C.well,{r:6,s:C.acc});s+=T(px+10,ty+17,'Tighten drums, bars 25-33',{z:11,w:700});
+     s+=T(px+10,ty+32,'14 changes  ·  late by 12 to 31 ms',{z:10,f:C.dim});
+     const by=ty+ch-28;s+=btn(px+10,by,52,20,'Apply',{on:1,z:10.5});s+=btn(px+66,by,52,20,'Reject',{z:10.5,w:500});s+=btn(px+122,by,wide?86:66,20,wide?'Open the list':'Open list',{z:10.5,w:500});
+     if(o.markCard)MARK.push([px+pw-12,ty+14,o.markCard]);ty+=ch+10}
+    me(wide?['a darker kick like the one on Kick']:['a darker kick like the one','on Kick']);
+    ag(['3 from your library:']);
+    [['Kick Wood','0.22'],['Kick Round 04','0.29'],['Kick Paper','0.15']].forEach((r,k)=>{if(k===0)s+=R(cx0+3,ty-2,w-cw-6,20,'#3f5866',{r:4});s+=wav(px+8,ty+8,C.dim);s+=T(px+20,ty+12,r[0],{z:11});s+=T(cr,ty+12,r[1]+' s',{z:10,f:C.dim,a:'end'});ty+=21});
+    if(o.markRows)MARK.push([cr-52,ty-52,o.markRows]);
+  }
+  if(o.preview){const py=iy-6-pvH+2;s+=R(x+4,py,w-8,pvH-4,C.well,{r:5});s+=R(x+12,py+7,26,14,C.acc,{r:7});s+=CI(x+31,py+14,5,C.ink);
+    s+=T(x+12,py+38,'Preview',{z:9.5,f:C.dim});const wx=x+62,ww=w-74;s+=R(wx,py+6,ww,34,'#101010',{r:3,s:'#3a3a3a'});
+    const d=wavePath(wx+2,py+8,ww-4,30,9,hit),id='pv'+(UID++);s+=P(d,{f:C.dim,op:0.55});s+=`<clipPath id="${id}"><rect x="${wx}" y="${py+6}" width="${ww*0.3}" height="34"/></clipPath><g clip-path="url(#${id})">${P(d,{f:C.val,op:0.9})}</g>`;s+=L(wx+ww*0.3,py+6,wx+ww*0.3,py+40,'#f0f0f0',1.3);
+    if(o.markPv)MARK.push([x+w-20,py+4,o.markPv])}
+  return w}
+let bx=20;
+bx+=browser(bx,'A  ·  Looking for a sample',{sel:'Samples',mode:'samples',bar:'kick',typed:1,filters:1,preview:1,markF:1,markPv:2,markInfo:3,markAI:4})+16;
+bx+=browser(bx,'B  ·  A device is selected',{sel:'Plug-Ins',mode:'plugins',bar:'Search (Ctrl + F)',markNoPv:2,markS:5})+16;
+bx+=browser(bx,'C  ·  AI is chosen',{sel:'AI',ai:1,mode:'ai',bar:'Ask...',markHead:6,markCard:7,markRows:8})+16;
+const dX=bx;bx+=browser(bx,'D  ·  AI, with the column widened',{sel:'AI',ai:1,mode:'ai',bar:'Ask...',w:420})+16;
+MARK.push([dX+408,62,9]);
+
+// ---------------- the floating search: wide and low, as the Mac's ----------------
+function floating(x,y,w,h,title,o){s+=T(x,y-8,title,{z:12.5,w:700});
+  s+=R(x,y,w,h,'#141416',{r:8,s:'#2a2a2e'});                         // the window behind, dimmed
+  for(let k=0;k<5;k++)s+=R(x+14,y+12+k*((h-24)/5),w-28,(h-24)/5-4,'#1a1a1d',{r:3});
+  const bh=44,bw2=w-48-4*54,bxx=x+18,byy=y+14;
+  s+=`<g filter="url(#sh)">`+R(bxx,byy,bw2,bh,'#34343a',{r:22,s:'#55555c'})+`</g>`;
+  if(o.ai)s+=spark(bxx+24,byy+22,8,C.acc);else s+=CI(bxx+22,byy+21,6.5,'none',{s:'#bdbdbd',sw:2})+L(bxx+27,byy+26,bxx+32,byy+31,'#bdbdbd',2,{cap:'round'});
+  s+=T(bxx+44,byy+28,o.text,{z:15,f:C.text});s+=L(bxx+48+o.text.length*7.6,byy+12,bxx+48+o.text.length*7.6,byy+32,C.text,1.4);
+  s+=T(bxx+bw2-18,byy+27,o.hint,{z:10.5,f:C.dim,a:'end'});
+  const kinds=[['Samples',(cx,cy,c)=>wav(cx,cy,c).replace('stroke-width="1.3"','stroke-width="1.8"')],['Devices',(cx,cy,c)=>plug(cx,cy,c)],['AI',(cx,cy,c)=>spark(cx,cy,8,c)],['Commands',(cx,cy,c)=>P(`M${cx-6} ${cy-5}l5 5l-5 5M${cx+1} ${cy+5}h6`,{s:c,sw:1.8})]];
+  kinds.forEach(([n,dr],k)=>{const cx=bxx+bw2+34+k*54,cy=byy+22,on=k===o.on;s+=`<g filter="url(#sh)">`+CI(cx,cy,21,on?C.acc:'#34343a',{s:on?null:'#55555c'})+`</g>`;s+=dr(cx,cy,on?C.ink:'#cfcfcf');s+=T(cx,cy+35,n,{z:9.5,f:on?C.text:C.dim,a:'middle',w:on?700:400})});
+  if(o.markK)MARK.push([bxx+bw2+34+3*54+24,byy+2,o.markK]);
+  const ry=byy+bh+22,rx=bxx,rw=bw2;
+  if(o.rows){const ph=o.rows.length*27+48;s+=`<g filter="url(#sh)">`+R(rx,ry,rw,ph,'#2b2b30',{r:12,s:'#4a4a50'})+`</g>`;
+    o.rows.forEach((r,k)=>{const yy=ry+7+k*27;if(k===0)s+=R(rx+6,yy,rw-12,24,'#3f5866',{r:6});
+      s+=P(wavePath(rx+16,yy+3,84,18,20+k,r[4]?loop:hit),{f:k===0?C.val:C.dim,op:0.9});s+=T(rx+114,yy+16,r[0],{z:12,w:k===0?600:400});
+      s+=T(rx+rw-120,yy+16,r[1],{z:10.5,f:C.dim,a:'end'});s+=T(rx+rw-66,yy+16,r[2],{z:10.5,f:C.dim,a:'end'});s+=T(rx+rw-18,yy+16,r[3],{z:10.5,f:C.dim,a:'end'})});
+    const fy=ry+7+o.rows.length*27+4;s+=L(rx+10,fy,rx+rw-10,fy,'#44444a');
+    s+=R(rx+14,fy+9,26,14,C.acc,{r:7});s+=CI(rx+33,fy+16,5,C.ink);s+=T(rx+48,fy+20,'Preview',{z:10,f:C.dim});
+    s+=T(rx+rw-14,fy+20,'up, down: move   ·   Shift+Enter: hear   ·   Enter: load onto Lead Vocals   ·   left, right: another kind',{z:10,f:C.dim,a:'end'});
+    if(o.markR)MARK.push([rx+rw+14,ry+16,o.markR]);if(o.markP)MARK.push([rx+108,fy+16,o.markP])}
+  if(o.ai){s+=`<g filter="url(#sh)">`+R(rx,ry,rw,74,'#2b2b30',{r:12,s:'#4a4a50'})+`</g>`;
+    s+=T(rx+16,ry+24,'Enter sends this line to the agent. The floating search closes, and the answer opens in the Browser under AI.',{z:11,f:'#cfcfcf'});
+    s+=T(rx+16,ry+42,'A mark in the Status Bar says when it is ready. A change still waits for your Apply.',{z:11,f:'#cfcfcf'});
+    s+=T(rx+16,ry+60,'Nothing typed under another button is ever sent to a model.',{z:10,f:C.dim});if(o.markA)MARK.push([rx+rw+14,ry+16,o.markA])}}
+{const fy=846,fh=222,fw=(W-40-16)/2;
+ floating(20,fy,fw,fh,'E  ·  The floating search (Ctrl + P): it opens on samples',{text:'kick short',hint:'samples',on:0,rows:[['Kick Short 01','0.21 s','','C'],['Kick Stub','0.12 s','','A'],['Kick Loop Short','1 bar','124','Am',1]],markK:10,markR:11,markP:12});
+ floating(20+fw+16,fy,fw,fh,'F  ·  The same, moved to AI with the mouse or the arrow keys',{text:'tighten the drums in the chorus',hint:'ask the agent',on:2,ai:1,markA:13})}
+
+// ---------------- the notes and his choices, in the right column ----------------
+{const nx=bx+4,nw=W-nx-20,ny=74;
+ const N=[
+  [1,'Filters by what a sound measures.','One-shot or loop, length, key, tempo, tone, hits. Measured, no AI.'],
+  [2,'The preview row waits.','There with the first sample you select (A). Absent for a device (B).'],
+  [3,'The Info box is part of the column.','It moves, hides and resizes with the Browser.'],
+  [4,'AI is the last label of Categories.','It is not there until ADI\'s agent can answer.'],
+  [5,'A plug-in on a server.','The same name with a small server mark.'],
+  [6,'Who answers, and how far it may go.','Always at the head: the agent, its level, where the model runs.'],
+  [7,'A proposed change is a card.','Apply, Reject, or open the full list of changes.'],
+  [8,'Samples the agent found','are ordinary rows: heard, dragged and loaded like any other.'],
+  [9,'Width.','C is today\'s width. D is the same column dragged wider.'],
+  [10,'One button for each kind of thing.','Samples first; the mouse or the arrows move to the others.'],
+  [11,'The same search as the Browser\'s.','The same words find the same samples in both.'],
+  [12,'One Preview switch','for the whole program, shown in both places.'],
+  [13,'Only the AI button sends,','and only on Enter.']];
+ const rowH=30,nh=14+N.length*rowH+6;s+=R(nx,ny,nw,nh,C.bar,{r:6});
+ N.forEach((n,k)=>{const cy=ny+12+k*rowH;s+=note(nx+20,cy+9,n[0]);s+=T(nx+38,cy+7,n[1],{z:11,w:700});s+=T(nx+38,cy+21,n[2],{z:10,f:'#bdbdbd'})});
+ const qy=ny+nh+10,qh=816-qy;s+=R(nx,qy,nw,qh,C.well,{r:6,s:C.acc});
+ s+=T(nx+12,qy+20,'Yours to choose  (I recommend a for each)',{z:12,w:700,f:C.acc});
+ const Q=[
+  ['W. How wide is the conversation?',['a) as wide as you drag the Browser (C, D)','b) choosing AI widens the column by itself to D','c) it also covers the list of labels']],
+  ['X. Where do you read the full list of a proposed change?',['a) in the centre, beside the Browser','b) all inside the column','c) in a floating window']],
+  ['Y. In the Mix View, which has no Browser:',['a) the floating search calls the agent; the column slides in','b) an AI label in the Mix View\'s own list','c) only from the Arrangement']],
+  ['Z. The floating search\'s buttons:',['a) four as drawn; Devices holds plug-ins and presets too','b) three: commands live under Devices','c) another split: tell me']]];
+ let cy=qy+42;Q.forEach(q=>{s+=T(nx+12,cy,q[0],{z:11,w:700});cy+=15;q[1].forEach(l=>{s+=T(nx+20,cy,l,{z:10.5,f:'#cfcfcf'});cy+=14});cy+=9})}
+MARK.forEach(([x,y,n])=>s+=note(x,y,n));
+finish(W,H,s);
+</script></body></html>

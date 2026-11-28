@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -104,10 +105,103 @@ void externalCopyOwnership() {
     check(!refused.ok && changed.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 && std::filesystem::exists(notCopied.source),
           "external material changes refuse native commit without deleting that source");
 }
+void batchImports() {
+    Project p;
+    auto &db = p.store->db();
+    auto first = p.options();
+    first.at = {0, 0};
+    first.track = 22;
+    first.edgeFades = true;
+    auto second = first;
+    second.source = p.temporary.path() / "same-bytes.wav";
+    std::filesystem::copy_file(first.source, second.source);
+    second.clipId = 9;
+    second.mediaId = 10;
+    auto third = first;
+    third.source = p.temporary.path() / "another.wav";
+    third.clipId = 11;
+    third.mediaId = 12;
+    clip_edit::ImportBatch batch;
+    batch.expectedHead = OpJournal(*p.store).headSeq();
+    batch.consecutive = true;
+    batch.imports = {first, second, third};
+    OpRequest create;
+    create.opType = "track.create";
+    create.payload = {{"id", 22}, {"kind", "audio"}, {"name", "Imported"}, {"index", 1}};
+    batch.createTracks.push_back(create);
+    auto bad = clip_edit::prepareImportAudioBatch(*p.store, batch, 48000);
+    check(!bad.edit.ok && bad.refusedImport == 2 && !clip_edit::commitMaterial(*p.store, bad).ok &&
+          db.execAndGet("SELECT count(*) FROM tracks WHERE id=22").getInt() == 0 && !History(*p.store).head(),
+          "SC-158: a missing last file refuses the complete batch before editing the project");
+    {
+        std::vector<float> samples(2048, 0.1f);
+        audio::WavWriter writer(third.source, 48000, 2, audio::WavFormat::Float32);
+        writer.write(samples.data(), 1024);
+        writer.close();
+    }
+    auto ready = clip_edit::prepareImportAudioBatch(*p.store, batch, 48000);
+    check(ready.edit.ok, "SC-158: prepare consecutive files, fades, copy and a new track");
+    if (!ready.edit.ok) return;
+    db.exec("CREATE TABLE batch_deferred(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES tracks(id) DEFERRABLE INITIALLY DEFERRED) STRICT");
+    db.exec("CREATE TRIGGER fail_batch AFTER INSERT ON clips WHEN new.id=11 BEGIN INSERT INTO batch_deferred VALUES(new.id,999);END");
+    const auto refused = clip_edit::commitMaterial(*p.store, ready);
+    check(!refused.ok && std::filesystem::is_empty(p.temporary.path() / "audio") &&
+          db.execAndGet("SELECT count(*) FROM tracks WHERE id=22").getInt() == 0 && !History(*p.store).head(),
+          "SC-158: deferred SQL refusal retracts both new copied assets and all project rows");
+    db.exec("DROP TRIGGER fail_batch;DROP TABLE batch_deferred");
+    const auto landed = clip_edit::commitMaterial(*p.store, ready);
+    check(landed.ok && db.execAndGet("SELECT count(*) FROM media_files").getInt() == 2 &&
+          db.execAndGet("SELECT count(*) FROM audio_clips WHERE media_id=8").getInt() == 2 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22 AND fade_in_ticks>0 AND fade_out_ticks>0").getInt() == 3 &&
+          db.execAndGet("SELECT b.pos_ticks=a.pos_ticks+a.length_ticks AND c.pos_ticks=b.pos_ticks+b.length_ticks "
+                        "FROM clips a,clips b,clips c WHERE a.id=7 AND b.id=9 AND c.id=11").getInt() == 1,
+          "SC-158: one commit preserves order and fades and deduplicates different files of the same content");
+    check(History(*p.store).undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM tracks WHERE id=22").getInt() == 0 && !History(*p.store).head() &&
+          History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=22").getInt() == 3,
+          "SC-158: one Undo and one Redo cover the complete drop");
+}
+void batchReplacement() {
+    Project project;
+    auto& db = project.store->db();
+    db.exec("INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) "
+            "VALUES(6,21,'midi','Original',0,1000000)");
+    auto first = project.options();
+    first.at = {0, 200000};
+    auto second = first;
+    second.clipId = 9;
+    second.mediaId = 10;
+    clip_edit::ImportBatch batch;
+    batch.expectedHead = OpJournal(*project.store).headSeq();
+    batch.consecutive = true;
+    batch.placementPolicy.emplace();
+    batch.imports = {first, second};
+    auto prepared = clip_edit::prepareImportAudioBatch(*project.store, batch, 48000);
+    const auto applied = clip_edit::commitMaterial(*project.store, prepared);
+    if (!applied.ok)
+        std::printf("batch replacement: %s\n", applied.error.c_str());
+    check(prepared.edit.ok && applied.ok &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21").getInt() == 4 &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=6").getInt64() == 200000 &&
+              db.execAndGet("SELECT count(*) FROM clips a,clips b,clips tail WHERE a.id=7 AND b.id=9 "
+                            "AND tail.name='Original' AND b.pos_ticks=a.pos_ticks+a.length_ticks "
+                            "AND tail.pos_ticks=b.pos_ticks+b.length_ticks "
+                            "AND tail.pos_ticks+tail.length_ticks=1000000").getInt() == 1,
+          "SC-35/158: consecutive files in one drop clear the same original together and preserve both faces");
+    check(applied.ok && History(*project.store).undo().ok &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21").getInt() == 1 &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=6").getInt64() == 1000000,
+          "SC-35/158: one Undo restores the whole original after a consecutive replacement");
+}
 void bounce() {
     Project p;auto& db=p.store->db();auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"bounce fixture imports source");
-    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PostFader};
+    p.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain)"
+                       " VALUES(91,'track',21,'volume','real')");
+    AutomationPoint point{};point.time=50000;point.value=-6;point.point_id=1;
+    const auto automation=writeStream<AutomationPoint>(FourCC::Automation,{&point,1});
+    check(p.store->putAutomationData(91,{},automation),"Bounce in Place fixture has track Volume automation");
+    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PreFader};
     options.job.beginSample=127;options.job.endSample=639;options.job.session={2,48000,64};
     options.job.encoding.format=audio::WavFormat::Float32;
     options.destination=p.options();options.destination.clipId=10;options.destination.mediaId=11;options.destination.at={1,1000000000};options.destination.warp=true;
@@ -131,7 +225,12 @@ void bounce() {
 void bounceInPlaceAndStale() {
     Project p;auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"Bounce in Place fixture source");
-    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PostFader};
+    p.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain)"
+                       " VALUES(91,'track',21,'volume','real')");
+    AutomationPoint point{};point.time=50000;point.value=-6;point.point_id=1;
+    const auto automation=writeStream<AutomationPoint>(FourCC::Automation,{&point,1});
+    check(p.store->putAutomationData(91,{},automation),"Bounce in Place fixture has track Volume automation");
+    clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PreFader};
     options.job.beginSample=127;options.job.endSample=639;options.job.session={2,48000,64};
     options.job.encoding.format=audio::WavFormat::Float32;
     options.destination=p.options();options.destination.clipId=8;options.destination.mediaId=11;options.destination.at={1,2645833};
@@ -146,6 +245,7 @@ void bounceInPlaceAndStale() {
               db.execAndGet("SELECT min(clip_id) FROM audio_clips WHERE clip_id NOT IN (7,8)").getInt64()==9 &&
               db.execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==1,
           "the supplied next ID belongs to the bounce and the crossing source uses two other IDs");
+    check(p.store->getAutomationData(91,{})==automation,"Bounce in Place leaves the live Volume envelope byte-exact");
     check(History(*p.store).undo().ok && p.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==1,"Bounce in Place undo restores the source whole");
     options.replace.reset();options.destination.clipId=20;options.destination.mediaId=21;
     bool edited=false;render::Control control;
@@ -162,4 +262,4 @@ void bounceInPlaceAndStale() {
 }
 
 }
-int main(){try{imports();refusalAndRollback();externalCopyOwnership();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();batchReplacement();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

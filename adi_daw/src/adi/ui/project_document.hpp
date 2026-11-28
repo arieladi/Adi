@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/automation_lanes.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/device_presets.hpp"
@@ -11,6 +12,7 @@
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/mix/limiter/ReductionMailbox.h"
+#include "adi/media/collect_export.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
@@ -28,10 +30,14 @@
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 #include <atomic>
-#include <mutex>
+#include <cstddef>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <utility>
+namespace adi::recording { struct RecordingEdit; }
+namespace adi::engine::recording_recovery { struct LaunchTake; }
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -39,9 +45,8 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // Message-thread project lifetime. The callback is detached before destruction.
 // Only process() accesses Transport while the driver is running.
 //
-// There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
-// and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
-// a named snapshot instead, a point in the history that copies nothing.
+// Every op is committed as it happens (ADR-0003, ADR-0203 d13), and the store
+// closes into one file. Ctrl/Cmd+S names the project once and then takes snapshots.
 struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
@@ -51,25 +56,85 @@ class ProjectDocument final : public engine::BlockProcessor {
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
                                                  engine::DeviceLoader, std::string &error,
                                                  const RecordingDefaults *defaults = nullptr);
+    // A candidate remains private until its graph and view agree. Advance and
+    // destroy this job on the document owner, between message loop turns.
+    class OpenJob {
+      public:
+        enum class Phase { preparing, loadingDevices, buildingGraph, ready, failed };
+        ~OpenJob();
+        Phase phase() const noexcept { return phase_; }
+        void advance();
+        std::size_t completedDevices() const noexcept { return completedDevices_; }
+        std::size_t totalDevices() const noexcept { return totalDevices_; }
+        const std::string &error() const noexcept { return error_; }
+        std::unique_ptr<ProjectDocument> takeDocument();
+
+      private:
+        friend class ProjectDocument;
+        OpenJob(std::filesystem::path, bool, engine::DeviceLoader, const RecordingDefaults *);
+        void prepare();
+        void fail(std::string reason);
+
+        std::filesystem::path path_;
+        bool create_;
+        engine::DeviceLoader loader_;
+        std::optional<RecordingDefaults> defaults_;
+        std::unique_ptr<ProjectDocument> document_;
+        Phase phase_ = Phase::preparing;
+        std::size_t completedDevices_ = 0;
+        std::size_t totalDevices_ = 0;
+        std::string error_;
+    };
+    static std::unique_ptr<OpenJob> startOpen(const std::filesystem::path &, bool create, engine::DeviceLoader,
+                                              const RecordingDefaults *defaults = nullptr);
+    struct HistoryReload {
+        std::unique_ptr<ProjectDocument> document;
+        std::string error;
+        bool replayBaseChanged = false;
+    };
+    // The caller must stop audio before calling and replace this document if the replay base changes.
+    // If the target cannot be opened, try to restore and open the previous head.
+    HistoryReload reopenAtStoredHistory(HistoryRestoreTarget, std::int64_t nowUtc);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
                                          int utcOffsetMinutes);
+    // The app supplies local civil time alongside UTC microseconds. The
+    // document updates the daily version after committed history changes.
+    using DailyHistoryClock = std::function<std::pair<std::int64_t, int>()>;
+    void setDailyHistoryClock(DailyHistoryClock clock) { dailyHistoryClock_ = std::move(clock); }
+    void flushDailyHistory() { updateDailyHistory(true); }
     // What the Take Snapshot prompt is pre-filled with: the project's name and the time.
     std::string snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const;
     const std::string &name() const noexcept { return name_; }
     // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the store copies the project into a
     // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
     // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
-    // The store never overwrites, so an existing destination is refused and `error()` says why,
-    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // Existing destinations require explicit replacement confirmation. False means nothing moved; once the store has
     // switched the save stands and is true, a warning the store reports, or a session that
     // failed to re-read the new file, in `warning()`.
-    bool saveAs(const std::filesystem::path &);
+    bool saveAs(const std::filesystem::path &, bool firstSave = false,
+                StoreFileCollision = StoreFileCollision::Fail,
+                const media::FileIdentity *expectedTarget = nullptr);
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
-    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
-    bool saveCopy(const std::filesystem::path &);
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused.
+    bool saveCopy(const std::filesystem::path &, bool keepUndoHistory = false);
+    enum class SaveKind { as, copy, firstSave };
+    struct SaveProgress {
+        enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
+        Phase phase;
+        int pagesDone = 0;
+        int pagesTotal = 0;
+        bool switched = false;
+    };
+    // File-menu saves progress between owner turns. Only Save As switches the live document.
+    bool startSave(const std::filesystem::path &, SaveKind, StoreFileCollision = StoreFileCollision::Fail,
+                   const media::FileIdentity *expectedTarget = nullptr, bool keepUndoHistory = false);
+    std::optional<SaveProgress> saveProgress() const;
+    void advanceSave();
+    void cancelSave();
+    void clearSave(); // after a terminal result has been shown
     // Live's Collect All and Save (manual 5.7): every outside media file the project and its
     // history use is copied into `audio/` beside it and the project points at the copies
     // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
@@ -83,14 +148,26 @@ class ProjectDocument final : public engine::BlockProcessor {
     // it owns and the window keeps working; a project replaced meanwhile does not wait for it.
     struct ExportJob {
         std::filesystem::path project, zip;
+        std::string stateWarning;
+        bool keepUndoHistory = false;
     };
-    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
-    static StoreFileResult runCollectAndExport(const ExportJob &);
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory = false);
+    static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
+    // Finish pending device edits and capture even plug-ins that never report changed state.
+    // Call before closing the document or reading the file for an offline render.
+    // Save, Export and Quit keep stored state for an unreadable plug-in and
+    // mark it stale. A hard storage failure is reported separately in error().
+    bool capturePluginState(std::optional<std::int64_t> deviceId = {});
+    const std::string &pluginStateWarning() const noexcept { return pluginStateWarning_; }
+    // Structural edits require the device's live state before they proceed.
+    bool requirePluginState();
     bool synchronise();
     // SC-318: a plug-in scan has ended; every placeholder whose plug-in now loads wakes in its place.
     // Returns how many woke (the view then re-reads the session).
     std::size_t wakeMissingPlugins();
     void tick(std::int64_t milliseconds);
+    // Drain and publish queued plug-in edits before a new surface begins observing touches.
+    void pollParameterEdits();
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
     // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
     // step they undo is the one the user sees last (DF-W29). A held drag (Begin with no End) stays.
@@ -118,6 +195,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
+    std::shared_ptr<const ParameterPublication> automationParameters(std::int64_t track);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // Visible surfaces hold one owner-thread lease per presented runtime.
     // Reads are nonconsuming and expose the same current frame to every reader.
@@ -160,9 +238,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // when the lane was not overridden or the rebuild failed.
     bool reenableAutomation(std::int64_t laneId);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
-    // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
-    // recording is not wired yet (AU-03), so the session is never told that recording is on.
-    void setAutomationArmed(bool armed) noexcept;
+    // button is on becomes automation. The session's switch is on in a new Set.
+    void setAutomationArmed(bool armed);
     bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
     RecordStates recordStates() const;
@@ -172,11 +249,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     // starts at the song start or the insert marker after the saved Count-In. While playing, it records
     // from the playhead. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    // The driver's round-trip latency is captured in samples at the recording's rate.
+    // The driver's round-trip latency and signed driver error are supplied in samples at the recording's rate.
     // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                         std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},
-                        audio::WavFormat format = audio::WavFormat::Float32);
+                        audio::WavFormat format = audio::WavFormat::Float32, bool overdub = false);
+    // The application owns launch discovery. Headless and transient document
+    // hosts do not create entries in the application's recording registry.
+    void enableRecordingRecovery() noexcept { recordingRecoveryEnabled_ = true; }
+    bool startTakeRecovery(const engine::recording_recovery::LaunchTake &);
     // The application replaces these routes when the device or its channel config changes.
     // An empty list means the device has no enabled inputs. The view lasts until the next set.
     void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
@@ -194,6 +275,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // the file switches. False when the recorder's worker did not finish in ten seconds.
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
+    bool capturingAudioTake() const noexcept { return recording_ && recordingAudio_; }
     bool landingTake() const noexcept { return landing_; }
     std::span<const LiveMidiTake> liveMidiTakes() const noexcept;
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
@@ -203,6 +285,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::vector<std::int64_t> clips;
         std::string message;
     };
+    [[nodiscard]] bool canCaptureMidi() const noexcept;
+    TakeLanded captureRecentMidi(std::int64_t positionTick, bool playing);
     std::optional<TakeLanded> takeLanded();
     // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
     // knob, on its track or, when that track is among the selected, on every selected track by the same
@@ -234,8 +318,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::optional<std::string> takeTrackRenderStatus();
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
-    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
-    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy captures live state first and uses
+    // stored state for a device whose plug-in is not loaded; the clipboard is the app's, not the
     // document's. Paste puts a new device, with the next free id and the copy's stored state, in
     // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
     // engine's refusals (a rack with nested chains, a copy from another project) come back in
@@ -254,7 +338,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // A drop below the tracks passes track 0 and creates and selects the appropriate track.
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
-                       const RecordingDefaults *defaults = nullptr);
+                       const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
@@ -262,9 +346,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
-                    const RecordingDefaults *defaults = nullptr);
+                    const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
                           const std::string &name, std::filesystem::path &saved);
+    bool saveDefaultDevicePreset(const DevicePanelData &, const std::filesystem::path &library);
+    // The current User Library, read when a new device is loaded. An empty path has no defaults.
+    std::function<std::filesystem::path()> devicePresetLibrary;
     std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
                                   const std::optional<rows::PluginRef> &installed = {});
     struct HotSwapTargetInfo {
@@ -308,13 +395,23 @@ class ProjectDocument final : public engine::BlockProcessor {
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
-    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
-    // SC-377: the same capture on a worker: a connection of its own on `project` (it only reads), and a stop.
-    // A 2 GB file is hashed and decoded here, never on the message thread. False, with `why`, when the
-    // file cannot be imported or the stop was asked.
+    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                       const std::filesystem::path &defaultsIndex = {});
+    // SC-377: capture on a worker with its own connection and cancellation.
     static bool captureImport(const std::filesystem::path &project, const std::string &utf8Path, std::int64_t nowUtc,
-                              AudioImport &out, std::string &why, std::stop_token stop = {});
+                              AudioImport &out, std::string &why, std::stop_token stop = {},
+                              const std::filesystem::path &defaultsIndex = {});
     [[nodiscard]] std::filesystem::path projectPath() const { return store_->path(); }
+    // An explicit Library write, available even for a read-only project.
+    bool saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex);
+    struct ClipRelinkTarget {
+        std::int64_t clipId{}, mediaId{};
+        std::string hash, originalName;
+    };
+    std::optional<ClipRelinkTarget> clipRelinkTarget(std::int64_t clip);
+    bool relinkClipMedia(const ClipRelinkTarget &, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, std::string_view expectedHash, const std::filesystem::path &);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
@@ -324,15 +421,27 @@ class ProjectDocument final : public engine::BlockProcessor {
     // stale when the project changed meanwhile, leaving nothing behind.
     struct MaterialJob {
         std::filesystem::path project, source;
+        std::filesystem::path defaultsIndex;
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
+        edit_plan::EditPolicy placementPolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
-                            const ImportChoices &, std::int64_t nowUtc) const;
+                            const ImportChoices &, std::int64_t nowUtc, edit_plan::EditPolicy = {}) const;
     static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
     // The new clip's id when it landed; 0 with `error()` saying why when it did not.
     std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
+    struct MaterialBatchJob {
+        std::filesystem::path project, defaultsIndex;
+        clip_edit::ImportBatch batch;
+        double rate = 48000.0;
+    };
+    MaterialBatchJob materialBatchJob(const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t atTicks, bool separate, const ImportChoices &,
+                                      const RecordingDefaults &, std::int64_t nowUtc) const;
+    static clip_edit::MaterialEdit prepareMaterialBatch(MaterialBatchJob, std::stop_token = {});
+    bool commitMaterialBatch(clip_edit::MaterialEdit &, const MaterialBatchJob &);
     // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
     // project through its own read-only store (`Store::open(path, error, true)`), never this one.
     WaveformCache &waveforms() noexcept { return waveforms_; }
@@ -343,18 +452,25 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startTrackRender(TrackRenderKind, std::int64_t track);
     void pollTrackRender();
     void stopTrackRender();
-    bool finishInsert(PreparedBuiltinInsert);
-    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    enum class PresetLoad { Insert, InPlace, Default };
+    std::optional<preset::Preset> captureDevicePreset(const DevicePanelData &);
+    bool finishInsert(PreparedBuiltinInsert, const preset::Identity &);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, PresetLoad = PresetLoad::Insert);
+    void publishDeviceEdit(std::optional<std::int64_t> newTrack);
+    std::optional<HotSwapTargetInfo> hotSwapTargetAfterCapture(const DevicePanelData &);
     std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
     bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
     static std::int64_t captureNowMs() noexcept;
+    bool capturePluginStateImpl(std::optional<std::int64_t> deviceId, bool bestEffort);
+    bool markStalePluginStates(std::span<const std::int64_t> stale, bool complete);
     // What the drain and a gesture both do with the requests the capture appended: the state
     // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
     // is nothing done. False with `error()` set when the store refused.
     bool commitCaptured(std::vector<OpRequest> &requests);
+    bool drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs = 0);
     // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
     // value, in that order.
     std::string refusalReason(std::int64_t id, const std::string &param);
@@ -364,6 +480,34 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    void refreshSessionSources();
+    struct AutomationPass {
+        automation::LaneSpec target;
+        std::optional<std::int64_t> suspendedLane;
+        std::optional<engine::DeviceRuntimeToken> device;
+        std::shared_ptr<const gesture::OwnerToken> owner;
+        std::vector<std::vector<AutomationPoint>> spans;
+        engine::Session::DriverClock last;
+        bool touched = false, nativeReleased = false;
+        void append(std::int64_t sample,double value);
+        void advance(const engine::Session::DriverClock &);
+        void value(const engine::Session::DriverClock &,double value);
+        void close(const engine::Session::DriverClock &);
+    };
+    void recordMixerValues(std::span<const OpRequest>);
+    void advanceAutomationWrites();
+    bool closeAutomationWrites(std::optional<std::int64_t> deviceId = {});
+    bool commitAutomation(std::vector<AutomationPass>,std::vector<OpRequest> requests={});
+    std::optional<AutomationPass> prepareParameterAutomation(std::int64_t,const device::ParamDescriptor&,
+                                                            double before,double after);
+    void suspendParameterAutomation(AutomationPass&);
+    bool observeNativeAutomation(std::int64_t,const device::ParamDescriptor&,engine::ParamEventKind,double before,double after,
+                                 const std::shared_ptr<const gesture::OwnerToken>&);
+    bool finishNativeAutomation(bool stop=false, std::optional<std::int64_t> deviceId = {});
+    bool releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken>&);
+    bool commitParameterAutomation(std::int64_t,const std::string&);
+    std::vector<AutomationPass> mixerWrites_, nativeWrites_;
+    std::map<std::pair<std::int64_t,std::string>,AutomationPass> parameterWrites_;
     [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
         std::int64_t id, const engine::DeviceRuntimeToken& expected);
     void refreshLimiterReductionSources();
@@ -377,11 +521,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
+    void updateDailyHistory(bool closing = false);
+    bool followSaveAs(const StoreFileResult &, bool keptTake);
+    struct SaveJob;
     std::unique_ptr<Store> store_;
     std::mutex formatMutex_;                 // SC-384
     std::string formatProblem_;              // the last one said
     std::optional<std::string> formatPending_; // for the window
     std::string name_;
+    DailyHistorySnapshots dailyHistory_;
+    AppliedSource dailyHistorySource_;
+    std::uint64_t dailyHistorySequence_ = 0;
+    DailyHistoryClock dailyHistoryClock_;
     engine::ProjectView view_;
     OpSubmitter ops_;
     ViewStateStore views_;
@@ -402,13 +553,21 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
-    // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
+    // Arrangement Record (MX-09): capture, staged audio files, then one owner commit.
+    struct TakePublication;
+    struct RecoveryWork;
+    struct MidiRecording;
     void pollRecording(bool deviceStopped);
     void landTake();
+    TakeLanded commitMidiTake(MidiRecording &, const std::string &audioProblem, const std::string &audioLocation);
+    void finishMidiTake(const MidiRecording &, const recording::RecordingEdit &, const SubmitResult &, TakeLanded &);
+    void pollTakePublication();
+    bool waitForTake(bool forceDetached);
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
-    struct MidiRecording;
+    bool recordingRecoveryEnabled_ = false;
+    std::unique_ptr<RecoveryWork> recoveryWork_;
     std::unique_ptr<MidiRecording> midiRecording_;
     std::optional<engine::AudioRecordingResult> audioTake_;
     bool recordingAudio_ = false;
@@ -417,10 +576,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::atomic<bool> captureReady_{false};
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
+    std::unique_ptr<TakePublication> takePublication_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;
-    ParameterFeed feed_;
+    ParameterFeed feed_{parameterOps_};
     // Owner-only. Refresh the pointer even when latency fields still match so
     // an old load of controls is never held after its display changes.
     std::shared_ptr<const ParameterPublication> reportedLatencyFeed_;
@@ -431,7 +591,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::shared_ptr<SharedAnalysis> analysis_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
-    std::string error_, warning_;
+    std::string error_, warning_, pluginStateWarning_;
     // Last, so its worker stops before anything else goes; it touches nothing of the above.
     // Where the document's file is now, for the waveform worker: Save As moves it.
     std::shared_ptr<WaveformSource> waveformSource_;
@@ -442,5 +602,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     std::map<std::int64_t, ReductionSource> limiterReductionSources_;
     std::int64_t limiterReductionPublication_ = 0;
+    std::unique_ptr<SaveJob> saveJob_;
 };
 } // namespace adi::ui

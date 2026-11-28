@@ -60,6 +60,7 @@ enum class ThemeId { Dark, MidGrey, Light, MixView };
     ADI_THEME_ROLE(favourite) /* the Browser's favourite mark */ \
     ADI_THEME_ROLE(focus) /* the Browser's preview ring */ \
     ADI_THEME_ROLE(lock) /* the Arrangement's lock button when on */ \
+    ADI_THEME_ROLE(playQuantize) /* Play-Q's armed latency indicator */ \
     ADI_THEME_ROLE(dropTarget) /* where a dragged track lands */ \
     ADI_THEME_ROLE(mutedClip) /* a deactivated clip, an off note */ \
     ADI_THEME_ROLE(handle) /* a fade's handle */ \

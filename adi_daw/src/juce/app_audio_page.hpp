@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/process.hpp"
 #include "adi/settings/channel_config.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "ui_channel_config.hpp"
@@ -22,6 +23,9 @@ settings::ChannelConfig channelConfigFor(const settings::AppSettings &, const st
 std::vector<ExternalAudioInput> externalAudioInputsFor(const settings::ChannelConfig &, const juce::BigInteger &active,
                                                        int inputCount);
 std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager &, const settings::AppSettings &);
+// Enabled physical stereo output pairs, with any names assigned in Output Config.
+std::vector<std::pair<int, std::string>> readExternalAudioOutputs(juce::AudioDeviceManager &,
+                                                                 const settings::AppSettings &, const engine::OutputChannelMap &);
 // Keeps one side of a device's record as a dialog edited it, the other side as it was; saved at
 // once. False, and why, when refused.
 bool keepChannelConfig(settings::AppSettings &, const std::string &device, bool inputs,

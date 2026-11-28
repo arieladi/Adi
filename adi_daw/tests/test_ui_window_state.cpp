@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/store.hpp"
 #include "adi/ui/density.hpp"
+#include "adi/ui/midi_input_feed.hpp"
 #include "adi/ui/midi_ports.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/theme.hpp"
@@ -384,6 +385,31 @@ void midiPortsCore() {
                   settings::validate(*row, *both, why),
               "two devices that swapped sockets each keep their own record");
     }
+    {
+        const settings::Value saved = {
+            {"in:manual", {{"track", false}, {"name", "Manual Keys"}}},
+            {"in:legacy", {{"remote", true}}},
+            {"out:existing", {{"track", true}, {"name", "External Synth"}}},
+        };
+        const auto first = reconcileMidiPorts(saved, {{"in:old", "Old Input"}, {"in:legacy", "Legacy Input"},
+                                                      {"out:old", "Old Input"}}, false);
+        check(first && first->at("in:old").at("track") == false && !first->contains("out:old"),
+              "discovering a new input saves even an off default and does not change its output");
+        const std::vector<MidiPortListing> expanded = {
+            {"in:old", "Old Input"}, {"in:legacy", "Legacy Input"}, {"in:moved", "Manual Keys"},
+            {"in:new", "New Input"}, {"out:new", "New Input"}, {"out:existing", "External Synth"},
+        };
+        const auto second = first ? reconcileMidiPorts(*first, expanded, true) : std::nullopt;
+        check(second && midiPortSwitches(*second, "in:new").track && !second->contains("out:new") &&
+                  midiPortSwitches(*second, "out:existing").track && !midiPortSwitches(*second, "out:new").track &&
+                  settings::validate(*row, *second, why),
+              "the enabled default reaches a new input while output Track switches keep their prior behavior");
+        check(second && !midiPortSwitches(*second, "in:old").track && !second->at("in:legacy").contains("track") &&
+                  !midiPortSwitches(*second, "in:moved").track && !second->contains("in:manual"),
+              "changing the default preserves seeded off, legacy partial records, and a moved manual off");
+        check(!reconcileMidiPorts(saved, {{"in:one", "Manual Keys"}, {"in:two", "Manual Keys"}}, true),
+              "an ambiguous saved input is left for the user instead of being enabled by the new default");
+    }
     // The ring: in order, refusing when full, counting what it lost.
     MidiEventRing<4> ring;
     for (std::uint32_t i = 0; i < 5; ++i) {
@@ -430,12 +456,85 @@ void midiPortsCore() {
               midiMessageSize(0xf0) == 0 && midiMessageSize(0x40) == 0,
           "each status byte's length");
 }
+void computerMidiFeed() {
+    using engine::Event;
+    using engine::EventType;
+    constexpr std::int64_t blockStart = 9600;
+    constexpr std::int32_t frames = 480;
+    constexpr double rate = 48000;
+    constexpr std::uint64_t keyOne = (std::uint64_t{1} << 48) + 1;
+    constexpr std::uint64_t keyTwo = keyOne + 1;
+    MidiInputFeed feed;
+    MidiInputFeed::Ring port;
+    const std::array sources{MidiInputFeed::Source{&port, 0, true, false, false, 1}};
+    feed.publish(sources);
+    const auto wire = [&](double time, std::array<std::uint8_t, 3> bytes) {
+        MidiPortEvent event;
+        event.timeMs = time;
+        event.bytes = bytes;
+        event.size = 3;
+        return port.push(event);
+    };
+    check(feed.pushComputerMidi(191, {99, EventType::NoteOn, 1, 60, keyOne, 0, .75}) &&
+              feed.pushComputerMidi(196, {0, EventType::NoteOn, 1, 60, keyTwo, 0, .5}) &&
+              feed.pushComputerMidi(197, {0, EventType::NoteOff, 1, 60, keyOne, 0, 0}) &&
+              feed.pushComputerMidi(198, {0, EventType::NoteOff, 1, 60, keyTwo, 0, 0}) &&
+              wire(192, {0x91, 60, 100}) && wire(195, {0x81, 60, 0}),
+          "typed computer keys and a physical port can play the same pitch simultaneously");
+
+    struct Heard { std::int64_t sample; Event event; std::int64_t inputSample; };
+    std::array<Heard, MidiInputFeed::kMaxPerBlock> heard{};
+    std::size_t count = 0;
+    // SC-50 supplies the played sample as well. The scheduled clock and ordering are shared.
+    const auto collect = [&](std::int64_t sample, const Event &event, std::int64_t inputSample) noexcept {
+        if (count == heard.size())
+            return false;
+        heard[count++] = {sample, event, inputSample};
+        return true;
+    };
+    feed.pump(blockStart, frames, rate, 200, collect);
+    const auto is = [&](std::size_t i, std::int64_t offset, EventType type, std::uint64_t id) {
+        return heard[i].sample == blockStart + offset && heard[i].inputSample == blockStart + offset - frames &&
+               heard[i].event.type == type && heard[i].event.noteId == id;
+    };
+    const auto physicalId = heard[1].event.noteId;
+    check(count == 6 && is(0, 48, EventType::NoteOn, keyOne) && is(1, 96, EventType::NoteOn, physicalId) &&
+              physicalId != 0 && physicalId < keyOne && is(2, 240, EventType::NoteOff, physicalId) &&
+              is(3, 288, EventType::NoteOn, keyTwo) && is(4, 336, EventType::NoteOff, keyOne) &&
+              is(5, 384, EventType::NoteOff, keyTwo) && heard[0].event.channel == 1 &&
+              heard[0].event.frame == 0 && heard[0].event.value == .75,
+          "the callback orders both sources by the port clock and preserves each computer key's identity and velocity");
+
+    const Event note{0, EventType::NoteOn, 1, 60, keyOne, 0, .75};
+    std::size_t filled = 0;
+    while (filled < 4096 && feed.pushComputerMidi(201, note))
+        ++filled;
+    check(filled > 0 && filled < 4096 && wire(202, {0x91, 62, 100}), "computer input has a finite queue and its own overflow");
+    count = 0;
+    int resets = 0;
+    feed.pump(blockStart + frames, frames, rate, 210, collect, [&]() noexcept {
+        if (count == 0)
+            ++resets;
+    });
+    check(resets == 1 && count == 1 && heard[0].event.dim == 62,
+          "overflow asks to release existing voices before the callback accepts any new input");
+    count = 0;
+    check(feed.pushComputerMidi(211, note) && feed.pump(blockStart + 2 * frames, frames, rate, 220, collect) == 1 &&
+              count == 1 && heard[0].event.noteId == keyOne,
+          "the computer input recovers after its old queued notes are discarded");
+    count = 0;
+    check(feed.pushComputerMidi(221, note), "a computer note is waiting when the device restarts");
+    feed.restart();
+    check(feed.pump(0, frames, rate, 230, collect) == 0 && count == 0,
+          "a device restart discards notes stamped against the previous device clock");
+}
 } // namespace
 int main() {
     themeAndDensityTables();
     locateFence();
     laneMarkerTransport();
     midiPortsCore();
+    computerMidiFeed();
     placementRule();
     whollyOnScreen();
     test::TempDirectory temp("ui_state", "roundtrip");
@@ -597,7 +696,8 @@ int main() {
               restored.noteLaneHeight == 90 && views.load("other").noteLaneHeight == 56 &&
               restored.clipPanelsArrangement == 2 && views.load("other").clipPanelsArrangement == 0 &&
               restored.quantizeAmount == 40 && restored.quantizeSwing == 15 && !restored.quantizeStarts && restored.quantizeEnds &&
-              views.load("other").noteGridSnap && !views.load("other").noteGridFixed && views.load("other").highlightScale &&
+              views.load("other").noteGridSnap && views.load("other").noteGridFixed &&
+              views.load("other").noteGridFixedQuarters == .25 && views.load("other").highlightScale &&
               views.load("other").noteColours == 0 && views.load("other").quantizeAmount == 100 && views.load("other").quantizeStarts &&
               views.load("other").clipViewHeight == 286,
           "the Note Editor's grid, Highlight Scale, note colours and Quantize settings persist per window, with Live's defaults");

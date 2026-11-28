@@ -5,6 +5,8 @@
 #include <numbers>
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/media/blake3.hpp"
+#include "adi/media/publish_file.hpp"
 #include <rubberband/RubberBandStretcher.h>
 #include <samplerate.h>
 #include <exception>
@@ -12,9 +14,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <thread>
 
 namespace adi::audio {
 struct WarpPreparation {
@@ -324,11 +329,25 @@ std::optional<WarpMode> parseWarpMode(std::string_view name)noexcept {
         if(name==warpModeName(mode))return mode;
     return std::nullopt;
 }
+double pitchedSampleRate(double sampleRate,double semitones)noexcept {
+    if (!(sampleRate>0.) || !(std::abs(semitones)<=48.)) return 0.;
+    if (semitones==0.) return sampleRate;
+    return std::max(1.,std::round(sampleRate*std::exp2(semitones/12)));
+}
 
 PreparedWarp::PreparedWarp(std::filesystem::path directory,std::uint32_t sampleRate,std::uint16_t channelCount,std::uint64_t frameCount)
     :file(directory/"prepared.wav"),rate(sampleRate),channels(channelCount),frames(frameCount),directory_(std::move(directory)){}
+PreparedWarp::PreparedWarp(std::filesystem::path path,std::uint32_t sampleRate,std::uint16_t channelCount,std::uint64_t frameCount,
+                           CachedFile)
+    :file(std::move(path)),rate(sampleRate),channels(channelCount),frames(frameCount){}
 PreparedWarp::~PreparedWarp() {
-    std::error_code error;std::filesystem::remove_all(directory_,error);
+    if(cache_) {
+        try { cache_->release(file); } catch (...) {}
+        return;
+    }
+    if (!directory_.empty()) {
+        std::error_code error;std::filesystem::remove_all(directory_,error);
+    }
 }
 WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
     WarpResult result;
@@ -379,5 +398,181 @@ WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
     } catch(const Failure& failure){result.error=failure.code;result.detail=failure.text;}
       catch(const std::exception& failure){result.error=WarpError::Io;result.detail=failure.what();}
     return result;
+}
+
+namespace {
+struct WarpSourceStamp {
+    media::FileIdentity identity;
+    std::uintmax_t bytes;
+    fs::file_time_type modified;
+    bool operator==(const WarpSourceStamp&) const = default;
+};
+WarpSourceStamp warpSourceStamp(const fs::path& source) {
+    std::error_code error;
+    const auto identity = media::readFileIdentity(source, error);
+    if (!identity) throw std::runtime_error("cannot identify the Warp source");
+    return {*identity, fs::file_size(source), fs::last_write_time(source)};
+}
+std::vector<std::uint8_t> warpRecipe(const WarpRenderPlan& plan) {
+    nlohmann::json anchors = nlohmann::json::array();
+    for (const auto& anchor : plan.anchors) anchors.push_back({anchor.sourceFrame, anchor.outputFrame});
+    // Change the recipe version when the generated PCM can change.
+    return nlohmann::json::to_cbor(nlohmann::json::array({
+        "adi-warp-v1", plan.sourceStart, plan.sourceFrames, plan.outputRate, plan.mode,
+        plan.transposeSemis, plan.formantScale, plan.grainSeconds, plan.fluctuation,
+        plan.transientEnvelope, plan.transientLoop, plan.seed, plan.transients, std::move(anchors)
+    }));
+}
+}
+
+class WarpRenderCache {
+public:
+    explicit WarpRenderCache(DecodeCache& cache)
+        : cache_(cache), worker_([this](std::stop_token stop) { work(stop); }) {}
+
+    std::shared_ptr<const WarpTask> request(WarpRenderPlan plan) {
+        auto recipe = warpRecipe(plan);
+        const auto stamp = warpSourceStamp(plan.source);
+        const auto recipeHash = media::blake3Bytes(std::as_bytes(std::span(recipe)));
+        if (!recipeHash) throw std::runtime_error("cannot hash the Warp recipe");
+        const auto key = std::pair{plan.source, recipeHash.hex};
+
+        std::lock_guard lock(mutex_);
+        if (++requests_ == 64) {
+            requests_ = 0;
+            std::erase_if(recent_, [](const auto& entry) { return entry.second.task.expired(); });
+        }
+        auto& recent = recent_[key];
+        if (recent.stamp == stamp) {
+            if (const auto task = recent.task.lock()) {
+                const auto result = task->result();
+                if (!result || *result) return task;
+            }
+        }
+        std::erase_if(queue_, [](const Queued& entry) { return entry.task.use_count() == 1; });
+        auto task = std::make_shared<WarpTask>();
+        queue_.push_back({std::move(plan), std::move(recipe), stamp, task});
+        recent = {stamp, task};
+        wake_.notify_one();
+        return task;
+    }
+
+private:
+    struct Recent {
+        std::optional<WarpSourceStamp> stamp;
+        std::weak_ptr<WarpTask> task;
+    };
+    struct Queued {
+        WarpRenderPlan plan;
+        std::vector<std::uint8_t> recipe;
+        WarpSourceStamp stamp;
+        std::shared_ptr<WarpTask> task;
+    };
+
+    std::shared_ptr<const PreparedWarp> pinLocked(const std::string& key, const WarpRenderPlan& plan,
+                                                  std::optional<std::uint16_t> channels = {}) {
+        const auto target = cache_.fileFor(key);
+        std::error_code error;
+        if (!fs::is_regular_file(fs::symlink_status(target, error))) return {};
+        WavReader reader(target);
+        if (reader.sampleRate() != plan.outputRate || reader.frames() != plan.anchors.back().outputFrame ||
+            reader.channels() < 1 || reader.channels() > 64 || (channels && reader.channels() != *channels)) return {};
+        auto& item = cache_.items_[key];
+        item.bytes = fs::file_size(target);
+        item.lastUse = cache_.stamp();
+        cache_.evict(0, key);
+        cache_.saveIndex();
+        // Allocate the lease before pinning. None of its destructor paths
+        // run under the cache lock.
+        auto pinned = std::shared_ptr<PreparedWarp>(new PreparedWarp(
+            target, reader.sampleRate(), reader.channels(), reader.frames(), PreparedWarp::CachedFile{}));
+        ++item.pins;
+        pinned->cache_ = &cache_;
+        return pinned;
+    }
+
+    WarpResult render(Queued& job, std::stop_token stop) {
+        auto& plan = job.plan;
+        cancelled(stop);
+        if (warpSourceStamp(plan.source) != job.stamp) throw std::runtime_error("Warp source changed before rendering");
+        const auto hash = media::blake3File(plan.source, stop);
+        cancelled(stop);
+        if (!hash || warpSourceStamp(plan.source) != job.stamp) throw std::runtime_error("cannot hash the current Warp source");
+        job.recipe.insert(job.recipe.end(), hash.hex.begin(), hash.hex.end());
+        const auto key = media::blake3Bytes(std::as_bytes(std::span(job.recipe)));
+        if (!key) throw std::runtime_error("cannot hash the current Warp render key");
+        if (!plan.anchors.empty()) {
+            try {
+                std::lock_guard lock(cache_.mutex_);
+                if (auto complete = pinLocked(key.hex, plan)) return {WarpError::None, {}, std::move(complete)};
+            } catch (const std::exception&) {
+                // A cache miss or unreadable entry can still play from the
+                // current render's private prepared file.
+            }
+        }
+
+        auto result = prepareWarp(plan, stop);
+        if (!result) return result;
+        const auto after = media::blake3File(plan.source, stop);
+        cancelled(stop);
+        if (!after || after.hex != hash.hex || warpSourceStamp(plan.source) != job.stamp)
+            throw std::runtime_error("Warp source changed during rendering");
+        try {
+            std::shared_ptr<const PreparedWarp> complete;
+            {
+                std::lock_guard lock(cache_.mutex_);
+                cache_.admitSpace(fs::file_size(result.prepared->file), key.hex);
+                const auto published = media::publishFile(result.prepared->file, cache_.fileFor(key.hex));
+                if (published.status == media::PublishStatus::published || published.status == media::PublishStatus::exists)
+                    complete = pinLocked(key.hex, plan, result.prepared->channels);
+                if (published.status == media::PublishStatus::published && !complete)
+                    return {WarpError::Io, "published Warp render could not be opened", {}};
+            }
+            if (complete) result.prepared = std::move(complete);
+        } catch (const std::exception&) {
+            // The existing private result remains useful if publication
+            // could not proceed, for example when the cache is full.
+            std::error_code error;
+            if (!fs::is_regular_file(result.prepared->file, error))
+                return {WarpError::Io, "published Warp render could not be retained", {}};
+        }
+        return result;
+    }
+
+    void work(std::stop_token stop) {
+        for (;;) {
+            Queued job;
+            {
+                std::unique_lock lock(mutex_);
+                if (!wake_.wait(lock, stop, [&] { return !queue_.empty(); }) || stop.stop_requested()) return;
+                job = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            WarpResult result;
+            try { result = render(job, stop); }
+            catch (const Failure& failure) { result = {failure.code, failure.text, {}}; }
+            catch (const std::exception& failure) { result = {WarpError::Io, failure.what(), {}}; }
+            job.task->result_ = std::make_shared<const WarpResult>(std::move(result));
+            job.task->ready_.store(true, std::memory_order_release);
+        }
+    }
+
+    DecodeCache& cache_;
+    std::mutex mutex_;
+    std::condition_variable_any wake_;
+    std::deque<Queued> queue_;
+    std::map<std::pair<fs::path, std::string>, Recent> recent_;
+    unsigned requests_ = 0;
+    std::jthread worker_;
+};
+
+std::shared_ptr<const WarpResult> WarpTask::result() const noexcept {
+    if (!ready_.load(std::memory_order_acquire)) return {};
+    return result_;
+}
+std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan) {
+    if (onAudioThread) return {};
+    static WarpRenderCache cache(defaultDecodeCache());
+    return cache.request(std::move(plan));
 }
 } // namespace adi::audio

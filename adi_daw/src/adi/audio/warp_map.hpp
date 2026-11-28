@@ -20,6 +20,8 @@ struct WarpMapRead {
     std::vector<WarpMarker> markers;
     [[nodiscard]] explicit operator bool()const noexcept{return error==WarpMapError::None;}
 };
+/// Average source BPM across the map, or zero when the source rate is unknown.
+[[nodiscard]] double sourceTempoBpm(std::span<const WarpMarker>,double sourceRate) noexcept;
 struct WarpMapWrite {
     WarpMapError error=WarpMapError::None;
     std::vector<std::byte> bytes;
