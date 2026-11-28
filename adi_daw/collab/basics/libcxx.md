@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 16:16 IST — seats/session-chain `539b3c501f4db09667b439d2ea96373da1348e96`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 303 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The exact `session_performance_capture.cpp` and `engine/session.cpp` files passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers. The headless run passed the Session scene-clock and performance-graph suites.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 16:01 IST — basics/browser-chain `f80910a6eb7f9c3a95658219c9be0889980ae44e`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`. `library_query.cpp`, `browser_catalogue.cpp`, `session_discovery.cpp` and `app_control.cpp` passed strict Apple Silicon syntax checks using the macOS 26.1 SDK.
