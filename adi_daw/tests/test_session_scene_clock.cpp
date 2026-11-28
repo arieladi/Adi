@@ -308,10 +308,82 @@ void audioHandover() {
     verifyHandover(*store);
     stopPreparedScenes(*store);
 }
+
+void rawAudioSeekKeepsPhysicalPhase() {
+    constexpr std::int64_t cut = 96'000;
+    constexpr std::int64_t offsetFrames = 240;
+    constexpr auto sampleValue = [](std::int64_t frame) { return static_cast<float>(frame) / 16384.0f; };
+    test::TempDirectory folder{"scene_clock_raw", "project"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path() / "raw.adi", error);
+    require(static_cast<bool>(store), "create fixed-source tempo scene project");
+    test::applySessionSchema(store->db());
+    const auto pcm = [&] {
+        std::vector<float> result(48000);
+        for (std::size_t index = 0; index < result.size(); ++index)
+            result[index] = sampleValue(static_cast<std::int64_t>(index));
+        return result;
+    }();
+    {
+        audio::WavWriter wave(folder.path() / "ramp.wav", 48000, 1, audio::WavFormat::Float32);
+        wave.write(pcm.data(), static_cast<std::uint32_t>(pcm.size()));
+        wave.close();
+    }
+    store->db().exec(
+        "INSERT INTO project(id,name,sample_rate) VALUES(1,'Raw tempo scenes',48000);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Source',0),(9,'master','Main',1);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(10,0,120,0),(20,1,140,1);"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'ramp','ramp.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(101,1,'audio',0,11531520);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(101,1,48000,0);"
+        "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(101,5000000,1000000000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,10,101,1);"
+        "INSERT INTO clip_launch(clip_id,quantization,clip_fade,ram_mode) VALUES(101,1,0,1);");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    session.transport().play();
+    Render render{session};
+    render.runThrough(0);
+    const auto stamp = session.launchIncarnation();
+    OpRequest change;
+    change.opType = "session.launchScene";
+    change.payload = {{"scene", 20}, {"incarnation", stamp}};
+    require(OpJournal(*store).commit(change).ok, "audit the prepared tempo scene on the live owner");
+    render.runThrough(cut);
+    require(render.count == 1 && render.scenes[0].sample == cut && render.scenes[0].tempoBpm == 140,
+        "clock scene already performed before the transport seeks");
+
+    session.transport().locate(1000);
+    const std::array launch{LaunchRequest{LaunchRequestKind::SlotPress, 1, 10, 101, stamp}};
+    require(session.postLaunchGesture(launch), "launch the persisted Warp-off source in the old bank");
+    render.runThrough(1000);
+    const auto verify = [&](std::int64_t frame, const char* message) {
+        require(std::abs(render.left.front() - sampleValue(frame)) < 1e-6f &&
+            std::abs(render.left.back() - sampleValue(frame + blockSize - 1)) < 1e-6f, message);
+    };
+    verify(offsetFrames, "native audio begins at its authored nonzero physical start");
+    std::array<LaunchTrackStatus, 1> status;
+    LaunchStatusHeader header;
+    require(session.readLaunchStatus(status, header) && status[0].clip == 101, "raw source is the current Session run");
+    const auto activeRun = status[0].run;
+    const auto launchEdges = render.clipCount;
+    session.transport().locate(cut + 1000);
+    render.runThrough(cut + 1000);
+    verify(offsetFrames + blockSize, "forward seek into the new bank preserves the next native source frame");
+    session.transport().locate(2000);
+    render.runThrough(2000);
+    verify(offsetFrames + 2 * blockSize, "backward seek into the old bank preserves the next native source frame");
+    require(session.readLaunchStatus(status, header) && status[0].run == activeRun && render.clipCount == launchEdges,
+        "raw phase is continuous across the two clock banks within one stable launch run");
+    require(allocations == 0 && audio::callbackFileIo == 0, "raw clock-bank seeks allocate or read no files in the driver");
+    std::printf("PASS -- Warp-off source preserves its physical phase in both directions across prepared tempo banks\n");
+}
 } // namespace
 
 int main() {
-    try { exercise(); audioHandover(); }
+    try { exercise(); audioHandover(); rawAudioSeekKeepsPhysicalPhase(); }
     catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

@@ -225,6 +225,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     if (driver.tailIncarnation_ != block.incarnation) {
         driver.tailCount_ = 0;
         driver.tailIncarnation_ = block.incarnation;
+        driver.lastMediaBpm_ = 0.0;
     }
     std::size_t remainingTails = 0;
     for (std::size_t index = 0; index < driver.tailCount_; ++index) {
@@ -240,6 +241,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         LaunchAudioRuntime& runtime;
         LaunchAudioDriver& driver;
         const LaunchAudioProject* media;
+        const LaunchAudioProject* previousMedia;
         LaunchView view;
         const LaunchBlock& block;
         const LaunchFollowPlayer* follow;
@@ -257,7 +259,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         observer = nullptr;
         sceneObserver = nullptr;
     }
-    Context context{*this, driver, project_.get(), {}, block, follow, block.incarnation,
+    Context context{*this, driver, project_.get(), nullptr, {}, block, follow, block.incarnation,
         followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer,
         sceneObserverContext, sceneObserver, capture};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
@@ -265,8 +267,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         call.runtime.add(call.driver.gains_, *call.media, section, call.block, call.offset, call.capture);
     }, [](void* state, const LaunchTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
-        const auto& before = call.runtime.beforeClock_;
-        const auto* outgoing = before && edge.sample == call.runtime.clockSample_ ? before.get() : call.media;
+        const auto* outgoing = call.previousMedia && edge.offset == 0 && edge.oldFramesSinceStart > 0
+            ? call.previousMedia : call.media;
         call.runtime.fadeOut(call.driver, *outgoing, edge, call.offset + edge.offset, call.frames, call.capture);
         if (call.capture || call.observer) {
             auto logicalEdge = edge;
@@ -309,6 +311,16 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             call.incarnation, call.block.followActionsEnabled, call.seed);
         if (next && next->request.scene && call.runtime.sceneClock(*next->request.scene)) return std::nullopt;
         return next;
+    }, [](void* state, std::int64_t clip, std::int64_t oldAnchor, std::int64_t elapsed) noexcept
+            -> std::optional<std::int64_t> {
+        const auto& call = *static_cast<const Context*>(state);
+        const auto* before = call.previousMedia ? call.previousMedia->clip(clip) : nullptr;
+        const auto* after = call.media->clip(clip);
+        if (!before || !after || elapsed < 0) return std::nullopt;
+        const auto oldFrame = before->frameForTick(oldAnchor, call.previousMedia->bpm());
+        if (oldFrame < 0 || oldFrame > std::numeric_limits<std::int64_t>::max() - elapsed) return std::nullopt;
+        const auto tick = after->tickForFrame(oldFrame + elapsed, call.media->bpm());
+        return tick >= 0 ? std::optional{tick} : std::nullopt;
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);
@@ -327,11 +339,18 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             else capture->markPcmDiscontinuity();
         }
         context.media = mediaAt(block.sample).get();
+        const auto* otherBank = context.media == beforeClock_.get() ? project_.get() : beforeClock_.get();
+        // Keeping the previous bank's metadata in the pinned graph also lets
+        // a stop or replacement fade out the old source after a seek.
+        context.previousMedia = context.media->bpm() != driver.lastMediaBpm_ &&
+            otherBank && otherBank->bpm() == driver.lastMediaBpm_ ? otherBank : nullptr;
+        block.reanchorAudioSources = context.previousMedia != nullptr;
         context.view = context.media->view();
         context.view.tracks = tracks_;
         driver.gains_.begin(block, tracks_, gainRevision());
         if (!driver.launcher_.process(block, context.view, sink))
             break;
+        driver.lastMediaBpm_ = context.media->bpm();
         context.offset += block.frames;
         driver.nextTimelineSample_ = block.sample + block.frames;
         driver.loopBegin_ = transport.loopBegin();

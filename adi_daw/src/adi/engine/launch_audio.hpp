@@ -35,6 +35,7 @@ public:
     [[nodiscard]] std::uint64_t frames() const noexcept { return pages_ ? pagedFrames_ : samples_.size() / channels_; }
     [[nodiscard]] std::uint64_t bytes() const noexcept { return samples_.size() * sizeof(float); }
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
+    [[nodiscard]] std::int64_t tickForFrame(std::int64_t frame, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
 

@@ -102,6 +102,7 @@ private:
     bool wasPlaying_ = false;
     std::int64_t nextTimelineSample_ = -1, loopBegin_ = -1, loopEnd_ = -1;
     std::uint64_t transportRevision_ = 0;
+    double lastMediaBpm_ = 0.0;
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     std::atomic<std::uint64_t> performedScene_{0};
 };

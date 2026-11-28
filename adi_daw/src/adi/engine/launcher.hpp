@@ -22,6 +22,7 @@ struct LaunchSlot {
     float velocityAmount = 0.0f;
     bool legato = false, fade = false, hasStop = true;
     bool liveRegionSupported = true; // the prepared bank can render an entire authored source window
+    bool nativePcmClock = false; // Warp-off audio advances in physical source frames
 };
 
 struct LaunchView {
@@ -55,6 +56,9 @@ struct LaunchBlock {
     std::uint64_t followPass = 0;
     // Set only for a natural Arrangement wrap, never for an explicit locate.
     bool arrangementWrap = false;
+    // Continuing runs rebase their PCM frame on the new tempo bank at the
+    // first rendered sample. Same-sample outgoing edges keep the old anchor.
+    bool reanchorAudioSources = false;
     std::optional<PreparedSceneLaunch> preparedScene{};
     double sampleRate = 48000.0;
     double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
@@ -144,6 +148,8 @@ struct LaunchSink {
     void (*trackStatus)(void*, const LaunchTrackStatus&) noexcept = nullptr;
     void (*scenePerformed)(void*, const LaunchSceneTransition&) noexcept = nullptr;
     std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
+    std::optional<std::int64_t> (*rawSourceTickAfterBankChange)(void*, std::int64_t clip,
+        std::int64_t oldAnchorTick, std::int64_t framesSinceAnchor) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch

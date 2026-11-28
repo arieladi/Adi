@@ -95,6 +95,15 @@ std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const 
     return std::llround(frame);
 }
 
+std::int64_t LaunchAudioClip::tickForFrame(std::int64_t frame, double bpm) const noexcept {
+    if (frame < 0 || !std::isfinite(bpm) || bpm <= 0) return -1;
+    const auto tick = static_cast<long double>(firstTick_) +
+        static_cast<long double>(frame) * bpm * textproj::kPPQ / (rate_ * 60.0L);
+    if (tick < 0 || tick >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()) - 0.5L)
+        return -1;
+    return std::llround(tick);
+}
+
 float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const noexcept {
     if (pages_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
         return 0;

@@ -551,6 +551,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                       LaunchSink sink, std::int64_t tick, std::int32_t cursor,
                       std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
+    std::uint64_t projectedRawRun = 0;
     while (cursor < end) {
         const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
@@ -572,6 +573,18 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
+        const bool reanchor = slot && cursor == 0 && block.reanchorAudioSources;
+        if (reanchor && slot->nativePcmClock && track.run.frames != 0 && projectedRawRun != track.run.serial &&
+            sink.rawSourceTickAfterBankChange) {
+            if (const auto rawTick = sink.rawSourceTickAfterBankChange(sink.context,track.run.clip,
+                    track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame)) {
+                // Raw audio changes its tick projection, not its physical phase.
+                // Retain the old PCM anchor for any outgoing edge at this sample.
+                projectedRawRun = track.run.serial;
+                track.run.anchorTick = tick;
+                track.run.anchorSourceTick = track.run.sourceTick = *rawTick;
+            }
+        }
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
@@ -634,6 +647,10 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             (boundary < block.frames || (sourceTick != lastTick &&
              block.sampleAtTick(block.clock,sourceTick) == block.sample + boundary));
         if (boundary > cursor) {
+            if (reanchor && (!slot->nativePcmClock || projectedRawRun == track.run.serial)) {
+                track.run.pcmAnchorTick = track.run.sourceTick;
+                track.run.pcmAnchorFrame = track.run.frames;
+            }
             auto endSource = track.run.sourceTick;
             if (slot) {
                 endSource = atSourceEdge ? sourceEnd(*slot) : std::min(sourceEnd(*slot),

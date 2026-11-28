@@ -1173,6 +1173,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         slot.mode = setting.mode;
         slot.legato = setting.legato;
         slot.fade = setting.clipFade;
+        slot.nativePcmClock = clip->kind == "audio" && !warped;
         slot.velocityAmount = static_cast<float>(setting.velocityAmount);
         if (setting.quantization != 0) slot.quantization = launch::resolveClipQuantization(setting.quantization,
             LaunchQuantization::Bar);
