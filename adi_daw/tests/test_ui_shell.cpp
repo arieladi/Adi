@@ -20464,6 +20464,60 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
             check(chooseParameter("Clear panel") && warnings == 3 && pendingWarning,
                   "SC-326: clearing the panel also warns before dropping an automated control");
             answer(false);
+
+            const bool restored = document->deviceAction("device.setPanel", {{"dev", id}, {"params", full}});
+            frame();
+            check(restored && chooseParameter("Cutoff") && warnings == 4 && pendingWarning,
+                  "SC-326: an automated-control warning can remain open while the panel changes elsewhere");
+            const std::vector<std::string> reordered{"gain", "0000001f", original.front()};
+            const bool changed = document->deviceAction("device.setPanel", {{"dev", id}, {"params", reordered}});
+            const auto reorderedHead = OpJournal(document->store()).headSeq();
+            const auto reorderedEdits = panelEdits;
+            answer(true);
+            frame();
+            check(changed && ordered() == reordered && panelEdits == reorderedEdits &&
+                      OpJournal(document->store()).headSeq() == reorderedHead && automationIntact(),
+                  "SC-326: accepting a stale warning cannot overwrite a new order with the same controls");
+
+            const auto control = std::find_if(panel.controls.begin(), panel.controls.end(), [](const auto &candidate) {
+                return candidate->parameter == "0000001f";
+            });
+            auto *peer = surface.getPeer();
+            const auto cutoffBefore = knobs->getParam("0000001f").normalized;
+            bool handled = false;
+            if (peer && control != panel.controls.end() && (*control)->isShowing()) {
+                (*control)->grabKeyboardFocus();
+                handled = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey));
+            }
+            check(panel.configuring && handled && warnings == 5 && pendingWarning && ordered() == reordered &&
+                      OpJournal(document->store()).headSeq() == reorderedHead,
+                  "SC-326: Delete on a focused configured control uses the same warning before removing it");
+            answer(true);
+            frame();
+            check(ordered() == std::vector<std::string>{"gain", original.front()} && panelEdits == reorderedEdits + 1 &&
+                      knobs->getParam("0000001f").normalized == cutoffBefore && automationIntact(),
+                  "SC-326: confirmed Delete removes the configured control and preserves its value and automation");
+
+            panel.configureButton.onClick();
+            const auto editorKey = AdiRootComponent::pluginWindowKey(id);
+            host.close(editorKey);
+            host.collect();
+            auto editor = std::exchange(root.pluginEditor, [](std::int64_t, std::string &why) {
+                why = "This plug-in has no editor.";
+                return AdiRootComponent::PluginEditorView{};
+            });
+            panel.configureButton.onClick();
+            frame();
+            const auto editorlessHead = OpJournal(document->store()).headSeq();
+            const auto editorlessEdits = panelEdits;
+            check(!host.contains(editorKey) && panel.configuring && chooseParameter("Gain") &&
+                      ordered() == std::vector<std::string>{"gain", original.front()} && warnings == 5 &&
+                      panelEdits == editorlessEdits && OpJournal(document->store()).headSeq() == editorlessHead,
+                  "SC-326: Configure cannot remove a visible control when the plug-in has no editor");
+            check(chooseParameter("Cutoff") && ordered() == std::vector<std::string>{"gain", original.front(), "0000001f"} &&
+                      panelEdits == editorlessEdits + 1 && automationIntact(),
+                  "SC-326: the Parameter List can still add controls when the plug-in has no editor");
+            root.pluginEditor = std::move(editor);
             panel.onPanelRemovalWarning = {};
             panel.configureButton.onClick();
         }
