@@ -15939,7 +15939,7 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
         const auto hasLocator = [&](std::int64_t id) { return locatorById(located(), id) != nullptr; };
         const auto hasLocatorAt = [&](std::int64_t tick) { return locatorAt(located(), tick) != nullptr; };
         const auto undoAdds = [&] {
-            for (int i = 0; i < 2 && step() != savedStep; ++i) {
+            for (int i = 0; i < 3 && step() != savedStep; ++i) {
                 check(root.command(AppCommands::Undo), "SC-354: undo the locator edit");
                 root.frame();
             }
@@ -15980,6 +15980,16 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
               "SC-354: stopped Add uses the song position and selects the new locator");
         undoAdds();
 
+        const auto oldMarker = sel;
+        sel.insert = sel.start = sel.end = 4 * bar;
+        arrangement.selectedLocator = existingId;
+        showSongPosition(5 * bar);
+        click(ArrangementView::TopButton::Set);
+        check(located().size() == 2 && hasLocator(existingId) && hasLocatorAt(4 * bar),
+              "SC-354: stopped Set uses the insert marker when the selected locator is elsewhere");
+        undoAdds();
+        sel = oldMarker;
+
         arrangement.selectedLocator = existingId;
         driver.play();
         showSongPosition(6 * bar);
@@ -15990,6 +16000,13 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(located().size() == 3 && hasLocator(existingId) && hasLocatorAt(6 * bar) && hasLocatorAt(7 * bar),
               "SC-354: both playing Add actions preserve the earlier locator");
+        const auto selectedWhilePlaying = arrangement.selectedLocator;
+        showSongPosition(8 * bar);
+        click(ArrangementView::TopButton::Set);
+        check(located().size() == 4 && hasLocator(existingId) && hasLocatorAt(6 * bar) &&
+                  hasLocatorAt(7 * bar) && hasLocatorAt(8 * bar) && selectedWhilePlaying != 0 &&
+                  arrangement.selectedLocator == selectedWhilePlaying,
+              "SC-354: Set adds while playing and leaves the previous locator selected");
 
         driver.play(false);
         driver.locate(savedPosition);
