@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 17:21 IST — seats/stretcher-chain `b365d79bc6a66dd0e6e322edb007b2ebf227edb6`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The full headless run used two parallel test jobs. It passed `adi_streaming_warp_playback_tests`, including the new 96 kHz reverse Complex fixture. The exact `audio/warp.cpp` passed a strict Clang 20 Apple Silicon syntax check using macOS 26.1 SDK headers.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 17:11 IST — basics/browser-chain `b71ec782768782755121cea1ff95019a2aae3c38`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
