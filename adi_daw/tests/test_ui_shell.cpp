@@ -43,6 +43,7 @@
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
+#include "ui_picture_compare.hpp"
 #include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
 #include "return_project_fixture.hpp"
@@ -27279,26 +27280,26 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 broker->pump(); mix.frame(actual.reader());
                 mix.analysis.detail.freezeButton.setToggleState(true, juce::dontSendNotification); mix.analysis.detail.freezeButton.onClick();
                 const auto spectralPicture = mix.analysis.detail.view.snapshot(); const auto spectralBefore = broker->stats();
-                const auto image = [&] {
-                    juce::Image rendered(juce::Image::RGB, mix.analysis.detail.view.getWidth(),
-                                         mix.analysis.detail.view.getHeight(), true, juce::SoftwareImageType{});
-                    {
-                        juce::Graphics graphics(rendered);
-                        mix.analysis.detail.view.paint(graphics);
-                    }
-                    return rendered;
+                const auto analysisPicture = [&](bool completeTree) {
+                    auto &detailSpectrum = mix.analysis.detail.view;
+                    const auto format = completeTree && !detailSpectrum.isOpaque() ? juce::Image::ARGB : juce::Image::RGB;
+                    return adi::uitest::pictureForComparison(format, detailSpectrum.getWidth(), detailSpectrum.getHeight(),
+                        [&](juce::Graphics &graphics) {
+                            if (completeTree)
+                                detailSpectrum.paintEntireComponent(graphics, true);
+                            else
+                                detailSpectrum.paint(graphics);
+                        });
                 };
-                const auto beforeImage = image();
+                const auto beforeImage = analysisPicture(false);
                 check(spectralPicture && mix.analysis.detail.view.frozen(), "palette rollback fixture retains a frozen spectrogram");
                 actual.state().zoom = 0;
                 mix.analysis.detail.paletteBox.setSelectedId(static_cast<int>(palettes::find("plasma")) + 1, juce::sendNotificationSync);
                 mix.analysis.detail.reverseButton.setToggleState(false, juce::dontSendNotification); mix.analysis.detail.reverseButton.onClick();
-                const auto afterImage = image(); bool pixelsEqual = beforeImage.getBounds() == afterImage.getBounds();
-                for (int y = 0; y < beforeImage.getHeight(); ++y) for (int x = 0; x < beforeImage.getWidth(); ++x)
-                    pixelsEqual = pixelsEqual && beforeImage.getPixelAt(x, y) == afterImage.getPixelAt(x, y);
+                const auto afterImage = analysisPicture(false);
                 check(mix.analysis.detail.view.palette() == "viridis" && mix.analysis.detail.view.paletteReversed() &&
                           mix.analysis.detail.requestedPalette() == "viridis" && mix.analysis.detail.reverseButton.getToggleState() &&
-                          mix.analysis.detail.view.snapshot() == spectralPicture && pixelsEqual &&
+                          mix.analysis.detail.view.snapshot() == spectralPicture && adi::uitest::samePicturePixels(beforeImage, afterImage) &&
                           broker->stats().transforms == spectralBefore.transforms && broker->stats().consumers == spectralBefore.consumers,
                       "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
                 actual.state().zoom = oldZoom;
@@ -27308,21 +27309,15 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
                 broker->pump(); mix.frame(actual.reader()); mix.analysis.detail.view.freeze(true);
                 const auto slopePicture = mix.analysis.detail.view.snapshot();
-                const auto slopeImage = mix.analysis.detail.view.createComponentSnapshot(
-                    mix.analysis.detail.view.getLocalBounds(), false, 1.f, juce::SoftwareImageType{});
+                const auto slopeImage = analysisPicture(true);
                 check(slopePicture && mix.analysis.detail.view.spectrumSlope() == SpectrumSlope::Tilt45,
                       "slope rollback fixture contains a retained real Frozen Spectrum");
                 const auto slopeBefore = broker->stats(); actual.state().zoom = 0;
                 mix.analysis.detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
-                const auto slopeAfter = mix.analysis.detail.view.createComponentSnapshot(
-                    mix.analysis.detail.view.getLocalBounds(), false, 1.f, juce::SoftwareImageType{});
-                bool slopePixelsEqual = slopeImage.getBounds() == slopeAfter.getBounds();
-                for (int y = 0; y < slopeImage.getHeight() && slopePixelsEqual; ++y)
-                    for (int x = 0; x < slopeImage.getWidth(); ++x)
-                        slopePixelsEqual = slopePixelsEqual && slopeImage.getPixelAt(x, y) == slopeAfter.getPixelAt(x, y);
+                const auto slopeAfter = analysisPicture(true);
                 check(mix.analysis.detail.requestedSpectrumSlope() == SpectrumSlope::Tilt45 &&
                           actual.state().analysisSpectrumSlope == "tilt45" && mix.analysis.detail.view.snapshot() == slopePicture &&
-                          slopePixelsEqual && broker->stats().consumers == slopeBefore.consumers &&
+                          adi::uitest::samePicturePixels(slopeImage, slopeAfter) && broker->stats().consumers == slopeBefore.consumers &&
                           broker->stats().transforms == slopeBefore.transforms,
                       "failed slope save restores only controls and retains Frozen projection, measurement and demand");
                 actual.state().zoom = oldZoom;
@@ -29661,29 +29656,50 @@ int main(int argc, char **argv) {
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
     {
-        // Each platform's fonts wrap a description differently: one longer than the panel is
-        // cut at the panel's foot, never drawn over its edge or the Status Bar below.
-        auto render = [&a] {
-            juce::Image image(juce::Image::ARGB, a.getWidth(), a.getHeight(), true,
-                              juce::SoftwareImageType{});
-            juce::Graphics g(image);
-            a.paintEntireComponent(g, true);
-            return image;
+        // The analyser normally steps aside during frame(). Hide it in both
+        // renders so the synthetic hover tests the description itself.
+        const bool analyserVisible = a.infoSpectrum.isVisible();
+        a.infoSpectrum.setVisible(false);
+        const auto renderInfo = [&a] {
+            return adi::uitest::pictureForComparison(juce::Image::ARGB, a.getWidth(), a.getHeight(),
+                                                      [&a](juce::Graphics &g) { a.paintEntireComponent(g, true); });
         };
-        const auto quiet = render();
+        const auto quiet = renderInfo();
         const auto saved = a.arrangement.canvas.getTooltip();
         a.arrangement.canvas.setTooltip(juce::String::repeatedString("A description that goes on. ", 80));
         a.hover(&a.arrangement.canvas);
-        const auto busy = render();
+        const auto busy = renderInfo();
         a.arrangement.canvas.setTooltip(saved);
         a.hover(nullptr);
+        a.infoSpectrum.setVisible(analyserVisible);
         const auto inner = a.infoArea().reduced(look::border);
-        int outside = 0;
-        for (int y = 0; y < busy.getHeight(); ++y)
-            for (int x = 0; x < busy.getWidth(); ++x)
-                if (!inner.contains(x, y) && busy.getPixelAt(x, y) != quiet.getPixelAt(x, y))
-                    ++outside;
-        check(outside == 0, "a long description stays inside the Info View");
+        const auto descriptionBounds = inner.withTrimmedTop(20);
+        const auto infoImageBounds = busy.raster.getBounds();
+        bool bodyTextPainted = false, textEscaped = false;
+        {
+            using Pixels = juce::Image::BitmapData;
+            const Pixels quietInk(quiet.raster, Pixels::readOnly), quietBlank(quiet.withoutWords, Pixels::readOnly);
+            const Pixels busyInk(busy.raster, Pixels::readOnly), busyBlank(busy.withoutWords, Pixels::readOnly);
+            for (int y = 0; y < infoImageBounds.getHeight(); ++y)
+                for (int x = 0; x < infoImageBounds.getWidth(); ++x) {
+                    const bool quietGlyph = quietInk.getPixelColour(x, y) != quietBlank.getPixelColour(x, y);
+                    const bool busyGlyph = busyInk.getPixelColour(x, y) != busyBlank.getPixelColour(x, y);
+                    if (quietGlyph != busyGlyph) {
+                        bodyTextPainted = bodyTextPainted || (busyGlyph && descriptionBounds.contains(x, y));
+                        textEscaped = textEscaped || !inner.contains(x, y);
+                    }
+                }
+        }
+        check(bodyTextPainted && !textEscaped, "a long description paints glyphs inside the Info View and never beyond it");
+        const auto alongside = infoImageBounds.withY(inner.getY()).withHeight(inner.getHeight());
+        const std::array outsideInfo{infoImageBounds.withBottom(inner.getY()), infoImageBounds.withTop(inner.getBottom()),
+                                     alongside.withRight(inner.getX()), alongside.withLeft(inner.getRight())};
+        const auto crop = [](const adi::uitest::ComparisonPicture &uncropped, juce::Rectangle<int> region) {
+            return adi::uitest::ComparisonPicture{uncropped.raster.getClippedImage(region), uncropped.withoutWords.getClippedImage(region)};
+        };
+        check(std::ranges::all_of(outsideInfo, [&](const auto &region) {
+                  return region.isEmpty() || adi::uitest::samePicturePixels(crop(quiet, region), crop(busy, region));
+              }), "the masked window outside the Info View remains unchanged");
     }
     const auto browserWithInfo = a.browserArea();
     const auto deviceWithInfo = a.deviceArea();
