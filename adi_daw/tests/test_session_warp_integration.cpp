@@ -1195,6 +1195,303 @@ void legacyMusicalOneShotPlaysRawPcm(bool explicitEnd = false) {
             "the raw slot performs no callback allocation or file I/O");
 }
 
+std::vector<float> residentLegacySignal() {
+    constexpr auto mediaFrames = 2 * rate;
+    std::vector<float> source(mediaFrames);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame % 257) - 128.f) * .001f;
+    return source;
+}
+
+std::unique_ptr<Store> residentLegacyRawSlot(const test::TempDirectory& folder, std::span<const float> source, bool fade) {
+    const auto mediaFrames = static_cast<std::uint32_t>(source.size());
+    auto store = sceneProject(folder.path());
+    const auto file = folder.path()/"dense.wav";
+    {
+        audio::WavWriter writer(file,rate,1,audio::WavFormat::Float32);
+        writer.write(source.data(),mediaFrames);
+        writer.close();
+    }
+    const auto hash = media::blake3File(file);
+    require(static_cast<bool>(hash),"hash the resident legacy file");
+    {
+        auto& db = store->db();
+        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+                "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+        SQLite::Statement mediaRow(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames)"
+                                     " VALUES(101,?,'dense.wav','wav',48000,1,?)");
+        mediaRow.bind(1,hash.hex);
+        mediaRow.bind(2,mediaFrames);
+        mediaRow.exec();
+        std::array<OpRequest,4> ops;
+        ops[0].opType = "clip.create";
+        ops[0].payload = {{"id",101},{"track",1},{"kind","audio"},{"pos",4*quarter},{"length",4*quarter}};
+        ops[1].opType = "clip.attachAudio";
+        ops[1].payload = {{"id",101},{"media",101},{"frames",mediaFrames}};
+        ops[2].opType = "session.setSlotClip";
+        ops[2].payload = {{"track",1},{"scene",10},{"clip",101}};
+        ops[3].opType = "session.setLaunchSettings";
+        ops[3].payload = {{"clip",101},{"ram",true},{"fade",fade}};
+        require(OpJournal(*store).commit(ops).ok,"save the dense source in a resident Session slot");
+        SQLite::Statement start(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=0 WHERE id=101");
+        start.bind(1,quarter/2);
+        start.exec();
+        SQLite::Statement end(db,"INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(101,?)");
+        end.bind(1,2*quarter);
+        end.exec();
+    }
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path()/"song.adi",error);
+    require(static_cast<bool>(store),"reopen the saved legacy Start and End");
+    auto& saved = store->db();
+    require(saved.execAndGet("SELECT content_offset_ticks FROM clips WHERE id=101").getInt64() == quarter/2 &&
+            saved.execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64() == 2*quarter &&
+            saved.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt64() == 0 &&
+            saved.execAndGet("SELECT loop_enabled FROM clips WHERE id=101").getInt() == 0 &&
+            saved.execAndGet("SELECT legato FROM clip_launch WHERE clip_id=101").getInt() == 0 &&
+            saved.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=101").getInt() == 0,
+            "the persisted slot has musical Start and End without pins, Warp, loop, or Legato");
+    return store;
+}
+
+void residentLegacyNonzeroStart() {
+    enum class Mode { Steady, Rebase, Fade, LiveStart, LiveLoop };
+    constexpr auto savedStart = 12000;
+    constexpr auto editAt = 6000;
+    constexpr auto loopBegin = 18000;
+    constexpr auto loopEnd = 30000;
+    constexpr auto wrap = loopEnd - savedStart;
+    const auto source = residentLegacySignal();
+    for (const auto mode : {Mode::Steady,Mode::Rebase,Mode::Fade,Mode::LiveStart,Mode::LiveLoop}) {
+        const bool rebase = mode == Mode::Rebase || mode == Mode::Fade;
+        const bool fade = mode == Mode::Fade;
+        const bool liveStart = mode == Mode::LiveStart;
+        const bool liveLoop = mode == Mode::LiveLoop;
+        test::TempDirectory folder{"resident_legacy_start","tick-only"};
+        auto store = residentLegacyRawSlot(folder,source,fade);
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        const std::int64_t stop = rebase ? 24000 : liveStart ? 30000 : 36000;
+        const auto relaunch = stop + blockFrames;
+        const auto freshStop = relaunch + 18000;
+        const auto renderEnd = liveLoop ? wrap + loopEnd-loopBegin + blockFrames
+            : (rebase ? freshStop : stop) + blockFrames;
+        std::vector<float> pcm(static_cast<std::size_t>(renderEnd));
+        Playback playback{session,pcm};
+        scene(*store,session,10);
+        playback.through(rebase ? 12000 : editAt);
+        const auto initial = trackState(session);
+        require(initial.clip == 101 && initial.run != 0,"the resident legacy run is active");
+        if (rebase) {
+            require(session.setExternalTempo(*store,240),"replace the entire clock during the current raw run");
+            playback.through(12001);
+            require(trackState(session).run == initial.run && session.beginRender().bpmAtTick(2*quarter) == 240,
+                    "the driver adopts 240 BPM while keeping the source's current run");
+            playback.through(relaunch);
+            scene(*store,session,10);
+        } else if (liveStart || liveLoop) {
+            LaunchClipRegion region{liveStart ? quarter : quarter/2,2*quarter,{}};
+            if (liveLoop) region.loop = LaunchClipLoopRegion{3*quarter/4,5*quarter/4};
+            require(session.postLaunchClipRegionEdit({1,101,session.launchIncarnation(),initial.run,region,
+                        ClipUpdateRate::None}),"the resident legacy range still accepts a legal live edit");
+            playback.through(editAt+1);
+            require(trackState(session).run == initial.run,"the edit keeps the original run");
+        }
+        playback.through(static_cast<std::int64_t>(pcm.size()));
+        const auto duration = launchFadeFrames(rate);
+        const auto at = [&](std::int64_t frame) { return source[static_cast<std::size_t>(frame)]; };
+        const auto fadeIn = [&](float sample, std::int64_t elapsed) {
+            return fade && elapsed < duration
+                ? sample*static_cast<float>(clipFadeShape(static_cast<double>(elapsed)/static_cast<double>(duration),4))
+                : sample;
+        };
+        const auto fadeOut = [&](float sample, std::int64_t elapsed) {
+            return fade && elapsed < duration
+                ? static_cast<float>(sample*(1.0-clipFadeShape(static_cast<double>(elapsed)/static_cast<double>(duration),4))) : 0.f;
+        };
+        auto exact = true;
+        for (std::int64_t frame = 0; frame < renderEnd; ++frame) {
+            float expected = 0;
+            if (liveLoop) {
+                const auto physical = frame < wrap ? savedStart+frame : loopBegin + (frame-wrap) % (loopEnd-loopBegin);
+                expected = at(physical);
+            } else if (frame < stop) {
+                const auto physical = liveStart && frame >= editAt ? 24000+frame-editAt : savedStart+frame;
+                expected = fadeIn(at(physical),frame);
+            } else if (frame < relaunch) {
+                expected = fadeOut(at(35999),frame-stop);
+            } else if (rebase && frame < freshStop) {
+                expected = fadeIn(at(6000+frame-relaunch),frame-relaunch);
+            } else if (rebase) {
+                expected = fadeOut(at(23999),frame-freshStop);
+            }
+            exact &= pcm[static_cast<std::size_t>(frame)] == expected;
+        }
+        const auto actualStop = playback.count > 1 ? playback.edges[1].sample : -1;
+        std::printf("Resident saved Start case %d: old Stop %lld/%lld, sample at cut %.6f, relaunch source %.6f, exact %d\n",
+            static_cast<int>(mode),static_cast<long long>(actualStop),static_cast<long long>(stop),
+            static_cast<double>(pcm[12000]),static_cast<double>(rebase ? pcm[static_cast<std::size_t>(relaunch)] : 0.f),exact);
+        const bool performed = liveLoop
+            ? playback.count == 1 && trackState(session).completedLoops == 2
+            : playback.count == (rebase ? 4u : 2u) && playback.edges[1].newClip == 0 && actualStop == stop;
+        require(performed && exact && session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "the resident legacy slot keeps its exact raw source phase, musical boundaries, and live edits");
+        if (rebase)
+            require(playback.edges[2].newClip == 101 && playback.edges[2].sample == relaunch &&
+                    playback.edges[3].newClip == 0 && playback.edges[3].sample == freshStop,
+                    "the next launch uses the current clock's Start and 18000-frame musical duration");
+    }
+}
+
+void protectResidentLegacyNonzeroStartAdoption() {
+    constexpr std::int64_t at = 12000, oldDuration = 36000, freshDuration = 18000;
+    const auto source = residentLegacySignal();
+    const auto editedGain = static_cast<float>(std::pow(10.0,-6.0/20.0));
+    for (const auto race : {false,true}) for (const auto missing : {false,true}) {
+        test::TempDirectory folder{"resident_legacy_guard",race ? "driver-race" : "owner"};
+        auto store = residentLegacyRawSlot(folder,source,false);
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        const auto launch = race ? at : 0;
+        const auto stop = launch + oldDuration;
+        const auto fresh = stop + blockFrames;
+        const auto freshStop = fresh + freshDuration;
+        const auto end = race ? freshStop + blockFrames : fresh;
+        std::vector<float> pcm(static_cast<std::size_t>(end));
+        Playback playback{session,pcm};
+        if (race) session.transport().play();
+        else scene(*store,session,10);
+        playback.through(at);
+        const auto swaps = session.graph().stats().swaps;
+        auto original = trackState(session);
+        require(race ? original.clip == 0 && playback.count == 0 : original.clip == 101,
+                "the owner first sees either the established raw run or the idle rolling track");
+        store->db().exec(missing ? "UPDATE clips SET muted=1 WHERE id=101" : "UPDATE clips SET gain_db=-6 WHERE id=101");
+        bool accepted = false;
+        bool wentThroughGuard = false;
+        if (race) {
+            accepted = session.setExternalTempo(*store,240,[&] {
+                wentThroughGuard = true;
+                scene(*store,session,10);
+                playback.through(launch+1);
+                original = trackState(session);
+                require(original.clip == 101 && original.run != 0 && playback.count == 1 &&
+                        playback.edges[0].sample == launch,
+                        "the old graph starts its original raw slot inside the post-check publication guard");
+                return true;
+            });
+            require(accepted && wentThroughGuard,"the owner publishes the replacement after the racing raw launch");
+        } else {
+            accepted = session.setExternalTempo(*store,240);
+            require(!accepted && !session.error().empty(),"the owner refuses a changed or missing resident backing during its active run");
+        }
+        playback.through(at+2);
+        require(session.beginRender().bpmAtTick(2*quarter) == 120 && session.graph().stats().swaps == swaps &&
+                trackState(session).run == original.run,
+                "the first adoption attempt keeps the old clock and the same raw run");
+        playback.through(stop);
+        require(session.graph().stats().swaps == swaps && trackState(session).run == original.run,
+                "the old generation finishes every PCM frame in the original musical aperture");
+        playback.through(stop+1);
+        require(session.graph().stats().swaps == swaps && playback.count == 2 && trackState(session).clip == 0 &&
+                playback.edges[1].newClip == 0 && playback.edges[1].sample == stop,
+                "the original run reaches its unmodified natural Stop before the candidate adopts");
+        playback.through(stop+2);
+        const auto after = session.graph().stats().swaps;
+        const auto bpm = session.beginRender().bpmAtTick(2*quarter);
+        require(race ? after > swaps && bpm == 240 : after == swaps && bpm == 120,
+                "only the already-published racing candidate becomes active after the old run has stopped");
+        playback.through(fresh);
+        if (race) {
+            scene(*store,session,10);
+            playback.through(end);
+        }
+        auto exact = true;
+        for (std::int64_t frame = 0; frame < end; ++frame) {
+            auto expected = 0.f;
+            if (frame >= launch && frame < stop) expected = source[static_cast<std::size_t>(12000+frame-launch)];
+            if (race && !missing && frame >= fresh && frame < freshStop)
+                expected = source[static_cast<std::size_t>(6000+frame-fresh)]*editedGain;
+            exact &= pcm[static_cast<std::size_t>(frame)] == expected;
+        }
+        std::printf("Resident Start guard %s %s: accepted %d, swaps %llu/%llu, old Stop %lld, new BPM %.0f, exact PCM %d\n",
+            race ? "race" : "owner",missing ? "muted" : "gain",accepted,
+            static_cast<unsigned long long>(swaps),static_cast<unsigned long long>(after),
+            static_cast<long long>(stop),bpm,exact);
+        require(exact && session.problems().empty(),"the old samples remain exact and a later run uses the installed backing");
+        if (race && !missing)
+            require(playback.count == 4 && playback.edges[2].newClip == 101 && playback.edges[2].sample == fresh &&
+                    playback.edges[3].newClip == 0 && playback.edges[3].sample == freshStop,
+                    "the fresh run uses its new gain, source Start and 18000-frame End at 240 BPM");
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "guarding resident legacy adoption does no callback allocation or file I/O");
+}
+
+void residentLegacyBudgetKeepsBothSlots() {
+    constexpr std::uint64_t croppedFrames = 48000;
+    constexpr std::uint64_t nativeFrames = 96000;
+    constexpr std::uint16_t channels = 2;
+    constexpr auto croppedBytes = croppedFrames * channels * sizeof(float);
+    test::TempDirectory folder{"resident_legacy_budget","two-stored-clips"};
+    const auto source = residentLegacySignal();
+    auto store = residentLegacyRawSlot(folder,source,false);
+    addClip(*store,folder.path(),102,20,1,false,1500,1,static_cast<int>(nativeFrames));
+    {
+        auto& db = store->db();
+        db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+                "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id=102");
+        SQLite::Statement end(db,"INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(102,?)");
+        end.bind(1,2*quarter);
+        end.exec();
+    }
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path()/"song.adi",error);
+    require(static_cast<bool>(store),"reopen both resident slots from the saved project");
+    const auto model = rows::readModel(*store);
+    const auto marked = std::ranges::find(model.slotClips,101,&rows::Clip::id);
+    const auto plain = std::ranges::find(model.slotClips,102,&rows::Clip::id);
+    require(model.slotClips.size() == 2 && marked != model.slotClips.end() && plain != model.slotClips.end() &&
+            marked->contentOffsetTicks == quarter/2 && plain->contentOffsetTicks == 0 &&
+            marked->endMarkerTicks == 2*quarter && plain->endMarkerTicks == 2*quarter,
+            "both stored clips have the same cropped End and different Starts");
+    const auto project = readClipProject(*store,model,true);
+    const auto tempo = TempoMap::fromRows(model.tempo);
+    std::shared_ptr<const LaunchAudioProject> cropped;
+    for (const auto canPromote : {false,true}) {
+        const auto bytes = (canPromote ? 3u : 2u) * croppedBytes;
+        std::vector<std::string> problems;
+        const auto bank = prepareStoredLaunchProject(*project,tempo,rate,channels,blockFrames,1,problems,bytes);
+        const auto* first = bank ? bank->clip(101) : nullptr;
+        const auto* second = bank ? bank->clip(102) : nullptr;
+        const auto firstFrames = first ? first->frames() : 0;
+        const auto secondFrames = second ? second->frames() : 0;
+        std::printf("Resident legacy budget %llu: first %llu frames, second %llu frames, problems %zu\n",
+            static_cast<unsigned long long>(bytes),static_cast<unsigned long long>(firstFrames),
+            static_cast<unsigned long long>(secondFrames),problems.size());
+        require(first && second && problems.empty() && bank->residentBytes() == bytes &&
+                !first->usesPages() && !second->usesPages() &&
+                firstFrames == (canPromote ? nativeFrames : croppedFrames) && secondFrames == croppedFrames,
+                "the budget preserves both cropped slots and only uses surplus for the nonzero Start source");
+        require(first->sample(12000,0) == source[12000] && first->sample(12000,1) == source[12000] &&
+                first->sample(48000,0) == (canPromote ? source[48000] : 0.f) &&
+                second->sample(1500,0) == .55f && second->sample(1500,1) == .55f,
+                "the fallback and promotion carry the expected stereo PCM at their boundaries");
+        if (canPromote) {
+            LaunchAudioRuntime whole(bank,{1},blockFrames);
+            LaunchAudioRuntime fallback(cropped,{1},blockFrames);
+            require(whole.dropsResidentRaw(&fallback,0,1,101),"a cropped candidate cannot replace the complete running source");
+        } else {
+            cropped = bank;
+        }
+    }
+}
+
 void retainPagedOneShotOnSlotRefresh() {
     test::TempDirectory folder{"session_unwarped_one_shot", "unrelated-slot"};
     auto store = sceneProject(folder.path());
@@ -3847,6 +4144,9 @@ int main() {
         steadyLegacyOneShotAperture(true);
         legacyMusicalOneShotPlaysRawPcm();
         legacyMusicalOneShotPlaysRawPcm(true);
+        residentLegacyNonzeroStart();
+        protectResidentLegacyNonzeroStartAdoption();
+        residentLegacyBudgetKeepsBothSlots();
         fadedLegacyRawSceneAtFirstAdoption();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();

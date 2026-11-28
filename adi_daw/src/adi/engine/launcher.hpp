@@ -24,6 +24,9 @@ struct LaunchSlot {
     // Absolute pins keep their native extent and laps when the project clock changes.
     std::int64_t physicalStartFrame = -1, physicalFrames = 0;
     std::int64_t physicalLoopBeginFrame = 0, physicalLoopEndFrame = 0;
+    // A resident tick-only reader can keep its old flat aperture until its
+    // run actually renders on a different clock.
+    double residentRawFixedBpm = 0;
 };
 
 struct LaunchView {
@@ -80,6 +83,7 @@ struct LaunchSection {
     // Musical anchor of the current run or lap, independent of callback size.
     std::int64_t clockAnchorTick = 0, clockAnchorSourceTick = 0;
     std::int64_t physicalSourceAnchorFrame = -1;
+    bool rawProjectAperture = false;
 };
 
 struct LaunchTransition {
@@ -97,6 +101,7 @@ struct LaunchTransition {
     std::int64_t oldClockAnchorTick = 0, oldClockAnchorSourceTick = 0;
     std::int64_t oldPhysicalSourceAnchorFrame = -1;
     std::int64_t oldFramesUntilMusicalEnd = -1;
+    bool oldRawProjectAperture = false;
 };
 
 struct LaunchFollowRequest {
@@ -172,6 +177,7 @@ struct LaunchSink {
                            std::int32_t offset, LaunchCueAdmission) noexcept = nullptr;
     // Driver-only forecast. Linked follows stay out of the user-queued status.
     void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, const LaunchSourceCue&) noexcept = nullptr;
+    std::int64_t (*residentRawAnchor)(void*, std::int64_t clip, std::int64_t tick) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
@@ -234,6 +240,9 @@ private:
         std::optional<LaunchClipRegion> region{};
         std::optional<LaunchPhysicalRegion> physicalRegion{};
         std::int64_t physicalCueFrame = -1;
+        std::int64_t residentRawAnchorFrame = -1;
+        double residentRawFixedBpm = 0;
+        double residentRawFrameRate = 0;
     };
     struct RegionRequest {
         LaunchClipRegionEdit edit;

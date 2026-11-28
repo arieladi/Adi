@@ -1119,9 +1119,13 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                 ? StoredLaunchPageReuse{reuse->launchSource.get(),
                     reuse->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
                 : StoredLaunchPageReuse{};
+            DriverClock position;
+            const auto adoptedResidentBank = adoptedCompatible && readDriverClock(position)
+                ? StoredLaunchPageReuse{adopted->launchSource.get(),adopted->launchAudio->mediaAt(position.sample).get()}
+                : StoredLaunchPageReuse{};
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
                 storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages,
-                !hasPriorBank || (adoptedCompatible && !primeExternalAt_));
+                !hasPriorBank || (adoptedCompatible && !primeExternalAt_), adoptedResidentBank);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {
@@ -1714,6 +1718,8 @@ bool Session::rebuild() {
     timing->protectExternalSessionAudio = primeExternalAt_.has_value() && !timing->preparedScene;
     if (timing->protectExternalSessionAudio) {
         const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+        const auto* adopted = dynamic_cast<const TimingView*>(graph_.adoptedTransportState());
+        const auto* residentBefore = adopted && adopted->session == this && adopted->launchAudio ? adopted : prior;
         if (prior && prior->launchAudio) {
             DriverClock clock;
             std::array<LaunchTrackStatus,kMaximumStoredLaunchTracks> tracks{};
@@ -1723,11 +1729,15 @@ bool Session::rebuild() {
                 for (const auto& track : std::span(tracks).first(status.trackCount)) {
                     const auto dropsWarp = prior->launchAudio->dropsWorkerWarp(timing->launchAudio.get(),clock.sample,
                                                                              track.track,track.clip);
-                    if (!dropsWarp && !prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
+                    const auto dropsResident = residentBefore && residentBefore->launchAudio &&
+                        residentBefore->launchAudio->incarnation() == status.incarnation &&
+                        residentBefore->launchAudio->dropsResidentRaw(timing->launchAudio.get(),clock.sample,track.track,track.clip);
+                    if (!dropsWarp && !dropsResident && !prior->launchAudio->dropsPinnedPages(timing->launchAudio.get(),clock.sample,
                                                                           track.track,track.clip)) continue;
                     error_ = "Session clips#" + std::to_string(track.clip) + (dropsWarp
                         ? ": external tempo has no source for the running worker-stretched slot"
-                        : ": external tempo needs the active unwarped page bank");
+                        : dropsResident ? ": external tempo needs the active unwarped resident bank"
+                                        : ": external tempo needs the active unwarped page bank");
                     return false;
                 }
             }
@@ -3644,10 +3654,12 @@ bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const 
     const bool compatibleFormat = previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
         previous->spec.maxFrames == spec.maxFrames;
     const bool protectPinned = (protectExternal || protectCompatiblePinnedPages) && compatibleFormat;
+    const bool protectResident = playing && compatibleFormat && !preparedScene &&
+        (protectExternal || previous->tempoRevision != tempoRevision);
     auto* driver = session->launchAudioDriver_.get();
-    const bool dropped = (protectExternal || protectPinned) && previous->launchAudio && driver &&
+    const bool dropped = (protectExternal || protectPinned || protectResident) && previous->launchAudio && driver &&
         driver->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
-            position,protectExternal,protectPinned);
+            position,protectExternal,protectPinned,protectResident);
     if (dropped && (playing || preparedPinnedRestart || samePausedTempo(*previous))) return false;
     if (playing && delayedSourceReadiness && previous->authoredPerformanceTempo &&
         previous->tempoRevision != tempoRevision && compatibleFormat &&

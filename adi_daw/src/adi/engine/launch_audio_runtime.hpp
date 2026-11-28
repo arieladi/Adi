@@ -92,7 +92,8 @@ public:
         return launcher_.readStatus(tracks, header);
     }
     [[nodiscard]] bool dropsRunningProtectedAudio(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
-                                              std::int64_t sample, bool externalTempo, bool pinnedPages) const noexcept;
+                                              std::int64_t sample, bool externalTempo, bool pinnedPages,
+                                              bool residentRaw) const noexcept;
     void suspend() noexcept;
     void retainPinnedRuns(const LaunchAudioRuntime& before, const LaunchAudioRuntime& after,
                           std::int64_t sample) noexcept;
@@ -186,6 +187,8 @@ public:
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] bool dropsWorkerWarp(const LaunchAudioRuntime* after, std::int64_t sample,
                                        std::int64_t track, std::int64_t clip) const noexcept;
+    [[nodiscard]] bool dropsResidentRaw(const LaunchAudioRuntime* after, std::int64_t sample,
+                                        std::int64_t track, std::int64_t clip) const noexcept;
     [[nodiscard]] bool dropsPinnedPages(const LaunchAudioRuntime* after, std::int64_t sample,
                                         std::int64_t track, std::int64_t clip, bool retainedOnly = false) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;

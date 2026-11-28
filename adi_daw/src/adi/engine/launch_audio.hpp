@@ -64,9 +64,14 @@ public:
     [[nodiscard]] std::uint32_t rate() const noexcept { return rate_; }
     [[nodiscard]] bool legacyRaw() const noexcept { return legacyRaw_; }
     [[nodiscard]] std::uint64_t frames() const noexcept {
-        return pages_ || followsTempo() ? renderedFrames_ : samples_.size() / channels_;
+        return pages_ || followsTempo() ? renderedFrames_ : residentSamples().size() / channels_;
     }
-    [[nodiscard]] std::uint64_t bytes() const noexcept { return samples_.size() * sizeof(float); }
+    [[nodiscard]] std::uint64_t bytes() const noexcept { return residentSamples().size() * sizeof(float); }
+    [[nodiscard]] const std::vector<float>* residentRawPcm() const noexcept { return residentRaw_.get(); }
+    [[nodiscard]] bool matchesResidentRaw(std::uint32_t rate, std::uint16_t channels, std::uint64_t frames) const noexcept {
+        return residentRaw_ && rate_ == rate && channels_ == channels && this->frames() == frames;
+    }
+    void shareWholeResidentRaw(); // owner only
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
@@ -99,6 +104,9 @@ private:
     struct Warp;
     LaunchAudioClip(std::int64_t clip, std::int64_t firstTick, std::uint32_t rate,
                     std::uint16_t channels, std::vector<float> samples);
+    [[nodiscard]] const std::vector<float>& residentSamples() const noexcept {
+        return residentRaw_ ? *residentRaw_ : samples_;
+    }
 
     std::int64_t clip_;
     std::int64_t firstTick_;
@@ -111,6 +119,7 @@ private:
     std::uint64_t renderedFrames_ = 0;
     bool legacyRaw_ = false;
     std::optional<LegacyAperture> legacyAperture_;
+    std::shared_ptr<const std::vector<float>> residentRaw_;
 };
 
 /// Replace a half-open region of a track's source buffer with an active slot

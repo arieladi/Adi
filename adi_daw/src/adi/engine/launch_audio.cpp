@@ -160,13 +160,17 @@ std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const 
     return std::llround(frame);
 }
 
+void LaunchAudioClip::shareWholeResidentRaw() {
+    if (!residentRaw_) residentRaw_ = std::make_shared<const std::vector<float>>(std::move(samples_));
+}
+
 float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const noexcept {
     if (usesPages() || warp_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
         return 0;
     const auto source = channels_ == 1 ? 0 : channel;
     if (source >= channels_)
         return 0;
-    return samples_.data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
+    return residentSamples().data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
 }
 
 namespace {

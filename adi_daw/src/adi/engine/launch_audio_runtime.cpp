@@ -249,7 +249,10 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
     if (pcm) {
         const auto last = std::max(edit.region.end, edit.region.loop ? edit.region.loop->end : std::int64_t{0});
         const auto lastFrame = pcm->frameForTick(last, prepared.bpm());
-        if (pcm->usesPages() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
+        const auto aperture = pcm->legacyAperture();
+        const auto endFrame = aperture && !aperture->followProjectEnd
+            ? static_cast<std::uint64_t>(aperture->preparedEndFrame) : pcm->frames();
+        if (pcm->usesPages() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > endFrame) return false;
     } else if (!prepared.isMidiTrack(edit.track)) return false;
     const auto slots = prepared.view().slots;
     const auto slot = std::ranges::find_if(slots,[&](const LaunchSlot& candidate) {
@@ -474,6 +477,16 @@ bool LaunchAudioRuntime::dropsWorkerWarp(const LaunchAudioRuntime* after, std::i
         (!after || !after->hasTrack(track) || !after->mediaAt(sample)->clip(clip));
 }
 
+bool LaunchAudioRuntime::dropsResidentRaw(const LaunchAudioRuntime* after, std::int64_t sample,
+                                         std::int64_t track, std::int64_t clip) const noexcept {
+    if (!hasTrack(track)) return false;
+    const auto* source = mediaAt(sample)->clip(clip);
+    if (!source || !source->residentRawPcm()) return false;
+    const auto* next = after && after->incarnation() == incarnation() && after->hasTrack(track)
+        ? after->mediaAt(sample)->clip(clip) : nullptr;
+    return !next || next->residentRawPcm() != source->residentRawPcm();
+}
+
 bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::int64_t sample,
                                          std::int64_t track, std::int64_t clip, bool retainedOnly) const noexcept {
     if (!hasTrack(track)) return false;
@@ -508,18 +521,20 @@ bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::
 }
 
 bool LaunchAudioDriver::dropsRunningProtectedAudio(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
-                                               std::int64_t sample, bool externalTempo, bool pinnedPages) const noexcept {
+                                               std::int64_t sample, bool externalTempo, bool pinnedPages,
+                                               bool residentRaw) const noexcept {
     struct Check {
         const LaunchAudioRuntime& before;
         const LaunchAudioRuntime* after;
         std::int64_t sample;
-        bool externalTempo, pinnedPages;
+        bool externalTempo, pinnedPages, residentRaw;
     };
-    const Check check{before,after,sample,externalTempo,pinnedPages};
+    const Check check{before,after,sample,externalTempo,pinnedPages,residentRaw};
     return launcher_.anyRunningClip(&check,[](const void* opaque, std::int64_t track, std::int64_t clip,
                                               std::uint64_t) noexcept {
         const auto& query = *static_cast<const Check*>(opaque);
         return (query.externalTempo && query.before.dropsWorkerWarp(query.after,query.sample,track,clip)) ||
+            (query.residentRaw && query.before.dropsResidentRaw(query.after,query.sample,track,clip)) ||
             (query.pinnedPages && query.before.dropsPinnedPages(query.after,query.sample,track,clip,!query.externalTempo));
     });
 }
@@ -812,6 +827,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == target.clip) return;
         const auto frame = physical ? cue.physicalFrame : clip->frameForTick(cue.tick,call.media->bpm());
         clip->pageReader()->prefetch(target.clip,frame);
+    }, [](void* state, std::int64_t clip, std::int64_t tick) noexcept {
+        const auto& call = *static_cast<const Context*>(state);
+        const auto* pcm = call.media->clip(clip);
+        return pcm && pcm->residentRawPcm() ? pcm->frameForTick(tick,call.media->bpm()) : -1;
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);
@@ -898,7 +917,7 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
         // A paired Scene still fades the outgoing prepared bank. Its next
         // block may already be on the incoming clock.
         sourceEnd = aperture->preparedEndFrame;
-        if (aperture->followProjectEnd && !sceneCut && edge.oldFramesUntilMusicalEnd >= 0)
+        if ((aperture->followProjectEnd || edge.oldRawProjectAperture) && !sceneCut && edge.oldFramesUntilMusicalEnd >= 0)
             sourceEnd = source + std::min(edge.oldFramesUntilMusicalEnd,
                 std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
     }
@@ -935,11 +954,14 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
     const auto aperture = bankClip ? bankClip->legacyAperture() : std::nullopt;
-    const auto sourceEnd = aperture && !aperture->followProjectEnd ? aperture->preparedEndFrame : -1;
+    const auto sourceEnd = aperture && !aperture->followProjectEnd && !section.rawProjectAperture
+        ? aperture->preparedEndFrame : -1;
+    const auto available = pcm ? pcm->frames() : 0;
+    const auto captureEnd = sourceEnd < 0 ? available : std::min(available,static_cast<std::uint64_t>(sourceEnd));
     const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm &&
         !pcm->usesPages() && !pcm->followsTempo() && fade < 0 && section.velocity == 1.0f && source >= 0 &&
-        static_cast<std::uint64_t>(source) <= pcm->frames() &&
-        static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);
+        static_cast<std::uint64_t>(source) <= captureEnd &&
+        static_cast<std::uint64_t>(section.frames) <= captureEnd - static_cast<std::uint64_t>(source);
     if (capture && !tapePcm && section.clip != 0 && (pinned || section.regionIsLiveEdit ||
         (gain.beforeFrames > 0 && gain.before != 1.0f) ||
         (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();

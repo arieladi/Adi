@@ -1602,7 +1602,7 @@ static bool hasWholeAbsoluteSource(const rows::Clip& clip, const rows::AudioClip
 
 static std::optional<std::int64_t> legacyRawDuration(const rows::Clip& clip, const rows::AudioClip& audio,
                                                      std::span<const rows::Media> allMedia) {
-    if (clip.timeBase != 0 || clip.contentOffsetTicks != 0 || clip.contentOffsetNs || clip.sourceEndNs ||
+    if (clip.timeBase != 0 || clip.contentOffsetTicks < 0 || clip.contentOffsetNs || clip.sourceEndNs ||
         clip.loopEnabled) return {};
     const auto rate = wholeRawSourceRate(audio,allMedia);
     if (!rate) return {};
@@ -1714,7 +1714,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
     std::span<const std::int64_t> warmWarpClips, StoredLaunchPageReuse priorPinnedPages,
-    bool allowColdPinnedPages) {
+    bool allowColdPinnedPages, StoredLaunchPageReuse adoptedResidentBank) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -1786,18 +1786,47 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             pinned && warmPhysicalWindow, pinned || legacyAperture.has_value()});
         pagedLegacyApertures.push_back(legacyAperture);
     };
+    const auto sameRawSlotSource = [&](const StoredLaunchPageReuse& prior, const rows::Clip& clip) {
+        if (!prior.source || !prior.bank) return false;
+        const auto& clips = prior.source->rows.slotClips;
+        const auto priorClip = std::ranges::find(clips,clip.id,&rows::Clip::id);
+        return priorClip != clips.end() && *priorClip == clip && sameStoredAudioBacking(*prior.source,original,clip.id);
+    };
     const auto priorRawPages = [&](const rows::Clip& clip, std::int64_t endFrame, auto matches) -> const LaunchAudioClip* {
         if (!priorPinnedPages.source || !priorPinnedPages.bank) return nullptr;
         const auto* prior = priorPinnedPages.bank->clip(clip.id);
         const auto slots = priorPinnedPages.bank->view().slots;
         const auto priorSlot = std::ranges::find(slots,clip.id,&LaunchSlot::clip);
-        const auto& clips = priorPinnedPages.source->rows.slotClips;
-        const auto priorClip = std::ranges::find(clips,clip.id,&rows::Clip::id);
         return prior && prior->pageReader() && prior->latencySamples() == 0 &&
             prior->pageReader()->matchesFormat(rate,channels,maxFrames) &&
             prior->frames() == static_cast<std::uint64_t>(endFrame) && priorSlot != slots.end() &&
-            priorClip != clips.end() && *priorClip == clip &&
-            sameStoredAudioBacking(*priorPinnedPages.source,original,clip.id) && matches(*prior,*priorSlot) ? prior : nullptr;
+            sameRawSlotSource(priorPinnedPages,clip) && matches(*prior,*priorSlot) ? prior : nullptr;
+    };
+    const auto priorRawResident = [&](const rows::Clip& clip, std::int64_t frames) -> const LaunchAudioClip* {
+        for (const auto& from : {adoptedResidentBank,priorPinnedPages}) {
+            const auto* old = from.bank ? from.bank->clip(clip.id) : nullptr;
+            if (old && old->matchesResidentRaw(rate,channels,static_cast<std::uint64_t>(frames)) &&
+                sameRawSlotSource(from,clip)) return old;
+        }
+        return nullptr;
+    };
+    struct ResidentPromotion {
+        const rows::Clip& clip;
+        std::size_t slot;
+        std::optional<std::size_t> fallback;
+        std::int64_t endNs, frames;
+        LaunchAudioClip::LegacyAperture aperture;
+    };
+    std::vector<ResidentPromotion> residentPromotions;
+    const auto prepareWholeResident = [&](const ResidentPromotion& source, std::uint64_t budget) {
+        auto& slot = launchSlots[source.slot];
+        const auto* prior = priorRawResident(source.clip,source.frames);
+        auto prepared = prior ? *prior : prepareLaunchClipAudio(original,source.clip,slot.endTick,bpm,rate,channels,
+                                                                budget,source.endNs);
+        prepared.shareWholeResidentRaw();
+        prepared.setLegacyAperture(source.aperture);
+        if (hasPreparedClock) slot.residentRawFixedBpm = bpm;
+        return prepared;
     };
     const auto add = [](std::int64_t a, std::int64_t b) {
         if (a < 0 || b < 0 || a > std::numeric_limits<std::int64_t>::max() - b)
@@ -1928,8 +1957,10 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 const auto pinned = prepared.physicalStartFrame >= 0;
                 // LaunchSlot still owns the musical End. The reader must have
                 // the source past its old flat-clock trim when playback slows.
-                auto rawEndNs = usePins && !slot.legato &&
-                    (!setting.ramMode || !hasPreparedClock) && audioRow != original.rows.audioClips.end()
+                const bool residentOffset = setting.ramMode && slot.startTick > 0;
+                auto rawEndNs = usePins && !slot.legato && (residentOffset ||
+                    (slot.startTick == 0 && (!setting.ramMode || !hasPreparedClock))) &&
+                    audioRow != original.rows.audioClips.end()
                     ? legacyRawDuration(*clip,*audioRow,original.rows.media) : std::nullopt;
                 const auto rawFrames = rawEndNs ? samplesAtNs(*rawEndNs,rate) : 0;
                 if (rawFrames <= 0 || (setting.ramMode && (channels == 0 ||
@@ -1958,8 +1989,27 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 if (mode) usePreparedWarpEnd(*clip,prepared);
                 const auto preparedEnd = std::max(launchSlots.back().endTick,slot.loopEndTick);
                 if (setting.ramMode) {
-                    auto clipAudio = prepareLaunchClipAudio(original, *clip, preparedEnd, bpm, rate, channels, remaining,
-                                                           pinned ? sourceEndNs : rawEndNs);
+                    if (residentOffset && rawEndNs && legacyAperture) {
+                        ResidentPromotion promotion{*clip,launchSlots.size()-1,{},*rawEndNs,rawFrames,*legacyAperture};
+                        if (hasPreparedClock && rawFrames <= legacyAperture->preparedEndFrame) {
+                            auto clipAudio = prepareWholeResident(promotion,remaining);
+                            remaining -= clipAudio.bytes();
+                            pcm.push_back(std::move(clipAudio));
+                        } else {
+                            // Preserve the ordinary flat bank before consuming
+                            // spare budget on full windows with a bigger footprint.
+                            if (hasPreparedClock) {
+                                auto fallback = prepareLaunchClipAudio(original,*clip,preparedEnd,bpm,rate,channels,remaining);
+                                remaining -= fallback.bytes();
+                                promotion.fallback = pcm.size();
+                                pcm.push_back(std::move(fallback));
+                            }
+                            residentPromotions.push_back(promotion);
+                        }
+                        continue;
+                    }
+                    auto clipAudio = prepareLaunchClipAudio(original,*clip,preparedEnd,bpm,rate,channels,remaining,
+                                                            pinned ? sourceEndNs : rawEndNs);
                     remaining -= clipAudio.bytes();
                     if (legacyAperture) clipAudio.setLegacyAperture(*legacyAperture);
                     pcm.push_back(std::move(clipAudio));
@@ -1970,6 +2020,19 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             }
         } catch (const std::exception& e) {
             problems.push_back("Session clips#" + std::to_string(clip->id) + ": " + e.what());
+        }
+    }
+    for (const auto& source : residentPromotions) {
+        const auto budget = remaining + (source.fallback ? pcm[*source.fallback].bytes() : 0);
+        try {
+            if (static_cast<std::uint64_t>(source.frames) > budget / sizeof(float) / channels)
+                throw std::length_error("Session clip exceeds the prepared audio budget");
+            auto complete = prepareWholeResident(source,budget);
+            remaining = budget - complete.bytes();
+            if (source.fallback) pcm[*source.fallback] = std::move(complete);
+            else pcm.push_back(std::move(complete));
+        } catch (const std::exception& e) {
+            if (!source.fallback) problems.push_back("Session clips#" + std::to_string(source.clip.id) + ": " + e.what());
         }
     }
     if (!nativePages.empty()) {
