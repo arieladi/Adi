@@ -1006,7 +1006,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             warmWarpClips = sceneTempoBanks_->warmWarpClips;
             budget -= beforeClock->residentBytes();
         }
-        timing.protectCompatiblePinnedPages = !beforeClock && prior && prior->launchAudio && prior->launchSource &&
+        timing.protectCompatiblePinnedPages = prior && prior->launchAudio && prior->launchSource &&
             prior->launchAudio->incarnation() == storedLaunchIncarnation_ &&
             prior->sampleRate == timing.sampleRate && prior->spec.channels == timing.spec.channels &&
             prior->spec.maxFrames == timing.spec.maxFrames &&
@@ -2665,8 +2665,11 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     const LaunchAudioProject* mixedBefore = nullptr;
     std::vector<std::int64_t> continuingWarp;
     std::vector<std::int64_t> retainedWarp;
+    std::vector<std::int64_t> retainedPinned;
     std::optional<std::int64_t> missingWarp;
     std::optional<std::int64_t> changedWarp;
+    std::optional<std::int64_t> missingPin;
+    std::optional<std::int64_t> changedPin;
     if (bpm && tick > 0) {
         const auto& before = timing->launchAudio->mediaAt(sample - 1);
         if ((*bpm != before->bpm() || *bpm != timing->tempo.bpmAt(tick)) &&
@@ -2693,6 +2696,11 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     if (cell == view.slots.end()) return false;
                     if (!cell->clip) {
                         if (cell->hasStop) return false;
+                        const auto old = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
+                        if (old != view.slots.end() && old->physicalFrames > 0 && before->clip(clip.id)) {
+                            retainedPinned.push_back(clip.id);
+                            return false;
+                        }
                         if (!continuesWarp(clip.id)) return true;
                         retainedWarp.push_back(clip.id);
                         return false;
@@ -2749,13 +2757,29 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 return false;
             }
         }
-        if (mixedBefore && !retainedWarp.empty()) {
+        if (mixedBefore && (!retainedWarp.empty() || !retainedPinned.empty())) {
             const auto before = mixedBefore->view().slots;
             const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
             // No Stop may retain any slot on this track after a queued or
             // Follow action. Its live gain belongs to the old source baseline.
             const bool sameBank = timing->launchSource && storedLaunchSource_ &&
                 sameStoredLaunchSources(*timing->launchSource,*storedLaunchSource_);
+            if (!retainedPinned.empty() && !sameBank) {
+                changedPin = retainedPinned.front();
+                return false;
+            }
+            for (const auto id : retainedPinned) {
+                const auto oldSlot = std::ranges::find(before,id,&LaunchSlot::clip);
+                const auto newSlot = std::ranges::find(after,id,&LaunchSlot::clip);
+                const auto* oldSource = mixedBefore->clip(id);
+                const auto* newSource = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
+                if (oldSlot == before.end() || newSlot == after.end() || !oldSource || !newSource ||
+                    oldSlot->track != newSlot->track || oldSlot->physicalStartFrame != newSlot->physicalStartFrame ||
+                    oldSlot->physicalFrames != newSlot->physicalFrames || oldSource->pageReader() != newSource->pageReader()) {
+                    missingPin = id;
+                    return false;
+                }
+            }
             for (const auto id : retainedWarp) {
                 const auto oldSlot = std::ranges::find(before,id,&LaunchSlot::clip);
                 const auto newSlot = std::ranges::find(after,id,&LaunchSlot::clip);
@@ -2816,6 +2840,10 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                                        ": a continuing tempo scene needs the same Warp region and warm source pages";
         else if (changedWarp) error_ = "Session clips#" + std::to_string(*changedWarp) +
                                        ": No Stop needs unchanged Warp source audio and clip gain at the scene tempo";
+        else if (missingPin) error_ = "Session clips#" + std::to_string(*missingPin) +
+                                      ": No Stop needs the same physical region and ready unwarped source";
+        else if (changedPin) error_ = "Session clips#" + std::to_string(*changedPin) +
+                                      ": No Stop needs unchanged unwarped source audio and clip gain at the scene tempo";
         else if (keepStreamingBank && storedLaunchProject_ && !followsSceneTempo(*storedLaunchProject_) && !launchProblems_.empty())
             error_ = launchProblems_.front();
     } else sceneClockRollback_ = std::move(previousClock);

@@ -686,6 +686,68 @@ void physicalOneShotToWarpLegato() {
             "the changed-tempo native Warp attack keeps the inherited phase after a pinned source");
 }
 
+void physicalOneShotRetainedByTempoScene() {
+    for (const bool ram : {true,false}) {
+        test::TempDirectory folder{"session_unwarped_one_shot", ram ? "no-stop-ram" : "no-stop-paged"};
+        auto store = sceneProject(folder.path());
+        enableTempoScene(*store);
+        constexpr auto span = 4 * rate;
+        addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+        pinUnwarpedOneShot(*store,50031250,4000000000); // Start is 2401.5 frames.
+        store->db().exec("INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0)");
+        if (!ram) store->db().exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+
+        const auto render = [&](bool change, bool changeGain = false) {
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+            std::vector<float> pcm(span + blockFrames);
+            Playback playback{session,pcm};
+            playback.paged = !ram;
+            scene(*store,session,10);
+            playback.through(blockFrames);
+            const auto status = [&] {
+                std::array<LaunchTrackStatus,1> tracks{};
+                LaunchStatusHeader header;
+                require(session.readLaunchStatus(tracks,header) && header.trackCount == 1 && tracks[0].clip == 101,
+                        "the pinned one-shot keeps its active Session slot");
+                return tracks[0];
+            };
+            const auto before = status();
+            require(session.postLaunchClipGainEdit({1,101,session.launchIncarnation(),before.run,0.5f,ClipUpdateRate::None}),
+                    "set live gain on the active pinned run");
+            playback.through(tempoSceneFrame - 2 * blockFrames);
+            if (changeGain) sceneWithGain(*store,session,20,101,-6.0);
+            else if (change) scene(*store,session,20);
+            if (change && !changeGain && !session.error().empty())
+                throw std::runtime_error("No Stop one-shot: " + session.error());
+            playback.through(tempoSceneFrame + 1);
+            const auto after = status();
+            require(after.run == before.run && after.remainingSamples == span - tempoSceneFrame - 1,
+                    "the scene preserves the run and its exact physical remaining frames");
+            if (change && !changeGain) checkTempoScene(*store,session,playback);
+            if (changeGain) {
+                require(session.error().find("unchanged unwarped") != std::string::npos && playback.sceneCount == 1 &&
+                        session.beginRender().bpmAtTick(4 * quarter) == 120,
+                        "No Stop refuses a different source gain and keeps the old scene clock");
+            }
+            playback.through(span + blockFrames);
+            require(playback.count == 2 && playback.edges[0].sample == 0 && playback.edges[1].newClip == 0 &&
+                    playback.edges[1].sample == span, "the one-shot stops exactly on its original physical end");
+            require(pcm[3000] == .275f && pcm[span - 9000] == .275f && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                    "the pinned source and live gain stay audible without callback allocation or file I/O");
+            return pcm;
+        };
+
+        const auto reference = render(false);
+        require(render(true) == reference, "No Stop keeps every physical one-shot PCM sample across the tempo scene");
+        if (!ram)
+            require(render(true,true) == reference, "a refused source change leaves the entire active page bank sounding");
+        std::printf("No Stop physical %s one-shot: scene %lld, stop %d, identical PCM\n",ram ? "RAM" : "paged",
+                    static_cast<long long>(tempoSceneFrame),span);
+    }
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -756,6 +818,7 @@ int main() {
         physicalOneShotsFollowExternalTempo();
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
+        physicalOneShotRetainedByTempoScene();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.
