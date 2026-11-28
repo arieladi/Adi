@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/launch_audio_runtime.hpp"
 
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
@@ -130,6 +131,92 @@ const LaunchAudioClip* LaunchAudioProject::clip(std::int64_t id) const noexcept 
     return pcm != end && pcm->clip() == id ? pcm : nullptr;
 }
 
+bool LaunchAudioDriver::postSource(const LaunchClipSourceEdit& edit, std::uint64_t baseline,
+                                   std::unique_ptr<LaunchAudioClip>& replacement) noexcept {
+    const auto token = sourceLease_.idleToken();
+    if (!token) return false;
+    sourceEdit_ = {edit,baseline,std::move(replacement)};
+    if (sourceLease_.publish(*token)) return true;
+    replacement = std::move(sourceEdit_.clip);
+    return false;
+}
+
+void LaunchAudioDriver::collectSourceEdit() noexcept {
+    if (!audio::onAudioThread && !sourceEditReserved()) sourceEdit_.clip.reset();
+}
+
+bool LaunchAudioDriver::hasSourceEdit() const noexcept {
+    return sourcePhase_ == SourceEditPhase::Pending || sourcePhase_ == SourceEditPhase::Applied;
+}
+
+void LaunchAudioDriver::releaseSourceEdit() noexcept {
+    sourcePhase_ = SourceEditPhase::Idle;
+    sourceBoundary_.reset();
+    // Source ranges from the preceding callback are no longer in use.
+    // Only the owner may reclaim the prepared buffer after this release.
+    sourceLease_.release();
+}
+
+void LaunchAudioDriver::suspendSourceEdits() noexcept {
+    sourcePhase_ = SourceEditPhase::Idle;
+    sourceBoundary_.reset();
+    sourceLease_.suspend();
+}
+
+void LaunchAudioDriver::beginSourceCallback() noexcept {
+    sourceLease_.resume();
+    if (sourcePhase_ == SourceEditPhase::Retiring) releaseSourceEdit();
+    if (sourcePhase_ == SourceEditPhase::Idle && sourceEditReserved()) sourcePhase_ = SourceEditPhase::Pending;
+}
+
+void LaunchAudioDriver::beginSourceSlice(const LaunchBlock& block, const LaunchAudioProject& media,
+                                         std::span<const std::int64_t> tracks) noexcept {
+    if (!hasSourceEdit()) return;
+    const auto& edit = sourceEdit_.address;
+    if (edit.incarnation != block.incarnation || !std::binary_search(tracks.begin(),tracks.end(),edit.track) ||
+        !launcher_.matchesRunningClip(edit.track,edit.clip,edit.run) ||
+        media.pcmRevision() > sourceEdit_.baseline ||
+        (sourcePhase_ == SourceEditPhase::Applied && media.pcmRevision() != sourceEdit_.baseline)) {
+        sourcePhase_ = SourceEditPhase::Retiring;
+        return;
+    }
+    // An older graph already pinned by the driver cannot consume a request
+    // made against the owner's newer PCM bank. Resolve only when it appears.
+    if (sourcePhase_ == SourceEditPhase::Pending && sourceBoundary_ && block.sample != nextTimelineSample_) {
+        if (block.arrangementWrap && edit.rate != ClipUpdateRate::None && block.tickAtSample) {
+            const auto previous = std::max<std::int64_t>(0,block.tickAtSample(block.clock,nextTimelineSample_));
+            const auto now = std::max<std::int64_t>(0,block.tickAtSample(block.clock,block.sample));
+            const auto remaining = std::max<std::int64_t>(0,sourceBoundary_->tick - previous);
+            sourceBoundary_->tick = now + std::min(remaining,std::numeric_limits<std::int64_t>::max() - now);
+        } else sourceBoundary_.reset();
+    }
+}
+
+void LaunchAudioDriver::trackSourceStatus(const LaunchTrackStatus& status) noexcept {
+    if (!hasSourceEdit()) return;
+    const auto& edit = sourceEdit_.address;
+    if (status.track == edit.track && (status.run != edit.run || status.clip != edit.clip))
+        sourcePhase_ = SourceEditPhase::Retiring;
+}
+
+LaunchAudioDriver::SourceRange LaunchAudioDriver::sourceRange(const LaunchBlock& block,
+    const LaunchSection& section, std::uint64_t baseline) noexcept {
+    if (!hasSourceEdit() || sourceEdit_.baseline != baseline)
+        return {section.frames};
+    const auto& edit = sourceEdit_.address;
+    if (section.track != edit.track || section.clip != edit.clip || section.run != edit.run)
+        return {section.frames};
+    if (sourcePhase_ == SourceEditPhase::Applied) return {0,sourceEdit_.clip.get()};
+    if (!sourceBoundary_) sourceBoundary_ = nextClipUpdateBoundary(block,block.sample,edit.rate,true);
+    if (!sourceBoundary_) return {section.frames};
+    const auto due = edit.rate == ClipUpdateRate::None ? sourceBoundary_->sample
+        : block.sampleAtTick(block.clock,sourceBoundary_->tick);
+    const auto first = block.sample + section.offset;
+    if (due < 0 || due >= first + section.frames) return {section.frames};
+    sourcePhase_ = SourceEditPhase::Applied;
+    return {static_cast<std::int32_t>(std::max<std::int64_t>(0,due-first)),sourceEdit_.clip.get()};
+}
+
 bool LaunchAudioRuntime::postGainEdit(LaunchAudioDriver& driver, const LaunchClipGainEdit& edit) const noexcept {
     return edit.incarnation == project_->incarnation() && hasTrack(edit.track) && project_->clip(edit.clip) &&
         driver.gains_.post(edit, gainRevision());
@@ -155,6 +242,23 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
         }
     } else if (!prepared.isMidiTrack(edit.track)) return false;
     return driver.launcher_.postRegionEdit(edit);
+}
+
+bool LaunchAudioRuntime::postSourceEdit(LaunchAudioDriver& driver, const LaunchClipSourceEdit& edit,
+                                        std::unique_ptr<LaunchAudioClip>& replacement) const noexcept {
+    if (audio::onAudioThread || !replacement || beforeClock_ || edit.incarnation != project_->incarnation() ||
+        edit.run == 0 || edit.rate > ClipUpdateRate::Bar || !hasTrack(edit.track) || project_->isMidiTrack(edit.track))
+        return false;
+    const auto* original = project_->clip(edit.clip);
+    if (!original || !original->sameResidentSourceShape(*replacement)) return false;
+    const auto slots = project_->view().slots;
+    const auto slot = std::ranges::find_if(slots,[&](const LaunchSlot& value) {
+        return value.track == edit.track && value.clip == edit.clip;
+    });
+    if (slot == slots.end() || slot->fade) return false;
+    const auto resident = project_->residentBytes();
+    if (resident > kSessionResidentPcmBudget || replacement->bytes() > kSessionResidentPcmBudget - resident) return false;
+    return driver.postSource(edit,project_->pcmRevision(),replacement);
 }
 
 LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject> project,
@@ -219,6 +323,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         driver.suspend();
         return;
     }
+    driver.beginSourceCallback();
     if (!driver.wasPlaying_ || transport.streamedFrames() == 0) ++driver.pass_;
     driver.wasPlaying_ = true;
     block.incarnation = project_->incarnation();
@@ -264,7 +369,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         sceneObserverContext, sceneObserver, capture};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
-        call.runtime.add(call.driver.gains_, *call.media, section, call.block, call.offset, call.capture);
+        call.runtime.add(call.driver, *call.media, section, call.block, call.offset, call.capture);
     }, [](void* state, const LaunchTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         const auto* outgoing = call.previousMedia && edge.offset == 0 && edge.oldFramesSinceStart > 0
@@ -282,6 +387,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         return call.follow->followOnLaunch(edge, call.view, call.incarnation, call.block.followActionsEnabled, call.seed);
     }, [](void* state, const LaunchTrackStatus& track) noexcept {
         const auto& call = *static_cast<const Context*>(state);
+        call.driver.trackSourceStatus(track);
         if (!track.queued.legatoSourceTick) return;
         const auto due = call.block.sampleAtTick(call.block.clock, track.queued.tick);
         const auto& media = *call.runtime.mediaAt(due);
@@ -347,6 +453,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         block.reanchorAudioSources = context.previousMedia != nullptr;
         context.view = context.media->view();
         context.view.tracks = tracks_;
+        driver.beginSourceSlice(block,*context.media,tracks_);
         driver.gains_.begin(block, tracks_, gainRevision());
         if (!driver.launcher_.process(block, context.view, sink))
             break;
@@ -405,9 +512,9 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
         driver.tails_.data()[driver.tailCount_++] = tail;
 }
 
-void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProject& media, const LaunchSection& section,
-                             const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
-    const auto gain = gains.range(block, section);
+void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject& media, const LaunchSection& section,
+                              const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
+    const auto gain = driver.gains_.range(block, section);
     if (section.arrangement || section.frames <= 0 || tracks_.empty())
         return;
     const auto* ids = tracks_.data();
@@ -419,6 +526,7 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     if (ranges.size >= ranges.items.size()) return;
     if (!ranges.midi.empty()) ranges.midi.data()[ranges.size] = {section, block, base};
     const auto* pcm = media.clip(section.clip);
+    const auto replacement = driver.sourceRange(block,section,media.pcmRevision());
     const auto anchor = pcm ? pcm->frameForTick(section.sourceAnchorTick, media.bpm()) : 0;
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
@@ -427,27 +535,30 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
         section.velocity == 1.0f && source >= 0 &&
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
         static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);
+    if (capture && replacement.replacement) capture->markSourceEdit();
     if (capture && !tapePcm && section.clip != 0 && (section.regionIsLiveEdit ||
         (gain.beforeFrames > 0 && gain.before != 1.0f) ||
         (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
 
-    const auto addRange = [&](std::int32_t skip, std::int32_t frames, std::int64_t firstSource,
-                              float multiplier, std::int64_t fadeElapsed) noexcept {
-        ranges.items.data()[ranges.size++] = {base + section.offset + skip, frames, pcm, firstSource,
-            section.velocity * multiplier, !section.regionIsLiveEdit, fadeElapsed};
-        if (tapePcm) {
-            const auto first = block.sample + section.offset + skip;
-            (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + frames, firstSource,
+    for (auto skip = std::int32_t{0}; skip < section.frames && ranges.size < ranges.items.size();) {
+        const bool beforeGain = skip < gain.beforeFrames;
+        const bool beforeReplacement = skip < replacement.beforeFrames;
+        const auto end = std::min(beforeGain ? gain.beforeFrames : section.frames,
+            beforeReplacement ? replacement.beforeFrames : section.frames);
+        const auto multiplier = beforeGain ? gain.before : gain.after;
+        const auto* current = beforeReplacement ? pcm : replacement.replacement;
+        const auto advanced = source + std::min<std::int64_t>(skip,
+            std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
+        const auto elapsed = fade < 0 ? -1 : fade + std::min<std::int64_t>(skip,
+            std::numeric_limits<std::int64_t>::max() - fade);
+        ranges.items.data()[ranges.size++] = {base + section.offset + skip, end - skip, current, advanced,
+            section.velocity * multiplier, !section.regionIsLiveEdit, elapsed};
+        if (tapePcm && beforeReplacement) {
+            const auto first = block.sample + section.offset;
+            (void)capture->appendPcmRange({section.track, section.clip, section.run, first + skip, first + end, advanced,
                 section.regionIsLiveEdit, multiplier});
         }
-    };
-    if (gain.beforeFrames > 0) addRange(0, gain.beforeFrames, source, gain.before, fade);
-    if (gain.beforeFrames < section.frames && ranges.size < ranges.items.size()) {
-        const auto advanced = source + std::min<std::int64_t>(gain.beforeFrames,
-            std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
-        const auto elapsed = fade < 0 ? -1 : fade + std::min<std::int64_t>(gain.beforeFrames,
-            std::numeric_limits<std::int64_t>::max() - fade);
-        addRange(gain.beforeFrames, section.frames - gain.beforeFrames, advanced, gain.after, elapsed);
+        skip = end;
     }
 }
 

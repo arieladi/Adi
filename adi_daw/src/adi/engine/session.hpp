@@ -86,6 +86,7 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
+class LaunchAudioClip;
 class LaunchAudioProject;
 class LaunchAudioRuntime;
 class LaunchAudioDriver;
@@ -93,6 +94,7 @@ struct AudioRecordingSpec;
 struct LaunchBlock;
 struct LaunchClipGainEdit;
 struct LaunchClipRegionEdit;
+struct LaunchClipSourceEdit;
 struct LaunchRequest;
 struct LaunchSceneTransition;
 struct LaunchStatusHeader;
@@ -570,6 +572,10 @@ public:
     [[nodiscard]] bool postLaunchClipGainEdit(const LaunchClipGainEdit&) noexcept;
     /// Schedule a run's start/end and loop against already prepared material.
     [[nodiscard]] bool postLaunchClipRegionEdit(const LaunchClipRegionEdit&) noexcept;
+    /// Owner only. Replace this run's PCM on the Clip Update Rate grid.
+    [[nodiscard]] bool postLaunchClipSourceEdit(const LaunchClipSourceEdit&,
+                                               std::unique_ptr<LaunchAudioClip>&) noexcept;
+    [[nodiscard]] bool launchSourceEditReserved() const noexcept;
     /// An owner may stamp a launch op with this published project identity.
     [[nodiscard]] std::uint64_t launchIncarnation() const noexcept;
     [[nodiscard]] bool readLaunchStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;

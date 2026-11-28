@@ -67,6 +67,46 @@ struct LaunchRenderSlice {
     std::int32_t baseOffset = 0; // Arrangement-loop slice origin within the logical callback
 };
 
+/// A prepared resident source revision for one still-running clip.
+struct LaunchClipSourceEdit {
+    std::int64_t track = 0, clip = 0;
+    std::uint64_t incarnation = 0, run = 0;
+    ClipUpdateRate rate = ClipUpdateRate::Sixteenth;
+};
+
+namespace detail {
+/// An owner may stage a buffer while idle. Its exact rolling token must
+/// still match when it publishes. A stop closes both roles in one update.
+class LaunchSourceEditLease {
+public:
+    [[nodiscard]] std::optional<std::uint64_t> idleToken() const noexcept {
+        const auto state = state_.load(std::memory_order_acquire);
+        return (state & flags) == rolling ? std::optional{state} : std::nullopt;
+    }
+    [[nodiscard]] bool publish(std::uint64_t token) noexcept {
+        return (token & flags) == rolling && state_.compare_exchange_strong(token,token | reserved,
+            std::memory_order_release,std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool held() const noexcept {
+        return (state_.load(std::memory_order_acquire) & reserved) != 0;
+    }
+    void resume() noexcept {
+        const auto state = state_.load(std::memory_order_relaxed);
+        if ((state & rolling) == 0) state_.store((state + generationStep) | rolling,std::memory_order_release);
+    }
+    void suspend() noexcept {
+        if ((state_.load(std::memory_order_relaxed) & rolling) != 0)
+            state_.fetch_and(~flags,std::memory_order_release);
+    }
+    void release() noexcept { state_.fetch_and(~reserved,std::memory_order_release); }
+
+private:
+    static constexpr std::uint64_t rolling = 1, reserved = 2, flags = rolling | reserved, generationStep = 4;
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    std::atomic<std::uint64_t> state_{0};
+};
+} // namespace detail
+
 /// Session-owned state that survives graph replacement. The gesture and gain
 /// mailboxes carry live commands from the owner to the driver.
 class LaunchAudioDriver {
@@ -81,13 +121,40 @@ public:
         wasPlaying_ = false;
         tailCount_ = 0;
         nextTimelineSample_ = -1;
+        suspendSourceEdits();
     }
     [[nodiscard]] std::uint64_t performedSceneToken() const noexcept {
         return performedScene_.load(std::memory_order_acquire);
     }
+    [[nodiscard]] bool sourceEditReserved() const noexcept {
+        return sourceLease_.held();
+    }
+    /// Driver or quiescent owner. Close source admission after the last callback.
+    void suspendSourceEdits() noexcept;
+    /// Owner only. Reclaim an edited buffer whose last callback has ended.
+    void collectSourceEdit() noexcept;
 
 private:
     friend class LaunchAudioRuntime;
+    enum class SourceEditPhase : std::uint8_t { Idle, Pending, Applied, Retiring };
+    struct SourceEdit {
+        LaunchClipSourceEdit address;
+        std::uint64_t baseline = 0;
+        std::unique_ptr<LaunchAudioClip> clip;
+    };
+    struct SourceRange {
+        std::int32_t beforeFrames;
+        const LaunchAudioClip* replacement = nullptr;
+    };
+    [[nodiscard]] bool postSource(const LaunchClipSourceEdit&, std::uint64_t baseline,
+                                  std::unique_ptr<LaunchAudioClip>&) noexcept;
+    void releaseSourceEdit() noexcept;
+    void beginSourceCallback() noexcept;
+    void beginSourceSlice(const LaunchBlock&, const LaunchAudioProject&, std::span<const std::int64_t>) noexcept;
+    void trackSourceStatus(const LaunchTrackStatus&) noexcept;
+    [[nodiscard]] SourceRange sourceRange(const LaunchBlock&, const LaunchSection&, std::uint64_t baseline) noexcept;
+    [[nodiscard]] bool hasSourceEdit() const noexcept;
+
     struct Tail {
         std::int64_t track, clip, sourceFrame, elapsed, fadeInAtExit;
         float velocity;
@@ -95,6 +162,12 @@ private:
     };
     Launcher launcher_;
     LaunchClipGainEdits gains_;
+    // The owner writes and reclaims the prepared clip only while available.
+    // The driver keeps the lease until the callback after the last raw use.
+    detail::LaunchSourceEditLease sourceLease_;
+    SourceEdit sourceEdit_;
+    SourceEditPhase sourcePhase_ = SourceEditPhase::Idle;
+    std::optional<ClipUpdateBoundary> sourceBoundary_;
     std::vector<Tail> tails_;
     std::size_t tailCount_ = 0;
     std::uint64_t tailIncarnation_ = 0;
@@ -133,6 +206,11 @@ public:
     [[nodiscard]] bool hasScene(std::int64_t scene) const noexcept;
     [[nodiscard]] bool postGainEdit(LaunchAudioDriver&, const LaunchClipGainEdit&) const noexcept;
     [[nodiscard]] bool postRegionEdit(LaunchAudioDriver&, const LaunchClipRegionEdit&, std::int64_t sample) const noexcept;
+    /// One prepared replacement can be pending or active. The replacement
+    /// belongs to the exact addressed run and current unchanging source bank.
+    /// A rejected post leaves ownership with the caller.
+    [[nodiscard]] bool postSourceEdit(LaunchAudioDriver&, const LaunchClipSourceEdit&,
+                                      std::unique_ptr<LaunchAudioClip>&) const noexcept;
     [[nodiscard]] const std::shared_ptr<const LaunchAudioProject>& mediaAt(std::int64_t sample) const noexcept;
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
@@ -161,7 +239,7 @@ private:
                                std::int32_t frames, LaunchCaptureBuffer*) noexcept;
     void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
                  std::int32_t blockFrames, LaunchCaptureBuffer*) noexcept;
-    void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
+    void add(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
              std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
     [[nodiscard]] std::uint64_t gainRevision() const noexcept;
 

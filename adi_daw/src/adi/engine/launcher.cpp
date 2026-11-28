@@ -193,6 +193,11 @@ Launcher::Track* Launcher::findTrack(std::int64_t id) noexcept {
     return it != active.end() && it->id == id ? &*it : nullptr;
 }
 
+bool Launcher::matchesRunningClip(std::int64_t track, std::int64_t clip, std::uint64_t run) noexcept {
+    const auto* current = findTrack(track);
+    return current && run != 0 && current->run.serial == run && current->run.clip == clip;
+}
+
 void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSink sink) noexcept {
     if (incarnation_ != block.incarnation) {
         trackCount_ = 0;

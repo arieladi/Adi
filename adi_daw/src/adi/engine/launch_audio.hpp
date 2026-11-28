@@ -38,6 +38,10 @@ public:
     [[nodiscard]] std::int64_t tickForFrame(std::int64_t frame, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
+    [[nodiscard]] bool sameResidentSourceShape(const LaunchAudioClip& other) const noexcept {
+        return !pages_ && !other.pages_ && clip_ == other.clip_ && firstTick_ == other.firstTick_ &&
+            rate_ == other.rate_ && channels_ == other.channels_ && frames() == other.frames();
+    }
 
 private:
     LaunchAudioClip(std::int64_t clip, std::int64_t firstTick, std::uint32_t rate,

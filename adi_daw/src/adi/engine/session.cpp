@@ -987,6 +987,7 @@ Node* Session::TimingView::inputMonitorSource(std::int64_t track) const noexcept
 void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, ClipPlayback& clips) {
     if (!timing.spec.performanceState || timing.spec.exporting || !launchAudioDriver_)
         return;
+    launchAudioDriver_->collectSourceEdit();
     auto project = timing.spec.launchAudio;
     std::shared_ptr<const LaunchAudioProject> beforeClock;
     std::int64_t clockSample = 0;
@@ -3019,6 +3020,7 @@ bool Session::tick(std::int64_t nowMs) {
         presentationPending_=false;error_.clear();
     }
     collectScopeTaps();
+    if (launchAudioDriver_) launchAudioDriver_->collectSourceEdit();
     if(gestureAudio_)gestureAudio_->collect();
     mainLoudness_.collect();
     cueMonitor_.collect();
@@ -3735,6 +3737,19 @@ bool Session::postLaunchClipRegionEdit(const LaunchClipRegionEdit& edit) noexcep
         timing->launchAudio->postRegionEdit(*launchAudioDriver_, edit, clock.sample);
 }
 
+bool Session::postLaunchClipSourceEdit(const LaunchClipSourceEdit& edit,
+                                       std::unique_ptr<LaunchAudioClip>& replacement) noexcept {
+    if (audio::onAudioThread) return false;
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    DriverClock clock;
+    return launchAudioDriver_ && timing && timing->launchAudio && readDriverClock(clock) && clock.playing &&
+        timing->launchAudio->postSourceEdit(*launchAudioDriver_, edit, replacement);
+}
+
+bool Session::launchSourceEditReserved() const noexcept {
+    return launchAudioDriver_ && launchAudioDriver_->sourceEditReserved();
+}
+
 std::uint64_t Session::launchIncarnation() const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     return timing && timing->launchAudio ? timing->launchAudio->incarnation() : 0;
@@ -4031,6 +4046,10 @@ void Session::renderMetronome(const TimingView& timing, const AudioIo& io, bool 
 
 void Session::release() {
     ++runtimeEpoch_;
+    if (launchAudioDriver_) {
+        launchAudioDriver_->suspendSourceEdits();
+        launchAudioDriver_->collectSourceEdit();
+    }
     recording_->stop();
     midiInputCapture_->deviceStopped();
     resetMidiInput();

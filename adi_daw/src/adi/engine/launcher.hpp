@@ -170,6 +170,9 @@ public:
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
+    /// Driver only, before draining the next block's launch requests.
+    [[nodiscard]] bool matchesRunningClip(std::int64_t track, std::int64_t clip,
+                                          std::uint64_t run) noexcept;
     /// Driver only. Drain a stopped block's valid gestures. A surviving fresh
     /// launch asks the caller to roll the clock; process() then runs it. Fresh
     /// stops and Back to Arrangement can settle even while the clock is held.
