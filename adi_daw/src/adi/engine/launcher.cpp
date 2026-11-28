@@ -623,8 +623,9 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        const bool eligibleHandoff = quantizedHandoff && (!target->physicalLoopEndFrame || !pending.linkedPhysical);
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,offset,quantizedHandoff)) return false;
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,eligibleHandoff)) return false;
     }
     track.follow.reset();
     track.repeat.reset();

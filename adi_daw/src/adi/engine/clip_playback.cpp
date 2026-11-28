@@ -259,6 +259,8 @@ struct Clip {
     // worker must not even temporarily claim a page until rendering releases
     // or supersedes it. No callback allocation or shared ownership operation.
     std::array<Page*,slots> admitted{};
+    // The cue lease spans all subreads of a single Session callback.
+    bool cueAdmitted = false;
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     std::atomic<bool> invalidWarpRate{false};
@@ -378,9 +380,11 @@ struct Clip {
         requestSeq.fetch_add(1,std::memory_order_seq_cst);
     }
     void releaseAdmission() noexcept {
+        if (cueAdmitted) return;
         for(auto& page:admitted)if(page){auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);}
     }
     void trimAdmission(const std::array<std::int64_t,slots>& wantedPages) noexcept {
+        if (cueAdmitted) return;
         for(auto& page:admitted)if(page && std::find(wantedPages.begin(),wantedPages.end(),page->number.load(std::memory_order_relaxed))==wantedPages.end()){
             auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);
         }
@@ -1740,7 +1744,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 samplesAtNs(physicalLoop ? std::min(*clip->contentOffsetNs,*clip->loopBeginNs) : *clip->contentOffsetNs,rate)
                     <= 3 * ClipPlayback::readAheadFrames(rate);
             const bool supportedPhysicalLaunch = !slot.legato || setting.ramMode || boundedPhysicalWindow ||
-                (!clip->loopEnabled && slot.mode != LaunchMode::Repeat);
+                slot.mode != LaunchMode::Repeat;
             const bool physicalPins = physicalSource && supportedPhysicalLaunch && (!clip->loopEnabled || physicalLoop);
             const bool warmPhysicalWindow = boundedPhysicalWindow && (!physicalLoop || slot.legato);
             // A paired tempo scene still observes the outgoing pin's logical
@@ -1914,6 +1918,7 @@ bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::in
     auto* source = dynamic_cast<TrackSource*>(&node);
     if (!source || source->clips.size() != 1 || frames < 1 || frames > source->maxFrames) return false;
     auto& clip = *source->clips.data()[0];
+    if (clip.cueAdmitted) return false;
     const auto required = clip.wanted(transport,frames,false);
     clip.trimAdmission(required);
     clip.request(clip.wanted(transport,frames));
@@ -1927,12 +1932,17 @@ bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::in
             return false;
         }
     }
+    clip.cueAdmitted = true;
     return true;
 }
 
 void ClipPlayback::releaseSource(Node& node) noexcept {
     auto* source = dynamic_cast<TrackSource*>(&node);
-    if (source && source->clips.size() == 1) source->clips.data()[0]->releaseAdmission();
+    if (source && source->clips.size() == 1) {
+        auto& clip = *source->clips.data()[0];
+        clip.cueAdmitted = false;
+        clip.releaseAdmission();
+    }
 }
 
 void ClipPlayback::keepSourceStartWarm(Node& node, std::int64_t firstFrame) noexcept {

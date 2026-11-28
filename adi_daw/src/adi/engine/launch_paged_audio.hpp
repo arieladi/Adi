@@ -44,8 +44,9 @@ public:
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
 
-    /// Driver only. A successful reservation pins the initial one-shot cue
-    /// across scheduling and overlay. A cold cue only queues the worker.
+    /// Driver only. A successful reservation pins the initial physical cue
+    /// and any first wrap across scheduling and overlay until releaseCue().
+    /// A cold cue only queues the worker.
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 

@@ -595,8 +595,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue,
            std::int32_t offset, bool quantizedHandoff) noexcept {
         auto& call = *static_cast<Context*>(state);
-        if (!call.media->stored() || target.physicalLoopEndFrame || target.physicalFrames <=
-            3 * ClipPlayback::readAheadFrames(static_cast<std::uint32_t>(call.block.sampleRate))) return true;
+        if (!call.media->stored() || target.physicalFrames <= 0) return true;
+        const auto start = target.physicalLoopEndFrame
+            ? std::min(target.physicalStartFrame,target.physicalLoopBeginFrame) : target.physicalStartFrame;
+        const auto window = target.physicalStartFrame + target.physicalFrames - start;
+        if (window <= 3 * ClipPlayback::readAheadFrames(static_cast<std::uint32_t>(call.block.sampleRate))) return true;
         const auto* pcm = call.media->clip(target.clip);
         if (!pcm) return false;
         auto* pages = pcm->pageReader();
