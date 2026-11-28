@@ -18,7 +18,10 @@
 #include <unistd.h>
 #endif
 
+#include "adi/audio/io_audit.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstddef>
@@ -112,6 +115,20 @@ inline ssize_t receiveBytes(SocketHandle handle, Bytes bytes) {
 }
 #endif
 
+/// DEV-27: never a socket on the audio thread. Every TCP call of a plug-in
+/// server connection is refused on a callback thread and counted here; the
+/// count must stay zero (the live TCP regression asserts it).
+inline std::atomic<std::uint64_t> callbackRefusals{0};
+
+[[nodiscard]] inline bool offCallback(std::string& error) {
+    if (!audio::onAudioThread) return true;
+    callbackRefusals.fetch_add(1, std::memory_order_relaxed);
+    // Short enough for every library's in-place string: the refusal itself
+    // must not allocate on the callback thread.
+    error = "audio thread";
+    return false;
+}
+
 class PluginSocket final {
 public:
     PluginSocket() = default;
@@ -124,6 +141,7 @@ public:
     }
 
     [[nodiscard]] bool open(in_addr address, std::uint16_t port, Deadline deadline, std::string& error) {
+        if (!offCallback(error)) return false;
 #ifdef _WIN32
         static const SocketRuntime runtime;
         if (!runtime.ready) {
@@ -165,11 +183,11 @@ public:
     }
 
     [[nodiscard]] bool write(ReadOnlyBytes bytes, Deadline deadline, std::string& error) const {
-        return transfer(bytes, POLLOUT, sendBytes, deadline, error);
+        return offCallback(error) && transfer(bytes, POLLOUT, sendBytes, deadline, error);
     }
 
     [[nodiscard]] bool read(Bytes bytes, Deadline deadline, std::string& error) const {
-        return transfer(bytes, POLLIN, receiveBytes, deadline, error);
+        return offCallback(error) && transfer(bytes, POLLIN, receiveBytes, deadline, error);
     }
 
 private:

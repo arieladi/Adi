@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "juce/net_plugin_socket.hpp"
 #include "juce/audiogridder_transport.hpp"
+#include "adi/audio/io_audit.hpp"
 
 #include "replace_operator_new.hpp"
 
@@ -66,6 +68,22 @@ int main(int argc, char** argv) {
     const auto parsed = std::from_chars(portText.data(), end, port);
     if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0) return 2;
 
+    // DEV-27: never a socket on the audio thread. The guard refuses and counts
+    // a TCP call made on a callback thread (port 1: nothing of the fixture's).
+    {
+        net::plugin_socket::PluginSocket probe;
+        std::string error;
+        in_addr loopback{};
+        loopback.s_addr = htonl(INADDR_LOOPBACK);
+        bool opened = false;
+        {
+            const audio::CallbackScope scope;
+            opened = probe.open(loopback, 1, std::chrono::steady_clock::now() + 1s, error);
+        }
+        if (!check(!opened && net::plugin_socket::callbackRefusals.load() == 1,
+                   "a TCP call on the audio thread was not refused and counted")) return 1;
+    }
+
     auto processor = device::makeAudioGridderProcessor(
         {"127.0.0.1", port, 5s, 10s}, {"VST3-12ab", "Stereo"});
     device::RemoteDevice remote({"vst3", "tcp-test", "TCP Fixture Gain", "ADI", "1"},
@@ -103,7 +121,10 @@ int main(int argc, char** argv) {
         // a unique level, so playing a stale packet fails even if it is wet.
         input.level = static_cast<float>(2 * (block + 1));
         auditCallback = true;
-        graph.process(io);
+        {
+            const audio::CallbackScope scope;
+            graph.process(io);
+        }
         auditCallback = false;
         const auto currentBlock = block++;
         const auto misses = remote.droppedBlocks() - previousMisses;
@@ -156,7 +177,9 @@ int main(int argc, char** argv) {
                "peer disconnect did not name the affected plug-in and TCP fault") ||
         !check(driveUntil(Block::Dry) && exactDryTrack(),
                "the disconnected TCP peer disturbed the dry track or drop counter") ||
-        !check(callbackAllocations == 0, "the live callback allocated memory")) return 1;
+        !check(callbackAllocations == 0, "the live callback allocated memory") ||
+        !check(net::plugin_socket::callbackRefusals.load() == 1,
+               "the live callback reached a TCP call; only the worker may")) return 1;
 
     std::printf("Live TCP graph recovered, reported the named disconnect and counted %llu dry blocks\n",
                 static_cast<unsigned long long>(remote.droppedBlocks()));
