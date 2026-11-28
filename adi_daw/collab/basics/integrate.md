@@ -1,4 +1,4 @@
-Ready for review: basics/integrate-3 at 83e1f7681a2ccfd938141747a1c3ad71b69422ae
+Ready for review: basics/integrate-3 at 269d4c14767efb79b3e6a71cb83003cd2b28b9dd
 
 # Basics integration
 
@@ -41,7 +41,7 @@ Review fixes through `98914809944a02dc6d9c5d870ebe521a10696b13`. The four Browse
 | SC-158 `01d9c08854bc2b69fe0c210d3f2e959e3df79ed1` | `12bd518f6678481e03ed7ef894df0f56915357bc` | The clean merge brings the exact SC-184 `3789b35ac4c9a4d2ec9a4c1456577159856fb29e` and SC-344 `8146a636190f52aea35ff0a514068fed97c2a88a` tips as ancestors. Kept one-Undo grouped drops, defaults and replacement while plain drops reuse identical pending audio. Retained selected Split targets and cancellation of stale breakpoint drafts. |
 | SC-180 `c7f792c13fb91b451a704425581c13e7f91b0ad3` | `8a28e5f53f1f9db26c9c78ae0925f97c27b56d01` | The clean merge brings grouped keyboard movement and its SC-178 Consolidate dependency. Preserved the earlier editor and envelope paths, existing command IDs, and the owner's exact keymap additions. |
 
-Window comparisons use software renders with Graphics closed before reading. The checked-in goldens retain their text masks. Same-run image checks mask glyphs too, and the Info View fixture separately verifies that the description's glyphs stay inside its bounds. Compared path text uses native separators. These checks are in `77544c7f9`, `989148099`, `a2cee2a3d` and `8bbbfc074`.
+Window comparisons use software renders with Graphics closed before reading. The checked-in goldens retain their text masks. Same-run analyser and Info View image checks mask glyphs too, and the Info View fixture separately verifies that the description's glyphs stay inside its bounds. Compared path text uses native separators. These checks are in `77544c7f9`, `989148099`, `a2cee2a3d` and `8bbbfc074`.
 
 Wincheck's serialization and shadow fixes and the libc++ sample-rate casts are already in the main base or have equivalent fixes there. The MIDI checker row adds no correction. `7d79bb339` adapts the applicable Wincheck AAC fixture for MSVC Debug iterator proxies and retains the zero-allocation check with other CRTs. [Windows check](https://github.com/arieladi/Adi/blob/1a46eb5eecc629f7e4f6cf53a9a2aa7357008624/adi_daw/collab/basics/wincheck.md) [libc++ check](https://github.com/arieladi/Adi/blob/63f07083bc68c93e73e39f80c6ecb7811cb3f835/adi_daw/collab/basics/libcxx.md)
 
@@ -55,7 +55,9 @@ Review head `83e1f7681a2ccfd938141747a1c3ad71b69422ae` passed the full Linux GCC
 | SC-186 `fcae7a1bd2be51e619fae1d474e342757f6b61ed` | `a860ea05aaa4d13c3bf785857e157f245130d69d` | Clean merge. Complete a fragmentary bar with silence or delete its remaining time. The fixture covers both repairs and Undo around the meter boundary. |
 | SC-187 `0d906f69b68e89fbffd25a337da66570fc6c0e53` | `59e64f55ec16748da6974cb7f86bc45527e7a369` | Includes the exact SC-354 tip `0c186b7ecf7f63dc5f46f1ab4f6b08468c4cfa7c`. Resolved one shell header conflict by retaining both the opening-state history restore and the stopped locator position helper. Insert Silence uses the alert reply seam, with cancellation, invalid input, selected range and Undo covered. Set/Del and Add Locator keep their separate positions. Renamed a prompt-local variable to avoid shadowing the outer local. |
 
-The final fixture commit `269d4c147` applies the glyph mask to the Stack EQ and Focus comparisons. The all-target JUCE build, validators, landing-check tests and two focused window suites passed. The full CTest gate is running at `269d4c14767efb79b3e6a71cb83003cd2b28b9dd`.
+Review head `269d4c14767efb79b3e6a71cb83003cd2b28b9dd` contains all nine exact owner tips. It passed the full Linux GCC 14 Debug build with JUCE, Pd and warnings as errors, including `adi_app` and `adi_play`. All 295 non-performance suites, 18 display-free window suites, 3 acceptance suites, six validators and the landing-check tests passed. The changed production sources and the three affected window fixture translation units also passed strict Clang 14 syntax checks. The new window checks use peerless menu and dialog seams. The final test commit `269d4c147` also masks words in the Stack EQ and Focus raster comparisons if a label is painted, while keeping the graph and scope assertions.
+
+The latest Windows report has no new fix for these chains. The libc++ update covers the Server seat, whose affected files are outside this bundle. The applicable platform fixes from the first bundle remain in place. Native Windows and macOS gates were outside this Linux run. [Windows check](https://github.com/arieladi/Adi/blob/1a46eb5eecc629f7e4f6cf53a9a2aa7357008624/adi_daw/collab/basics/wincheck.md) [libc++ check](https://github.com/arieladi/Adi/blob/b584b5a44fcce174be05a8c17f8944d3bfb0f830/adi_daw/collab/basics/libcxx.md)
 
 ## Tenth stack, first review bundle
 
