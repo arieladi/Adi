@@ -51,13 +51,26 @@ bool pinnedLegatoTarget(const LaunchSlot& slot, std::int64_t scene) noexcept {
     return slot.scene == scene && slot.legato && slot.physicalFrames > 0;
 }
 
+bool pinnedLegatoLoop(const LaunchSlot& slot) noexcept {
+    return slot.legato && slot.physicalFrames > 0 && slot.physicalLoopEndFrame > 0;
+}
+
+bool retainedPinnedLegatoLoop(const LaunchSlot& slot, std::span<const LaunchSlot> slots,
+                             std::int64_t scene) noexcept {
+    if (!pinnedLegatoLoop(slot)) return false;
+    const auto cell = std::ranges::lower_bound(slots,std::pair{slot.track,scene},{},[](const LaunchSlot& candidate) {
+        return std::pair{candidate.track,candidate.scene};
+    });
+    return cell != slots.end() && cell->track == slot.track && cell->scene == scene && !cell->clip && !cell->hasStop;
+}
+
 bool hasReadyPhysicalSource(const LaunchAudioClip* clip, const LaunchSlot& slot) noexcept {
     return clip && slot.physicalStartFrame >= 0 && slot.physicalFrames > 0 &&
         !clip->followsTempo() && clip->latencySamples() == 0 &&
         static_cast<std::uint64_t>(slot.physicalStartFrame) + static_cast<std::uint64_t>(slot.physicalFrames) <= clip->frames();
 }
 
-bool readyPinnedLegatoTarget(const LaunchAudioProject& bank, const LaunchSlot& slot) noexcept {
+bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot& slot) noexcept {
     const auto* clip = bank.clip(slot.clip);
     return hasReadyPhysicalSource(clip,slot) &&
         (!clip->pageReader() || clip->pageReader()->allPhysicalPhasesPrimed(slot.clip));
@@ -1216,7 +1229,8 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             sameStoredLaunchSources(*prior->launchSource,*clipProject_);
         const bool pinnedLegato = beforeClock && sceneClockPending() && preparedScene_->tempoBpm > 0 &&
             sceneTempoBanks_->tick == preparedScene_->tick && std::ranges::any_of(beforeClock->view().slots,[&](const LaunchSlot& slot) {
-                return pinnedLegatoTarget(slot,preparedScene_->scene);
+                return pinnedLegatoTarget(slot,preparedScene_->scene) ||
+                    retainedPinnedLegatoLoop(slot,beforeClock->view().slots,preparedScene_->scene);
             });
         // The driver may replace its outgoing run before the scene bar.
         // Each publication while the cut is pending must keep the same
@@ -1270,9 +1284,10 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             const auto before = beforeClock->view().slots;
             const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
             for (const auto& target : before) {
-                if (!pinnedLegatoTarget(target,preparedScene_->scene)) continue;
+                const bool retained = retainedPinnedLegatoLoop(target,before,preparedScene_->scene);
+                if (!retained && !pinnedLegatoTarget(target,preparedScene_->scene)) continue;
                 for (const auto& oldSlot : before) {
-                    if (!oldSlot.clip || oldSlot.track != target.track) continue;
+                    if (!oldSlot.clip || oldSlot.track != target.track || (retained && oldSlot.clip != target.clip)) continue;
                     const auto newSlot = std::ranges::find(after,oldSlot.clip,&LaunchSlot::clip);
                     const auto* oldAudio = beforeClock->clip(oldSlot.clip);
                     const auto* newAudio = storedLaunchProject_ ? storedLaunchProject_->clip(oldSlot.clip) : nullptr;
@@ -1287,9 +1302,13 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     // around Start and Loop Begin.
                     if (sameWarp && oldAudio->usesPages() && !adoptedBefore && !oldAudio->allWarpPhasesPrimed())
                         throw std::runtime_error("a pinned Session Legato scene waits for the adopted outgoing bank");
-                    if (oldSlot.clip == target.clip && (!pinnedLegatoTarget(*newSlot,preparedScene_->scene) ||
-                        !readyPinnedLegatoTarget(*storedLaunchProject_,*newSlot)))
-                        throw std::runtime_error("a pinned Session Legato scene needs the target's complete physical window");
+                    if (oldSlot.clip == target.clip) {
+                        const bool hasSceneSlot = retained
+                            ? retainedPinnedLegatoLoop(*newSlot,after,preparedScene_->scene)
+                            : pinnedLegatoTarget(*newSlot,preparedScene_->scene);
+                        if (!hasSceneSlot || !hasCompletePhysicalWindow(*storedLaunchProject_,*newSlot))
+                            throw std::runtime_error("a pinned Session Legato scene needs the clip's complete physical window");
+                    }
                 }
             }
         }
@@ -2986,8 +3005,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     if (!cell->clip) {
                         if (cell->hasStop) return false;
                         const auto old = std::ranges::find(view.slots,clip.id,&LaunchSlot::clip);
-                        if (old != view.slots.end() && old->physicalFrames > 0 &&
-                            (!old->legato || !old->physicalLoopEndFrame) && before->clip(clip.id)) {
+                        if (old != view.slots.end() && old->physicalFrames > 0 && before->clip(clip.id) &&
+                            (!pinnedLegatoLoop(*old) || hasCompletePhysicalWindow(*before,*old))) {
                             retainedPinned.push_back(clip.id);
                             return false;
                         }
@@ -3002,7 +3021,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     }
                     if (!cell->legato) return false;
                     if (continuesWarp(cell->clip)) return false;
-                    if (pinnedLegatoTarget(*cell,scene)) return !readyPinnedLegatoTarget(*before,*cell);
+                    if (pinnedLegatoTarget(*cell,scene)) return !hasCompletePhysicalWindow(*before,*cell);
                     const auto* target = before->clip(cell->clip);
                     if (!target || target->latencySamples() == 0) return true;
                     if (!target->allWorkerPhasesPrimed()) {
@@ -3117,7 +3136,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 const auto* oldSource = mixedBefore->clip(id);
                 const auto* newSource = storedLaunchProject_ ? storedLaunchProject_->clip(id) : nullptr;
                 if (oldSlot == before.end() || newSlot == after.end() || !oldSource || !newSource ||
-                    !samePhysicalWindow(*oldSlot,*newSlot) || oldSource->pageReader() != newSource->pageReader()) {
+                    !samePhysicalWindow(*oldSlot,*newSlot) || oldSource->pageReader() != newSource->pageReader() ||
+                    (pinnedLegatoLoop(*oldSlot) && !hasCompletePhysicalWindow(*storedLaunchProject_,*newSlot))) {
                     missingPin = id;
                     return false;
                 }
