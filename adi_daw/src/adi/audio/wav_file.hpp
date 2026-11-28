@@ -63,6 +63,7 @@ public:
     WavReader& operator=(const WavReader&) = delete;
     [[nodiscard]] std::uint32_t sampleRate() const noexcept { return rate_; }
     [[nodiscard]] std::uint16_t channels() const noexcept { return channels_; }
+    [[nodiscard]] std::uint32_t speakerMask() const noexcept { return speakerMask_; }
     [[nodiscard]] std::uint64_t frames() const noexcept { return frames_; }
     [[nodiscard]] WavFormat format() const noexcept { return format_; }
     std::uint32_t read(float* interleaved, std::uint32_t frames);
@@ -71,6 +72,7 @@ private:
     std::ifstream file_;
     WavFormat format_ = WavFormat::Pcm16;
     std::uint32_t rate_ = 0;
+    std::uint32_t speakerMask_ = 0; // Zero when WAVE does not name channel roles.
     std::uint16_t channels_ = 0, bytes_ = 0, align_ = 0;
     std::uint64_t frames_ = 0, position_ = 0, dataOffset_ = 0;
 };

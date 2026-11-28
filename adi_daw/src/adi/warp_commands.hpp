@@ -2,7 +2,9 @@
 #pragma once
 #include "adi/clip_commands.hpp"
 #include "adi/audio/auto_warp.hpp"
+#include "adi/audio/short_sample_warp.hpp"
 #include "adi/audio/warp.hpp"
+#include "adi/library/sample_warp_policy.hpp"
 #include <optional>
 #include <span>
 namespace adi::clip_edit {
@@ -11,6 +13,8 @@ struct WarpOptions {
     audio::WarpMode mode=audio::WarpMode::Beats;
     audio::AutoWarpOptions analysis;
     std::stop_token stop;
+    std::optional<audio::ShortSampleWarpInput> shortSample = {};
+    std::optional<library::SampleWarpPolicy> shortSamplePolicy = {};
 };
 /// Owner/worker connection, off the callback. Toggle Warp while preserving the
 /// audible source interval of a placed clip. An explicit source BPM also corrects

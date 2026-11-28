@@ -205,9 +205,10 @@ void editedSourceWindow() {
     auto on=f.options();
     on.analysis.sourceBpm=240;
     on.analysis.fromFirstBeat=false;
+    on.shortSample=audio::ShortSampleWarpInput{"unwarpedOneShot",{},std::string(64,'a')};
     for(const auto id:{7,11}) {
         if(!apply(f,clip_edit::prepareSetWarp(*f.store,id,on,48000),
-                  "enable Warp on a piece of a split and trimmed clip"))return;
+                  "enable Warp on an edited interval without applying a whole-file policy"))return;
     }
     check(db.execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64()==q &&
               db.execAndGet("SELECT length_ticks FROM clips WHERE id=11").getInt64()==q &&

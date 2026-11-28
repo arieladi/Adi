@@ -6,9 +6,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <stop_token>
 #include <vector>
 namespace adi::library {
+struct SampleAnalysisOverrides;
+struct SampleAnalysisResolution;
+struct SampleAnalysisResolutionChanges;
+struct SampleAnalysisMetadata;
 struct Entry {
     std::string volumeId, relativePath, hash, error;
     std::uintmax_t size = 0;
@@ -68,8 +73,17 @@ public:
     [[nodiscard]] SampleSettingsResult sampleSettings(const std::string& hash) const;
     [[nodiscard]] SampleSettingsProblem saveSampleSettings(const std::string& hash,const SampleSettings&,std::string& error);
     [[nodiscard]] SampleSettingsProblem clearSampleSettings(const std::string& hash,std::string& error);
-    std::string exportJson() const;
-    bool importJson(const std::string&, std::string& error);
+    [[nodiscard]] SampleAnalysisOverrides analysisOverrides(const std::string& hash) const;
+    [[nodiscard]] SampleAnalysisResolution analysisResolution(const std::string& hash) const;
+    // Committed mutations made through this Index. Polling an unchanged
+    // revision does no database work. A missed journal window supplies the
+    // current resolution inputs. Empty entries in a delta clear the overlay.
+    [[nodiscard]] SampleAnalysisResolutionChanges analysisResolutionSince(std::uint64_t revision) const;
+    // V3 observations live in this Index after a successful import. Callers
+    // may also receive the original observations for explicit re-export.
+    std::string exportJson(std::span<const SampleAnalysisMetadata> = {}) const;
+    bool importJson(const std::string&, std::string& error,
+                    std::vector<SampleAnalysisMetadata>* observations = nullptr);
 private:
     struct Impl;
     explicit Index(std::unique_ptr<Impl>);

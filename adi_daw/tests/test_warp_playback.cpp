@@ -3,6 +3,8 @@
 #include "temp_directory.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp.hpp"
+#include "adi/audio/warp_timing_cache.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -28,6 +30,7 @@
 #include <numbers>
 #include <stop_token>
 #include <string_view>
+#include <thread>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
 void adi::test::countReplacedNew() noexcept{if(adi::audio::onAudioThread)++callbackAllocations;}
 namespace {
@@ -191,6 +194,93 @@ void longWarpResponse() {
     check(renameReady<coldReady/2,"an unrelated edit reuses the complete prepared warp");
     check(reopenReady<coldReady/2,"a reopened project reuses the complete prepared warp");
 }
+
+void sharedBeatsOnsets() {
+    constexpr std::uint32_t sourceRate = audio::kWarpAnalysisRate;
+    constexpr std::uint32_t sourceFrames = 12000;
+    constexpr std::uint64_t start = 1100, window = 8000, sharedOnset = 2200;
+    test::TempDirectory temporary{"warp_playback", "shared_beats"};
+    audio::WarpRenderPlan plan;
+    plan.source = temporary.path() / "source.wav";
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceStart = start;
+    plan.sourceFrames = window;
+    plan.outputRate = 48000;
+    plan.anchors = {{0, 0}, {window, 24000}};
+    plan.transientLoop = audio::TransientLoop::Off;
+    std::vector<float> input(sourceFrames, 0.04f);
+    std::fill(input.begin() + 5000, input.begin() + 5300, 0.5f);
+    {
+        audio::WavWriter writer(plan.source, sourceRate, 1, audio::WavFormat::Float32);
+        writer.write(input.data(), sourceFrames);
+        writer.close();
+    }
+    const auto hash = media::blake3File(plan.source);
+    if (!hash) throw std::runtime_error("hash shared Beats onset fixture");
+    const media::AnalysisIdentity identity{hash.hex, sourceRate, 1, sourceFrames};
+    auto& analysis = media::defaultAnalysisCache();
+    const auto wait = [](const std::shared_ptr<const audio::WarpTask>& task) {
+        if (!task) throw std::runtime_error("request prepared Beats PCM");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        do {
+            if (auto result = task->result()) {
+                if (!*result) throw std::runtime_error(result->detail);
+                return result;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("wait for prepared Beats PCM");
+    };
+    const auto pcm = [](const audio::WarpResult& result) {
+        audio::WavReader reader(result.prepared->file);
+        const auto frames = static_cast<std::uint32_t>(reader.frames());
+        std::vector<float> values(frames);
+        if (reader.read(values.data(), frames) != frames) throw std::runtime_error("read prepared Beats PCM");
+        return values;
+    };
+
+    const audio::WarpTimingSettings settings{4, 61};
+    const auto normalTask = audio::requestWarp(plan);
+    const auto normal = wait(normalTask);
+    const auto coldTask = audio::requestWarp(plan, settings);
+    const auto cold = wait(coldTask);
+    const auto legacyPcm = pcm(*cold);
+    check(legacyPcm == pcm(*normal), "cache-aware Beats falls back to the incumbent after a miss");
+
+    audio::WarpTimingAnalysis cached;
+    cached.onsets = {{start - 90, .5f, -10.0f}, {start + sharedOnset, .5f, -10.0f},
+                     {start + window + 90, .5f, -10.0f}};
+    std::string diagnostic;
+    check(audio::storeWarpTiming(analysis, identity, settings, cached, diagnostic) == media::AnalysisCacheProblem::None,
+          "publish a shared onset map after the fallback render is already cached");
+    const auto warmTask = audio::requestWarp(plan, settings);
+    const auto warm = wait(warmTask);
+    const auto measured = pcm(*warm);
+    auto explicitPlan = plan;
+    explicitPlan.transients = {sharedOnset};
+    const auto explicitTask = audio::requestWarp(explicitPlan, settings);
+    check(warmTask != coldTask && measured != legacyPcm && measured == pcm(*wait(explicitTask)),
+          "live shared onset replaces the fallback and respects the source crop and resampling");
+    double peakDifference = 0;
+    for (std::size_t i = 0; i < std::min(measured.size(), legacyPcm.size()); ++i)
+        peakDifference = std::max(peakDifference, std::abs(static_cast<double>(measured[i]) - legacyPcm[i]));
+    std::printf("Shared Beats onset: peak PCM difference from the fallback %.6f, %zu frames\n",
+                peakDifference, measured.size());
+    check(audio::requestWarp(plan) == normalTask && audio::requestWarp(explicitPlan) == explicitTask,
+          "one-argument and explicit-onset task memoization remain unchanged");
+    check(pcm(*wait(audio::requestWarp(plan, {4, 62}))) == legacyPcm,
+          "another sensitivity cannot borrow the cached onset map");
+
+    cached.onsets.erase(cached.onsets.begin() + 1);
+    check(audio::storeWarpTiming(analysis, identity, settings, cached, diagnostic) == media::AnalysisCacheProblem::None,
+          "replace the shared onset map with a window containing no attacks");
+    explicitPlan.transients = {0};
+    const auto withoutInterior = pcm(*wait(audio::requestWarp(plan, settings)));
+    check(withoutInterior != legacyPcm && withoutInterior != measured &&
+          withoutInterior == pcm(*wait(audio::requestWarp(explicitPlan))),
+          "a known empty onset window stays empty and invalidates prior prepared PCM");
+}
+
 void sourceRatesAndTempoBoundary() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
         Fixture f(44100);f.load(width);const auto output=f.render(24000,width);
@@ -502,7 +592,8 @@ int main(int argc,char** argv) {
 #endif
         if(argc==2 && std::string_view(argv[1])=="--long-warp-speed-only")longWarpResponse();
         else {
-            modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();rampProjection();modelAndRefusals();workerFailure();
+            modesAndLoops();longWarpResponse();sharedBeatsOnsets();sourceRatesAndTempoBoundary();
+            rampProjection();modelAndRefusals();workerFailure();
             replacementSourceInvalidatesWarp();
             unwarpedPitch();compressedPitchAndRecordingWarp();
             trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();

@@ -63,6 +63,23 @@ exclusive end boundary. An absent trailer means the boundaries were not
 assessed. A zero count means the assessment found no hints. Hints are evidence
 for reviewing boundaries and leave the note geometry and identities intact.
 
+`ALIB` version 2 carries library descriptors, optional gated LUFS, type,
+tempo and key with provenance and key strength, plus bounded read-only file
+tags. Configuration 1 identifies the expanded tag reader. Like APKS, the
+payload repeats source dimensions and checks them against the envelope.
+
+`AWTM` version 2 carries a derived Warp analysis in the 44,100 Hz source
+clock. Configuration packs the meter numerator, denominator and transient
+sensitivity. The 56-byte payload header repeats the source dimensions,
+counts the four point series, and carries the median tempo, an optional
+source quarter-note tempo cue and the musical ticks per detected pulse.
+Its series are ordered onsets (frame, normalized strength, local peak dBFS),
+beat frames, downbeat indices, and tempo regions (first beat index and BPM).
+Positions use 64-bit frames, indices use 32 bits and values use IEEE binary32
+for onset measurements and binary64 for BPM. Tempo zero is the missing value.
+The cache checks configuration, dimensions, size, ordering, and value bounds
+before returning data. Authored AWRP remains in the project edit.
+
 Other tags stay opaque and survive ordinary same-process updates. An invalid
 optional envelope or pitch payload can be rebuilt. Authored clip edits belong
 in project rows.

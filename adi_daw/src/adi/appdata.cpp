@@ -7,11 +7,14 @@
 #include "adi/appdata.hpp"
 
 #include <cstdlib>
+#include <mutex>
 #include <string>
 
 namespace adi::appdata {
 
 namespace fs = std::filesystem;
+std::mutex cacheFolderMutex;
+fs::path cacheFolderPreference;
 
 // One environment read, silenced for MSVC at ONE site (as clap_host.cpp's
 // envOr). On Windows the WIDE call: the narrow one returns the ANSI code page,
@@ -91,6 +94,22 @@ Paths pathsFor(App app) {
     p.cache = cache / "adi";
 #endif
     return p;
+}
+
+void setCacheFolderPreference(fs::path folder) {
+    if (!folder.is_absolute()) folder.clear();
+    std::lock_guard lock(cacheFolderMutex);
+    cacheFolderPreference = std::move(folder);
+}
+
+const fs::path& processCacheRoot() {
+    static const auto root = [] {
+        std::lock_guard lock(cacheFolderMutex);
+        if (!cacheFolderPreference.empty()) return cacheFolderPreference;
+        auto folder = pathsFor(App::Daw).cache;
+        return folder.is_absolute() ? folder : fs::path{};
+    }();
+    return root;
 }
 
 fs::path pluginRegistryFile() {

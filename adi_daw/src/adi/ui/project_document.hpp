@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <string_view>
 #include <span>
 #include <utility>
 namespace adi::recording { struct RecordingEdit; }
@@ -360,6 +361,11 @@ class ProjectDocument final : public engine::BlockProcessor {
                                const std::optional<rows::PluginRef> &installed = {});
     bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
                        std::int64_t nowUtc);
+    enum class SampleAssignmentResult { Applied, SourceChanged, Failed };
+    // The content hash identifies the indexed sound through import and decoding.
+    SampleAssignmentResult hotSwapIndexedSample(const DevicePanelData &, std::int32_t slot,
+                                                const std::filesystem::path &, std::int64_t nowUtc,
+                                                std::string_view expectedHash);
     // SC-325 (ADR-0134 d7): the expression route remembered for a plug-in (format, uid), the default of a
     // new instance `loadPlugin` makes; the project then keeps it on the device row. Unset: Auto.
     std::function<std::optional<engine::RouteChoice>(const std::string &, const std::string &)> pluginRouteDefault;
@@ -415,6 +421,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
+        // Capture the application's sample policy before dispatching the job.
+        std::optional<library::SampleWarpPolicy> shortSamplePolicy;
         edit_plan::EditPolicy placementPolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
@@ -437,6 +445,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    SampleAssignmentResult assignSampleWithIdentity(std::int64_t device, std::int32_t slot,
+                                                    const std::filesystem::path &, std::int64_t nowUtc,
+                                                    std::string_view expectedHash);
     enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
     struct TrackRenderWork;
     bool startTrackRender(TrackRenderKind, std::int64_t track);

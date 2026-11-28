@@ -2132,7 +2132,15 @@ std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const
 
 bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t slot,
                                     const std::filesystem::path &file, std::int64_t nowUtc) {
-    return hotSwapTarget(target).has_value() && assignSample(target.id, slot, file, nowUtc);
+    return hotSwapIndexedSample(target, slot, file, nowUtc, {}) == SampleAssignmentResult::Applied;
+}
+
+ProjectDocument::SampleAssignmentResult ProjectDocument::hotSwapIndexedSample(
+    const DevicePanelData &target, std::int32_t slot, const std::filesystem::path &file,
+    std::int64_t nowUtc, std::string_view expectedHash) {
+    if (audio::onAudioThread || !hotSwapTarget(target))
+        return SampleAssignmentResult::Failed;
+    return assignSampleWithIdentity(target.id, slot, file, nowUtc, expectedHash);
 }
 
 std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, preset::Preset presetValue,
@@ -2475,16 +2483,26 @@ bool ProjectDocument::loadSampleInstrument(std::int64_t track, const std::filesy
     // state when it creates the runtime, before that runtime can play a note.
     if (!result.ok || !synchronise())
         return false;
+    // The receipt was enqueued before this runtime existed. Acknowledge it
+    // against the insertion's realised sequence before another edit advances it.
+    (void)parameterOps_.retryApplied(captureNowMs());
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
                                    std::int64_t nowUtc) {
+    return assignSampleWithIdentity(device, slot, file, nowUtc, {}) == SampleAssignmentResult::Applied;
+}
+
+ProjectDocument::SampleAssignmentResult ProjectDocument::assignSampleWithIdentity(
+    std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc,
+    std::string_view expectedHash) {
     // The decode cache takes every format the browser lists (AIFF, FLAC, MP3...), not WAV alone.
-    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc, &audio::defaultDecodeCache());
+    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc,
+                                            &audio::defaultDecodeCache(), expectedHash);
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The sample could not be prepared." : prepared.error;
-        return false;
+        return prepared.sourceChanged ? SampleAssignmentResult::SourceChanged : SampleAssignmentResult::Failed;
     }
     const auto states = loadStates(prepared);
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {
@@ -2492,13 +2510,13 @@ bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const
     });
     error_ = result.error;
     if (!result.ok)
-        return false;
+        return SampleAssignmentResult::Failed;
     for (const auto &state : states)
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
-        return false;
+        return SampleAssignmentResult::Failed;
     feed_.publish(session_, realisedGeneration_);
-    return true;
+    return SampleAssignmentResult::Applied;
 }
 bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
     auto prepared = prepareSampleClear(*store_, device, slot);
@@ -2734,6 +2752,7 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.warp = job.choices.warp;
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
+    options.shortSamplePolicy = job.shortSamplePolicy;
     options.stop = stop;
     options.arrangementPlacement = job.placementPolicy;
     try {

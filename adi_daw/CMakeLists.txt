@@ -2142,6 +2142,64 @@ endif()
 add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
+
+# TM-MD-04: static read-only sample tag parser, with its pinned header-only
+# dependency. ADI already builds miniz, including the inflate calls used for
+# compressed ID3 frames, so the metadata parser needs no system zlib.
+set(_adi_taglib "${ADI_THIRD_PARTY}/taglib")
+if(NOT EXISTS "${_adi_taglib}/CMakeLists.txt" OR
+   NOT EXISTS "${_adi_taglib}/3rdparty/utfcpp/source/utf8.h")
+    message(FATAL_ERROR "Missing TagLib or its UTF8-CPP submodule; run tools/fetch_external.sh --build-only")
+endif()
+function(adi_add_taglib)
+    set(BUILD_SHARED_LIBS OFF)
+    set(BUILD_TESTING OFF)
+    set(BUILD_BINDINGS OFF)
+    set(BUILD_EXAMPLES OFF)
+    set(BUILD_FRAMEWORK OFF)
+    set(WITH_APE ON)
+    set(WITH_ASF OFF)
+    set(WITH_DSF OFF)
+    set(WITH_MATROSKA ON)
+    set(WITH_MOD OFF)
+    set(WITH_MP4 ON)
+    set(WITH_RIFF ON)
+    set(WITH_SHORTEN OFF)
+    set(WITH_TRUEAUDIO OFF)
+    set(WITH_VORBIS ON)
+    set(WITH_ZLIB OFF)
+    set(CMAKE_DISABLE_FIND_PACKAGE_utf8cpp TRUE)
+    set(utf8cpp_INCLUDE_DIR "${_adi_taglib}/3rdparty/utfcpp/source")
+    add_subdirectory("${_adi_taglib}" "${CMAKE_BINARY_DIR}/third_party/taglib" EXCLUDE_FROM_ALL SYSTEM)
+endfunction()
+adi_add_taglib()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(tag PUBLIC _FILE_OFFSET_BITS=64)
+endif()
+set(_adi_taglib_zlib "${CMAKE_CURRENT_BINARY_DIR}/generated/taglib_zlib")
+file(MAKE_DIRECTORY "${_adi_taglib_zlib}")
+file(WRITE "${_adi_taglib_zlib}/zlib.h"
+    "#pragma once\n#undef MINIZ_NO_ZLIB_COMPATIBLE_NAMES\n#include <miniz.h>\n")
+set_property(SOURCE "${_adi_taglib}/taglib/toolkit/tzlib.cpp" TARGET_DIRECTORY tag
+    APPEND PROPERTY COMPILE_DEFINITIONS HAVE_ZLIB)
+target_include_directories(tag SYSTEM PRIVATE "${_adi_taglib_zlib}")
+target_link_libraries(tag PRIVATE "$<BUILD_INTERFACE:adi_miniz>")
+add_library(adi_sample_tags STATIC src/adi/library/sample_file_tags.cpp)
+target_include_directories(adi_sample_tags PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(adi_sample_tags SYSTEM PRIVATE "${_adi_taglib}/taglib"
+    "${_adi_taglib}/taglib/toolkit" "${_adi_taglib}/taglib/mp4"
+    "${_adi_taglib}/taglib/mpeg" "${_adi_taglib}/taglib/mpeg/id3v1"
+    "${_adi_taglib}/taglib/mpeg/id3v2" "${_adi_taglib}/taglib/ape"
+    "${_adi_taglib}/taglib/riff" "${_adi_taglib}/taglib/riff/wav")
+target_link_libraries(adi_sample_tags PRIVATE tag adi_utf8proc adi_warnings)
+target_link_libraries(adi_core PRIVATE adi_sample_tags)
+add_executable(adi_sample_file_tags_tests tests/test_sample_file_tags.cpp)
+target_include_directories(adi_sample_file_tags_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(adi_sample_file_tags_tests PRIVATE
+    ADI_METADATA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+target_link_libraries(adi_sample_file_tags_tests PRIVATE adi_sample_tags adi_warnings)
+add_test(NAME adi_sample_file_tags_tests COMMAND adi_sample_file_tags_tests)
+
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
 target_sources(adi_core PRIVATE src/adi/ui/library_query.cpp src/adi/ui/project_library.cpp)
 add_executable(adi_library_query_tests tests/test_library_query.cpp)
@@ -2164,6 +2222,38 @@ add_test(NAME adi_library_tests COMMAND adi_library_tests)
 # THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
 # took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
 set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+
+# ADR-0226's fixed-rate worker. Only the selected upstream sources build.
+include(cmake/warp_tracker.cmake)
+adi_add_qmdsp("${ADI_THIRD_PARTY}/qm-dsp" "${ADI_THIRD_PARTY}/mixxx-warp/lib/qm-dsp")
+target_link_libraries(adi_core PRIVATE adi_qmdsp)
+target_sources(adi_core PRIVATE
+    src/adi/audio/sample_classification.cpp
+    src/adi/audio/short_sample_warp.cpp
+    src/adi/audio/spectral_onsets.cpp
+    src/adi/audio/warp_analysis_pcm.cpp
+    src/adi/audio/warp_beat_candidate.cpp
+    src/adi/audio/warp_source_analysis.cpp
+    src/adi/audio/warp_timing_cache.cpp
+    src/adi/audio/warp_timing_map.cpp
+    src/adi/library/analysis_worker.cpp
+    src/adi/library/sample_analysis.cpp
+    src/adi/library/sample_analysis_catalog.cpp
+    src/adi/library/sample_descriptors.cpp
+    src/adi/library/sample_query.cpp
+    src/adi/library/sample_swap.cpp
+    src/adi/library/sample_tonality.cpp
+    src/adi/library/sample_warp_policy.cpp)
+foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_worker
+                       sample_analysis sample_descriptors sample_query browser_sample_query sample_tonality
+                       spectral_onsets warp_timing_map warp_timing_cache warp_source_analysis)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
+target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings)
+add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.

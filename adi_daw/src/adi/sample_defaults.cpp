@@ -117,7 +117,7 @@ library::SampleSettingsProblem saveSampleDefaults(Store& store,std::int64_t clip
     const auto captured=captureSampleDefaults(store,clipId,referenceRate);if(!captured.ok){error=captured.error;return library::SampleSettingsProblem::Invalid;}
     return index.saveSampleSettings(captured.hash,*captured.settings,error);
 }
-std::optional<SampleSettings> loadSampleDefaults(Store &store, library::Index &index, const media::MediaResult &imported,
+std::optional<SampleSettings> loadSampleDefaults(Store &store, const library::Index &index, const media::MediaResult &imported,
                                                  const OpRequest &capture) {
     const auto key = capture.opType == "media.import" ? capture.payload.at("row").at("hash_blake3")
                                                       : media::mediaRow(store.db(), imported.mediaId).at("hash_blake3");
