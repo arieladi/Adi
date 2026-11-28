@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 15:39 IST — seats/stretcher-chain `7f4b86a67d01f1b5d42a84df3f12201e450c85f5`
+
+Headless Debug compiled with Clang 20, libc++, Pd and the strict flags. The first full `ctest -LE performance` run passed 285 of 286 suites. `adi_link_playback_tests` failed the Complex Link tempo-change checks at `adi_daw/tests/test_link_playback.cpp:493–494`, `503` and `531`. The isolated rerun passed. A complete rerun with `ctest -LE performance --parallel 2` passed all 286 suites, including Link Playback and the streaming Warp suites.
+
+JUCE Debug linked libc++ and libc++abi, and all three offscreen window suites passed. `streaming_warp.cpp`, `clip_playback.cpp`, `play_quantize.cpp` and `live_midi_input.cpp` also passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers.
+
 ### 28 November 2026, 15:10 IST — main `e14c080ae4029f99c6d5737d9811bcb520e4c2c7`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered non-performance CTest suites passed with `ctest -LE performance`.
