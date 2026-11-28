@@ -310,10 +310,16 @@ private:
     std::size_t tokens_ = 0;
 };
 
+std::span<const unsigned char> jsonInput(ReadOnlyBytes bytes) noexcept {
+    // nlohmann's input adapters provide character traits for unsigned char.
+    return {reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()};
+}
+
 Json decodeMetadata(ReadOnlyBytes bytes) {
+    const auto input = jsonInput(bytes);
     MetadataGuard bounds;
-    if (!Json::sax_parse(bytes, &bounds, Json::input_format_t::msgpack)) return {};
-    return Json::from_msgpack(bytes, /*strict=*/true, /*allow_exceptions=*/false);
+    if (!Json::sax_parse(input, &bounds, Json::input_format_t::msgpack)) return {};
+    return Json::from_msgpack(input, /*strict=*/true, /*allow_exceptions=*/false);
 }
 
 bool validText(std::string_view text) {
@@ -684,7 +690,7 @@ private:
             !readControl(commands_, Command::AddPluginResult, payload, deadline, error))
             return false;
         try {
-            const auto result = Json::parse(payload.begin(), payload.end(),
+            const auto result = Json::parse(jsonInput(payload),
                 [](int depth, Json::parse_event_t, Json&) {
                     if (depth > 8) throw std::runtime_error("v13 plug-in result too deep");
                     return true;
