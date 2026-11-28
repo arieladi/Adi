@@ -621,16 +621,17 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 }
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
-                                   bool readOnly) {
-    return openWithLease(path, err, readOnly, false);
+                                   bool readOnly, OpenReport* report) {
+    return openWithLease(path, err, readOnly, false, report);
 }
 
 std::unique_ptr<Store> Store::openForHeadlessApply(const std::filesystem::path& path, StoreError& err) {
-    return openWithLease(path, err, false, true);
+    return openWithLease(path, err, false, true, nullptr);
 }
 
 std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, StoreError& err,
-                                           bool readOnly, bool exclusive) {
+                                           bool readOnly, bool exclusive, OpenReport* report) {
+    if (report) *report = {};
     if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
     std::shared_ptr<media::ProjectFileLease> lease;
     std::error_code leaseError;
@@ -642,6 +643,13 @@ std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, S
                 ? StoreError::ExclusiveAccessRequired : StoreError::CannotOpen;
             return nullptr;
         }
+    }
+    if (report && lease) {
+        auto wal = lease->path();
+        wal += "-wal";
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(wal, ec);
+        if (!ec) report->walBytesAtOpen = size;
     }
     std::unique_ptr<SQLite::Database> db;
     try {

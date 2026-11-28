@@ -66,6 +66,11 @@ const char* toString(StoreError);
 
 // Discard a closed provisional project still owned by this launch, with no edits or recovery files.
 bool discardUntouchedProject(const std::filesystem::path&, const media::FileIdentity&);
+struct OpenReport {
+    // A sidecar seen before SQLite opened the file. A live writer can also
+    // have a sidecar. This observation alone cannot identify a crash.
+    std::optional<std::uintmax_t> walBytesAtOpen;
+};
 
 enum class StoreFileCollision { Fail, ReplaceConfirmed };
 
@@ -173,7 +178,7 @@ public:
     /// never written: each table it lacks is stood in for by an empty TEMP
     /// table on this connection, so every reader sees "no rows".
     static std::unique_ptr<Store> open(const std::filesystem::path&, StoreError&,
-                                       bool readOnly = false);
+                                       bool readOnly = false, OpenReport* = nullptr);
     /// The headless changeset writer must be the only holder of this project.
     static std::unique_ptr<Store> openForHeadlessApply(const std::filesystem::path&, StoreError&);
 
@@ -322,7 +327,7 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     static std::unique_ptr<Store> openWithLease(const std::filesystem::path&, StoreError&,
-                                               bool readOnly, bool exclusive);
+                                               bool readOnly, bool exclusive, OpenReport* report);
     struct CopyState;
     static std::filesystem::path copyBeforeMigration(SQLite::Database&, int fromMinor, std::int64_t now,
                                                       const std::shared_ptr<media::ProjectFileLease>&);
