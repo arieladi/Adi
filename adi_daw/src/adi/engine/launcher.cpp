@@ -1157,7 +1157,9 @@ std::optional<std::size_t> Launcher::planTimedSceneActions(const LaunchBlock& bl
                 previous->mode != LaunchMode::Trigger) return {};
             if (continues) {
                 const auto elapsed = run.frames - run.pcmAnchorFrame;
-                if (elapsed < 0 || elapsed >= lap.length()) return {};
+                // The old prefix can end exactly with this lap still live.
+                // Let the selected suffix settle its natural Stop.
+                if (elapsed < 0 || elapsed > lap.length()) return {};
                 result[count++] = {TimedSceneActionKind::Continue,track.id,run.clip,run.clip,run.serial,
                     {run.sourceTick,lap.originFrame()+elapsed}};
             } else {

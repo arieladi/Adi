@@ -693,7 +693,7 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
                 (retained && (!samePinnedShape(retained->slot,before->slot) ||
                               retained->source->pcm.pageReader() != reader)) ||
                 action.cue.physicalFrame < before->slot.physicalStartFrame ||
-                action.cue.physicalFrame - before->slot.physicalStartFrame >= before->slot.physicalFrames) {
+                action.cue.physicalFrame - before->slot.physicalStartFrame > before->slot.physicalFrames) {
                 finish();
                 return false;
             }
@@ -701,6 +701,7 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
             // already closes it at its exclusive physical End.
             const auto elapsed = action.cue.physicalFrame - before->slot.physicalStartFrame;
             const auto remaining = before->slot.physicalFrames - elapsed;
+            if (remaining == 0) continue;
             leaseFrames = static_cast<std::int32_t>(std::min<std::int64_t>(leaseFrames,remaining));
         } else if ((action.outgoingRun == 0) != (action.outgoingClip == 0) || action.outgoingClip == action.clip) {
             finish();
