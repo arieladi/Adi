@@ -311,6 +311,36 @@ void automaticProjectBackups() {
     }
 }
 
+// A clock set back (a dual-boot PC whose systems disagree about the hardware clock, a manual
+// correction) makes the next backup carry the earliest stored time. The newest backup must not be
+// the one offered to the Recycle Bin: the oldest of the others goes instead.
+void backupsAfterTheClockGoesBack() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    constexpr std::int64_t stamp = 1795737600000000;
+    constexpr std::int64_t hour = 3'600'000'000;
+    auto makeBackup = [&](std::int64_t utcMicros) {
+        backup::Job job;
+        const auto prep = backup::prepare(store, utcMicros, job);
+        if (!prep.ok) throw std::runtime_error(prep.error);
+        auto saved = backup::write(job);
+        if (!saved.file.ok) throw std::runtime_error(saved.file.error);
+        return saved;
+    };
+    bool nothingRotated = true;
+    for (std::int64_t number = 1; number <= 10; ++number)
+        nothingRotated = makeBackup(stamp + number * hour).expired.empty() && nothingRotated;
+    check(nothingRotated, "clock set back: ten backups are kept without rotating one");
+    const auto behind = makeBackup(stamp - hour);
+    const auto offers = [](const backup::Result& result, const fs::path& path) {
+        return std::ranges::any_of(result.expired, [&](const ProjectBackup& item) { return item.path == path; });
+    };
+    check(!offers(behind, behind.path) && fs::is_regular_file(behind.path),
+          "clock set back: the backup just written is not offered to the Recycle Bin");
+    check(behind.expired.size() == 1 && behind.expired.front().createdUtc == stamp + hour,
+          "clock set back: the oldest of the other backups is offered instead");
+}
+
 void copiesAndSwitches() {
     Fixture f;const auto before=digestProject(*f.store).text,history=historyBytes(*f.store);
     const auto projectUuid = f.store->projectUuid();
@@ -781,5 +811,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();writeProtectedSource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();backupsAfterTheClockGoesBack();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();writeProtectedSource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
