@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet 7: the instruments</title>
+<style>html,body{margin:0;background:#0c0c0e}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script><script src="../src/devlib.js"></script>
+<script>
+// ADI, the built-in devices' panels, sheet 7 (28 November 2026). SC-455. The two instruments: OneShot
+// (pd/devices/OneShot.pd, 41 controls and one sample) and Sampler (src/adi/sampler_declarations.hpp,
+// 24 controls and 32 sample slots). Their main picture is the sample.
+const W=1920,H=1080;let s='';
+function wavef(x,y,w,h,seed,o={}){const r=rng(seed);let up='',dn='';const n=Math.floor(w/1.6);for(let k=0;k<=n;k++){const u=k/n;
+  const e=(o.loop?(0.25+0.6*Math.exp(-((u*4)%1)*3.5)):(0.04+0.95*Math.exp(-u*4.2)))*(0.62+0.38*r());up+=(k?'L':'M')+(x+w*u).toFixed(1)+' '+(y+h/2-e*h*0.46).toFixed(1);dn=`L${(x+w*u).toFixed(1)} ${(y+h/2+e*h*0.46).toFixed(1)}`+dn}
+  return `<path d="${up}${dn}Z" fill="${B}" opacity="${o.op||0.55}"/>`+L(x,y+h/2,x+w,y+h/2,'#ffffff',1,{op:0.08})}
+const flag=(x,y,h,col,right)=>L(x,y,x,y+h,col,2)+P(right?`M${x} ${y}h-11l11 11Z`:`M${x} ${y}h11l-11 11Z`,{f:col});
+function adsr(x,y,w,h,col){return screen(x,y,w,h,()=>{const d=`M${x+6} ${y+h-6}L${x+w*0.14} ${y+8}L${x+w*0.4} ${y+h*0.42}L${x+w*0.72} ${y+h*0.42}L${x+w-6} ${y+h-6}`;
+  return `<path d="${d}Z" fill="url(#fO)"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" filter="url(#glow2)"/>`+[[0.14,8/h],[0.4,0.42],[0.72,0.42]].map(p=>CI(x+w*p[0],y+h*p[1],4,col,{s:'#0d0e11',sw:1.4})).join('')})}
+function keys(x,y,w,h,oct){let g='';const n=oct*7,kw=w/n;for(let k=0;k<n;k++)g+=R(x+k*kw,y,kw-1,h,'#d9dbe0',{r:1.5});
+  for(let k=0;k<n;k++){const j=k%7;if(j!==2&&j!==6)g+=R(x+k*kw+kw*0.65,y,kw*0.7,h*0.6,'#16171a',{r:1.2})}
+  for(let o=0;o<=oct;o++)g+=T(x+o*7*kw+2,y+h+11,'C'+o,{z:8.5,f:'#70737c'});return g}
+const lpSmall=(x,y,w,h)=>screen(x,y,w,h,()=>{const d=plot(x,y,w,h,u=>{const f=0.66;return 0.55+0.25*Math.exp(-Math.pow((u-f)/0.05,2))-(u>f?(u-f)*3.4:0)});return curve(d,O,'url(#fO)',x,y,w,h)+dot(x+w*0.66,y+h*0.2,O)});
+const Y0=70,HO=604,Y1=690,HF=370;
+// ================= OneShot, opened =================
+{const x=20,y=Y0,w=1100;s+=card(x,y,w,HO,'OneShot',{open:false,sub:'opened from its card'});
+ s+=pills(x+16,y+48,288,26,['Classic','1-Shot','Slice'],0)+tog(x+316,y+48,64,26,'Loop',true)+tog(x+386,y+48,64,26,'Snap',true);
+ s+=vbox(x+470,y+48,120,26,'Start','0.0 %')+vbox(x+596,y+48,120,26,'End','100 %')+vbox(x+722,y+48,150,26,'Loop length','50.0 %')+vbox(x+878,y+48,206,26,'Loop fade','0 %');
+ const gx=x+16,gy=y+84,gw=w-32,gh=196;
+ s+=screen(gx,gy,gw,gh,()=>{let g='';for(let k=1;k<8;k++)g+=L(gx+gw*k/8,gy,gx+gw*k/8,gy+gh,'#ffffff',1,{op:0.05});
+  g+=R(gx+gw*0.5,gy,gw*0.5-2,gh,O,{op:0.07})+wavef(gx,gy,gw,gh,7);
+  g+=T(gx+10,gy+gh-8,'Kick 808.wav   ·   48 kHz   ·   mono   ·   1.000 s',{z:10,f:'#8b8e97'});return g});
+ s+=flag(gx+2,gy,gh,O,false)+flag(gx+gw-2,gy,gh,O,true);
+ s+=R(gx+gw*0.5,gy+3,gw*0.5-4,7,O,{r:3})+L(gx+gw*0.5,gy,gx+gw*0.5,gy+gh,O,1.5)+T(gx+gw*0.5+8,gy+26,'loop',{z:10,f:O,w:600});
+ s+=L(gx+gw*0.22,gy,gx+gw*0.22,gy+gh,'#f2f3f5',1.5,{op:0.9});
+ const ry=y+296;s+=vline(x+330,ry+4,y+HO-16)+vline(x+560,ry+4,y+HO-16)+vline(x+800,ry+4,y+HO-16);
+ // sound
+ s+=cap(x+16,ry+14,'SOUND');
+ s+=kb(x+86,ry+96,46,0.6,O,'VOLUME','-12.0 dB');
+ s+=kb(x+190,ry+84,27,0.5,O,'TRANSPOSE','0 st',{bi:1,vz:10})+kb(x+272,ry+84,20,0.5,O,'DETUNE','0 ct',{bi:1});
+ s+=kb(x+56,ry+222,18,0.35,O,'VEL > VOL','35 %',{lz:9})+kb(x+126,ry+222,18,0.5,O,'GAIN','0.0 dB');
+ s+=vbox(x+170,ry+166,146,24,'Voices','6')+tog(x+170,ry+196,70,24,'Retrig',true,{z:10})+tog(x+246,ry+196,70,24,'Gate',true,{z:10});
+ s+=vbox(x+170,ry+226,146,24,'Tempo','120 BPM');
+ // envelope
+ s+=cap(x+346,ry+14,'ENVELOPE');
+ s+=adsr(x+346,ry+26,198,86,O);
+ s+=kb(x+372,ry+160,17,0.02,O,'ATTACK','0.1 ms',{lz:9})+kb(x+424,ry+160,17,0.4,O,'DECAY','600 ms',{lz:9})+kb(x+476,ry+160,17,1.0,O,'SUSTAIN','0.0 dB',{lz:9})+kb(x+528,ry+160,17,0.2,O,'RELEASE','50 ms',{lz:9});
+ s+=vbox(x+346,ry+216,96,24,'Fade in','0 ms')+vbox(x+448,ry+216,96,24,'Fade out','0 ms');
+ // filter
+ s+=cap(x+576,ry+14,'FILTER')+tog(x+740,ry+0,44,22,'On',true,{z:10});
+ s+=lpSmall(x+576,ry+26,208,86);
+ s+=kb(x+612,ry+160,20,0.85,O,'FREQUENCY','8.00 kHz',{lz:9})+kb(x+690,ry+160,20,0.2,O,'RESONANCE','20 %',{lz:9})+tog(x+734,ry+148,50,24,'24 dB',true,{z:9.5});
+ s+=pills(x+576,ry+216,208,24,['Low','High','Band','Notch'],0,{z:10});
+ // LFO
+ s+=cap(x+816,ry+14,'LFO')+tog(x+1040,ry+0,44,22,'On',true,{c:B,z:10});
+ s+=pills(x+816,ry+26,268,24,['Sine','Square','Tri','Saw','Ramp','Rnd'],0,{c:B,z:9.5});
+ s+=kb(x+858,ry+110,26,0.3,B,'RATE','1.00 Hz',{vz:9.5})+tog(x+900,ry+98,56,24,'Sync',false,{c:B,z:10});
+ s+=T(x+1020,ry+84,'what it moves',{z:10,f:'#8b8e97',a:'middle'});
+ s+=kb(x+850,ry+222,16,0.0,B,'PITCH','0 st')+kb(x+920,ry+222,16,0.0,B,'VOLUME','0 %')+kb(x+990,ry+222,16,0.0,B,'PAN','0 %')+kb(x+1060,ry+222,16,0.0,B,'FILTER','0 oct');}
+// ================= Sampler, opened =================
+{const x=1135,y=Y0,w=765;s+=card(x,y,w,HO,'Sampler',{open:false,sub:'opened from its card'});
+ const gx=x+16,gy=y+50,gw=w-32,gh=178,kw=gw;
+ s+=screen(gx,gy,gw,gh,()=>{let g='';const zones=[[0,0.18,O,'Sub'],[0.18,0.36,G,'Kick'],[0.36,0.52,B,'Snare'],[0.52,0.68,V,'Hat'],[0.68,0.86,Y,'Stab'],[0.86,1.0,'#ff7a6b','Air']];
+  zones.forEach((z,k)=>{const zx=gx+gw*z[0],zw=gw*(z[1]-z[0])-3,sel=k===2;g+=R(zx+1.5,gy+12+k%2*30,zw,24,z[2],{r:5,op:sel?0.95:0.45})+T(zx+10,gy+28+k%2*30,(k+1)+'  '+z[3],{z:10.5,w:sel?700:500,f:sel?INK:'#eceef2'});
+   if(sel)g+=R(zx,gy+72,zw+3,gh-72,z[2],{op:0.1})});
+  g+=T(gx+8,gy+88,'velocity',{z:9,f:'#70737c'})+L(gx,gy+96,gx+gw,gy+96,'#ffffff',1,{op:0.05});return g});
+ s+=keys(gx,gy+gh-44,gw,30,6);
+ s+=cap(gx,y+254,'SAMPLE 3  ·  SNARE')+vbox(gx+gw-330,y+240,104,24,'Root','D 2')+vbox(gx+gw-220,y+240,108,24,'Keys','D 2 – A 2')+vbox(gx+gw-106,y+240,106,24,'Vel','1 – 127');
+ s+=screen(gx,y+270,gw,64,()=>wavef(gx,y+270,gw,64,21));
+ const ry=y+346;s+=vline(x+250,ry+4,y+HO-16)+vline(x+500,ry+4,y+HO-16);
+ s+=cap(x+16,ry+14,'SOUND');
+ s+=kb(x+78,ry+92,42,0.6,O,'VOLUME','-12.0 dB',{vz:11})+kb(x+176,ry+82,26,0.5,O,'TRANSPOSE','0 st',{bi:1,vz:9.5});
+ s+=kb(x+52,ry+196,16,0.35,O,'VEL > VOL','35 %',{lz:9})+vbox(x+96,ry+170,138,24,'Voices','6')+tog(x+96,ry+200,138,24,'Retrigger',true,{z:10});
+ s+=cap(x+266,ry+14,'ENVELOPE')+adsr(x+266,ry+26,218,66,O);
+ s+=kb(x+292,ry+140,16,0.02,O,'ATTACK','0.1 ms',{lz:9})+kb(x+348,ry+140,16,0.4,O,'DECAY','600 ms',{lz:9})+kb(x+404,ry+140,16,1.0,O,'SUSTAIN','0.0 dB',{lz:9})+kb(x+460,ry+140,16,0.2,O,'RELEASE','50 ms',{lz:9});
+ s+=cap(x+266,ry+196,'FILTER TYPE')+tog(x+444,ry+182,40,22,'On',true,{z:10})+pills(x+266,ry+210,218,22,['Low','High','Band','Notch'],0,{z:9.5});
+ s+=cap(x+516,ry+14,'FILTER')+kb(x+556,ry+70,20,0.85,O,'FREQUENCY','8.00 kHz',{lz:9})+kb(x+636,ry+70,20,0.2,O,'RESONANCE','20 %',{lz:9})+tog(x+686,ry+58,56,24,'24 dB',true,{z:9.5});
+ s+=cap(x+516,ry+132,'LFO')+tog(x+552,ry+118,40,22,'On',true,{c:B,z:10})+pills(x+598,ry+118,150,22,['Sine','Sq','Tri','More'],0,{c:B,z:9});
+ s+=kb(x+546,ry+196,16,0.3,B,'RATE','1.00 Hz')+kb(x+600,ry+196,13,0.0,B,'PITCH','0 st',{lz:8.5,vs:9.5})+kb(x+646,ry+196,13,0.0,B,'VOL','0 %',{lz:8.5,vs:9.5})+kb(x+692,ry+196,13,0.0,B,'PAN','0 %',{lz:8.5,vs:9.5})+kb(x+738,ry+196,13,0.0,B,'FILT','0 oct',{lz:8.5,vs:9.5});}
+// ================= their cards in the Device View =================
+{const x=20,y=Y1,w=650;s+=card(x,y,w,HF,'OneShot');
+ const gx=x+16,gy=y+50,gw=w-32,gh=136;
+ s+=screen(gx,gy,gw,gh,()=>R(gx+gw*0.5,gy,gw*0.5,gh,O,{op:0.07})+wavef(gx,gy,gw,gh,7)+T(gx+10,gy+gh-8,'Kick 808.wav',{z:10,f:'#8b8e97'}));
+ s+=flag(gx+2,gy,gh,O,false)+flag(gx+gw-2,gy,gh,O,true)+R(gx+gw*0.5,gy+3,gw*0.5-4,6,O,{r:3});
+ s+=pills(x+16,y+198,250,26,['Classic','1-Shot','Slice'],0)+tog(x+276,y+198,64,26,'Loop',true);
+ s+=meter(x+w-36,y+204,120,0.6,0.58);
+ s+=kb(x+78,y+296,44,0.6,O,'VOLUME','-12.0 dB',{vz:11});
+ s+=kb(x+178,y+290,26,0.5,O,'TRANSPOSE','0 st',{bi:1,vz:9.5})+kb(x+262,y+290,22,0.02,O,'ATTACK','0.1 ms')+kb(x+336,y+290,22,0.2,O,'RELEASE','50 ms')+kb(x+420,y+290,26,0.85,O,'FILTER','8.00 kHz',{vz:9})+kb(x+506,y+290,22,0.3,B,'LFO RATE','1.00 Hz',{lz:9});}
+{const x=685,y=Y1,w=650;s+=card(x,y,w,HF,'Sampler');
+ const gx=x+16,gy=y+50,gw=w-32,gh=136;
+ s+=screen(gx,gy,gw,gh,()=>{let g='';[[0,0.18,O],[0.18,0.36,G],[0.36,0.52,B],[0.52,0.68,V],[0.68,0.86,Y],[0.86,1.0,'#ff7a6b']].forEach((z,k)=>{g+=R(gx+gw*z[0]+1.5,gy+10+k%2*24,gw*(z[1]-z[0])-3,19,z[2],{r:5,op:k===2?0.95:0.45})+T(gx+gw*z[0]+9,gy+23.5+k%2*24,String(k+1),{z:10,w:700,f:k===2?INK:'#eceef2'})});
+  g+=wavef(gx,gy+60,gw,36,21,{op:0.4});return g});
+ s+=keys(gx,gy+gh-36,gw,24,6);
+ s+=T(x+16,y+216,'Sample 3 of 6  ·  Snare  ·  D 2 to A 2',{z:11,f:'#c4c6cc'})+meter(x+w-36,y+204,120,0.6,0.58);
+ s+=kb(x+78,y+296,44,0.6,O,'VOLUME','-12.0 dB',{vz:11});
+ s+=kb(x+178,y+290,26,0.5,O,'TRANSPOSE','0 st',{bi:1,vz:9.5})+kb(x+262,y+290,22,0.02,O,'ATTACK','0.1 ms')+kb(x+336,y+290,22,0.2,O,'RELEASE','50 ms')+kb(x+420,y+290,26,0.85,O,'FILTER','8.00 kHz',{vz:9})+kb(x+506,y+290,22,0.3,B,'LFO RATE','1.00 Hz',{lz:9});}
+{const x=1350,y=Y1,w=550;s+=R(x,y,w,HF,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+18,y+32,'The instruments',{z:14,w:700});
+ s+=para(x+18,y+58,['An instrument\'s main picture is its sample: the waveform fills the top of','the card and of the opened view.','','OneShot: the start and end are flags dragged on the waveform, the loop','is a bar across its top. Its three ways of playing are joined buttons.','In Slice the waveform shows the cuts and each is a pad.','','Sampler: the samples lie as coloured zones over the keyboard, each','dragged to the keys and the velocities it answers. The chosen one\'s','waveform and its own settings are under the map.','','Both share one layout under the picture: sound, envelope, filter, LFO.','What the LFO moves is in blue, as on the effects.'],{z:12,lh:19});}
+sheet(W,H,s,'ADI  ·  the built-in devices, sheet 7: the instruments','OneShot and Sampler opened in full, and their cards in the Device View. Every control drawn is one the instrument has today.','DEVICES SHEET  ·  7');
+</script></body></html>

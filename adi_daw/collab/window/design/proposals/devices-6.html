@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet 6: ADI-Shaper</title>
+<style>html,body{margin:0;background:#0c0c0e}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script><script src="../src/devlib.js"></script>
+<script>
+// ADI, the built-in devices' panels, sheet 6 (28 November 2026). SC-455. ADI-Shaper: seven shapers, each
+// with its own bands, and for each band a drawn shape of eight points with its clock. 418 controls
+// (pd/devices/ADI-Shaper.pd); the card shows one shaper and one band at a time.
+const W=1920,H=1080;let s='';
+const SH=[['Volume',1],['Width',1],['Pan',1],['Filter',1],['Sweep',0],['Drive',1],['Crush',0]],SEL=3;
+const pts=[0.2,0.2,0.85,0.55,0.35,0.9,0.6,0.25],res=[0.3,0.3,0.6,0.6,0.2,0.2,0.7,0.3];
+function shape(x,y,w,h,vals,col,o={}){const n=vals.length;let d='';vals.forEach((v,k)=>{d+=(k?'L':'M')+(x+w*k/n).toFixed(1)+' '+(y+h-v*h).toFixed(1)});d+=`L${x+w} ${(y+h-vals[0]*h).toFixed(1)}`;
+  let g=o.thin?`<path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" stroke-dasharray="5 4" opacity=".8"/>`:`<path d="${d}L${x+w} ${y+h}L${x} ${y+h}Z" fill="url(#fO)"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.6" stroke-linejoin="round" filter="url(#glow2)"/>`;
+  if(!o.thin&&!o.nodots)vals.forEach((v,k)=>{g+=`<g filter="url(#glow2)">`+CI(x+w*k/n,y+h-v*h,o.r||6,col)+`</g>`+CI(x+w*k/n,y+h-v*h,o.r||6,'none',{s:'#0d0e11',sw:1.6})});return g}
+function wave(x,y,w,h,seed){const r=rng(seed);let up='',dn='';const n=Math.floor(w/2);for(let k=0;k<=n;k++){const u=k/n,p=(u*4)%1,e=(0.15+0.8*Math.exp(-p*4.5))*(0.7+0.3*r());up+=(k?'L':'M')+(x+w*u).toFixed(1)+' '+(y+h/2-e*h*0.46).toFixed(1);dn=`L${(x+w*u).toFixed(1)} ${(y+h/2+e*h*0.46).toFixed(1)}`+dn}
+  return `<path d="${up}${dn}Z" fill="${B}" opacity=".22"/>`}
+function editor(x,y,w,h,o={}){return screen(x,y,w,h,()=>{let g='';for(let k=1;k<16;k++)g+=L(x+w*k/16,y,x+w*k/16,y+h,'#ffffff',1,{op:k%4===0?0.12:0.04});
+  [0.25,0.5,0.75].forEach(v=>{g+=L(x,y+h*v,x+w,y+h*v,'#ffffff',1,{op:0.05})});
+  if(!o.mini){['1','2','3','4'].forEach((t,k)=>{g+=T(x+w*k/4+5,y+h-6,t,{z:10,f:'#6b6e77'})});['100 %','50 %','0 %'].forEach((t,k)=>{g+=T(x+w-6,y+12+k*(h-20)/2,t,{z:9,f:'#5d6068',a:'end'})});}
+  g+=wave(x,y,w,h,5)+shape(x,y+10,w,h-20,res,B,{thin:1})+shape(x,y+10,w,h-20,pts,O,{r:o.mini?4.5:6});
+  g+=L(x+w*0.37,y,x+w*0.37,y+h,'#f2f3f5',1.6,{op:0.9});return g})}
+const tab=(x,y,w,h,name,on,sel)=>R(x,y,w,h,sel?'#34353b':'#1b1c20',{r:8,s:sel?'#f2f3f5':'#3c3d43'})+(on?`<g filter="url(#glow2)">`+CI(x+14,y+h/2,4.5,O)+`</g>`:CI(x+14,y+h/2,4.5,'#3c3d43'))+T(x+26,y+h/2+4.2,name,{z:12,w:sel?700:500,f:sel?'#f6f7f9':'#c4c6cc'});
+// ================= ADI-Shaper, opened =================
+{const x=20,y=70,w=1250,h=612;s+=card(x,y,w,h,'ADI-Shaper',{open:false,sub:'opened from its card'});
+ SH.forEach((a,k)=>{s+=tab(x+16+k*118,y+48,110,30,a[0],a[1]===1,k===SEL)});
+ s+=T(x+856,y+68,'Each shaper has its own bands and its own shapes.',{z:11,f:'#8b8e97'});
+ const gx=x+16,gw=810,by=y+90,bh=58,c1=gx+gw*0.28,c2=gx+gw*0.7;
+ s+=screen(gx,by,gw,bh,()=>R(gx,by,c1-gx,bh,O,{op:0.07})+R(c1,by,c2-c1,bh,G,{op:0.18})+R(c2,by,gx+gw-c2,bh,B,{op:0.07})+spectrum(gx,by+bh*0.2,gw,bh*0.8,23,'url(#fS)',0.3,0.2));
+ [c1,c2].forEach(c=>{s+=L(c,by,c,by+bh,'#f2f3f5',2)+`<g filter="url(#ksh)">`+R(c-7,by+bh/2-12,14,24,'#eceef2',{r:4})+`</g>`});
+ s+=T((gx+c1)/2,by+17,'Low',{z:12,w:600,a:'middle',f:'#d7d9de'})+T((c1+c2)/2,by+17,'Mid',{z:12,w:700,a:'middle'})+T((c2+gx+gw)/2,by+17,'High',{z:12,w:600,a:'middle',f:'#d7d9de'});
+ s+=R(c1-30,by+bh-19,60,16,'#26272c',{r:4,s:'#4a4b52'})+T(c1,by+bh-7.5,'200 Hz',{z:9.5,a:'middle',w:600})+R(c2-30,by+bh-19,60,16,'#26272c',{r:4,s:'#4a4b52'})+T(c2,by+bh-7.5,'2.50 kHz',{z:9.5,a:'middle',w:600});
+ s+=cap(gx,y+172,'THE SHAPE OF')+pills(gx+96,y+158,190,24,['Cutoff','Resonance'],0)+T(gx+gw,y+174,'one bar  ·  the white line is where the song is',{z:10.5,f:'#8b8e97',a:'end'});
+ s+=editor(gx,y+190,gw,330);
+ s+=cap(gx,y+548,'BANDS')+pills(gx+56,y+534,330,26,['Full','Low split','High split','Three'],3);
+ s+=cap(gx+408,y+548,'BETWEEN POINTS')+pills(gx+518,y+534,130,26,['Hold','Line'],1);
+ s+=cap(gx+668,y+548,'CLOCK')+pills(gx+718,y+534,92,26,['Beat','Hz'],0,{z:10});
+ // the chosen band
+ const px=x+842,pw=w-842-16;s+=R(px,y+90,pw,358,'#1d2a21',{r:9,s:'#3f7a4c'});
+ s+=`<g filter="url(#glow2)">`+R(px,y+90,96,24,G,{r:9})+`</g>`+T(px+48,y+106.5,'Mid band',{z:11.5,w:700,a:'middle',f:INK});
+ s+=pills(px+pw-196,y+92,184,22,['Low','Mid','High'],1,{c:G,z:10});
+ s+=kb(px+84,y+206,50,1.0,G,'MIX','100 %');
+ s+=kb(px+206,y+200,34,0.5,G,'CYCLE','1 bar',{vz:11})+kb(px+300,y+200,26,0.4,G,'RATE','2.00 Hz',{dis:1,vz:9});
+ s+=T(px+300,y+250,'used when the',{z:9,f:'#70737c',a:'middle'})+T(px+300,y+262,'clock is Hz',{z:9,f:'#70737c',a:'middle'});
+ s+=cap(px+16,y+304,'FILTER TYPE')+pills(px+16,y+312,pw-32,26,['LP 6','LP 12','HP 6','HP 12','BP 12'],1,{c:G,z:10.5});
+ s+=cap(px+16,y+366,'BAND EDGES')+vbox(px+16,y+374,150,26,'Low | Mid','200 Hz')+pills(px+172,y+374,pw-188,26,['6','12','24 dB'],1,{c:G,z:10});
+ s+=vbox(px+16,y+408,150,26,'Mid | High','2.50 kHz')+pills(px+172,y+408,pw-188,26,['6','12','24 dB'],1,{c:G,z:10});
+ s+=R(px,y+460,pw,136,'#141518',{r:9,s:'#34353b'});
+ s+=kb(px+72,y+536,36,1.0,O,'MASTER MIX','100 %');
+ s+=meter(px+140,y+478,96,0.62,0.6)+T(px+176,y+500,'in',{z:9.5,f:'#8b8e97'});
+ s+=meter(px+250,y+478,96,0.55,0.52)+T(px+286,y+500,'out',{z:9.5,f:'#8b8e97'});
+ s+=tog(px+pw-108,y+476,92,24,'Filter on',true,{z:10});
+ s+=T(px+pw-16,y+528,'the switch of',{z:9.5,f:'#70737c',a:'end'})+T(px+pw-16,y+541,'the chosen shaper',{z:9.5,f:'#70737c',a:'end'});}
+// ================= its card in the Device View =================
+{const x=1285,y=70,w=615,h=392;s+=card(x,y,w,h,'ADI-Shaper');
+ s+=pills(x+16,y+50,w-32,26,SH.map(a=>a[0]),SEL,{z:10.5});
+ s+=editor(x+16,y+86,w-32,176,{mini:1});
+ s+=pills(x+16,y+276,186,24,['Low','Mid','High'],1,{c:G,z:10});
+ s+=kb(x+66,y+346,26,1.0,G,'MIX','100 %',{vz:9.5})+kb(x+146,y+346,26,0.5,G,'CYCLE','1 bar',{vz:9.5});
+ s+=pills(x+216,y+276,150,24,['Cutoff','Resonance'],0,{z:9.5})+pills(x+216,y+308,150,24,['Hold','Line'],1,{z:9.5})+pills(x+216,y+340,150,24,['Beat','Hz'],0,{z:9.5});
+ s+=meter(x+392,y+282,84,0.6,0.56);
+ s+=kb(x+520,y+334,40,1.0,O,'MASTER MIX','100 %');}
+{const x=1285,y=476,w=615,h=206;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+18,y+30,'How ADI-Shaper reads',{z:14,w:700});
+ s+=para(x+18,y+54,['Seven shapers in a row of tabs. A lit dot means that shaper is on.','You draw eight points; the device plays the shape once every cycle,','in time with the song or at a rate in Hz.','Each shaper splits the sound into up to three bands of its own, and','every band has its own shape, mix and clock.','Its card in the Device View shows one shaper and one band, and','draws the shape over the sound; the arrow opens the view at the left.'],{z:12,lh:19.5});}
+// ================= what each shaper adds =================
+{const y=698,h=362;s+=R(20,y,1880,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(40,y+32,'The seven shapers',{z:14,w:700})+T(230,y+32,'All share the bands, the mix, the clock and the eight points. What differs is what the shape moves and what each adds.',{z:12,f:'#9a9da6'});
+ const info=[['Volume','one shape','the level, 0 to 100 %',[]],['Width','one shape','the stereo width, 0 to 200 %',[]],['Pan','one shape','left to right',['Delay blend']],
+  ['Filter','two shapes','cutoff and resonance',['LP 6  ·  LP 12','HP 6  ·  HP 12','BP 12']],['Sweep','two shapes','centre and feedback',['Flange','Phaser 4 to 16','Polarity']],
+  ['Drive','one shape','the drive',['Saturate','Hard clip','Rectify','In and out trim']],['Crush','two shapes','bits and hold rate',['Dither']]];
+ info.forEach((a,k)=>{const cx=40+k*264,cw=252,cy=y+54;s+=R(cx,cy,cw,290,'#141518',{r:9,s:k===SEL?'#f2f3f5':'#34353b'});
+  s+=(SH[k][1]?`<g filter="url(#glow2)">`+CI(cx+18,cy+22,5,O)+`</g>`:CI(cx+18,cy+22,5,'#3c3d43'))+T(cx+32,cy+27,a[0],{z:14,w:700});
+  const vals=[[1,0.2,0.6,0.2,1,0.2,0.6,0.2],[0.5,0.9,0.5,0.1,0.5,0.9,0.5,0.1],[0.1,0.9,0.1,0.9,0.1,0.9,0.1,0.9],pts,[0.2,0.4,0.6,0.8,0.9,0.7,0.5,0.3],[0.3,0.3,0.9,0.3,0.3,0.9,0.3,0.3],[0.9,0.7,0.5,0.3,0.9,0.7,0.5,0.3]][k];
+  s+=screen(cx+12,cy+42,cw-24,96,()=>{let g='';for(let j=1;j<8;j++)g+=L(cx+12+(cw-24)*j/8,cy+42,cx+12+(cw-24)*j/8,cy+138,'#ffffff',1,{op:j%2===0?0.1:0.04});
+   if(a[1]==='two shapes')g+=shape(cx+12,cy+50,cw-24,80,res,B,{thin:1});g+=shape(cx+12,cy+50,cw-24,80,vals,O,{r:4});return g});
+  s+=T(cx+14,cy+162,a[1],{z:11,f:'#8b8e97',w:600,ls:0.5})+T(cx+14,cy+182,a[2],{z:12.5,f:'#eceef2'});
+  a[3].forEach((t,j)=>{s+=R(cx+14,cy+198+j*23,cw-28,19,'#1f2024',{r:9.5,s:'#3c3d43'})+T(cx+cw/2,cy+211.5+j*23,t,{z:10.5,a:'middle',f:'#c4c6cc'})});});}
+sheet(W,H,s,'ADI  ·  the built-in devices, sheet 6: ADI-Shaper','ADI-Shaper opened in full, its card in the Device View, and what each of its seven shapers adds. Every control drawn is one the device has today.','DEVICES SHEET  ·  6');
+</script></body></html>
