@@ -492,18 +492,23 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     auto addFolder = std::move(sidebar_.back());
     sidebar_.resize(baseEntries_ - 1);
     for (auto &e : sidebar_)
-        if (e.name == "User Library" && !e.heading)
+        if (e.name == "User Library" && !e.heading) {
             e.place.clear();
+            e.missing = false;
+        }
     for (const auto &place : listing().places) {
         if (place.starterDrums)
             continue;
         if (place.userLibrary) {
             for (auto &e : sidebar_)
-                if (e.name == "User Library" && !e.heading)
+                if (e.name == "User Library" && !e.heading) {
                     e.place = place.volumeId;
+                    e.missing = !place.problem.empty();
+                }
             continue;
         }
         sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User, false, false, place.volumeId});
+        sidebar_.back().missing = !place.problem.empty();
     }
     sidebar_.push_back(addFolder);
     selected_ = findLabel(keep);
@@ -1809,7 +1814,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
                 g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
             } else {
                 icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
-                g.setColour(hotSwap_ ? look::textDim : look::text);
+                g.setColour(hotSwap_ || e.missing ? look::textDim : look::text);
                 g.setFont(look::font(look::fontHeading));
                 g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
             }
@@ -1992,6 +1997,14 @@ void BrowserPanel::sidebarClick(int row, const juce::MouseEvent &e) {
     juce::PopupMenu menu;
     if (place != places.end()) {
         addRevealItem(menu, place->root);
+        // SC-142: a Place whose folder has gone is located again in its place.
+        if (!place->problem.empty() && !place->userLibrary && !place->starterDrums && locateFolder) {
+            const SafePointer<BrowserPanel> safe(this);
+            menu.addItem("Locate Folder...", [safe, path = place->root] {
+                if (safe && safe->locateFolder)
+                    safe->locateFolder(path);
+            });
+        }
         if (!place->userLibrary && !place->starterDrums && removeFolder) {
             const SafePointer<BrowserPanel> safe(this);
             menu.addItem("Remove from Places", [safe, path = place->root] {

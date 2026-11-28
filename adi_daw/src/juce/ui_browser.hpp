@@ -94,6 +94,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         bool heading = false;
         bool samples = false; // the Samples label
         std::string place;    // a Place's volume id, matched by identity: two folders may share a name
+        bool missing = false; // SC-142: a Place whose folder could not be read, drawn dim
     };
     const std::vector<Entry> &sidebar() const noexcept { return sidebar_; }
     int selected() const noexcept { return selected_; }
@@ -164,6 +165,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::function<void()> requestAddFolder;
     std::function<void(std::span<const std::filesystem::path>)> addFolders;
     std::function<void(const std::filesystem::path &)> removeFolder;
+    // SC-142: asks for the folder a Place that has gone now lives in; the app replaces its path.
+    std::function<void(const std::filesystem::path &)> locateFolder;
     std::function<void()> requestLibraryRescan;
     // The app's file-manager action and the popup can be captured without a native peer.
     std::function<void(const std::filesystem::path &)> revealInFileManager;

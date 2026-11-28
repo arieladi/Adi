@@ -9365,6 +9365,133 @@ void browserSampleFolders(AppCommands &commands, const std::filesystem::path &di
               browser.load(0) && file(1, drums, 1),
           "an overlapping Place has its own folder tree and browses the shared sample");
 }
+void browserMissingPlace(AppCommands &commands, const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    // Canonical, so the stored folder text and the scanned Place's root are written alike.
+    const auto base = fs::canonical(dir) / "missing-place";
+    const auto user = base / "User Library", here = base / "Here", gone = base / "Gone", moved = base / "Moved" / "Gone";
+    for (const auto &folder : {user, here, moved})
+        fs::create_directories(folder);
+    std::ofstream(user / "Kick.wav") << "user";
+    std::ofstream(here / "Here.wav") << "here";
+    std::ofstream(moved / "Moved.wav") << "moved";
+    std::string error;
+    auto index = library::Index::open(base / "index.sqlite", error, false);
+    auto doc = ProjectDocument::open(base / "missing.adi", true, {}, error);
+    check(index && doc, "SC-142: a project and a library index for a Place that has gone");
+    if (!index || !doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "missing-place");
+    root.setSize(1200, 1000);
+    auto &browser = root.browser;
+    library::MarkerVolumeProvider volumes;
+    settings::AppSettings prefs(appdata::App::Daw, base / "missing-settings.json");
+    browser.restoreLabel(prefs);
+    settings::Value configured = settings::Value::array();
+    configured.push_back(contentFolderText(gone));
+    configured.push_back(contentFolderText(here));
+    check(prefs.set(kContentFolders, configured, {settings::Actor::User, {}, 1}, error),
+          "SC-142: two Places are configured, one of them gone");
+    const auto publish = [&] {
+        std::vector<LibraryFolder> folders{{"User Library", user, true}};
+        for (const auto &stored : prefs.get(kContentFolders)) {
+            const auto path = media::pathFromUtf8(stored.get<std::string>());
+            folders.push_back({media::pathUtf8(path.filename()), path});
+        }
+        browser.setListing(scanLibrary(*index, folders, volumes));
+    };
+    publish();
+    const auto rowNamed = [&](const char *name) {
+        for (int row = 0; row < static_cast<int>(browser.sidebar().size()); ++row)
+            if (browser.sidebar()[static_cast<std::size_t>(row)].name == name && !browser.sidebar()[static_cast<std::size_t>(row)].heading)
+                return row;
+        return -1;
+    };
+    const int goneRow = rowNamed("Gone"), hereRow = rowNamed("Here"), userRow = rowNamed("User Library");
+    const auto entry = [&](int row) -> const BrowserPanel::Entry & { return browser.sidebar()[static_cast<std::size_t>(row)]; };
+    check(goneRow >= 0 && hereRow >= 0 && userRow >= 0 && entry(goneRow).missing && !entry(hereRow).missing &&
+              !entry(userRow).missing,
+          "SC-142: the Place whose folder has gone keeps its row, marked missing; the others are not");
+    // SC-138's indexed path: the index's size and time reach the Browser's file.
+    const auto kick = std::ranges::find(browser.listing().files, user / "Kick.wav", &LibraryFile::path);
+    check(kick != browser.listing().files.end() && kick->size == 4 && kick->modifiedNs > 0,
+          "SC-138: an indexed file carries the index's size and modified time");
+
+    // Drawn dim: the brightest pixel of the gone Place's name is darker than a present Place's.
+    const auto brightest = [&](int row) {
+        juce::Image picture(juce::Image::ARGB, browser.getWidth(), browser.getHeight(), true, juce::SoftwareImageType());
+        {
+            juce::Graphics g(picture);
+            browser.paintEntireComponent(g, false);
+        }
+        const auto text = browser.sidebarRowBounds(row).withTrimmedLeft(25).getIntersection(browser.sidebarArea());
+        float most = 0.f;
+        for (int y = text.getY(); y < text.getBottom(); ++y)
+            for (int x = text.getX(); x < text.getRight(); ++x)
+                most = std::max(most, picture.getPixelAt(x, y).getPerceivedBrightness());
+        return most;
+    };
+    check(goneRow != browser.selected() && hereRow != browser.selected() && brightest(goneRow) < brightest(hereRow),
+          "SC-142: the gone Place's name is drawn dim");
+
+    juce::PopupMenu captured;
+    browser.onContextMenu = [&](juce::PopupMenu menu, juce::Point<int>) { captured = std::move(menu); };
+    const auto menuFor = [&](int row) {
+        captured = juce::PopupMenu();
+        browser.mouseDown(pressAt(browser, browser.sidebarRowBounds(row).getCentre().toFloat(),
+                                  juce::ModifierKeys::rightButtonModifier));
+        std::vector<juce::PopupMenu::Item> items;
+        for (juce::PopupMenu::MenuItemIterator it(captured); it.next();)
+            if (!it.getItem().isSeparator)
+                items.push_back(it.getItem());
+        return items;
+    };
+    fs::path located;
+    int locates = 0;
+    browser.locateFolder = [&](const fs::path &path) {
+        ++locates;
+        located = path;
+    };
+    browser.removeFolder = [](const fs::path &) {};
+    const auto texts = [](const std::vector<juce::PopupMenu::Item> &items) {
+        std::vector<std::string> out;
+        for (const auto &item : items)
+            out.push_back(item.text.toStdString());
+        return out;
+    };
+    const auto goneMenu = menuFor(goneRow);
+    check(texts(goneMenu) == std::vector<std::string>{"Show in File Manager", "Locate Folder...", "Remove from Places"},
+          "SC-142: a gone Place's menu offers Locate Folder before Remove from Places");
+    check(texts(menuFor(hereRow)) == std::vector<std::string>{"Show in File Manager", "Remove from Places"},
+          "SC-142: a Place that is there offers no Locate Folder");
+    const auto locate = std::ranges::find(goneMenu, juce::String("Locate Folder..."), &juce::PopupMenu::Item::text);
+    if (locate != goneMenu.end() && locate->action)
+        locate->action();
+    check(locates == 1 && located == gone, "SC-142: Locate Folder asks the app for the gone Place's folder");
+
+    // What the app does with the folder chosen: the entry takes it where it stood.
+    check(prefs.set(kContentFolders, relocateContentFolder(prefs.get(kContentFolders), located, moved),
+                    {settings::Actor::User, {}, 2}, error),
+          "SC-142: the located folder is kept in Content folders");
+    const auto stored = prefs.get(kContentFolders);
+    check(stored.size() == 2 && stored[0].get<std::string>() == contentFolderText(moved) &&
+              stored[1].get<std::string>() == contentFolderText(here),
+          "SC-142: the located folder takes the gone one's place in the list");
+    publish();
+    const int again = rowNamed("Gone");
+    check(again == goneRow && !entry(again).missing, "SC-142: the located Place returns in its row, no longer dim");
+    browser.choose(again);
+    check(browser.shown().size() == 1 && browser.shown().front()->path == moved / "Moved.wav",
+          "SC-142: the located Place lists the folder's files");
+    const auto unchanged = relocateContentFolder(stored, moved, base / "No Such Folder");
+    settings::Value both = settings::Value::array();
+    both.push_back(contentFolderText(gone));
+    both.push_back(contentFolderText(here));
+    const auto merged = relocateContentFolder(both, gone, here);
+    check(unchanged == stored && merged.size() == 1 && merged[0].get<std::string>() == contentFolderText(here),
+          "SC-142: a path that is no folder changes nothing; a folder already listed drops the gone entry");
+}
 void browserNameAndHide(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto doc = ProjectDocument::open(dir / "browser-name-and-hide.adi", true, {}, error);
@@ -33629,6 +33756,7 @@ int main(int argc, char **argv) {
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
     trace("browserSampleFolders", [&] { browserSampleFolders(commands, temp.path()); });
+    trace("browserMissingPlace", [&] { browserMissingPlace(commands, temp.path()); });
     trace("browserNameAndHide", [&] { browserNameAndHide(commands, temp.path()); });
     trace("browserColumns", [&] { browserColumns(temp.path()); });
     trace("browserProjectAndMidiFiles", [&] { browserProjectAndMidiFiles(commands, temp.path()); });

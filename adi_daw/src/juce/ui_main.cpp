@@ -580,9 +580,24 @@ class AdiApplication final : public juce::JUCEApplication,
         if (settingsWindow_) settingsWindow_->panel().refreshValues();
         if (!settings_->save(error)) report(error);
     }
-    void chooseBrowserFolder() {
+    // SC-142: a Place that has gone is located again; its entry in the settings takes the new folder.
+    void relocateBrowserFolder(const std::filesystem::path &gone, const std::filesystem::path &found) {
+        const auto current = settings_->get(kContentFolders);
+        const auto updated = relocateContentFolder(current, gone, found);
+        if (current == updated) return;
+        std::string error;
+        if (!settings_->set(kContentFolders, updated, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, error)) {
+            report(error);
+            return;
+        }
+        startLibrary();
+        if (settingsWindow_) settingsWindow_->panel().refreshValues();
+        if (!settings_->save(error)) report(error);
+    }
+    void chooseBrowserFolder(std::optional<std::filesystem::path> gone = std::nullopt) {
         if (chooser_) {
-            report("Close the current file chooser before adding a folder.");
+            report(gone ? "Close the current file chooser before locating a folder."
+                        : "Close the current file chooser before adding a folder.");
             return;
         }
         auto start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
@@ -594,16 +609,24 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (previous.isDirectory()) start = previous;
             }
         }
-        chooser_ = std::make_unique<juce::FileChooser>("Add a sample folder", start);
+        // Locating starts beside where the folder was, when that still exists.
+        if (gone) {
+            if (const auto beside = fileFromPath(gone->parent_path()); beside.isDirectory())
+                start = beside;
+        }
+        chooser_ = std::make_unique<juce::FileChooser>(gone ? "Locate the sample folder" : "Add a sample folder", start);
         const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
-        chooser_->launchAsync(flags, [this](const juce::FileChooser &chooser) {
+        chooser_->launchAsync(flags, [this, gone](const juce::FileChooser &chooser) {
             const auto picked = chooser.getResult();
-            juce::MessageManager::callAsync([this, picked] {
+            juce::MessageManager::callAsync([this, picked, gone] {
                 if (juce::JUCEApplicationBase::getInstance() != this) return;
                 chooser_.reset();
                 if (!picked.isDirectory()) return;
                 const auto path = pathFromUtf8(picked.getFullPathName().toStdString());
-                editBrowserFolders(std::span{&path, 1}, ContentFolderEdit::Add);
+                if (gone)
+                    relocateBrowserFolder(*gone, path);
+                else
+                    editBrowserFolders(std::span{&path, 1}, ContentFolderEdit::Add);
             });
         });
     }
@@ -1882,6 +1905,7 @@ class AdiApplication final : public juce::JUCEApplication,
         root->browser.removeFolder = [this](const std::filesystem::path &folder) {
             editBrowserFolders(std::span{&folder, 1}, ContentFolderEdit::Remove);
         };
+        root->browser.locateFolder = [this](const std::filesystem::path &folder) { chooseBrowserFolder(folder); };
         refreshDevicePresets();
         root->browser.loadDevicePreset = [this](const std::filesystem::path &path) {
             return loadDevicePreset(path);
