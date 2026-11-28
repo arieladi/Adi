@@ -726,6 +726,8 @@ Outcome renameSelection(const Model& m) {
         out.rename = RenameTarget{Focus::Track, s.track};
     else if (const auto cell = focusCell(m); cell && m.slot(cell->first, cell->second).clip != 0)
         out.rename = RenameTarget{Focus::Slot, m.slot(cell->first, cell->second).clip};
+    else if (const auto clips = selectedClipSlots(m); !clips.empty())
+        out.rename = RenameTarget{Focus::Slot, m.slot(clips.front().first, clips.front().second).clip};
     return out;
 }
 
@@ -1192,6 +1194,15 @@ std::optional<RenameTarget> nextRenameTarget(const Model& m, const RenameTarget&
         if (const auto c = m.columnOf(target.id))
             if (const auto next = step(*c, m.columnCount()))
                 return RenameTarget{Focus::Track, m.column(*next).track};
+    if (target.what == Focus::Slot) {
+        // Several clips selected are renamed one after another (7.1), in the selection's order.
+        const auto clips = selectedClipSlots(m);
+        const auto at = std::find_if(clips.begin(), clips.end(),
+                                     [&](const auto& cell) { return m.slot(cell.first, cell.second).clip == target.id; });
+        if (at != clips.end())
+            if (const auto next = step(static_cast<std::size_t>(at - clips.begin()), clips.size()))
+                return RenameTarget{Focus::Slot, m.slot(clips[*next].first, clips[*next].second).clip};
+    }
     return std::nullopt;
 }
 

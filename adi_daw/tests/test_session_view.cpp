@@ -858,6 +858,13 @@ void slotCommands() {
           "nonadjacent scenes collapse together when dropped (7.2)");
     check(dropScenes(sceneSelected(20), 1).edits.empty(), "a scene dropped where it is does not move");
 
+    const auto two = selected({Focus::Slot, B, 10, A, 10, {}});
+    check(nextRenameTarget(two, {Focus::Slot, 100}, false) == RenameTarget{Focus::Slot, 101} &&
+              !nextRenameTarget(two, {Focus::Slot, 101}, false) &&
+              nextRenameTarget(two, {Focus::Slot, 101}, true) == RenameTarget{Focus::Slot, 100} &&
+              run(Command::Rename, selected({Focus::Slot, D, 20, A, 20, {}}), ctx()).rename == RenameTarget{Focus::Slot, 102},
+          "several selected clips are renamed one after another (7.1), from the first where the focus is empty");
+
     const auto colour = recolour(selected({Focus::Slot, B, 10, A, 10, {}}), 12);
     check(colour.edits.size() == 2 && colour.edits[0].opType == "clip.setColor" && colour.edits[1].payload.at("color") == 12 &&
               editsValid(colour),
