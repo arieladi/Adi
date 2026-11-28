@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159, SC-157, SC-151 and SC-155 are ready for Win's Windows check. The one-gesture Undo items are next.
+SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 follow-up for cancelling a held draft is building against main `bdcccb3e`.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -41,7 +41,8 @@ The safety session's dedicated Linux VM runs from `D:\adi-basics-safety-linux\ub
 It occupied 15,741,485,056 bytes (14.66 GiB) at the check. The original C: image
 path is clear and the verified pre-migration image is archived on D:. C: had
 17,119,453,184 bytes (15.94 GiB) free at 18:17 on 27 November. New build
-trees, caches and downloads use D:.
+trees, caches and downloads use D:. At 02:53 on 28 November the active image was
+15,741,616,128 bytes (14.66 GiB) and C: had 15,219,154,944 bytes (14.17 GiB) free.
 
 ## For the director
 
