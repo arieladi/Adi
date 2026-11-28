@@ -21565,8 +21565,9 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     // The command: on Ctrl/Cmd+Shift+R, named as Live's; outside the application it says where it runs.
     juce::ApplicationCommandInfo info(AppCommands::ExportAudio);
     commands.getCommandInfo(AppCommands::ExportAudio, info);
+    const juce::KeyPress exportKey('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
     check(info.shortName == "Export Audio/Video..." &&
-              info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+              info.defaultKeypresses.contains(exportKey),
           "Export Audio/Video, on Ctrl/Cmd+Shift+R [P:export#1]");
     check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
           "outside the application it says where it runs");
@@ -21583,7 +21584,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     selection.insert = selection.start = selection.end = 19 * textproj::kWhole;
     selection.marked = true;
     const auto transport = root.reader().transport();
-    check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
+    check(root.keyPressed(exportKey) && asked && !transport.loopEnabled &&
               asked->startTicks == 0 && asked->lengthTicks == songLength &&
               asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
           "SC-394: with no range and looping off, export defaults to the whole song");
@@ -21624,6 +21625,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
           "Main, from 1.1.1 for 2.0.0: Export is offered [P:export#1] [P:export#3]");
+    check(page.dither.getText() == "No Dither", "SC-469: the Export command opens with No Dither");
     {
         // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
         // when the list lacks it.
@@ -21811,6 +21813,51 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               "export progress remains in the main window alongside other status messages");
         root.status.setExportProgress(std::nullopt);
         check(root.status.exportProgressText().isEmpty(), "a finished or cancelled export clears the progress");
+
+        std::filesystem::path revealed;
+        int reveals = 0;
+        root.status.revealExportedFile = [&](const std::filesystem::path &path) {
+            revealed = path;
+            ++reveals;
+        };
+        std::vector<render::Entry> entries(1);
+        entries.front().result = result;
+        const auto completion = exportCompletion(entries, false);
+        root.status.finishExport(completion.message, completion.output);
+        root.frame();
+        const auto &showFile = root.status.showExportedFile;
+        const auto box = showFile.getBounds();
+        check(root.status.messageText() == "Exported Song {mix}.wav." && showFile.isVisible() &&
+                  box.getWidth() == 64 && box.getHeight() == 16 && root.status.messageField().contains(box) &&
+                  !box.intersects(root.status.secondField()),
+              "SC-470: the Status Bar names the completed export and places Show File in the message field");
+        showFile.onClick();
+        check(reveals == 1 && revealed == result.output,
+              "SC-470: Show File hands the exact existing output path to the file-manager action");
+
+        entries.push_back(entries.front());
+        entries.back().result.output = dir / "Second stem.wav";
+        const auto batchCompletion = exportCompletion(entries, false);
+        check(batchCompletion.output == result.output && batchCompletion.message == "Exported Song {mix}.wav and 1 more.",
+              "SC-470: a completed batch names a real result and counts the remaining files");
+
+        root.status.setExportProgress(0);
+        check(!showFile.isVisible(), "SC-470: starting another export hides the previous file action");
+        entries.front().result.state = entries.back().result.state = render::JobState::Cancelled;
+        const auto cancelled = exportCompletion(entries, true);
+        root.status.finishExport(cancelled.message, cancelled.output);
+        showFile.onClick();
+        check(root.status.messageText() == "The export was cancelled." && !showFile.isVisible() && reveals == 1,
+              "SC-470: a cancelled job cannot reveal a stale output path");
+        const auto noOutput = exportCompletion({}, false);
+        check(noOutput.output.empty() && noOutput.message == "The export failed: no output",
+              "SC-470: no files means no Show File action");
+
+        root.status.finishExport(completion.message, completion.output);
+        std::filesystem::remove(result.output);
+        showFile.onClick();
+        check(!showFile.isVisible() && reveals == 1 && root.status.messageText() == "The exported file is no longer on disk.",
+              "SC-470: a removed file clears the action and shows why");
     }
     document->release();
 }
@@ -21899,6 +21946,9 @@ void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
 void exportPreferences(const std::filesystem::path &dir) {
     settings::AppSettings settings(appdata::App::Daw, dir / "export-settings.json");
     settings.setLogUserChanges(false);
+    ExportPreferences defaults;
+    check(defaults.open(ExportChoices{}, settings).dither == "No Dither",
+          "SC-469: a fresh app profile opens the export page with No Dither");
     std::string why;
     const auto configuredFolder = dir / "configured export";
     const auto lastFolder = dir / "last export";

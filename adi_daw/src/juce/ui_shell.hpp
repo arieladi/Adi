@@ -38,6 +38,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -425,12 +426,16 @@ class StatusBar final : public juce::Component, public juce::SettableTooltipClie
     void mouseDrag(const juce::MouseEvent &) override;
     void setExportProgress(std::optional<int> percent);
     const juce::String &exportProgressText() const noexcept { return exportProgressText_; }
+    void finishExport(std::string message, std::filesystem::path output = {});
+    juce::TextButton showExportedFile{"Show File"};
+    std::function<void(const std::filesystem::path &)> revealExportedFile;
     juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
     juce::TextButton mixerOptions{""};
 
   private:
+    void setExportedFile(std::filesystem::path);
     AdiRootComponent &root_;
     juce::String audioDeviceProblem_;
     std::vector<std::string> playbackProblems_;
@@ -442,6 +447,7 @@ class StatusBar final : public juce::Component, public juce::SettableTooltipClie
     bool selectorDragged_ = false;
     std::optional<int> exportPercent_;
     juce::String exportProgressText_;
+    std::filesystem::path exportedFile_;
 };
 // The browser's inner edge follows it from one side of the window to the other.
 class BrowserResizer final : public juce::Component {

@@ -1420,6 +1420,21 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
         else
             root_.showPlaybackProblems();
     };
+    addChildComponent(showExportedFile);
+    showExportedFile.setTitle("Show Exported File");
+    showExportedFile.onClick = [this] {
+        if (exportedFile_.empty())
+            return;
+        const juce::File file(juce::String::fromUTF8(media::pathUtf8(exportedFile_).c_str()));
+        if (!file.existsAsFile()) {
+            finishExport("The exported file is no longer on disk.");
+            return;
+        }
+        if (revealExportedFile)
+            revealExportedFile(exportedFile_);
+        else
+            file.revealToUser();
+    };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
     audioDeviceProblem_ = std::move(problem);
@@ -1478,6 +1493,10 @@ void StatusBar::resized() {
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
     auto actions = messageField().withY(11).withHeight(16).reduced(4, 0);
+    if (showExportedFile.isVisible()) {
+        showExportedFile.setBounds(actions.removeFromRight(64));
+        actions.removeFromRight(4);
+    }
     const bool showAudio = audioSettings.isVisible(), showIssues = playbackIssues.isVisible();
     if (showAudio) {
         const int availableWidth = showIssues ? actions.getWidth() / 2 : actions.getWidth();
@@ -1532,10 +1551,31 @@ juce::Rectangle<float> StatusBar::clipViewFrame() const {
             std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
 void StatusBar::setExportProgress(std::optional<int> percent) {
+    if (percent)
+        setExportedFile({});
     if (exportPercent_ == percent)
         return;
     exportPercent_ = percent;
     exportProgressText_ = percent ? "Exporting " + juce::String(*percent) + "%" : juce::String{};
+    repaint();
+}
+void StatusBar::finishExport(std::string message, std::filesystem::path output) {
+    setExportProgress(std::nullopt);
+    setExportedFile(std::move(output));
+    root_.say(std::move(message));
+}
+void StatusBar::setExportedFile(std::filesystem::path output) {
+    if (!output.is_absolute())
+        output.clear();
+    if (output == exportedFile_)
+        return;
+    exportedFile_ = std::move(output);
+    showExportedFile.setVisible(!exportedFile_.empty());
+    if (showExportedFile.isVisible()) {
+        const auto filename = juce::String::fromUTF8(media::pathUtf8(exportedFile_.filename()).c_str());
+        showExportedFile.setTooltip("Show " + filename + " in its folder.");
+    }
+    resized();
     repaint();
 }
 void StatusBar::paint(juce::Graphics &g) {
@@ -1602,7 +1642,8 @@ void StatusBar::paint(juce::Graphics &g) {
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
     const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
-                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0);
+                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0) +
+                             (showExportedFile.isVisible() ? showExportedFile.getWidth() + 4 : 0);
     auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
     if (exportProgressText_.isNotEmpty())
         g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);

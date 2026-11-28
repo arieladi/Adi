@@ -891,46 +891,28 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         render_ = std::thread([this, alive, completed, jobs = std::move(jobs), stateWarning = std::move(stateWarning),
                                made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
-            std::string message;
+            ExportCompletion completion;
             try {
                 render::Queue queue;
                 for (auto &job : jobs)
                     queue.add(std::move(job));
                 queue.run(std::move(made), std::move(control));
-                const auto entries = queue.snapshot();
-                const auto succeeded = std::count_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
-                    return entry.result.state == render::JobState::Completed;
-                });
-                const auto failed = std::find_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
-                    return entry.result.state == render::JobState::Failed;
-                });
-                if (entries.size() == 1 && succeeded == 1)
-                    message = "Exported " + media::pathUtf8(entries.front().result.output.filename()) + ".";
-                else if (static_cast<std::size_t>(succeeded) == entries.size())
-                    message = "Exported " + std::to_string(succeeded) + " tracks.";
-                else if (stop.stop_requested())
-                    message = "The export was cancelled.";
-                else
-                    message = "The export failed: " + (failed == entries.end() ? std::string("unknown error") : failed->result.error);
-                if (succeeded > 0 && static_cast<std::size_t>(succeeded) < entries.size())
-                    message += " " + std::to_string(succeeded) + " tracks were exported.";
+                completion = exportCompletion(queue.snapshot(), stop.stop_requested());
             } catch (const std::exception &e) {
-                message = "The export failed: " + std::string(e.what());
+                completion.message = "The export failed: " + std::string(e.what());
             }
-            message = withWarning(std::move(message), stateWarning);
+            completion.message = withWarning(std::move(completion.message), stateWarning);
             completed->set_value();
-            juce::MessageManager::callAsync([this, alive, message = std::move(message)] {
+            juce::MessageManager::callAsync([this, alive, completion = std::move(completion)]() mutable {
                 if (!alive->load())
                     return;
                 if (render_.joinable())
                     render_.join();
                 renderHost_.reset();
                 if (exportPage_)
-                    exportPage_->showDone(message);
-                if (root_) {
-                    root_->status.setExportProgress(std::nullopt);
-                    root_->say(message);
-                }
+                    exportPage_->showDone(completion.message);
+                if (root_)
+                    root_->status.finishExport(std::move(completion.message), std::move(completion.output));
             });
         });
     }
