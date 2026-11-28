@@ -155,6 +155,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-449 | `basics/test-chain-2` at `5cdad58fe` | Refresh the native Edit menu when Redo becomes available. Window and edit seats. | The peerless menu fixture follows real Undo and Redo and uses the platform chord. Physical macOS key delivery remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-475, SC-184 | `basics/test-chain-2` at `385447fcd` | Split uses the marker track or picked clips and ranges. The explicit all-tracks setting remains. Edit and window seats. | The focused display-free fixture failed seven checks before and passed 98 after, including one-step Undo and Redo. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-453, SC-229 | `basics/test-chain-2` at `b33ec13de` | Open Quantize Settings and route shortcuts into focused notes and picked Arrangement MIDI. Clips, edit and engine seats. | The dialog probe covers all ten timing choices, independent endpoints, Amount, Cancel and OK. The revised Functions fixture passed all 194 checks and both mixed-grid regressions passed. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-451 | `basics/test-chain-2` at `7494d44fa` | Pinch zooms the Note and Sample Editors around the pointer and shares the existing Follow behavior. Clips and Arrangement seats. | Real JUCE magnify calls in the peerless fixture preserve the pointer anchor across all three editor surfaces. A physical Mac trackpad remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -195,3 +196,19 @@ The linked transform suite reproduced two targeted baseline failures and passed 
 A linked headless smoke of the actual JUCE dialog content passed. It selected the tenth grid, adjusted the two endpoint checkboxes and Amount, confirmed Cancel did not apply, then confirmed OK delivered the chosen settings. The measured content and settings rows match the bounds above. The Debug Werror syntax check passed for the shell, Clip View, and full shell fixture.
 
 The full gate exposed another inline Clip View fixture tied to the former shortcut. That fixture now opens the Functions tab directly, checks all ten grid choices and the existing Start, End, Amount and Swing controls, and undoes only the transaction it creates. The exact peerless fixture changed from 10 failures to all 194 checks passing, with zero unexpected JUCE assertions.
+
+#### SC-451 Trackpad pinch in the editors
+
+The bundled JUCE Cocoa peer delivers `magnifyWithEvent:` to the component under the pointer. The Arrangement Canvas already handled that callback. The Note and Sample editors inherited JUCE's default forwarding, which left their timelines at the same scale. Both now use the same cursor-centred time geometry as their established wheel zoom, pause Follow while the user changes the view, and repaint the relevant controls and editor.
+
+| Time viewport and gesture | Before (px/quarter, left quarter) | After (px/quarter, left quarter) | Anchor |
+| --- | --- | --- | --- |
+| Note Editor at component x=236 px, ×1.5 | (64, 4) → (64, 4) | (64, 4) → (96, 5) | 7×PPQ at x=192 px inside the grid |
+| Sample Editor at component x=192 px, ×1.5 | (64, 4) → (64, 4) | (64, 4) → (96, 5) | 7×PPQ at x=192 px |
+| Arrangement at component x=192 px, ×1.5 | (64, 4) → (96, 5) | (64, 4) → (96, 5) | 7×PPQ at x=192 px |
+
+A subsequent ×0.5 pinch yields (48, 3) in all three current handlers with the same x=192 px timeline anchor. Arrangement Option-pinch takes the hit track from 88 to 132 px and keeps the scale at 48 px per quarter. The Note Editor probe also leaves the viewport and Follow alone for neutral, zero and infinite factors.
+
+The focused display-free probe compiled the exact application callback bodies with the production timeline geometry and used real JUCE virtual mouse callbacks. The shell regression invokes the same callbacks on real Arrangement, Note, and Sample editor components with a saved-project fixture, a MIDI clip, and an imported audio clip. The Linux probe cannot exercise macOS physical input.
+
+Candidate `e8d0a35b5`. Ninja-derived Debug syntax with warnings as errors passed for both edited translation units. The focused JUCE comparison passed with `DISPLAY` unset. The full shell and acceptance suites are the chain gate.
