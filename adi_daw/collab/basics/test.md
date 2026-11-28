@@ -167,6 +167,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-448 | `basics/test-chain-2` at `46512e011` | Draw loop repeats with marks at the points where the loop turns. Clips and Arrangement seats. | Software-painted loop fixtures check repeated contents and marks through the Arrangement renderer. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-468 | `basics/test-chain-2` at `89aee0ff3` | Show the horizontal resize pointer over the existing Loop brace end grips. Arrangement seat. | The peerless pointer replay checks both grips, the middle, the band below, and exit. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-472 | `basics/test-chain-2` at `b2737141e` | Use plain punctuation in the three project-open progress labels. Project seat. | Source traces all three strings through the same narrow-string path. The native window is not opened by the headless gate. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-467 | `basics/test-chain-2` at `b8943be0b` | Expose Analyser Dock on Stack when the dock can fit. Mix View and look seats. | Peerless tests exercise the real checkbox, page switches and the exact size threshold. All 295 headless tests outside the performance label passed in Debug with warnings as errors. The later sync added one review document and kept all build and test inputs identical. | Pushed |
 
 ### Second test measurements and findings
 
@@ -341,3 +342,23 @@ The focused Debug fixture built with the existing warnings-as-errors command and
 #### SC-472 · Project-open progress
 
 The three open stages passed a UTF-8 ellipsis through JUCE's narrow ASCII-string path. The first now reads “Reading the project...” and the following stages use the same plain punctuation. In the 390 × 136 px progress body the status label stays at `(14,37,362,23)`. The change is in the project seat. The headless suite builds this native path with warnings as errors, and never starts the progress window.
+
+#### SC-467 | Analyser Dock switch
+
+Candidate `786c164c97c707b5d6574de18a952ffc72e45780` from `6aeeed1b1`. Mix View / window seat. ADR-0240 d4 and ADR-0255 d3(i) retain the optional right dock, off by default. The former Overview is now a saved route to the Analysers Spectrum subpage (`361979561`). The dock already works beside Stack, with room for 320 px of channel tools and a 240 × 420 px dock. The switch used to remain visible in Analysers, legacy Overview, Focus and undersized Stack layouts where changing its state had no immediate effect.
+
+The checkbox now uses the same fit and Stack rule as the optional dock. It toggles Meters, Phase and Spectrum in Stack where they fit. Stack retains the same saved request while the switch is out of view and restores it after a tab switch or resize. Existing pane dimensions, tab positions and dock width rules still apply. SC-466 owns the separate analyser window.
+
+The existing peerless Mix View test now clicks the real callback on and off, changes to each unsupported tab, shrinks and grows through 419/420 px of body height and exercises the narrow layout. It verifies the saved preference, dock size and remaining Stack bounds. No menu or native peer is created in this fixture section. The focused Werror replay used the same peerless test block with `DISPLAY` unset, against the stock objects and then the changed Mix View object. The baseline passed 12 of 17 checks. The five failures were all the unwanted switch. The candidate passed all 17 checks. Both runs recorded zero JUCE assertions. `git diff --check` passed. The integrated CTest gate is separate.
+
+Measured control and pane bounds are relative to the Mix View panel in Compact density. Rows indicate `(x, y, width, height)` in pixels.
+
+| View / panel size | Switch before | Switch after | Dock and main pane in both builds |
+| --- | --- | --- | --- |
+| Stack off, 1000 × 650 | `(872, 66, 94, 17)` | `(872, 66, 94, 17)` | Dock hidden. Stack `(178, 121, 685, 525)` |
+| Stack on, 1000 × 650 | `(872, 66, 94, 17)` | `(872, 66, 94, 17)` | Dock `(503, 121, 360, 525)`, Stack `(4, 121, 493, 525)` |
+| Analysers / recalled Overview, 1000 × 650 | `(872, 66, 94, 17)` | Hidden | Dock hidden. Analysers `(178, 121, 685, 525)` |
+| Focus, 1000 × 650 | `(872, 66, 94, 17)` | Hidden | Dock hidden. Stack `(178, 444, 685, 202)` |
+| Stack, 419 px body | `(872, 66, 94, 17)` | Hidden | Dock hidden. Stack `(178, 121, 685, 419)` |
+| Stack, 420 px body | `(872, 66, 94, 17)` | `(872, 66, 94, 17)` | Dock `(503, 121, 360, 420)`, Stack `(4, 121, 493, 420)` |
+| Narrow Stack, 400 × 650 | `(8, 91, 94, 17)` | Hidden | Dock hidden. Stack `(4, 146, 392, 500)` |
