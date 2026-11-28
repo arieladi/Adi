@@ -18,7 +18,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **His corrections the same day:** the take with parts cut happened once (SC-447 goes to the foot of the queue); Quantize also lacks Live's settings (SC-453); and he asks for a sanity check of the right-click menus against Live (SC-478: Live's side is read in Live, `collab/prompts/2026-11-28-live-readings-menus.md`). SC-454, EQ Eight opening as a hosted plug-in's empty panel, goes to the devices seat. He raised bringing his own ADI EQ in as the EQ device; win put it to him beside his ruling of 5 November (ADR-0212), which has no separate built-in EQ of his on a track.
 
-**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-479.
+**His five answers, the same day (ADR-0266, which rides the next stack):** the two encoder libraries for MP3 and FLAC are taken in; the timed backups stay; a clip that does not loop stops at the end of its audio, as Live's; playback keeps running during an export, with a button that shows the file; EQ Eight is laid out as Live's and his own EQ comes through the Mix View as ruled. He asked for a sanity check that exporting while playing does no harm: win read the render path (a second engine on the saved project, one snapshot, its own plug-ins) and registered what is not yet proved as SC-479.
+
+**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-480.
 
 ---
 
