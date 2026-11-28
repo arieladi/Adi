@@ -1,3 +1,11 @@
+Ready for landing: control/agent-chain at 289611a34eb8296338a2cf457c25115f8f238514
+
+28 November 2026. Merged `origin/main` (`6aeeed1b1`) first, then `origin/libcxx/control/agent-chain` (`a0e5dfc3d`). The merge keeps main's fresh UUID for shared copies, and the file-binding regressions use preserve-policy copies to exercise a shared UUID deliberately.
+
+- Linux Debug, warnings as errors. All 294 headless CTest suites passed with Pd, WTS-01, and Node integration enabled. The separate JUCE VST3 portion of WTS-01 also passed.
+- The JUCE application and window targets built with warnings as errors. All 27 offscreen window suites and all six private Xvfb checks passed, including appearance settings and the app's export-and-quit probe. Four suites ran in both modes.
+- All 15 Node helper tests, all six repository validators, and the CI classifier checks passed. No test failures.
+
 2026-11-27 — agent seat online. Starting the ADI chain from `origin/main`.
 
 | Item | What changed | Proof | State |
