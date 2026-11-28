@@ -104,6 +104,7 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
   private:
     juce::Rectangle<float> markerBox(const textproj::Meter &) const;
     juce::Rectangle<float> locatorBox(const Locator &) const;
+    void repairFragmentaryBar(std::int64_t at, bool complete);
     void endMeterEdit();
     // The locator being renamed or given info text, and which; the locator pressed, the ticks from
     // it to the press, where a drag would put it, and whether the mouse moved.

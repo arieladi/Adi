@@ -1959,9 +1959,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(meterOf(bar3) == "5/4" && submitter.nextUndo()->txnId == stepsBefore,
           "four undos (the two refused moves made none): back at bar 3");
-    // Live's fragmentary bar (manual 6.5): 5/4 from bar 3 makes bars of five quarters, so the 7/8 on
-    // quarter 14 cuts the second short, from quarter 13; its menu holds Live's two commands, which
-    // wait for the time ops.
+    // Live's fragmentary bar (manual 6.5): the 7/8 at quarter 14 cuts the second 5/4 bar short.
     auto names = [](const juce::PopupMenu &menu) {
         std::vector<std::pair<std::string, bool>> out;
         for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
@@ -1970,13 +1968,80 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         return out;
     };
     root.arrangement.selectedMeter = -1;
-    const auto inFragment = names(scrub.menu(13 * q + q / 2));
+    const auto inside = 13 * q + q / 2;
+    const auto inFragment = names(scrub.menu(inside));
     check(inFragment.size() == 4 && inFragment[0].first == "Add Locator" &&
-              inFragment[2] == std::pair<std::string, bool>{"Delete Fragmentary Bar Time", false} &&
-              inFragment[3] == std::pair<std::string, bool>{"Complete Fragmentary Bar (Insert Time)", false} &&
-              root.error().find("time ops") != std::string::npos,
-          "the menu on the fragment: Live's two commands, dimmed, and the Status Bar says why");
+              inFragment[2] == std::pair<std::string, bool>{"Delete Fragmentary Bar Time", true} &&
+              inFragment[3] == std::pair<std::string, bool>{"Complete Fragmentary Bar (Insert Time)", true},
+          "SC-186: the fragment's menu offers both repairs");
     check(names(scrub.menu(10 * q)).size() == 2, "elsewhere: Add Locator and Insert Time Signature Change alone");
+
+    const auto chooseRepair = [&](std::int64_t at, const juce::String &name) {
+        const auto menu = scrub.menu(at);
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (const auto &item = it.getItem(); item.text == name && item.isEnabled && item.action) {
+                item.action();
+                root.frame();
+                return true;
+            }
+        return false;
+    };
+    const auto undoRepair = [&](std::int64_t before) {
+        const auto repaired = submitter.nextUndo();
+        check(repaired && repaired->txnId != before && root.command(AppCommands::Undo), "SC-186: undo the repair");
+        root.frame();
+        const auto restored = submitter.nextUndo();
+        check(restored && restored->txnId == before, "SC-186: the repair takes one Undo");
+    };
+    const auto selectionBeforeRepair = lanes.selection;
+    OpRequest locatorInFragment;
+    locatorInFragment.opType = "marker.create";
+    locatorInFragment.payload = {{"id", 901}, {"pos", inside}, {"kind", "position"}, {"name", "In the fragment"}};
+    locatorInFragment.label = "Add test locator";
+    check(submitter.submit(std::move(locatorInFragment)).ok, "SC-186 fixture places a locator inside the fragment");
+    root.frame();
+    const auto locatorPosition = [&] {
+        for (const auto &locator : locatorsOf(*root.current()))
+            if (locator.id == 901)
+                return locator.pos;
+        return std::int64_t{-1};
+    };
+    const auto beforeRepair = submitter.nextUndo()->txnId;
+    check(chooseRepair(inside, "Complete Fragmentary Bar (Insert Time)"), "SC-186: choose Complete");
+    check(meterOf(18 * q) == "7/8" && meterOf(sevenEighths).empty() && locatorPosition() == inside + 4 * q,
+          "SC-186: completing the bar inserts four beats at its start, before the locator");
+    undoRepair(beforeRepair);
+    check(meterOf(sevenEighths) == "7/8" && locatorPosition() == inside, "SC-186: Undo restores the fragment");
+
+    check(chooseRepair(inside, "Delete Fragmentary Bar Time"), "SC-186: choose Delete");
+    check(meterOf(13 * q) == "7/8" && meterOf(sevenEighths).empty() && locatorPosition() == -1,
+          "SC-186: deleting the fragment removes its locator and brings the next meter back one beat");
+    undoRepair(beforeRepair);
+    check(meterOf(sevenEighths) == "7/8" && locatorPosition() == inside &&
+              root.command(AppCommands::Undo),
+          "SC-186: Undo restores the fragment again, then remove the fixture locator");
+    root.frame();
+
+    OpRequest ownMeter;
+    ownMeter.opType = "project.insertTimeSignature";
+    ownMeter.payload = {{"pos", 10 * q}, {"num", 3}, {"den", 4}};
+    ownMeter.label = "Add test signature";
+    check(submitter.submit(std::move(ownMeter)).ok, "SC-186 fixture makes the first 5/4 bar fragmentary");
+    root.frame();
+    const auto beforeOwnMeterRepair = submitter.nextUndo()->txnId;
+    check(chooseRepair(9 * q, "Complete Fragmentary Bar (Insert Time)"), "SC-186: complete a fragment at its meter marker");
+    check(meterOf(bar3) == "5/4" && meterOf(10 * q).empty() && meterOf(13 * q) == "3/4",
+          "SC-186: the fragment's own meter stays put when the missing beats are inserted");
+    undoRepair(beforeOwnMeterRepair);
+    check(meterOf(10 * q) == "3/4" && root.command(AppCommands::Undo),
+          "SC-186: Undo restores the first fragment, then remove the fixture signature");
+    root.frame();
+    check(submitter.nextUndo()->txnId == stepsBefore && meterOf(bar3) == "5/4" &&
+              meterOf(sevenEighths) == "7/8" && locatorPosition() == -1,
+          "SC-186: the original meter fixture is restored");
+    lanes.selection = selectionBeforeRepair;
+    root.publishSelection();
+
     lanes.left = 7;
     root.mark(DirtySet::All);
     root.frame();

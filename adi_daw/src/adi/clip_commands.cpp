@@ -824,7 +824,8 @@ PreparedEdit prepareReverse(Store& store,std::span<const std::int64_t> clipIds,
     return result;
 }
 namespace {
-PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,std::optional<std::int64_t> exactNanos) {
+PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,
+                              std::optional<std::int64_t> exactNanos,bool keepMeterAtStart=false) {
     PreparedEdit result;
     try {
         validRate(referenceRate);
@@ -862,7 +863,9 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
             points.bind(1,atTicks);
             while(points.executeStep()) {
                 const auto id=points.getColumn(0).getInt64();auto point=*plan.current(table,id);
-                point["pos_ticks"]=edit::addTime(detail::signedInteger(point.at("pos_ticks")),ticks);plan.set(table,id,point);
+                const auto position=detail::signedInteger(point.at("pos_ticks"));
+                if(keepMeterAtStart && position==atTicks && std::string_view(table)=="time_signature_map")continue;
+                point["pos_ticks"]=edit::addTime(position,ticks);plan.set(table,id,point);
             }
         }
         SQLite::Statement markers(db,"SELECT id FROM markers ORDER BY id");
@@ -912,6 +915,9 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
 } // namespace
 PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate) {
     return prepareInsertion(store,atTicks,ticks,referenceRate,std::nullopt);
+}
+PreparedEdit prepareCompleteFragmentaryBar(Store& store,std::int64_t atTicks,std::int64_t missingTicks,double referenceRate) {
+    return prepareInsertion(store,atTicks,missingTicks,referenceRate,std::nullopt,true);
 }
 
 PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {

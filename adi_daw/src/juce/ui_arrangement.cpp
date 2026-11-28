@@ -657,17 +657,41 @@ juce::PopupMenu ScrubArea::menu(std::int64_t at) {
         out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         out.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
     }
-    // On a fragmentary bar, Live's two ways to make it whole (manual 6.5, its figure). Both delete or
-    // insert time across every track, which waits for the time ops (the …Time commands' kind, N17);
-    // the Status Bar says so.
     if (at >= 0 && fragmentAt(at, view.reader().meters()).first >= 0) {
         out.addSeparator();
-        out.addItem(juce::PopupMenu::Item("Delete Fragmentary Bar Time").setEnabled(false));
-        out.addItem(juce::PopupMenu::Item("Complete Fragmentary Bar (Insert Time)").setEnabled(false));
-        view.root.say("Deleting or completing a fragmentary bar inserts or deletes time across the tracks, "
-                      "which waits for the time ops.");
+        const juce::Component::SafePointer<ScrubArea> safe(this);
+        out.addItem("Delete Fragmentary Bar Time", [safe, at] {
+            if (safe != nullptr)
+                safe->repairFragmentaryBar(at, false);
+        });
+        out.addItem("Complete Fragmentary Bar (Insert Time)", [safe, at] {
+            if (safe != nullptr)
+                safe->repairFragmentaryBar(at, true);
+        });
     }
     return out;
+}
+void ScrubArea::repairFragmentaryBar(std::int64_t at, bool complete) {
+    const auto current = view.root.current();
+    if (!current)
+        return;
+    const auto [start, end] = fragmentAt(at, current->meters);
+    if (start < 0) {
+        view.root.say("The fragmentary bar is no longer there.");
+        return;
+    }
+    // Completion inserts the missing portion at the beginning of the fragment (Live 12 manual 6.5).
+    const auto missing = meterAt(start, current->meters).barTicks() - (end - start);
+    auto &store = view.root.editStore();
+    const auto rate = view.root.editRate();
+    auto edit = complete ? clip_edit::prepareCompleteFragmentaryBar(store, start, missing, rate)
+                         : clip_edit::prepareDeleteTime(store, start, end, rate);
+    if (!edit.requests.empty())
+        edit.requests.front().label = complete ? "Complete Fragmentary Bar" : "Delete Fragmentary Bar Time";
+    if (view.root.commitEdit(std::move(edit))) {
+        view.selectedMeter = -1;
+        view.changed();
+    }
 }
 bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
     if (pos < 0)
