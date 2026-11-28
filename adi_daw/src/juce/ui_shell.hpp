@@ -310,7 +310,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
             edit::AutomationRangeCopy range;
             std::string sourceFile;
         };
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, TrackCopy, EnvelopeCopy> held;
+        using Material = std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy,
+                                      clip_edit::TimeCopy, TrackCopy, EnvelopeCopy>;
+        Material held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
         // The project file a copy names; a Time copy names it by its material.
         static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
@@ -330,6 +332,14 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         }
     };
     ClipClipboard &clipClipboard() noexcept { return clipClipboard_; }
+    // A track title can accept either clipboard. Keep the copies for their own views and remember which was written last.
+    enum class ClipboardSource { Arrangement, Device };
+    ClipboardSource latestClipboardSource() const noexcept { return latestClipboardSource_; }
+    void clipboardWritten(ClipboardSource source) noexcept { latestClipboardSource_ = source; }
+    void setArrangementClipboard(ClipClipboard::Material material) {
+        clipClipboard_.held = std::move(material);
+        clipboardWritten(ClipboardSource::Arrangement);
+    }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
     // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
     // and keeping a window's zoom there, saved at once.
@@ -364,6 +374,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool linkLoop_ = false;
     bool splitAll_ = true;
     ClipClipboard clipClipboard_;
+    ClipboardSource latestClipboardSource_ = ClipboardSource::Arrangement;
 };
 // WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
 // mapping editor on the application's commands, under Live's menus, in the theme's colours. Each change
@@ -1110,6 +1121,7 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    std::int64_t titleDevicePasteTrack() const;
     bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);

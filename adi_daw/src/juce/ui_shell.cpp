@@ -2901,6 +2901,8 @@ ReverseTargets reverseTargets(const engine::Snapshot &current, const Arrangement
     }
     return result;
 }
+// R52 is still to be checked in Live. A focused track title provisionally pastes a device at the chain end.
+constexpr bool kPasteDeviceFromTrackTitle = true;
 bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || isMidiTrack(t); }
 std::string_view clipTrackKind(const engine::TrackNode &t) { return isMidiTrack(t) ? "midi" : std::string_view(t.kind); }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
@@ -2920,6 +2922,16 @@ bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
            (clip == DeviceChainStrip::Clip::Paste && commands_.clipClipboard().empty() &&
             !arrangement.canvas.hasAutomationSelection());
 }
+std::int64_t AdiRootComponent::titleDevicePasteTrack() const {
+    if (!kPasteDeviceFromTrackTitle || !trackClipboardContext() || arrangement.canvas.hasAutomationSelection() ||
+        !devices.paste || !devices.holdsCopy || !devices.holdsCopy())
+        return 0;
+    if (!commands_.clipClipboard().empty() && commands_.latestClipboardSource() != AppCommands::ClipboardSource::Device)
+        return 0;
+    const auto track = arrangement.geometry.selection.track;
+    const auto current = view_.current();
+    return track > 0 && current && current->findTrack(track) ? track : 0;
+}
 bool AdiRootComponent::canClipboard(int id) const {
     using Clip = DeviceChainStrip::Clip;
     const auto clip = id == AppCommands::Cut    ? Clip::Cut
@@ -2930,7 +2942,8 @@ bool AdiRootComponent::canClipboard(int id) const {
                          : id == AppCommands::Copy ? ClipCommand::Copy
                          : id == AppCommands::Paste ? ClipCommand::Paste
                                                     : ClipCommand::Duplicate;
-    return devices.canClipboard(clip) || canClipClipboard(command);
+    return devices.canClipboard(clip) || (clip == Clip::Paste && titleDevicePasteTrack() != 0) ||
+           canClipClipboard(command);
 }
 namespace {
 // The project file a clipboard copy names (`sourceFile`), as the engine reads the store's.
@@ -3026,7 +3039,7 @@ bool AdiRootComponent::trackClipboard(ClipCommand command) {
                     sel.picked.clear();
                     publishSelection();
                 }
-                board.held = std::move(copy);
+                commands_.setArrangementClipboard(std::move(copy));
                 error_.clear();
                 dirty_.mark(DirtySet::Status);
                 commands_.manager.commandStatusChanged();
@@ -3137,7 +3150,7 @@ bool AdiRootComponent::automationClipboard(ClipCommand command) {
         if (!commitEdit(std::move(prepared)))
             return false;
     }
-    board.held = EnvelopeCopy{std::move(copy), projectFile(store)};
+    commands_.setArrangementClipboard(EnvelopeCopy{std::move(copy), projectFile(store)});
     error_.clear();
     dirty_.mark(DirtySet::Status);
     commands_.manager.commandStatusChanged();
@@ -3257,13 +3270,13 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                     return fail(cut.copy.error);
                 if (!commitEdit(std::move(cut.edit)))
                     return false;
-                board.held = std::move(cut.copy);
+                commands_.setArrangementClipboard(std::move(cut.copy));
                 timeSelection(group.tracks.front(), group.tracks.front(), begin, begin);
             } else {
                 auto copy = clip_edit::copySelectedClips(store, group, ids, options);
                 if (!copy.ok)
                     return fail(copy.error);
-                board.held = std::move(copy);
+                commands_.setArrangementClipboard(std::move(copy));
             }
             commands_.manager.commandStatusChanged();
         }
@@ -3276,12 +3289,12 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             auto copy = clip_edit::copyClip(store, chosen.clip->id, options);
             if (!copy.ok)
                 return fail(copy.error);
-            board.held = std::move(copy);
+            commands_.setArrangementClipboard(std::move(copy));
         } else {
             auto copy = clip_edit::copyRange(store, selection, options);
             if (!copy.ok)
                 return fail(copy.error);
-            board.held = std::move(copy);
+            commands_.setArrangementClipboard(std::move(copy));
         }
         // Copy writes nothing, so nothing else clears an earlier refusal from the Status Bar.
         error_.clear();
@@ -3297,7 +3310,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))
                 return false;
-            board.held = std::move(cut.copy);
+            commands_.setArrangementClipboard(std::move(cut.copy));
             timeSelection(chosen.track->id, chosen.track->id, from, from);
         } else {
             auto cut = clip_edit::prepareCutRange(store, selection, options);
@@ -3305,7 +3318,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))
                 return false;
-            board.held = std::move(cut.copy);
+            commands_.setArrangementClipboard(std::move(cut.copy));
         }
         commands_.manager.commandStatusChanged();
         succeeded();
@@ -3529,7 +3542,7 @@ bool AdiRootComponent::timeCommand(int id) {
         auto copy = clip_edit::copyTime(store, from, to, rate);
         if (!copy.ok)
             return fail(copy.error);
-        board.held = std::move(copy);
+        commands_.setArrangementClipboard(std::move(copy));
         return done();
     }
     case AppCommands::CutTime: {
@@ -3539,7 +3552,7 @@ bool AdiRootComponent::timeCommand(int id) {
             return fail(cut.copy.error);
         if (!commitEdit(std::move(cut.edit)))
             return false;
-        board.held = std::move(cut.copy);
+        commands_.setArrangementClipboard(std::move(cut.copy));
         select(from, from);
         return done();
     }
@@ -6680,6 +6693,9 @@ bool AdiRootComponent::command(int id) {
                                                      : Clip::Duplicate;
         if (deviceClipboardFirst(clip))
             return devices.clipboard(clip);
+        if (clip == Clip::Paste)
+            if (const auto track = titleDevicePasteTrack())
+                return devices.pasteAt(track, std::nullopt);
         const auto command = id == AppCommands::Cut    ? ClipCommand::Cut
                              : id == AppCommands::Copy ? ClipCommand::Copy
                              : id == AppCommands::Paste ? ClipCommand::Paste

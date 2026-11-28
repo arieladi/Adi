@@ -387,6 +387,8 @@ class DeviceChainStrip final : public juce::Component,
     enum class Clip { Cut, Copy, Paste, Duplicate };
     bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
+    // Paste into an explicit destination, even when the strip itself lacks focus.
+    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::optional<std::int64_t> focusedDevice() const;
     bool hasHotSwapContext() const;
     bool hotSwapFocused();
@@ -487,7 +489,6 @@ class DeviceChainStrip final : public juce::Component,
     void selectTitle(const DevicePanelView &, bool extend);
     void clearSelection();
     void chooseEnd();
-    bool pasteAt(std::int64_t track, std::optional<std::int64_t> before);
     std::vector<DevicePanelData> selectedTargets() const;
     bool clipboardSelection(Clip);
     DevicePanelView *focusedHotSwapPanel() const;

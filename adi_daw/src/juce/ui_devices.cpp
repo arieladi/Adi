@@ -2961,17 +2961,26 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, boo
     includeSelection = includeSelection || !device;
     if (!device)
         device = focusedDevice();
-    if (c != Clip::Paste && includeSelection && device && selectionActsOn(*device))
-        return clipboardSelection(c);
+    const bool useSelection = includeSelection && device && selectionActsOn(*device);
     const auto *data = device ? dataOf(*device) : nullptr;
     switch (c) {
     case Clip::Cut:
-    case Clip::Copy:
-        return data != nullptr && copy && copy(*device, c == Clip::Cut);
+    case Clip::Copy: {
+        const SafePointer<DeviceChainStrip> alive(this);
+        const bool copied = useSelection ? clipboardSelection(c) : data && copy && copy(*device, c == Clip::Cut);
+        if (copied && alive) {
+            auto &commands = alive->root.commands();
+            commands.clipboardWritten(AppCommands::ClipboardSource::Device);
+            commands.manager.commandStatusChanged();
+        }
+        return copied;
+    }
     case Clip::Paste:
         return data ? pasteAt(data->track, *device)
                     : endChosen() && selectedTrack >= 0 && pasteAt(selectedTrack, std::nullopt);
     case Clip::Duplicate: {
+        if (useSelection)
+            return clipboardSelection(c);
         if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;
         // In front of the next device in its chain, else at the chain's end.
