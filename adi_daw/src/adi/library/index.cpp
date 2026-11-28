@@ -270,6 +270,7 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
         }
         struct Item { std::string path,key; Metadata meta; };
         std::vector<Item> items; std::set<std::string> keys;
+        std::vector<fs::path> foundDirectories;
         report();
         std::vector<fs::directory_iterator> directories;
         directories.emplace_back(start);
@@ -298,8 +299,11 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
                 const auto current = fs::symlink_status(file.path(), ec);
                 if (!vanished(ec, "directory status", file.path()) && fs::is_directory(current)) {
                     fs::directory_iterator child(file.path(), ec);
-                    if (!vanished(ec, "open directory", file.path()) && child != end)
-                        directories.push_back(std::move(child));
+                    if (!vanished(ec, "open directory", file.path())) {
+                        foundDirectories.push_back(file.path().lexically_relative(root));
+                        if (child != end)
+                            directories.push_back(std::move(child));
+                    }
                 }
                 continue;
             }
@@ -400,6 +404,7 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
             }
             throw;
         }
+        result.directories = std::move(foundDirectories);
         result.ok=true; impl_->cv.notify_all(); return result;
     } catch (const ScanCancelled &) {
         // The transaction and mutex have already unwound. These are committed

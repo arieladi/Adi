@@ -63,6 +63,24 @@ std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager
                                          device->getOutputChannelNames().size());
     return externalAudioInputsFor(config, device->getActiveInputChannels(), inputs);
 }
+std::vector<std::pair<int, std::string>> readExternalAudioOutputs(juce::AudioDeviceManager &manager,
+    const settings::AppSettings &store, const engine::OutputChannelMap &granted) {
+    auto *device = manager.getCurrentAudioDevice();
+    if (!device || !device->isOpen())
+        return {};
+    const auto setup = manager.getAudioDeviceSetup();
+    const auto config = channelConfigFor(store, setup.outputDeviceName.toStdString(),
+        device->getInputChannelNames().size(), device->getOutputChannelNames().size());
+    std::vector<std::pair<int, std::string>> choices;
+    for (const auto &pair : config.stereoOutputs)
+        if (pair.left >= 1 && pair.left <= 63 && pair.left % 2 == 1 &&
+            pair.on && granted.packedPair(pair.left - 1) >= 0) {
+            const auto label = std::to_string(pair.left) + "/" + std::to_string(pair.left + 1);
+            choices.emplace_back(pair.left - 1, pair.name.empty() ? label : pair.name);
+        }
+    std::ranges::sort(choices, {}, &std::pair<int, std::string>::first);
+    return choices;
+}
 bool keepChannelConfig(settings::AppSettings &store, const std::string &device, bool inputs,
                        const settings::ChannelConfig &edited, std::string &why) {
     auto record = settings::channelConfig(store, device).value_or(edited);

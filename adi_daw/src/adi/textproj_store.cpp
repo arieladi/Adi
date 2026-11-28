@@ -750,6 +750,10 @@ static Tree buildTree(const rows::Model& m, const clip_edit::ProjectPitchEditsRe
         a.real("pan", r.pan, 0.0);
         a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         if (r.sendTap) a.text("sendTap", individualSendTapName(*r.sendTap));
+        if (r.midiOutput) {
+            a.text("midiPort", r.midiOutput->port);
+            a.num("midiChannel", r.midiOutput->channel, 0);
+        }
         a.flag("disabled", !r.enabled);
         if(r.kind=="sidechain" && r.dstKind=="device" && r.keyTap!="post_mixer")a.text("keyTap",r.keyTap);
 

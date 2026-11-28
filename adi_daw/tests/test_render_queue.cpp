@@ -407,11 +407,11 @@ void missingSources() {
           "an existing moved sample with different content remains an export error");
     fs::remove(oldMedia);
 
-    f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=1;");
+    f.store->db().exec("UPDATE audio_clips SET formant_shift=1 WHERE clip_id=1;");
     const auto unsupported=renderWav(f.job("unsupported"),{});
-    check(unsupported.state==JobState::Failed && unsupported.error.find("reverse unsupported")!=std::string::npos &&
+    check(unsupported.state==JobState::Failed && unsupported.error.find("unwarped formant shift unsupported")!=std::string::npos &&
           !fs::exists(unsupported.output) && f.noStage(),
-          "other unresolved playback problems still stop export");
+          "an unsupported setting on a clip with available media still stops export");
 }
 void queueEdits() {
     Fixture f;

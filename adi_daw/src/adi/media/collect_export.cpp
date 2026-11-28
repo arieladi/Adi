@@ -136,7 +136,7 @@ FileResult extractMedia(Store& store) {
     } catch (const std::exception& e) { return {false, e.what(),published.rollback()}; }
 }
 FileResult collectExport(const fs::path& input, const fs::path& output,
-                         const ArchiveControl& control) {
+                         const ArchiveControl& control, bool keepUndoHistory) {
     try {
         const auto target = fs::absolute(output);
         if (fs::exists(target) || fs::is_symlink(fs::symlink_status(target))) return {false, "output already exists: " + pathUtf8(target)};
@@ -148,7 +148,9 @@ FileResult collectExport(const fs::path& input, const fs::path& output,
         const auto project = stage.path / "project"; fs::create_directory(project);
         const auto filename = input.extension() == ".adi" ? safeName(pathUtf8(input.filename()), 0) : std::string("project.adi");
         const auto copyPath = project / pathFromUtf8(filename);
-        const auto saved=source->saveCopy(copyPath);
+        const auto policy = keepUndoHistory ? StoreCopyPolicy::shareWithUndo : StoreCopyPolicy::share;
+        const auto saved = source->saveCopy(copyPath, StoreFileCollision::Fail, policy, control.stop);
+        if (control.stop.stop_requested()) throw ArchiveCancelled{};
         if(!saved.ok)throw std::runtime_error(saved.error);
         source.reset();
         advanceArchive(control, {ArchivePhase::CollectMedia});

@@ -281,10 +281,8 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         if (plugin && plugin->expressionRoute && *plugin->expressionRoute != engine::RouteChoice::Auto)
             append("device.setExpressionRoute",{{"dev",result.deviceId},{"route",engine::routeChoiceName(*plugin->expressionRoute)}},
                    "device",result.deviceId);
-        if (kAutoArmFirstInstrumentWithExclusiveArm && exclusiveArm && insertionRole == detail::DeviceRole::Instrument &&
-            (!newTrack.empty() || midiTrackNeedsFirstInstrument(db, track))) {
-            if (!newTrack.empty())
-                append("track.setArm", {{"id", track}, {"armed", true}}, "track", track);
+        if (kAutoArmFirstInstrumentWithExclusiveArm && exclusiveArm && !replace &&
+            insertionRole == detail::DeviceRole::Instrument && (result.newTrack || midiTrackNeedsFirstInstrument(db, track))) {
             SQLite::Statement arms(db, "SELECT id,record_armed FROM tracks WHERE kind IN ('audio','midi','instrument') "
                 "AND (id=? OR record_armed<>0) ORDER BY id");
             arms.bind(1, track);
@@ -294,6 +292,8 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
                 if (arm != (arms.getColumn(1).getInt() != 0))
                     append("track.setArm", {{"id", id}, {"armed", arm}}, "track", id);
             }
+            if (result.newTrack)
+                append("track.setArm", {{"id", track}, {"armed", true}}, "track", track);
         }
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}

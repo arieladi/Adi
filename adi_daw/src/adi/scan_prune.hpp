@@ -31,6 +31,7 @@ struct ScanPruneResult {
     std::uint64_t rootsWalked = 0, missingRootsSkipped = 0, unverifiableKeysSkipped = 0;
     bool legacySkipped = false; // validated v1/v2 or early success-only v3; no migration/write
     std::string error;
+    std::string unreadablePath; // any permission-denied evidence leaves pruning incomplete
     explicit operator bool() const noexcept { return status == ScanPruneStatus::Complete; }
 };
 // Bind before either format scan. Records canonical roots/confirmed absence,

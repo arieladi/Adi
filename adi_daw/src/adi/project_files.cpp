@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/project_backup.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/gesture_capture_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/ops.hpp"
 #include "adi/history_content.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/published_rollback.hpp"
@@ -15,14 +17,19 @@
 #include <SQLiteCpp/Backup.h>
 #include <sqlite3.h>
 #include <utf8proc.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <charconv>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <limits>
 #include <map>
 #include <functional>
 #include <set>
+#include <thread>
+#include <tuple>
 #include <vector>
 
 namespace adi {
@@ -289,6 +296,83 @@ void rebaseHistory(SQLite::Database& db,const fs::path& oldFolder,const fs::path
     },true,stop);
     transaction.commit();
 }
+// Only the private stage is writable here. A shared project is a new identity
+// so it cannot pick up this computer's existing project/server authorization.
+Payload prepareSharedCopy(SQLite::Database& db, StoreCopyPolicy policy, std::stop_token stop) {
+    const auto version = db.execAndGet("PRAGMA user_version").getInt();
+    if (version / 1000 != kSchemaMajor || version > kUserVersion)
+        throw std::runtime_error("this project format is too new to share safely");
+    if (version < kUserVersion) {
+        std::string error;
+        if (!migrateToCurrent(db, version % 1000, error))
+            throw std::runtime_error("cannot upgrade the shared copy: " + error);
+    }
+    db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
+    SQLite::Transaction transaction(db);
+    db.exec("INSERT INTO adi_meta(key,value) VALUES('project_uuid',lower(hex(randomblob(16)))) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+            "DELETE FROM session_lock;"
+            "DELETE FROM adi_meta WHERE key IN ('history.undo.collaboration','history.undo.uploaded_through');"
+            "UPDATE remote_hosts SET enabled=0 WHERE enabled<>0;");
+    Payload reportedLatency;
+    if (policy == StoreCopyPolicy::share) {
+        // A measurement tied to the exact captured state still describes the
+        // shared project. The fresh Undo baseline gives that state a new head.
+        {
+            SQLite::Statement measured(db,
+                "SELECT s.value,b.head_seq FROM session_state s,op_branches b "
+                "WHERE s.key='devices.reported_latency' AND b.is_current=1");
+            if (measured.executeStep()) {
+                auto report = Payload::parse(measured.getColumn(0).getString(), nullptr, false);
+                const auto head = measured.getColumn(1);
+                const auto sourceHead = head.isNull() ? Payload(nullptr) : Payload(head.getInt64());
+                if (report.contains("version") && report["version"] == 1 &&
+                    report.contains("history_head") && report["history_head"] == sourceHead)
+                    reportedLatency = std::move(report);
+            }
+        }
+        db.exec("DELETE FROM session_state WHERE key='devices.reported_latency';"
+                "DELETE FROM adi_meta WHERE key GLOB 'history.daily.*';"
+                "DELETE FROM history_origin_root; DELETE FROM history_roots;"
+                "DELETE FROM history_checkpoint_content; DELETE FROM history_checkpoint;"
+                "DELETE FROM history_state_manifests; DELETE FROM history_state_rows;"
+                "DELETE FROM history_snapshots; DELETE FROM op_branches;"
+                "DELETE FROM ops; DELETE FROM op_clients;"
+                "DELETE FROM sqlite_sequence WHERE name='ops';"
+                "INSERT INTO op_branches VALUES(1,'main',NULL,0,1,'system');"
+                "DELETE FROM state_blobs WHERE NOT EXISTS "
+                "(SELECT 1 FROM plugin_state WHERE state_hash=state_blobs.hash_blake3);");
+    } else {
+        // An agent's supplied operation label can repeat the request. Keep the
+        // operation and semantic tags, and give the entry a generic Undo label.
+        db.exec("UPDATE ops SET label='Agent edit', actor_detail='' WHERE actor='agent' "
+                "OR txn_id IN(SELECT txn_id FROM agent_requests);");
+        history_detail::visitCheckpointState(db, [stop](Payload& state) {
+            checkSaveCancellation(stop);
+            for (auto& table : state.at("tables")) {
+                if (table.at("name") != "remote_hosts") continue;
+                const auto& columns = table.at("columns");
+                const auto enabled = std::find(columns.begin(), columns.end(), "enabled");
+                if (enabled == columns.end()) break;
+                const auto index = static_cast<std::size_t>(std::distance(columns.begin(), enabled));
+                bool edited = false;
+                for (auto& row : table.at("rows")) {
+                    checkSaveCancellation(stop);
+                    auto& value = row.at(index).at(1);
+                    if (value == 0) continue;
+                    value = 0;
+                    edited = true;
+                }
+                return edited;
+            }
+            return false;
+        }, true);
+        history_detail::pruneCheckpointContent(db, [stop] { checkSaveCancellation(stop); });
+    }
+    db.exec("DELETE FROM agent_requests");
+    transaction.commit();
+    return reportedLatency;
+}
 std::error_code projectDestinationReady(const fs::path& target) {
     // A closed backup must never inherit another database's WAL or rollback
     // journal. Do not checkpoint/delete someone else's recovery material.
@@ -440,9 +524,18 @@ bool discardUntouchedProject(const fs::path& path, const media::FileIdentity& ex
     }
 }
 
+namespace {
+struct BackupImageStamp {
+    std::string sourceName;
+    std::int64_t utcMicros = 0;
+    std::optional<unsigned> collisionIndex;
+};
+}
+
 struct StoreFileSave::Data {
     StoreSaveKind kind = StoreSaveKind::copy;
     StoreFileCollision collision = StoreFileCollision::Fail;
+    StoreCopyPolicy copyPolicy = StoreCopyPolicy::share;
     fs::path sourcePath, sourceFolder, target;
     std::shared_ptr<media::ProjectFileLease> sourceLease;
     media::FileIdentity sourceIdentity;
@@ -453,7 +546,9 @@ struct StoreFileSave::Data {
     ProjectRevision sourceRevision;
     gesture::detail::StoreWriteStamp stamp{};
     std::unique_ptr<SQLite::Database> reader;
+    std::optional<BackupImageStamp> backup;
     std::optional<Store::CopyState> copy;
+    bool recoveringBackup = false;
     std::unique_ptr<Store> retired;
     bool cancelled = false;
 };
@@ -464,7 +559,8 @@ StoreFileSave::StoreFileSave(StoreFileSave&&) noexcept = default;
 StoreFileSave& StoreFileSave::operator=(StoreFileSave&&) noexcept = default;
 
 StoreFileResult Store::prepareFileSave(const fs::path& output, StoreSaveKind kind, StoreFileSave& job,
-                                       StoreFileCollision collision, const media::FileIdentity* expectedTarget) {
+                                       StoreFileCollision collision, const media::FileIdentity* expectedTarget,
+                                       StoreCopyPolicy copyPolicy) {
     if (audio::onAudioThread) return {false, {}, {}};
     if (job.data_) return {false, "save job was already prepared", {}};
     if (closed_ || !db_) return {false, "project is closed", {}};
@@ -477,7 +573,7 @@ StoreFileResult Store::prepareFileSave(const fs::path& output, StoreSaveKind kin
         if (!fileLease_ || !sqlite3_get_autocommit(db_->getHandle()))
             throw std::runtime_error("save needs a project file with no open transaction");
         if (kind != StoreSaveKind::copy) {
-            if (major_ != kSchemaMajor) throw std::runtime_error("use Save a Copy for an unsupported schema major");
+            if (major_ != kSchemaMajor) throw std::runtime_error("use a newer ADI version to save this project");
             if (sqlite3_next_stmt(db_->getHandle(), nullptr))
                 throw std::runtime_error("finish database statements before Save As");
             const auto change = gesture::detail::beginSourceChange(*this);
@@ -486,6 +582,7 @@ StoreFileResult Store::prepareFileSave(const fs::path& output, StoreSaveKind kin
         auto state = std::make_unique<StoreFileSave::Data>();
         state->kind = kind;
         state->collision = collision;
+        state->copyPolicy = kind == StoreSaveKind::copy ? copyPolicy : StoreCopyPolicy::preserve;
         state->target = saveDestination(output, fileLease_, collision);
         if (collision == StoreFileCollision::ReplaceConfirmed) {
             if (fs::is_regular_file(fs::symlink_status(state->target))) {
@@ -566,7 +663,7 @@ StoreFileResult StoreFileSave::write(std::stop_token stop, const Progress& progr
             reader.reset();
         };
         state.copy = Store::writeFileCopy(state.target, state.sourceFolder, state.sourceLease, state.major,
-                                          state.collision, snapshot, stop, phaseProgress, this);
+                                          state.collision, snapshot, stop, phaseProgress, this, state.copyPolicy);
         return *state.copy;
     } catch (const SaveCancelled&) {
         state.cancelled = true;
@@ -586,11 +683,414 @@ std::string StoreFileSave::closeReplacedProject() {
     return folded ? std::string{} : "old project is still in use; its WAL could not be folded";
 }
 
-StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCollision collision) const {
-    auto result=saveCopyImpl(output,collision);
+fs::path Store::copyBeforeMigration(SQLite::Database& source, int fromMinor, std::int64_t now,
+                                    const std::shared_ptr<media::ProjectFileLease>& sourceLease) {
+    // The migration connection holds the writer lock. Read the committed
+    // image, including pages in a WAL, without using the writer as backup source.
+    const auto folder = media::projectFolder(source);
+    const auto backupPath = folder / ("Before upgrade from 1." + std::to_string(fromMinor) + "-" +
+                                      std::to_string(now) + ".adi");
+    SQLite::Database reader(sqlite3_db_filename(source.getHandle(), "main"), SQLite::OPEN_READONLY);
+    const auto copied = writeFileCopy(backupPath, folder, sourceLease,
+        kSchemaMajor, StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+            SQLite::Backup backup(destination, reader);
+            if (backup.executeStep() != SQLITE_DONE)
+                throw std::runtime_error("pre-upgrade database snapshot was incomplete");
+        });
+    if (!copied.ok || !copied.durable)
+        throw std::runtime_error("could not publish a durable safety copy");
+    return backupPath;
+}
+
+StoreFileResult Store::saveCopy(const std::filesystem::path& output, StoreFileCollision collision,
+                               StoreCopyPolicy copyPolicy, std::stop_token stop) const {
+    auto result=saveCopyImpl(output,collision,copyPolicy,stop);
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
-Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision) const {
+namespace {
+constexpr auto backupOrigin = "backup_origin";
+constexpr auto backupCreated = "backup_created_utc";
+
+std::string backupBaseName(const fs::path& project) {
+    return media::detail::portableFilename(media::pathUtf8(project.stem()), "Project");
+}
+
+std::string backupTimestamp(std::int64_t createdUtc) {
+    using namespace std::chrono;
+    const sys_time<microseconds> instant{microseconds{createdUtc}};
+    const auto midnight = floor<days>(instant);
+    if (midnight < sys_days{year{1970}/January/1} || midnight > sys_days{year{9999}/December/31})
+        throw std::runtime_error("backup time is outside the supported range");
+    const year_month_day date{midnight};
+    const hh_mm_ss clock{instant - midnight};
+    char name[48];
+    std::snprintf(name, sizeof(name), "%04d-%02u-%02u_%02d-%02d-%02d.%06dZ",
+                  static_cast<int>(date.year()), static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()),
+                  static_cast<int>(clock.hours().count()), static_cast<int>(clock.minutes().count()),
+                  static_cast<int>(clock.seconds().count()), static_cast<int>(clock.subseconds().count()));
+    return name;
+}
+
+struct BackupGeneration {
+    std::string uuid, created;
+    [[nodiscard]] bool known() const { return !uuid.empty() || !created.empty(); }
+    [[nodiscard]] bool matches(const BackupGeneration& other) const {
+        return !uuid.empty() && !other.uuid.empty() ? uuid == other.uuid :
+            !created.empty() && created == other.created;
+    }
+};
+
+BackupGeneration backupGeneration(SQLite::Database& database) {
+    SQLite::Statement values(database,
+        "SELECT COALESCE((SELECT value FROM main.adi_meta WHERE key='project_uuid'),''),"
+        "COALESCE((SELECT value FROM main.adi_meta WHERE key='created_utc'),'')");
+    if (!values.executeStep()) return {};
+    return {values.getColumn(0).getString(), values.getColumn(1).getString()};
+}
+
+BackupGeneration sourceBackupGeneration(const fs::path& project) {
+    try {
+        SQLite::Database reader(media::pathUtf8(project), SQLite::OPEN_READONLY);
+        if (reader.execAndGet("PRAGMA application_id").getInt() == kApplicationId)
+            return backupGeneration(reader);
+    } catch (const SQLite::Exception&) {
+        // A corrupt original still needs the backups identified by its filename.
+    }
+    return {};
+}
+
+void clearBackupMarkers(SQLite::Database& database) {
+    database.exec("DELETE FROM main.adi_meta WHERE key IN "
+                  "('backup_origin','backup_created_utc','backup_source','backup_utc','backup_collision')");
+}
+
+void verifyBackupImage(SQLite::Database& database) {
+    SQLite::Statement check(database, "PRAGMA quick_check(1)");
+    if (!check.executeStep() || check.getColumn(0).getString() != "ok" || check.executeStep())
+        throw std::runtime_error("the project copy failed its SQLite integrity check");
+}
+
+void stampBackupImage(SQLite::Database& database, const BackupImageStamp& metadata) {
+    SQLite::Transaction finish(database);
+    database.exec("DELETE FROM main.session_lock");
+    clearBackupMarkers(database);
+    SQLite::Statement stamp(database, "INSERT OR REPLACE INTO main.adi_meta(key,value) VALUES(?,?),(?,?),('backup_collision',?)");
+    stamp.bind(1, backupOrigin);
+    stamp.bind(2, metadata.sourceName);
+    stamp.bind(3, backupCreated);
+    stamp.bind(4, std::to_string(metadata.utcMicros));
+    stamp.bind(5, std::to_string(metadata.collisionIndex.value_or(0)));
+    stamp.exec();
+    finish.commit();
+    verifyBackupImage(database);
+}
+
+std::optional<BackupImageStamp> readBackupStamp(SQLite::Database& database) {
+    if (database.execAndGet("PRAGMA application_id").getInt() != kApplicationId) return {};
+    SQLite::Statement marker(database,
+        "SELECT COALESCE((SELECT value FROM main.adi_meta WHERE key=?),"
+        "(SELECT value FROM main.adi_meta WHERE key='backup_source')),"
+        "COALESCE((SELECT value FROM main.adi_meta WHERE key=?),"
+        "(SELECT value FROM main.adi_meta WHERE key='backup_utc')),"
+        "(SELECT value FROM main.adi_meta WHERE key='backup_collision')");
+    marker.bind(1, backupOrigin);
+    marker.bind(2, backupCreated);
+    if (!marker.executeStep()) return {};
+    BackupImageStamp result;
+    result.sourceName = marker.getColumn(0).getString();
+    const auto sourceName = media::pathFromUtf8(result.sourceName);
+    if (sourceName.empty() || sourceName.filename() != sourceName || sourceName == "." || sourceName == "..") return {};
+    const auto stamp = marker.getColumn(1).getString();
+    const auto parsed = std::from_chars(stamp.data(), stamp.data() + stamp.size(), result.utcMicros);
+    if (parsed.ec != std::errc{} || parsed.ptr != stamp.data() + stamp.size()) return {};
+    if (!marker.getColumn(2).isNull()) {
+        const auto collision = marker.getColumn(2).getString();
+        unsigned ordinal = 0;
+        const auto parsedCollision = std::from_chars(collision.data(), collision.data() + collision.size(), ordinal);
+        if (parsedCollision.ec != std::errc{} || parsedCollision.ptr != collision.data() + collision.size() || ordinal >= 1000)
+            return {};
+        result.collisionIndex = ordinal;
+    }
+    return result;
+}
+
+std::optional<BackupImageStamp> readOwnedBackup(SQLite::Database& database, const fs::path& project,
+                                               const BackupGeneration& generation) {
+    auto stamp = readBackupStamp(database);
+    if (!stamp || stamp->sourceName != media::pathUtf8(project.filename()) ||
+        (generation.known() && !generation.matches(backupGeneration(database)))) return {};
+    return stamp;
+}
+
+void backUpDatabase(SQLite::Database& destination, SQLite::Database& source, std::stop_token stop) {
+    using namespace std::chrono_literals;
+    // Each step takes its own short source read lock. SQLite restarts from the
+    // latest committed image when another connection writes between steps.
+    SQLite::Backup backup(destination, source);
+    auto deadline = std::chrono::steady_clock::now() + 30s;
+    int fewestRemaining = std::numeric_limits<int>::max();
+    while (true) {
+        checkSaveCancellation(stop);
+        const auto state = backup.executeStep(128);
+        if (state == SQLITE_DONE) return;
+        const auto now = std::chrono::steady_clock::now();
+        const auto remaining = backup.getRemainingPageCount();
+        if (state == SQLITE_OK && remaining < fewestRemaining) {
+            fewestRemaining = remaining;
+            deadline = now + 30s;
+        }
+        if (now >= deadline)
+            throw std::runtime_error("the project stayed too busy to make a backup");
+        if (state == SQLITE_BUSY || state == SQLITE_LOCKED) std::this_thread::sleep_for(10ms);
+    }
+}
+
+fs::path numberedAdiFile(const fs::path& folder, const std::string& stem, unsigned number) {
+    const auto suffix = number == 1 ? std::string{} : " (" + std::to_string(number) + ")";
+    return folder / media::pathFromUtf8(stem + suffix + ".adi");
+}
+std::optional<unsigned> ownedBackupCollision(const fs::path& file, const BackupImageStamp& metadata) {
+    const auto origin = media::pathFromUtf8(metadata.sourceName);
+    auto utc = backupTimestamp(metadata.utcMicros);
+    const auto stem = backupBaseName(origin) + " - " + utc;
+    const auto actual = media::pathUtf8(file.stem());
+    std::optional<unsigned> ordinal;
+    if (actual == stem) ordinal = 0;
+    if (const auto prefixed = stem + " ("; actual.starts_with(prefixed) && actual.ends_with(')')) {
+        const std::string_view number(actual.data() + prefixed.size(), actual.size() - prefixed.size() - 1);
+        unsigned selected = 0;
+        const auto parsed = std::from_chars(number.data(), number.data() + number.size(), selected);
+        if (parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size() && selected >= 2 && selected <= 1000)
+            ordinal = selected - 1;
+    }
+    if (ordinal && (!metadata.collisionIndex || metadata.collisionIndex == ordinal)) return ordinal;
+    // The original queue put bracketed UTC and its collision ordinal in names.
+    if (!metadata.collisionIndex) return {};
+    utc[10] = ' ';
+    utc.erase(16, 1);
+    utc.erase(13, 1);
+    auto legacy = media::pathUtf8(origin.stem()) + " [" + utc + "]";
+    if (*metadata.collisionIndex != 0) legacy += "-" + std::to_string(*metadata.collisionIndex + 1);
+    return actual == legacy ? metadata.collisionIndex : std::nullopt;
+}
+} // namespace
+
+StoreFileResult Store::writeProjectBackup(const fs::path& project, std::int64_t createdUtc, std::stop_token stop) {
+    try {
+        checkSaveCancellation(stop);
+        StoreError error{};
+        auto source = open(project, error, true);
+        if (!source) return {false, toString(error), {}};
+        if (source->major_ != kSchemaMajor) return {false, "this project version cannot be backed up", {}};
+        if (source->db().execAndGet("SELECT EXISTS(SELECT 1 FROM main.adi_meta "
+                                    "WHERE key IN ('backup_origin','backup_source'))").getInt() != 0)
+            return {false, "this file is already a project backup", {}};
+        const auto base = media::projectFolder(*source);
+        const auto folder = base / "Backup";
+        if (!fs::create_directory(folder) && !fs::is_directory(fs::symlink_status(folder)))
+            return {false, "Backup must be a regular directory in the project folder", {}};
+        const auto stem = backupBaseName(project) + " - " + backupTimestamp(createdUtc);
+        for (unsigned number = 1; number <= 1000; ++number) {
+            checkSaveCancellation(stop);
+            const auto target = numberedAdiFile(folder, stem, number);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
+            auto copied = writeFileCopy(target, base, source->fileLease_, source->major_, StoreFileCollision::Fail,
+                [&](SQLite::Database& destination) {
+                    backUpDatabase(destination, source->db(), stop);
+                    stampBackupImage(destination, {media::pathUtf8(project.filename()), createdUtc, number - 1});
+                }, stop);
+            if (copied.ok || fs::symlink_status(target).type() == fs::file_type::not_found) return copied;
+        }
+        return {false, "could not reserve a name for the project backup", {}};
+    } catch (const SaveCancelled&) {
+        return {false, "project backup cancelled", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+std::vector<ProjectBackup> Store::projectBackups(const fs::path& project, bool requireSourceIdentity) {
+    std::vector<ProjectBackup> files;
+    const auto generation = sourceBackupGeneration(project);
+    if (requireSourceIdentity && !generation.known()) return files;
+    std::error_code error;
+    const auto folder = fs::weakly_canonical(project, error).parent_path() / "Backup";
+    if (error || !fs::is_directory(fs::symlink_status(folder, error))) return files;
+    const auto prefix = backupBaseName(project) + " - ";
+    const auto earlierPrefix = media::pathUtf8(project.stem()) + " [";
+    for (fs::directory_iterator file(folder, error), end; !error && file != end; file.increment(error)) {
+        std::error_code entryError;
+        const auto& path = file->path();
+        const auto name = media::pathUtf8(path.filename());
+        if (path.extension() != ".adi" || (!name.starts_with(prefix) && !name.starts_with(earlierPrefix)) ||
+            !fs::is_regular_file(file->symlink_status(entryError))) continue;
+        if (projectDestinationReady(path)) continue;
+        const auto revision = media::readFileRevision(path, entryError);
+        if (!revision) continue;
+        try {
+            std::optional<BackupImageStamp> stamp;
+            {
+                SQLite::Database reader(media::pathUtf8(path), SQLite::OPEN_READONLY);
+                stamp = readOwnedBackup(reader, project, generation);
+            }
+            const auto collision = stamp ? ownedBackupCollision(path, *stamp) : std::nullopt;
+            if (collision && media::readFileRevision(path, entryError) == revision)
+                files.push_back({path, stamp->utcMicros, *revision, *collision});
+        } catch (const std::exception&) {
+            // An incomplete or unreadable file is not offered or rotated.
+        }
+    }
+    std::ranges::sort(files, [](const auto& left, const auto& right) {
+        return std::tie(left.createdUtc, left.collisionIndex, left.path) >
+               std::tie(right.createdUtc, right.collisionIndex, right.path);
+    });
+    return files;
+}
+
+std::shared_ptr<media::ProjectFileLease> ProjectBackup::leaseForTrash() const {
+    std::error_code error;
+    const auto lease = media::ProjectFileLease::openExclusive(path, error);
+    if (!lease || lease->identity() != revision.identity || projectDestinationReady(path) ||
+        media::readFileRevision(path, error) != revision)
+        return {};
+    return lease;
+}
+
+StoreFileResult Store::restoreProjectBackup(const fs::path& project, const fs::path& backup,
+                                           fs::path& restored, std::stop_token stop,
+                                           const fs::path& recoveryFolder) {
+    restored.clear();
+    try {
+        checkSaveCancellation(stop);
+        const auto folder = fs::weakly_canonical(project).parent_path();
+        if (fs::canonical(backup.parent_path()) != folder / "Backup" ||
+            !fs::is_regular_file(fs::symlink_status(backup)))
+            return {false, "choose a backup from this project's Backup folder", {}};
+        StoreError error{};
+        auto source = open(backup, error, true);
+        if (!source) return {false, toString(error), {}};
+        if (source->major_ != kSchemaMajor || !readOwnedBackup(source->db(), project, sourceBackupGeneration(project)))
+            return {false, "this file is not a backup of the project", {}};
+        const auto stem = backupBaseName(project) + " - Recovered";
+        const auto destinationFolder = recoveryFolder.empty() ? folder : fs::canonical(recoveryFolder);
+        for (unsigned number = 1; number <= 1000; ++number) {
+            checkSaveCancellation(stop);
+            const auto target = numberedAdiFile(destinationFolder, stem, number);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found) continue;
+            auto copied = writeFileCopy(target, media::projectFolder(*source), source->fileLease_, source->major_,
+                StoreFileCollision::Fail, [&](SQLite::Database& destination) {
+                    backUpDatabase(destination, source->db(), stop);
+                    clearBackupMarkers(destination);
+                    verifyBackupImage(destination);
+                }, stop);
+            if (copied.ok) restored = target;
+            if (copied.ok || fs::symlink_status(target).type() == fs::file_type::not_found) return copied;
+        }
+        return {false, "could not reserve a name for the recovered project", {}};
+    } catch (const SaveCancelled&) {
+        return {false, "project recovery cancelled", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+namespace backup {
+
+fs::path directoryFor(const fs::path& project) {
+    if (project.empty()) return {};
+    std::error_code error;
+    const auto canonical = fs::weakly_canonical(project, error);
+    return (error ? project : canonical).parent_path() / "Backup";
+}
+
+bool isBackup(Store& store) {
+    if (store.schemaMajor() != kSchemaMajor || !appliedSource(store).alive()) return false;
+    try {
+        return readBackupStamp(store.db()).has_value();
+    } catch (const SQLite::Exception&) {
+        return false;
+    }
+}
+
+StoreFileResult prepare(Store& store, std::int64_t utcMicros, Job& job) {
+    if (audio::onAudioThread || !appliedSource(store).alive() || store.schemaMajor() != kSchemaMajor)
+        return {false, "backups need an open supported project", {}};
+    if (job.file.data_) return {false, "backup was already prepared", {}};
+    try {
+        if (isBackup(store)) return {false, "this file is already a backup", {}};
+        if (store.synchronizedLocation()) return {false, "synced projects use the incremental file backup", {}};
+        const auto source = fs::canonical(store.path());
+        if (!fs::is_regular_file(source)) return {false, "backups need a saved project file", {}};
+        const auto directory = directoryFor(source);
+        fs::create_directory(directory);
+        if (!fs::is_directory(fs::symlink_status(directory)))
+            return {false, "the project's Backup folder is not a directory", {}};
+        const auto stem = backupBaseName(source) + " - " + backupTimestamp(utcMicros);
+        for (unsigned number = 1; number <= 1000; ++number) {
+            auto target = numberedAdiFile(directory, stem, number);
+            if (fs::symlink_status(target).type() != fs::file_type::not_found || projectDestinationReady(target))
+                continue;
+            auto result = store.prepareFileSave(target, StoreSaveKind::copy, job.file, StoreFileCollision::Fail,
+                                                nullptr, StoreCopyPolicy::preserve);
+            if (!result.ok) return result;
+            job.file.data_->backup = BackupImageStamp{media::pathUtf8(source.filename()), utcMicros, number - 1};
+            job.path = std::move(target);
+            job.project = source;
+            return result;
+        }
+        return {false, "could not reserve a name for the project backup", {}};
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+std::vector<ProjectBackup> expiredBackups(const fs::path& project) {
+    auto backups = Store::projectBackups(project, true);
+    constexpr std::size_t keep = 10;
+    if (backups.size() <= keep) return {};
+    backups.erase(backups.begin(), backups.begin() + static_cast<std::ptrdiff_t>(keep));
+    return backups;
+}
+
+Result write(Job& job, std::stop_token stop) {
+    if (job.path.empty()) return {{false, "backup was not prepared", {}}, {}, {}};
+    Result result{job.file.write(stop), job.path, {}};
+    job.file = {};
+    if (result.file.ok && result.file.warning.empty() && !stop.stop_requested()) {
+        try {
+            result.expired = expiredBackups(job.project);
+        } catch (const std::exception& error) {
+            result.file.warning = joinedWarning(std::move(result.file.warning),
+                "could not check backup retention: " + std::string(error.what()));
+        }
+    }
+    return result;
+}
+
+StoreFileResult recover(const fs::path& path, const fs::path& destination, std::stop_token stop) {
+    if (stop.stop_requested()) return {false, "recovery cancelled", {}};
+    try {
+        if (!fs::is_regular_file(fs::symlink_status(path)))
+            return {false, "choose a regular ADI backup file", {}};
+        StoreError error{};
+        auto source = Store::open(path, error, true);
+        if (!source) return {false, "could not open backup: " + std::string(toString(error)), {}};
+        if (!isBackup(*source)) return {false, "the selected file is not an ADI backup", {}};
+        StoreFileSave file;
+        auto result = source->prepareFileSave(destination, StoreSaveKind::copy, file, StoreFileCollision::Fail,
+                                              nullptr, StoreCopyPolicy::preserve);
+        if (!result.ok) return result;
+        file.data_->recoveringBackup = true;
+        return file.write(stop);
+    } catch (const std::exception& error) {
+        return {false, error.what(), {}};
+    }
+}
+
+} // namespace backup
+
+Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output, StoreFileCollision collision,
+                                     StoreCopyPolicy copyPolicy, std::stop_token stop) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {
         if(closed_ || !db_)return {false,"project is closed",{}};
@@ -598,16 +1098,16 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
         const auto sourceFolder = major_ == kSchemaMajor ? media::projectFolder(*this) : fs::path{};
         return writeFileCopy(output, sourceFolder, fileLease_, major_, collision,
             [&](SQLite::Database& destination) {
-                SQLite::Backup backup(destination, *db_);
-                if (backup.executeStep() != SQLITE_DONE) throw std::runtime_error("database snapshot busy or incomplete");
-            });
-    } catch (const std::exception& e) { return {false, e.what(), {}}; }
+                backUpDatabase(destination, *db_, stop);
+            }, stop, {}, nullptr, copyPolicy);
+    } catch (const SaveCancelled&) { return {false, "save cancelled", {}}; }
+    catch (const std::exception& e) { return {false, e.what(), {}}; }
 }
 
 Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& sourceFolder,
     const std::shared_ptr<media::ProjectFileLease>& sourceLease, int major, StoreFileCollision collision,
     const std::function<void(SQLite::Database&)>& snapshot, std::stop_token stop, const StoreFileSave::Progress& progress,
-    const StoreFileSave* pending) {
+    const StoreFileSave* pending, StoreCopyPolicy copyPolicy) {
     try {
         checkSaveCancellation(stop);
         const auto target = saveDestination(output, sourceLease, collision);
@@ -623,19 +1123,58 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
             mediaToMove.emplace(stage.path/"media",canonicalSource,targetFolder,privateFolder,
                                 collision==StoreFileCollision::ReplaceConfirmed);
         {
-            SQLite::Database destination(media::pathUtf8(staged),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
+            auto database = std::make_unique<SQLite::Database>(media::pathUtf8(staged),
+                SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+            auto& destination = *database;
             snapshot(destination);
             checkSaveCancellation(stop);
             if (progress) progress({StoreSavePhase::relocating});
+            const bool sharing = copyPolicy != StoreCopyPolicy::preserve;
+            Payload reportedLatency;
+            if (sharing) {
+                sqlite3_progress_handler(destination.getHandle(), 10000, [](void* token) {
+                    return static_cast<const std::stop_token*>(token)->stop_requested() ? 1 : 0;
+                }, &stop);
+                reportedLatency = prepareSharedCopy(destination, copyPolicy, stop);
+            }
             // Rebase between the folders as SQLite names them, the bases that
             // resolveMedia() joins rel_path onto (the stage sits inside the
             // copy's folder). On unix SQLite resolves symlinks (macOS: /var is
             // /private/var) and ".." climbs physical parents, so a path made
             // relative to fs::absolute()'s spelling climbs the wrong distance.
-            if(major==kSchemaMajor)rebaseHistory(destination,sourceFolder,media::projectFolder(destination).parent_path(),
-                                                  mediaToMove ? &*mediaToMove : nullptr,stop);
-            destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-            destination.exec("PRAGMA journal_mode=DELETE");
+            if (major == kSchemaMajor) {
+                rebaseHistory(destination, sourceFolder, media::projectFolder(destination).parent_path(),
+                              mediaToMove ? &*mediaToMove : nullptr, stop);
+                // A normal Save As (or its Copy dialog) yields an ordinary project.
+                if (pending && pending->data_->backup)
+                    stampBackupImage(destination, *pending->data_->backup);
+                else if (pending || sharing)
+                    clearBackupMarkers(destination);
+                if (pending && pending->data_->recoveringBackup)
+                    verifyBackupImage(destination);
+            }
+            if (copyPolicy == StoreCopyPolicy::share) {
+                Store stagedStore(std::move(database), staged, false, {});
+                {
+                    SQLite::Transaction transaction(destination);
+                    const auto baseline = history_detail::seedShareBaseline(stagedStore);
+                    if (!reportedLatency.is_null()) {
+                        reportedLatency["history_head"] = baseline;
+                        SQLite::Statement measured(destination,
+                            "INSERT INTO session_state(key,value) VALUES('devices.reported_latency',?)");
+                        measured.bind(1, reportedLatency.dump());
+                        measured.exec();
+                    }
+                    transaction.commit();
+                }
+                checkSaveCancellation(stop);
+                destination.exec("VACUUM");
+                if (!stagedStore.closeFinalized()) throw std::runtime_error(stagedStore.lastError());
+            } else {
+                if (sharing) destination.exec("VACUUM");
+                destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+                destination.exec("PRAGMA journal_mode=DELETE");
+            }
         }
         if (progress) progress({StoreSavePhase::publishing});
         checkSaveCancellation(stop);
@@ -675,7 +1214,11 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
                 if(move.identity)copied.originalMedia.emplace(relative,*move.identity);
         return copied;
     } catch (const SaveCancelled&) { throw; }
-    catch(const std::exception& e){return {false,e.what(),{}};}
+    catch (const std::exception& e) {
+        // SQLite interrupts the private staging statements on cancellation.
+        checkSaveCancellation(stop);
+        return {false, e.what(), {}};
+    }
 }
 StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileCollision collision,
                               const media::FileIdentity* expectedTarget) {
@@ -794,6 +1337,7 @@ StoreFileResult Store::switchToCopy(const fs::path& output, const CopyState& cop
     gestureDomain_.swap(replacement->gestureDomain_);
     detail::rebindAppliedDomain(*this);
     std::swap(readOnly_,replacement->readOnly_);std::swap(major_,replacement->major_);std::swap(minor_,replacement->minor_);
+    std::swap(synchronizedLocation_,replacement->synchronizedLocation_);
     upgradedFrom_.swap(replacement->upgradedFrom_);lastError_.clear();
     if (cleanup) {
         untitledCleanupReady_ = false;
@@ -887,10 +1431,10 @@ StoreFileResult Store::collectAllAndSave() {
         return {true,{},status==SQLITE_OK?std::string{}:std::string("collection saved; WAL checkpoint is pending")};
     }catch(const std::exception& e){return {false,e.what(),files.rollback()};}
 }
-StoreFileResult Store::collectAndExport(const std::filesystem::path& output) const {
+StoreFileResult Store::collectAndExport(const std::filesystem::path& output, bool keepUndoHistory) const {
     if(closed_ || !db_)return {false,"project is closed",{}};
     if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before exporting",{}};
-    const auto result=media::collectExport(media::projectFolder(*this)/path_.filename(),output);
+    const auto result=media::collectExport(media::projectFolder(*this)/path_.filename(),output,{},keepUndoHistory);
     return {result.ok,result.error,result.warning};
 }
 }

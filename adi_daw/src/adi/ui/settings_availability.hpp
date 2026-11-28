@@ -43,6 +43,8 @@ inline bool settingAvailable(std::string_view key) noexcept {
         "files.projectsFolder",
         "files.recordFolder",
         "files.renderFolder",
+        "files.sampleEditor",
+        "files.sampleEditorOpens",
         "library.backgroundIndexing",
         "library.contentFolders",
         "library.userLibrary",

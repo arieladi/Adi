@@ -35,6 +35,7 @@
 #include "adi/store_rows.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -140,10 +141,15 @@ struct StripConfig {
     double panLeft = -1.0, panRight = 1.0;
 };
 
-/// Linear post-fader levels, independent relaxed loads for the UI frame.
-/// Peak is the largest channel magnitude; RMS averages all channel samples.
-/// No scope subscription, snapshot rebuild or SQL read is needed.
+/// Linear post-fader levels, independent relaxed loads for readers.
+/// The scalar peak is the largest channel magnitude and scalar RMS averages
+/// all samples. The mixer reads the first two channels individually.
 struct StripMeter {
+    struct Channel {
+        std::atomic<float> peak{0}, rms{0};
+    };
+    static constexpr std::size_t kStereoChannels = 2;
+    std::array<Channel, kStereoChannels> stereo{};
     std::atomic<float> peak{0}, rms{0};
     /// Highest linear post-fader peak published since the previous take.
     /// One consuming UI reader fans this value out to its widgets. Callback
@@ -235,6 +241,7 @@ public:
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
     [[nodiscard]] const StripMeter& meter() const noexcept { return meter_; }
+    [[nodiscard]] bool midiAudible(const NodeIo&) const noexcept;
     /// Driver stopped: clear the published readout without touching render state.
     void release() override;
 
@@ -274,7 +281,8 @@ private:
     StripMeter meter_;
     // Audio thread only. Accumulate segments of one callback; offset zero
     // starts the next. Publication after each segment describes its prefix.
-    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0;
+    std::array<double, StripMeter::kStereoChannels> meterChannelPeak_{}, meterChannelEnergy_{};
+    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0, meterFrames_ = 0;
 
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};

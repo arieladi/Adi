@@ -2,6 +2,7 @@
 #include "adi/pitch_flatten.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp.hpp"
 #include "adi/edit_rows.hpp"
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
@@ -37,7 +38,6 @@ struct CapturedClip {
     Payload root, source, pitch, media;
     std::shared_ptr<const ClipPitchEdits> edits;
     std::uint64_t first, frames;
-    bool reversed;
 };
 
 CapturedClip captureClip(Store& store, std::int64_t clipId) {
@@ -66,14 +66,14 @@ CapturedClip captureClip(Store& store, std::int64_t clipId) {
     const auto first = detail::signedInteger(source->at("src_start_frames"));
     const auto frames = detail::signedInteger(source->at("src_len_frames"));
     if (first < 0 || frames <= 0) throw std::runtime_error("invalid pitch flatten source window");
-    const bool reverse = source->at("reverse") != 0;
     const bool warp = source->at("warp_enabled") != 0;
-    if (!warp && (source->at("transpose_semis") != 0 || source->at("formant_shift") != 0))
+    if (!warp && (source->at("formant_shift") != 0 ||
+        audio::pitchedSampleRate(saved.edits->sampleRate, source->at("transpose_semis").get<double>()) <= 0))
         throw std::runtime_error("current clip source playback combination is unsupported");
     read.commit();
     return {head, std::move(file), std::move(*root), std::move(*source), std::move(*pitch), std::move(media),
             std::make_shared<const ClipPitchEdits>(std::move(*saved.edits)), static_cast<std::uint64_t>(first),
-            static_cast<std::uint64_t>(frames), reverse};
+            static_cast<std::uint64_t>(frames)};
 }
 
 } // namespace
@@ -101,10 +101,10 @@ PitchFlattenResult preparePitchFlatten(Store& store, const PitchFlattenOptions& 
         const auto sourcePath = media::resolveMedia(media::projectFolder(store), captured.media, sourceError, options.stop);
         if (options.stop.stop_requested()) return fail(PitchFlattenProblem::Cancelled);
         if (sourcePath.empty()) return fail(PitchFlattenProblem::Capture, std::move(sourceError));
-        // Segment edits already use the full source context in the worker.
-        // Preserve the downstream Warp map by staging its same native window.
+        // Keep the native aperture in forward physical order. Playback still
+        // applies the clip's Reverse, Warp and Transpose to that same window.
         const media::ClipPitchRenderPlan render{sourcePath, {}, captured.edits,
-                                               captured.first, captured.frames, captured.reversed, {}};
+                                               captured.first, captured.frames, false, {}};
         const auto rendered = media::prepareClipPitchRender(render, options.stop, decoder, cache);
         if (!rendered) {
             if (rendered.problem == media::ClipPitchRenderProblem::Cancelled) return fail(PitchFlattenProblem::Cancelled);
@@ -151,7 +151,6 @@ PitchFlattenResult preparePitchFlatten(Store& store, const PitchFlattenOptions& 
         auto after = std::move(captured.source);
         after["media_id"] = imported.mediaId;
         after["src_start_frames"] = 0;
-        after["reverse"] = 0; // baked into the native aperture before any project Warp
         edit::RowEdits changes(db);
         changes.set("audio_clips", options.clipId, std::move(after));
         changes.set("clip_pitch_edits", options.clipId, std::nullopt);

@@ -217,13 +217,14 @@ void preparedPair() {
     }
 
     auto warped = plan;
+    warped.playbackRate = 2 * rate;
     auto& warp = warped.warp.emplace();
     warp.mode = WarpMode::RePitch;
     warp.outputRate = 48000;
     warp.anchors = {{0, 0}, {length, 2 * length}};
     const auto pair = media::prepareClipPitchCompare(warped, {}, &decoded, &cache, 48000);
     check(pair && pair.prepared->rate() == 48000 && pair.prepared->frames() == 2 * length,
-          "both sides use the same captured Warp output extent");
+          "both sides keep the captured Warp clock even with an unwarped playback rate supplied");
     if (pair) {
         PitchComparePlayback playback(pair.prepared);
         std::vector<float> corrected(12000), original(12000);
@@ -262,6 +263,36 @@ void preparedPair() {
         check(edited && raw && std::abs(originalHz - 220) < 0.2 && std::abs(editedHz - 233.08188) < 0.2,
               "owner rate conversion preserves each lane's own pitch");
     }
+
+    auto transposed = plan;
+    transposed.playbackRate = 2 * rate;
+    transposed.sourceFrames = length - 1;
+    const auto effective = media::prepareClipPitchCompare(transposed, {}, &decoded, &cache);
+    check(effective && effective.prepared->rate() == 2 * rate && effective.prepared->frames() == length - 1,
+          "unwarped comparison defaults to the effective rate with unchanged source-frame addresses");
+    const auto graph = media::prepareClipPitchCompare(transposed, {}, &decoded, &cache, rate);
+    check(graph && graph.prepared->rate() == rate && graph.prepared->frames() == length / 2,
+          "a graph rate equal to the WAV rate still converts the odd-length transposed window");
+    if (graph) {
+        PitchComparePlayback playback(graph.prepared);
+        std::vector<float> editedSignal(8000), rawSignal(8000);
+        const bool edited = playback.readAt(bodyFirst / 2, editedSignal);
+        playback.select(PitchCompareSide::Original);
+        const bool raw = playback.readAt(bodyFirst / 2, rawSignal);
+        check(edited && raw && std::abs(frequency(rawSignal, rate) - 440) < 0.4 &&
+              std::abs(frequency(editedSignal, rate) - 466.16376) < 0.4,
+              "both graph lanes retain clip transpose and only the corrected lane adds the note edits");
+        std::array<float, 10> rawLandmark{}, editedLandmark{};
+        const bool readRawLandmark = playback.readAt(marker / 2 - 2, rawLandmark);
+        playback.select(PitchCompareSide::Corrected);
+        check(readRawLandmark && playback.readAt(marker / 2 - 2, editedLandmark) && rawLandmark == editedLandmark &&
+              std::distance(rawLandmark.begin(), std::max_element(rawLandmark.begin(), rawLandmark.end())) == 4,
+              "the original and corrected lanes share the transposed graph sample address");
+    }
+    const auto nativeRender = media::prepareClipPitchRender(transposed, {}, &decoded, &cache);
+    check(nativeRender && nativeRender.prepared->rate == rate && nativeRender.prepared->frames == length - 1,
+          "ordinary render retains the physical WAV clock despite a comparison playback rate");
+
     const auto wrongRate = media::prepareClipPitchCompare(warped, {}, &decoded, &cache, 44100);
     check(wrongRate.problem == media::ClipPitchRenderProblem::Unsupported && !wrongRate.prepared,
           "a requested rate cannot silently replace an existing projected Warp clock");

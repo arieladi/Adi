@@ -256,6 +256,12 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         result->report.failures.push_back({"",diagnostic,state});
         failed(diagnostic,state);
     };
+    const auto noteUnreadable=[&](const scan::ScanPruneResult& reason) {
+        if(std::ranges::none_of(result->report.failures,[&](const auto& failure) {
+            return failure.state==scan::State::UnreadablePath && failure.path==reason.unreadablePath;
+        }))
+            result->report.failures.push_back({reason.unreadablePath,reason.error,scan::State::UnreadablePath});
+    };
     try {
         if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh) {
             failed("invalid discovery mode",scan::State::Invalid);return result;
@@ -266,6 +272,7 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         auto stagedVst3=std::make_unique<juce::KnownPluginList>();
         std::vector<ClapPluginRef> stagedClap;
         scan::ScanPruneRequest prune;
+        scan::ScanPruneResult bound;
         if(mode!=DiscoveryMode::CacheOnly) {
             ++stats_.scans;
             auto config=scanConfig_;
@@ -293,14 +300,15 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 }
                 for(const auto& root:searchPaths->clap)
                     prune.roots.push_back({"clap",media::pathFromUtf8(root)});
-                const auto bound=scan::bindScanPruneRoots(prune);
-                if(!bound){maintenanceFailed(bound);return result;}
+                bound=scan::bindScanPruneRoots(prune);
+                if(!bound && bound.unreadablePath.empty()){maintenanceFailed(bound);return result;}
             }
             if(job) {
                 config.progress=&job->vst3Progress;
                 job->phase.store(DiscoveryPhase::Vst3,std::memory_order_relaxed);
             }
             result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
+            if(!bound.unreadablePath.empty())noteUnreadable(bound);
             if(!liftError.empty())
                 result->report.failures.push_back({"","the blocked plug-ins could not be tried again: "+liftError,scan::State::Unavailable});
             if(result->report.complete && !result->report.cancelled) {
@@ -364,14 +372,22 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         std::sort(snapshot->clap.begin(),snapshot->clap.end(),[](const auto& a,const auto& b) {
             return a.bundlePath==b.bundlePath?a.id<b.id:a.bundlePath<b.bundlePath;
         });
-        auto report=result->report;
-        if(mode==DiscoveryMode::Incremental) {
+        // An unreadable search subtree cannot prove any cached module is missing.
+        // Publish the modules we did validate and defer all destructive pruning.
+        const bool incompleteWalk=std::ranges::any_of(result->report.failures,[](const auto& failure) {
+            return failure.state==scan::State::UnreadablePath;
+        });
+        if(mode==DiscoveryMode::Incremental && !incompleteWalk) {
             if(job)job->phase.store(DiscoveryPhase::Reconciling,std::memory_order_relaxed);
             prune.discoveryComplete=true;
             const auto registry=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
             const auto pruned=scan::pruneMissingScans(registry,prune);
-            if(!pruned){maintenanceFailed(pruned);return result;}
+            if(!pruned) {
+                if(pruned.unreadablePath.empty()){maintenanceFailed(pruned);return result;}
+                noteUnreadable(pruned);
+            }
         }
+        auto report=result->report;
         // Both formats, snapshot ownership and the copied report are prepared
         // before replacing either runtime catalogue. Old const snapshots live on.
         known_.swap(stagedVst3);clapCatalogue_.swap(stagedClap);

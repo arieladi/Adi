@@ -198,6 +198,24 @@ void run() {
           "redo restores bit-identical edited playback");
     checkComparison(session, *store, original, shifted);
 
+    database.exec("UPDATE audio_clips SET reverse=1,transpose_semis=12 WHERE clip_id=7");
+    engine::Session transposed;
+    load(transposed, *store);
+    const double nativeShift = frequency(render(transposed, 2200));
+    std::string comparisonError;
+    if (!transposed.clips()->preparePitchComparison(7, audio::PitchCompareSide::Original, comparisonError))
+        throw std::runtime_error(comparisonError);
+    const double dryShift = frequency(render(transposed, 2200));
+    check(transposed.clips()->selectPitchComparison(7, audio::PitchCompareSide::Corrected),
+          "select corrected on a reversed and transposed clip");
+    const double wetShift = frequency(render(transposed, 2200));
+    check(std::abs(nativeShift - 2 * shiftedHz) < 0.5 && std::abs(dryShift - 440) < 0.5 &&
+          std::abs(wetShift - nativeShift) < 0.5, "unwarped clip transpose and reverse apply to playback and both comparison lanes");
+    check(render(transposed, sourceFrames / 2) == std::vector<float>(8 * blockFrames),
+          "the transposed comparison ends at the same halved source duration as playback");
+    std::printf("Reversed +12 st clip: %.3f Hz original, %.3f Hz corrected, %.3f Hz paged\n", dryShift, wetShift, nativeShift);
+    database.exec("UPDATE audio_clips SET reverse=0 WHERE clip_id=7");
+
     const auto markers = audio::writeWarpMap(
         std::vector<WarpMarker>{{0, 0}, {sourceFrames, 2 * textproj::kPPQ}}, sourceFrames);
     if (!markers) throw std::runtime_error("build Warp fixture");
@@ -209,13 +227,22 @@ void run() {
     engine::Session warped;
     load(warped, *store);
     const auto warpedHz = frequency(render(warped, 12000));
-    check(std::abs(warpedHz * 2 - shiftedHz) < 0.5, "Re-Pitch sees the edited source and stretches it to two beats");
+    check(std::abs(warpedHz * 2 - shiftedHz) < 0.5,
+          "Re-Pitch stretches the edited source and ignores the retained clip transpose");
+    database.exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=7");
+    engine::Session reversedWarp;
+    load(reversedWarp, *store);
+    const auto reversedWarpPcm = render(reversedWarp, 12000);
+    if (!reversedWarp.clips()->preparePitchComparison(7, audio::PitchCompareSide::Corrected, comparisonError))
+        throw std::runtime_error(comparisonError);
+    check(reversedWarpPcm == render(reversedWarp, 12000) && frequency(reversedWarpPcm) > 100,
+          "reversed Warp comparison uses the exact output samples of ordinary corrected playback");
     check(callbackAllocations.load() == 0 && audio::callbackFileIo.load() == 0,
           "Session's edited source uses no callback allocations or file I/O");
     std::printf("Session pitch edit %.3f Hz to %.3f Hz (%+.3f cents), then Re-Pitch %.3f Hz\n",
                 originalHz, shiftedHz, shift, warpedHz);
 
-    database.exec("UPDATE audio_clips SET warp_enabled=0,warp_mode='none',warp_markers=NULL WHERE clip_id=7;"
+    database.exec("UPDATE audio_clips SET warp_enabled=0,warp_mode='none',warp_markers=NULL,reverse=0,transpose_semis=0 WHERE clip_id=7;"
                   "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=500000000 WHERE id=7;");
     auto draft = audio::draftPitchSegments(analysis.data->analysis, {});
     if (!draft) throw std::runtime_error("draft source notes");

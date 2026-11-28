@@ -6,6 +6,62 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-28, noon — the director's second test: 31 rows and a queue
+
+**He tested again on his Mac** and dictated what he found: recording, notes, saving and reopening, edits, the built-in devices, automation, the analysers, export. What works he said so (it is listed at the foot of the queue). What is wrong is SC-447 to SC-477, with a note on SC-347, and one session works the functional rows from `collab/prompts/2026-11-28-directors-test-2.md`, a take with parts cut first (SC-447).
+
+**Three sheets are owed before anything of theirs is built** (ADR-0243): the built-in devices' panels, which he wants laid out as Live's (SC-455: "it should look like Ableton utility, please"); the Analysers page (SC-463 to SC-466); the Export page (SC-471). Four lists against the plan are owed too: SC-456, SC-473, SC-474, SC-477.
+
+**Asked of him:** how far a clip can be drawn out (SC-476), whether playback stops for an export (SC-470), and the two questions parked in the integrator's log (the encoders for MP3 and FLAC; backups on a timer).
+
+**He had not handed the night's pastes on,** so the integrator has not started on the review's findings and the finished rows on the edit, safety and routing branches wait for it.
+
+**His corrections the same day:** the take with parts cut happened once (SC-447 goes to the foot of the queue); Quantize also lacks Live's settings (SC-453); and he asks for a sanity check of the right-click menus against Live (SC-478: Live's side is read in Live, `collab/prompts/2026-11-28-live-readings-menus.md`). SC-454, EQ Eight opening as a hosted plug-in's empty panel, goes to the devices seat. He raised bringing his own ADI EQ in as the EQ device; win put it to him beside his ruling of 5 November (ADR-0212), which has no separate built-in EQ of his on a track.
+
+**His five answers, the same day (ADR-0266, which rides the next stack):** the two encoder libraries for MP3 and FLAC are taken in; the timed backups stay; a clip that does not loop stops at the end of its audio, as Live's; playback keeps running during an export, with a button that shows the file; EQ Eight is laid out as Live's and his own EQ comes through the Mix View as ruled. He asked for a sanity check that exporting while playing does no harm: win read the render path (a second engine on the saved project, one snapshot, its own plug-ins) and registered what is not yet proved as SC-479.
+
+**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-480.
+
+---
+
+## 2026-11-28, before dawn — #830 on main: the tenth stack and the fixes for the director's own test
+
+**Landed:** #830, 25 checks green on the three systems. Two more faults showed on GitHub after the entry below and were fixed on the stack. Linux: the acceptance walk's four-bar recording was cut short, because its driver runs as fast as the engine renders and, since a new song has no returns (SC-437), outran the recorder's writer and filled its two-second ring; the driver now gives the writer a turn while a take is recorded. A device cannot do this, it calls once per block of real time. macOS: the two faults named below. #831: the entry below.
+
+**The register:** seventeen rows of the director's own test are marked on main (#830). SC-441 is not: its Loop half is fixed, its silent click was not reproduced and waits for his retest. The marks for #818, #822 and the rest of #830 are still owed.
+
+**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-447.
+
+---
+
+## 2026-11-28, night — the ninth stack on main; the director's own test, and its fixes stacked on the tenth (#830); the review's findings; what the window suite hid on Windows and macOS
+
+**Landed since the last entry.** #822, the ninth basics stack: `basics/integrate-1` (eight chains, about 200 commits), the gemini seat's 18 findings fixed by the integrator, and ADR-0263. Win's fixes on it: a local in the Settings folder chooser that hid a JUCE member (MSVC C4458); Save a Copy keeping a sample's relative path when Windows spells the folder two ways (seen only on GitHub's Windows, whose temporary folder is reached through a short name; reproduced on the second PC by running the suite with such a name); the Warp result published through a flag where Apple's standard library has no atomic shared pointer; the library suite run on its own. #823 to #828: reservations and the records below.
+
+**The director tested ADI himself, on macOS, on 27 November.** His findings are SC-433 to SC-445, his rulings ADR-0265 (how far Stop Agent reaches, a new song with no returns, FX channels as decided, a double-click that adds a track, no tooltip repeating the Info text), and one session works the queue `collab/prompts/2026-11-28-directors-test.md`. It finished fourteen rows the same night on `basics/test-chain`. Items 15 and 16 of that queue (DF-W64, DF-W65) are not done yet. ADR-0264 records the Tip Zone as a goal, not near work.
+
+**The tenth stack is #830** (`land/basics-1128b`): main, `basics/integrate-2` (the Browser chain through SC-137, Safety, Routing, later Clips, Tracks, MIDI and Edit tips), the Windows checker's fixes, `basics/test-chain`, and the records. #829 held the same stack without the director's-test chain and is closed as carried. What the check on the second PC and GitHub's three systems found, all fixed on the stack:
+
+- *Windows, the window suite (eleven failed checks).* A content folder was written with forward slashes, unlike the path the folder chooser hands over, and the two checks that read it disagreed with each other: it is written the way the system writes it. A colour check drew into Windows' own picture type and read a pixel while the drawing was open. The picture comparison did not black out the names in the Browser's content list, and each system draws text its own way: the mask covers them and the nine reference pictures are rewritten (each differs from its earlier reference only inside that one rectangle, checked pixel by pixel; Linux and macOS then pass against the same pictures).
+- *macOS.* A conversion Apple's compiler refuses where a replaced sample's frames are rescaled (a long double is 64 bits wide there). The Sample Editor's click that sets Start or End, made with the key that on macOS also leaves the grid, landed off the grid: for that click the key is the shortcut alone.
+- *The director's-test chain.* A shadowed local (MSVC C4456), and two headless suites, Clip Playback and Link Playback, that still held the old Loop rule; the session had run only the suites it judged affected.
+
+**The Windows checker does not run the window suites** (its desk may be in use), so the second PC and GitHub are the only places a Windows-only fault in them shows. Three rules for whoever writes window checks: every word in a compared picture is blacked out; a picture read in a check is a memory picture and its drawing is closed first; a path compared as text is written the system's way.
+
+**The review of `basics/integrate-2`.** The gemini seat found 22 faults at an earlier head. The integrator had ended its turn and nobody could hand it a paste overnight, so win set three helpers to verify each finding against the stack and fix the real ones; a usage limit cut them off partway. Their edits are parked on `win/review-fixes-wip`, never built and never reviewed, in no landing. Five findings win verified itself and fixed on the stack: hardware MIDI outputs silent, and hardware MIDI inputs missing from MIDI From, on the first project opened at launch; startup recovery comparing a take's project as text; Take Snapshot not refreshing an open Undo History; Current Project stale after Collect All and Save. **Win changed its own condition:** it had said the tenth stack waits for all 22. It does not, because the director's own fixes sit on top of that stack and the remaining findings are faults inside new features, not damage to what was on main. They are the integrator's first job after #830.
+
+**The second PC's check** now forces its checkout and compares it with the commit asked for: a run that had rewritten reference pictures left files changed, and the next check silently tested the commit before.
+
+**Recorded:** DF-W65 (a setting: the Loop switch takes the selection) and SC-446 (in a window 960 wide the Control Bar draws Key, the field beside it and MIDI on top of one another; seen in the suite's own picture, which blacks out words and so never failed on it).
+
+**Parked in the integrator's log, for the director or win.** SC-398: Export to MP3 and FLAC needs his grant for the two encoder libraries (PLAN names the grant as his). SC-157: the Safety session made backups on a timer as win's prompt asked, where ADR-0255 (e) says from the second Take Snapshot only; the timer is an addition and is his to keep or strike. SC-100: whether reopening an edited Untitled file asks for a name at its first Save; win reads Live's recovered Set and says yes. SC-277 and SC-406: format rows win owes the routing seat. SC-434: the 70 colour slots repeat the fourteen until the measured table is approved (ADR-0211 d3).
+
+**Owed by win:** the register's "on main" marks for #818 and #822 (a helper was compiling them from the sessions' own reports when the limit cut it off), and for #830 when it lands; the plan rows of DF-R2 and DF-R3.
+
+**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-447.
+
+---
+
 ## 2026-11-27, night — the eighth stack on main; a checker on a second PC; five engine seats; collaboration ruled (ADR-0263)
 
 **Landed:** #818, the eighth basics stack: the analysers chain and ADR-0262 with the Browser's agreed sheet. #819 (eighteen speed rows marked on main), #820 (the five engine seats' queue), #821 (their reservations): prompts and the register only.

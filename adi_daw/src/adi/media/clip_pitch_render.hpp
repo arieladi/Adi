@@ -22,6 +22,8 @@ struct ClipPitchRenderPlan {
     // The caller projects this recipe using the original clip clock. The
     // pitch worker substitutes its staged source window before executing it.
     std::optional<audio::WarpRenderPlan> warp;
+    // Effective frame rate for unwarped comparison. Zero uses the WAV rate.
+    std::uint32_t playbackRate = 0;
 };
 
 enum class ClipPitchRenderProblem { None, Realtime, Cancelled, Source, Edits, Unsupported, Resource, Io, Dsp };
@@ -70,8 +72,10 @@ struct ClipPitchCompareResult {
 
 /// Opt-in worker comparison, from a single verified source capture. Both
 /// sides have the same trim, direction and optional project Warp clock. The
-/// original bypasses all segment edits. A nonzero desired rate can convert an
-/// unwarped source, or must match the rate of the captured project Warp plan.
+/// original bypasses all segment edits. Unwarped comparison uses playbackRate
+/// or the native WAV rate, and converts both sides to outputRate when supplied.
+/// Warped comparison uses the captured plan's clock. A supplied outputRate
+/// must equal that clock's rate.
 [[nodiscard]] ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan&, std::stop_token = {},
                                                              std::uint32_t outputRate = 0);
 [[nodiscard]] ClipPitchCompareResult prepareClipPitchCompare(const ClipPitchRenderPlan&, std::stop_token,

@@ -5,6 +5,7 @@
 #include "adi/appdata.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/scan_catalogue.hpp"
+#include "adi/ui/plugin_scan.hpp"
 #include "juce/juce_device_loader.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
@@ -88,6 +89,59 @@ inline bool fatalHeadlines() {
         passed=passed && headline;
     }
     return passed;
+}
+inline void unreadableSearchDirectory() {
+#if !defined(_WIN32)
+    using device::DiscoveryMode;using device::DiscoveryOutcome;
+    TempDirectory scratch("discovery_operation","unreadable");
+    const auto root=scratch.path()/"VST3",denied=root/"Unreadable",other=root/"Readable";
+    fs::create_directories(denied);
+    fs::create_directories(other);
+    const auto fixture=media::pathFromUtf8(ADI_CATALOGUE_FIXTURE);
+    fs::copy(fixture,other/fixture.filename(),fs::copy_options::recursive);
+    fs::copy(fixture,denied/fixture.filename(),fs::copy_options::recursive);
+    scan::Config config;
+    config.registry=scratch.path()/"registry.sqlite";
+    config.executable=media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+    device::PluginSearchPaths paths;
+    paths.vst3.add(juce::File(juce::String::fromUTF8(text(root).c_str())));
+    device::JuceDeviceLoader before(false);
+    before.setScanConfig(config);before.setSearchPaths(paths);
+    const auto full=before.discover(DiscoveryMode::Incremental);
+    require(full && full->outcome==DiscoveryOutcome::Published && full->catalogue->vst3.size()==6,
+            "SC-425: both VST3 bundles are found while the folders are readable");
+
+    struct RestorePermission {
+        fs::path path;
+        ~RestorePermission() { std::error_code error;fs::permissions(path,fs::perms::owner_all,error); }
+    } restore{denied};
+    fs::permissions(denied,fs::perms::none);
+    std::error_code deniedError;
+    const fs::directory_iterator inaccessible(denied,deniedError);
+    if (!deniedError) return; // Root can read this fixture despite chmod.
+    require(scan::isAccessDenied(deniedError),"SC-425: test fixture denies directory enumeration");
+
+    device::JuceDeviceLoader loader(false);
+    loader.setScanConfig(config);loader.setSearchPaths(paths);
+    for(const auto mode:{DiscoveryMode::Incremental,DiscoveryMode::Refresh}) {
+        const auto result=loader.discover(mode);
+        require(result && result->outcome==DiscoveryOutcome::Published && result->report.complete &&
+                result->report.failures.size()==1 && result->catalogue->vst3.size()==3 &&
+                result->report.failures.front().state==scan::State::UnreadablePath &&
+                result->report.failures.front().path==text(fs::canonical(denied)),
+                "SC-425: the unreadable folder is named and the readable VST3s publish");
+        ui::PluginScan displayed;
+        displayed.phase=ui::PluginScan::Phase::Done;
+        displayed.listing.plugins.resize(result->catalogue->vst3.size());
+        ui::applyReport(displayed.listing,result->report);
+        require(ui::pluginScanStatus(displayed).find("1 unreadable search location was skipped")!=std::string::npos,
+                "SC-425: the published scan explains the skipped location");
+    }
+    std::string error;
+    const auto retained=scan::readCatalogue(config.registry,error);
+    require(retained && retained->modules.size()==2,
+            "SC-425: scanning with an unreadable folder leaves its cached metadata intact");
+#endif
 }
 inline Json modes() {
     using device::DiscoveryMode;using device::DiscoveryOutcome;
@@ -552,6 +606,7 @@ inline void command() {
 inline bool scannerDiscoveryContracts() {
     juce::ScopedJuceInitialiser_GUI initialize;
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
+        discovery_test_detail::unreadableSearchDirectory();
         auto receipt=discovery_test_detail::modes();discovery_test_detail::refreshModes();discovery_test_detail::parallelDiscovery();
         discovery_test_detail::cacheStates();discovery_test_detail::command();
         discovery_test_detail::clapHintAndMove();discovery_test_detail::asynchronousDiscovery();

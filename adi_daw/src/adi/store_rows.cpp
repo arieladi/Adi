@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store_rows.hpp"
+#include "adi/ops.hpp"
 #include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
@@ -56,6 +57,18 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
 }
 
 }  // namespace
+
+std::optional<MidiOutput> decodeMidiOutput(std::span<const std::byte> data) {
+    std::string error;
+    const auto mapping = decodeFromLog(data, error);
+    if (!mapping || !mapping->is_object() || !mapping->contains("midiPort") ||
+        !mapping->at("midiPort").is_string() || !mapping->contains("midiChannel") ||
+        !mapping->at("midiChannel").is_number_integer()) return {};
+    auto port = mapping->at("midiPort").get<std::string>();
+    const auto channel = mapping->at("midiChannel").get<std::int64_t>();
+    if (!port.starts_with("out:") || port.size() <= 4 || channel < 1 || channel > 16) return {};
+    return MidiOutput{std::move(port), static_cast<int>(channel)};
+}
 
 // --- notes ------------------------------------------------------------------
 
@@ -405,7 +418,7 @@ static Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead* pit
               [&](const SQLite::Statement& st){keyTaps.emplace(st.getColumn(0).getInt64(),st.getColumn(1).getString());});
     query(m, db, "routing",
           "SELECT id, src_kind, src_id, dst_kind, dst_id, kind, ord, gain_db, "
-          "       pan, pre_fader, enabled, origin FROM routing",
+          "       pan, pre_fader, enabled, origin, channel_map FROM routing",
           [&](const SQLite::Statement& st) {
               Routing r;
               r.id = st.getColumn(0).getInt64();
@@ -420,6 +433,13 @@ static Model readModel(const Store& store, clip_edit::ProjectPitchEditsRead* pit
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if (r.srcKind == "track" && r.dstKind == "hw_out" && r.dstId == 0 && r.kind == "main") {
+                  const auto data = st.getColumn(12);
+                  if (data.isBlob() && data.getBytes() > 0) {
+                      r.midiOutput = decodeMidiOutput({static_cast<const std::byte*>(data.getBlob()),
+                          static_cast<std::size_t>(data.getBytes())});
+                  }
+              }
               if (const auto tap = individualTaps.find(r.id); tap != individualTaps.end())
                   r.sendTap = tap->second;
               if(const auto tap=keyTaps.find(r.id);tap!=keyTaps.end())r.keyTap=tap->second;

@@ -276,19 +276,17 @@ struct ComparisonResampleInput {
     }
 };
 
-std::vector<float> readComparisonSide(const PreparedClipPitch& prepared, std::uint32_t rate,
-                                      std::uint64_t frames, std::stop_token stop) {
+std::vector<float> readComparisonSide(const PreparedClipPitch& prepared, std::uint32_t inputRate,
+                                      std::uint32_t outputRate, std::uint64_t frames, std::stop_token stop) {
     audio::WavReader reader(prepared.file);
     if (reader.sampleRate() != prepared.rate || reader.channels() != prepared.channels || reader.frames() != prepared.frames)
         throw Failure{ClipPitchRenderProblem::Io, "prepared Pitch Editor comparison side changed"};
-    if (rate == prepared.rate) return readPcm(reader, stop);
+    if (outputRate == inputRate) return readPcm(reader, stop);
 
     // Use the exact device/source ratio. Round only the number of requested
     // frames, so the fractional sample clock does not drift to meet an end
     // anchor. Zero extension keeps sinc context beyond the trimmed boundary.
-    const double ratio = static_cast<double>(rate) / prepared.rate;
-    if (!src_is_valid_ratio(ratio))
-        throw Failure{ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison sample-rate ratio is unsupported"};
+    const double ratio = static_cast<double>(outputRate) / inputRate;
     const auto channels = prepared.channels;
     const auto padding = blockFrames * static_cast<std::uint32_t>(std::ceil(std::max(1.0, 1 / ratio)));
     ComparisonResampleInput input{reader, stop, std::vector<float>(static_cast<std::size_t>(blockFrames) * channels),
@@ -342,10 +340,16 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
         if (frames > maxSourceSamples / channels)
             return fail(ClipPitchRenderProblem::Resource, "Pitch Editor source exceeds render PCM budget");
 
-        const auto comparisonRate = plan.warp ? plan.warp->outputRate : outputRate ? outputRate : rate;
-        const auto comparisonFrames = plan.warp && !plan.warp->anchors.empty() ? plan.warp->anchors.back().outputFrame :
-            (plan.sourceFrames * comparisonRate + rate / 2) / rate;
+        std::uint32_t comparisonInputRate = 0, comparisonRate = 0;
+        std::uint64_t comparisonFrames = 0;
         if (comparison) {
+            const auto playbackRate = !plan.warp && plan.playbackRate ? plan.playbackRate : rate;
+            comparisonInputRate = plan.warp ? plan.warp->outputRate : playbackRate;
+            comparisonRate = outputRate ? outputRate : comparisonInputRate;
+            comparisonFrames = plan.warp && !plan.warp->anchors.empty() ? plan.warp->anchors.back().outputFrame :
+                (plan.sourceFrames * comparisonRate + playbackRate / 2) / playbackRate;
+            if (!plan.warp && !src_is_valid_ratio(static_cast<double>(comparisonRate) / comparisonInputRate))
+                return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison sample-rate ratio is unsupported");
             if (comparisonFrames == 0) return fail(ClipPitchRenderProblem::Source, "Pitch Editor comparison has no output frames");
             if (comparisonFrames > audio::kPitchCompareMaxResidentSamples / (2 * static_cast<std::uint64_t>(channels)))
                 return fail(ClipPitchRenderProblem::Resource, "Pitch Editor comparison exceeds resident PCM budget");
@@ -412,8 +416,8 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
         std::vector<float>(std::size_t{0}).swap(pcm);
         std::vector<float>(std::size_t{0}).swap(mono);
         rendered.reset();
-        auto dry = readComparisonSide(*original.prepared, comparisonRate, comparisonFrames, stop);
-        auto edited = readComparisonSide(*corrected.prepared, comparisonRate, comparisonFrames, stop);
+        auto dry = readComparisonSide(*original.prepared, comparisonInputRate, comparisonRate, comparisonFrames, stop);
+        auto edited = readComparisonSide(*corrected.prepared, comparisonInputRate, comparisonRate, comparisonFrames, stop);
         checkCancelled(stop);
         auto pair = audio::PitchComparePcm::prepare(comparisonRate, corrected.prepared->channels,
                                                      std::move(dry), std::move(edited), stop);
