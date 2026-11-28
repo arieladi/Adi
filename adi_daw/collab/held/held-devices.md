@@ -12,7 +12,8 @@
 ## Where it stands
 
 Round 1 (28 November): step 1 (the survey) done. Step 2 (the chain) done: all seven stack tops merged,
-the cut point is 578c95198. Step 3: the core check of the cut point is running in slot 14.
+the cut point is 578c95198. Step 3: core passes on the whole chain (318/318); the `all` check
+(core and the window suites with the app) is running in slot 14.
 
 ## For the director
 
@@ -108,6 +109,8 @@ The validators pass on a374b5afa (schema, ops, Pd, CI, parity).
 
 | Check | Chain head | Result |
 |---|---|---|
+| core | 578c95198 (the cut point) | build OK (validators, MSVC Debug /WX); CTest 314/318. The four failures are none of the lane's: `adi_agent_log_tests` (three child writers), `adi_library_tests` (timeout, 120 s), `adi_link_playback_tests` (owner preparation), `adi_ui_document_tests` ("opening yields to the owner between slow plug-in loads"). All four pass in the next row, on a superset of this tree, so they are the shared PC's load, not the merge. |
+| core | 086864eee (the whole chain) | **build OK; CTest 318/318.** |
 
 ## Step 4 — the account
 
