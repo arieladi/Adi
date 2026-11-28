@@ -20491,6 +20491,85 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     check(chooseHiddenTouch && root.automationMode() && hiddenTarget.ownerId == id && hiddenTarget.paramRef == "31" &&
               ordered() == std::vector<std::string>{original.front(), "0000001f"} && hasNoLiveDemand(),
           "SC-317: the Arrangement chooser pins and shows a hidden device's last touch without retaining live demand");
+
+    // SC-326: dragging the displayed controls changes the authored order as one Configure edit.
+    root.devices.suspendParameters(false);
+    root.setAutomationMode(false);
+    const std::vector<std::string> beforeDrag{original.front(), "0000001f", "gain"};
+    const bool listed = document->deviceAction("device.setPanel", {{"dev", id}, {"params", beforeDrag}});
+    frame();
+    frame();
+    panel.configureButton.onClick();
+    frame();
+    auto *peer = surface.getPeer();
+    const auto pointOf = [&](std::string_view parameter, bool lower) -> std::optional<juce::Point<float>> {
+        const auto control = std::find_if(panel.controls.begin(), panel.controls.end(), [parameter](const auto &entry) {
+            return entry->parameter == parameter && entry->isShowing();
+        });
+        if (control == panel.controls.end())
+            return std::nullopt;
+        const auto &controlView = **control;
+        return surface.getLocalPoint(&controlView, juce::Point<int>{controlView.getWidth() / 2,
+                                 lower ? controlView.getHeight() - 4 : 5}).toFloat();
+    };
+    const auto source = pointOf("0000001f", false);
+    const auto afterGain = pointOf("gain", true);
+    const bool dragReady = listed && peer && panel.configuring && source && afterGain;
+    check(dragReady, "SC-326: Configure shows the two known controls and retains the missing panel entry");
+    if (dragReady) {
+        auto when = juce::Time::currentTimeMillis();
+        const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
+            juce::ModifierKeys::currentModifiers = mods;
+            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+        };
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+        const auto start = head();
+        const auto edits = panelEdits;
+        const auto cutoff = knobs->getParam("0000001f").normalized;
+        const auto gain = knobs->getParam("gain").normalized;
+        mouse(*source, {});
+        mouse(*source, left);
+        mouse(*afterGain, left);
+        check(ordered() == beforeDrag && head() == start && panelEdits == edits,
+              "SC-326: the drag previews without writing the panel order");
+        mouse(*afterGain, {});
+        frame();
+        check(ordered() == std::vector<std::string>{original.front(), "gain", "0000001f"} &&
+                  panelEdits == edits + 1 && head() != start && knobs->getParam("0000001f").normalized == cutoff &&
+                  knobs->getParam("gain").normalized == gain,
+              "SC-326: dropping Cutoff after Gain reorders exactly once and preserves both parameter values");
+        if (head() != start) {
+            const bool undone = root.command(AppCommands::Undo);
+            frame();
+            check(undone && ordered() == beforeDrag && head() == start,
+                  "SC-326: one Undo restores the original control order and previous history step");
+        }
+
+        const auto startAgain = pointOf("0000001f", false);
+        const auto overGain = pointOf("gain", true);
+        check(startAgain && overGain, "SC-326: both controls remain available after restoring their order");
+        if (startAgain && overGain) {
+            const auto outside = surface.getLocalPoint(&panel, juce::Point<int>{panel.getWidth() + 35,
+                                                                               panel.getHeight() / 2}).toFloat();
+            const auto beforeCancel = panelEdits;
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*overGain, left);
+            mouse(outside, left);
+            mouse(outside, {});
+            frame();
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel,
+                  "SC-326: releasing beyond the device cancels the reorder without an edit");
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*startAgain, {});
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel,
+                  "SC-326: a click without a drag leaves the control in place");
+        }
+    }
+    if (panel.configuring)
+        panel.configureButton.onClick();
     root.pluginHost = nullptr;
 }
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
