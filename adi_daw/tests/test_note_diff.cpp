@@ -5,6 +5,7 @@
 #include "adi/history.hpp"
 #include "adi/note_diff.hpp"
 #include "adi/note_transforms.hpp"
+#include "adi/note_timing_randomize.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1296,10 +1297,66 @@ void transposeDegrees() {
     History history(*f.store);
     check(history.undo().ok && f.blob(2) == raised && history.redo().ok && f.blob(2) == original,
           "degree transpose retains byte-exact history replay");
+void seededNoteTiming() {
+    Fixture f("seeded_note_timing");
+    const auto first = rawRecord(native(1, -20), 48);
+    const auto middle = rawRecord(native(2, 1000), 48);
+    const auto last = rawRecord(native(wideId, 2000), 48);
+    const auto before = envelope({first, middle, last}, 48);
+    f.seed(1, before);
+    const auto snapshot = notes::captureNotes(*f.store, 1);
+    require(snapshot.ok, "capture seeded timing fixture: " + snapshot.error);
+    constexpr std::array selected{wideId, std::uint64_t{1}};
+    constexpr std::array reversed{std::uint64_t{1}, wideId};
+    std::string error;
+    const auto diff = notes::seededTimingDiff(snapshot, selected, 100, 42, error);
+    require(diff.has_value(), "derive literal timing diff: " + error);
+    const auto seededAgain = notes::seededTimingDiff(snapshot, reversed, 100, 42, error);
+    const auto otherSeed = notes::seededTimingDiff(snapshot, selected, 100, 43, error);
+    const std::array narrow{wideId};
+    const auto subset = notes::seededTimingDiff(snapshot, narrow, 100, 42, error);
+    const auto movedFirst = changeRecord(first, [](NoteRecord& note) { note.start_ticks = -59; });
+    const auto movedLast = changeRecord(last, [](NoteRecord& note) { note.start_ticks = 2011; });
+    const notes::Diff expected{{}, {}, {{first, movedFirst}, {last, movedLast}}};
+    check(*diff == expected && seededAgain == diff && otherSeed && otherSeed != diff,
+          "a seed gives stable independent musical offsets for signed starts and full-width IDs");
+    check(subset && subset->changed.size() == 1 && subset->changed.front() == expected.changed.back(),
+          "a retained note draws the same offset when the selection changes");
+    const auto noMovement = notes::seededTimingDiff(snapshot, selected, 0, 42, error);
+    check(noMovement == notes::Diff{} && !notes::seededTimingDiff(snapshot, selected, -1, 42, error),
+          "zero span makes no effects and a negative span is refused");
+    const std::array duplicate{wideId, wideId};
+    const std::array absent{wideId, maximumId};
+    const std::array zero{std::uint64_t{0}};
+    check(!notes::seededTimingDiff(snapshot, duplicate, 100, 42, error) &&
+              !notes::seededTimingDiff(snapshot, absent, 100, 42, error) &&
+              !notes::seededTimingDiff(snapshot, zero, 100, 42, error),
+          "invalid selection is refused without returning partial effects");
+    const auto prepared = notes::prepareDiff(snapshot, *diff);
+    require(prepared.ok && prepared.effects == expected && prepared.requests.size() == 1,
+            "prepare one literal timing diff: " + prepared.error);
+    const auto after = envelope({movedFirst, middle, movedLast}, 48);
+    const auto committed = notes::commitDiff(*f.store, prepared);
+    check(committed.ok && f.blob() == after, "commit preserves duration, all other fields and opaque record tails");
+    const auto undone = History(*f.store).undo();
+    const bool originalRestored = undone.ok && f.blob() == before;
+    const auto redone = History(*f.store).redo();
+    check(originalRestored && redone.ok && f.blob() == after, "Undo and Redo retain the literal seeded bytes");
+
+    constexpr auto lowest = std::numeric_limits<std::int64_t>::min();
+    constexpr auto highest = std::numeric_limits<std::int64_t>::max();
+    f.seed(2, envelope({rawRecord(native(1, lowest)), rawRecord(native(2, highest - 25))}), 102);
+    const auto bounds = notes::captureNotes(*f.store, 2);
+    require(bounds.ok, "capture extreme musical ticks: " + bounds.error);
+    const std::array lowerId{std::uint64_t{1}};
+    const std::array upperId{std::uint64_t{2}};
+    check(!notes::seededTimingDiff(bounds, lowerId, 100, 0, error) &&
+              !notes::seededTimingDiff(bounds, upperId, 100, 0, error),
+          "moves that would underflow the start or overflow the end are refused");
 }
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 17> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 18> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
@@ -1309,6 +1366,7 @@ int main() {
         {"ordered note batch", orderedNoteBatch},
         {"ordered note membership", orderedNoteMembership},
         {"large ordered note batch", largeOrderedNoteBatch},
+        {"seeded note timing", seededNoteTiming},
         {"late failures", lateFailures}, {"Fit to Scale", fitToScale},
         {"pitch inversion", invertPitches}, {"degree transposition", transposeDegrees}}};
     for (const auto& [name, run] : cases) {

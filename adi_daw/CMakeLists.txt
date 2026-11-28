@@ -302,6 +302,7 @@ add_library(adi_core STATIC
     src/adi/sync/midi_clock_follower.cpp
     src/adi/sync/midi_clock_transport.cpp
     src/adi/interchange/compound_file.cpp
+    src/adi/note_timing_randomize.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
