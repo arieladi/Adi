@@ -358,9 +358,9 @@ void midiLoopTakes() {
     const std::array<controllers::Point,2> pedalPoints{{{1,width/8,1.},{2,width/4,0.}}};
     const std::array<recording::MidiControllerLane,1> pedal{{{0,64,pedalPoints}}};
     const std::array<recording::MidiTakePass,4> passes{{
-        {{101,201,"First"},301,width,held,held},
-        {{102,202,"Second"},302,width,later[0],held,pedal},
-        {{103,203,"Third"},303,width,later[1],held},
+        {{101,201,"First"},301,width,held,held,{},{}},
+        {{102,202,"Second"},302,width,later[0],held,pedal,{}},
+        {{103,203,"Third"},303,width,later[1],held,{},{}},
         {{104,204,"Partial"},304,width/2,later[2],held,{},pedal},
     }};
     const recording::MidiLoopPlacement placement{23,2*width,width,200,300,"MIDI Take"};
