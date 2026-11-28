@@ -158,6 +158,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-451 | `basics/test-chain-2` at `7494d44fa` | Pinch zooms the Note and Sample Editors around the pointer and shares the existing Follow behavior. Clips and Arrangement seats. | Real JUCE magnify calls in the peerless fixture preserve the pointer anchor across all three editor surfaces. A physical Mac trackpad remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-459 | `basics/test-chain-2` at `d3a4b40f1` | Present accepted device automation values in the control display. Engine and devices seats. | The headless Utility replay tracked 0.25 and 0.75 after both readbacks stalled at 0.50 on the baseline. Sound scheduling and history were checked separately. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-460 | `basics/test-chain-2` at `8595bb034` | Volume, pan and send menus show, delete and re-enable target automation. Mixer and automation seats. | The focused peerless checks cover actual mixer menus, untouched sends, target-specific deletion and Undo. The broader Live menu reading is tracked in SC-478. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-457, SC-462 | `basics/test-chain-2` at `c7e5385cc` | Show Info for occupied surfaces and expand the analyser through its caption row. Arrangement, Browser, window and Analysers seats. | Peerless hover replays exercise clips, blanks and controls. A software-painted spectrogram matches the full raster across all 128 by 256 pixels. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -234,3 +235,9 @@ Main at `6aeeed1b1` already provided target-specific Delete Automation and Re-En
 The send chooser now agrees with the knob on the selected routing row. Choosing Show Automation on an untouched send prepares a silent route in a single undoable edit and preserves its enabled state. Opening a menu never creates the route. Volume, Pan, and already-routed Sends need no edit to show an envelope.
 
 For the director, the M1–M3 menu observations are still pending. The Live readings branch has no Right-click menus report. Keep these existing commands and compare any additional entries and their order in SC-478 when the readings arrive.
+
+#### SC-457 and SC-462 · Info hover and analyser plot
+
+The Browser used its description throughout the column. The Arrangement canvas used its directions over bare timeline. The Info box now uses actual hit positions to tell a clip or occupied Browser row from empty space. Controls with their own description still show it. A blank part of a lane and the spacer between the Browser's sidebar sections keep the analyser visible.
+
+The Info dock keeps the same outer bounds and frame. The spectrogram no longer reserves its 5 px inset and 16 px caption strip. In the exact 128 × 256 plot fixture the previous inset plot would start at `(5,21)` and occupy 118 × 230 px. The new plot starts at `(0,0)` and occupies the full 128 × 256 px. Compared pixel for pixel with the matching raster in the larger analysis view, the compact renderer shows the same data. Filled and line spectrum compact views also give the heading space to their plots. Arrangement, Browser, window and Analysers seats.
