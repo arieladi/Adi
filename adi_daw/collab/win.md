@@ -24,7 +24,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **He agreed the third sheet** ("agreed, draw the rest of the devices") and the rest were drawn the same day: sheet 4 (EQ, which he renamed from EQ Eight since it is ADI's only EQ device; Utility, Overdrive, Redux, Echo, Hybrid Reverb), 5 (Chorus-Ensemble, Phaser-Flanger, Shifter, Resonators, Vocoder), 6 (ADI-Shaper), 7 (OneShot and Sampler), 8 (Chord Comb and Color Cab). His outside panel then said, rightly, that ADI-Shaper, OneShot and Sampler do less than the tools they are measured against. A sheet draws only what a device has, so that is not a fault of the look: it is three lists to make, feature by feature (SC-481 to SC-483, `collab/prompts/2026-11-28-device-parity-lists.md`).
 
-**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-484.
+**Sheet 8 (Chord Comb, Color Cab):** "looks perfect to me". His panel's points on it were sorted against the code: the small missing things are SC-484, the additions are DF-W66, and two of its requests (the old colour sounding while the new one builds; no latency) are already what ADR-0192 built. **ADI-Shaper:** he doubts it matches its model ("it needs a browser, presets, and lots of templates, need to make sure it dident miss any quality or ability"); win read the model's pages and put the gaps on SC-481 and in the lists' prompt (#840).
+
+**Next free:** ADR-0267; schema minor 1.29; DF-W67, DF-R4, DF-C10, DF-E93; SC-485.
 
 ---
 
