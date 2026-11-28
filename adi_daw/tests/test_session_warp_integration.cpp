@@ -1642,79 +1642,123 @@ void physicalLegatoTempoScene(bool loop) {
     (void)render(true, Scene::ChangedSource);
 }
 
-void physicalLegatoOneShotRetainedByTempoScene(bool ram) {
-    test::TempDirectory folder{"physical_legato",ram ? "no-stop-ram" : "no-stop-paged"};
-    auto store = sceneProject(folder.path());
-    enableTempoScene(*store);
-    auto& db = store->db();
-    db.exec("UPDATE scenes SET ord=2 WHERE id=20;"
-            "INSERT INTO scenes(id,ord) VALUES(15,1);"
-            "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0);");
-    addClip(*store,folder.path(),101,10,5,false,3000,1,12000);
-    pinUnwarpedOneShot(*store,50000000,800000000);
-    addClip(*store,folder.path(),102,15,5,true,4800,1,12000);
-    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
-            "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
-            "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
-            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,1100000000);"
-            "UPDATE clip_launch SET launch_quant=1 WHERE clip_id IN (101,102);");
-    if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102");
+void physicalLegatoRetainedByTempoScene(bool ram, bool loop) {
+    constexpr std::int64_t from = 60000, switchAt = 72000;
+    constexpr std::int64_t loopBegin = 3600, loopEnd = 42000, savedStart = 4800, cue = 16800;
+    constexpr auto firstWrap = switchAt + loopEnd - cue;
+    const auto finish = loop ? firstWrap + 2 * (loopEnd - loopBegin) : 108000;
+    enum class Change { None, Tempo, SavedGain, PendingLoopEdit };
+    const auto render = [&](Change change) {
+        test::TempDirectory folder{"physical_legato_no_stop", ram ? "ram" : "paged"};
+        auto store = sceneProject(folder.path());
+        enableTempoScene(*store);
+        auto& db = store->db();
+        db.exec("UPDATE scenes SET ord=2 WHERE id=20;"
+                "INSERT INTO scenes(id,ord) VALUES(15,1);"
+                "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(1,20,0);");
+        addClip(*store, folder.path(), 101, 10, 5, false, 3000, 1, 12000);
+        pinUnwarpedOneShot(*store, 50000000, 800000000);
+        addClip(*store, folder.path(), 102, 15, 5, true, savedStart, 1, 12000);
+        db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
+                "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
+                "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+                "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,1100000000);"
+                "UPDATE clip_launch SET launch_quant=1 WHERE clip_id IN (101,102);");
+        if (loop) {
+            SQLite::Statement edit(db, "UPDATE clips SET loop_enabled=1,loop_start_ticks=?,loop_len_ticks=?,"
+                                       "length_ns=980000000 WHERE id=102");
+            edit.bind(1, loopBegin * quarter / (rate / 2));
+            edit.bind(2, (loopEnd - loopBegin) * quarter / (rate / 2));
+            edit.exec();
+            db.exec("UPDATE clip_playback_details SET loop_begin_ns=75000000,loop_end_ns=875000000,"
+                    "source_end_ns=1080000000 WHERE clip_id=102;"
+                    "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1 "
+                    "WHERE clip_id=102");
+        }
+        if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=102");
+        store.reset();
+        StoreError openError{};
+        store = Store::open(folder.path() / "song.adi", openError);
+        require(static_cast<bool>(store), "reopen the saved Legato No Stop project");
 
-    const auto render = [&](bool change, bool savedGainEdit) {
         Session session;
         session.graph().setFadeFrames(0);
-        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
-        constexpr std::int64_t from = 60000, switchAt = 72000, finish = 108000;
+        if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
         std::vector<float> pcm(static_cast<std::size_t>(finish + blockFrames));
-        Playback playback{session,pcm};
+        Playback playback{session, pcm};
         playback.paged = !ram;
         session.transport().play();
-        const auto press = [&](std::int64_t sceneId,std::int64_t clip) {
-            const LaunchRequest request{LaunchRequestKind::SlotPress,1,sceneId,clip,session.launchIncarnation()};
-            require(session.postLaunchGesture(std::array{request}),"post a regular persisted slot press");
+        const auto press = [&](std::int64_t sceneId, std::int64_t clip) {
+            const LaunchRequest request{LaunchRequestKind::SlotPress, 1, sceneId, clip, session.launchIncarnation()};
+            require(session.postLaunchGesture(std::array{request}), "post a regular persisted slot press");
         };
         playback.through(from);
-        press(10,101);
+        press(10, 101);
         playback.through(switchAt);
-        press(15,102);
+        press(15, 102);
         playback.through(switchAt + 1);
         const auto before = trackState(session);
         require(playback.count == 2 && playback.edges[1].newClip == 102 && playback.edges[1].sample == switchAt &&
-                before.remainingSamples == finish - switchAt - 1 && std::abs(pcm[switchAt] + .6f) < 1e-6f,
+                (loop ? before.completedLoops == 0 : before.remainingSamples == finish - switchAt - 1) &&
+                pcm[switchAt] == -.6f,
                 "ordinary Legato enters on its inherited 16,800-frame source cue");
-        require(session.postLaunchClipGainEdit({1,102,session.launchIncarnation(),before.run,0.5f,ClipUpdateRate::None}),
+        require(session.postLaunchClipGainEdit({1, 102, session.launchIncarnation(), before.run, 0.5f, ClipUpdateRate::None}),
                 "set live gain on the inherited Legato run");
         playback.through(tempoSceneFrame - 2 * blockFrames);
-        if (savedGainEdit) sceneWithGain(*store,session,20,102,-6.0);
-        else if (change) scene(*store,session,20);
-        if (change && !savedGainEdit && !session.error().empty())
-            throw std::runtime_error("Legato No Stop: "+session.error());
+        if (change == Change::SavedGain) sceneWithGain(*store, session, 20, 102, -6.0);
+        else if (change != Change::None) {
+            scene(*store, session, 20);
+            if (!session.error().empty()) throw std::runtime_error("Legato No Stop: " + session.error());
+        }
+        if (change == Change::PendingLoopEdit) {
+            OpRequest edit;
+            edit.opType = "clip.setLoop";
+            edit.payload = {{"id", 102}, {"on", true}, {"start", quarter / 4}, {"length", quarter}};
+            require(OpJournal(*store).commit(edit).ok && !session.refresh(*store),
+                    "the pending No Stop graph keeps the originally admitted physical loop");
+        }
         playback.through(tempoSceneFrame + 1);
         const auto after = trackState(session);
         const auto bpm = session.beginRender().bpmAtTick(4 * quarter);
-        require(after.clip == 102 && after.run == before.run && after.remainingSamples == finish - tempoSceneFrame - 1 &&
-                std::abs(pcm[tempoSceneFrame] + .4f) < 1e-6f,
-                "No Stop keeps the same run, physical remainder, source pulse and live gain");
-        if (change && !savedGainEdit) {
-            require(playback.sceneCount == 1 && playback.scenes[0].scene == 20 && playback.scenes[0].sample == tempoSceneFrame &&
-                    playback.scenes[0].bpm == 140 && bpm == 140 && session.problems().empty(),
+        require(after.clip == 102 && after.run == before.run &&
+                (loop ? after.completedLoops == 0 : after.remainingSamples == finish - tempoSceneFrame - 1) &&
+                pcm[tempoSceneFrame] == -.4f,
+                "No Stop keeps the same run, physical cue and live gain");
+        if (change == Change::Tempo || change == Change::PendingLoopEdit) {
+            require(playback.sceneCount == 1 && playback.scenes[0].scene == 20 &&
+                    playback.scenes[0].sample == tempoSceneFrame && playback.scenes[0].bpm == 140 && bpm == 140,
                     "the actual No Stop scene performs once at 140 BPM");
         }
-        if (savedGainEdit)
-            require(session.error().find("unchanged unwarped") != std::string::npos && bpm == 120 && playback.sceneCount == 0,
+        if (change == Change::SavedGain)
+            require(session.error().find("unchanged") != std::string::npos && bpm == 120 && playback.sceneCount == 0,
                     "refuse a saved gain change and keep the existing source and clock");
+        if (loop) {
+            playback.through(firstWrap);
+            require(trackState(session).completedLoops == 0, "retain the complete inherited partial lap");
+            playback.through(firstWrap + 1);
+            require(trackState(session).run == before.run && trackState(session).completedLoops == 1,
+                    "wrap the retained run at the physical loop boundary");
+            playback.through(finish - 1);
+            require(trackState(session).run == before.run && trackState(session).completedLoops == 2 &&
+                    pcm[firstWrap + savedStart - loopBegin] == -.25f,
+                    "the linked Follow keeps counting the same wraps and the retained live gain");
+        }
         playback.through(finish + blockFrames);
         require(playback.count == 3 && playback.edges[2].newClip == 0 && playback.edges[2].sample == finish &&
-                callbackAllocations == 0 && audio::callbackFileIo == 0,
-                "the inherited one-shot still stops at its physical End without callback work");
+                std::all_of(pcm.begin() + finish, pcm.end(), [](float frame) { return frame == 0; }) &&
+                session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "the inherited slot stops at its physical boundary without callback work");
         return pcm;
     };
 
-    const auto reference = render(false,false);
-    require(render(true,false) == reference,"No Stop keeps the entire inherited Legato signal sample-exact");
-    require(render(true,true) == reference,"refused source gain replacement leaves the entire run sample-exact");
-    std::printf("No Stop inherited Legato %s: cue 16800 at 72000, scene 96000, stop 108000, identical PCM\n",
-                ram ? "RAM" : "paged");
+    const auto reference = render(Change::None);
+    require(render(Change::Tempo) == reference, "No Stop keeps the entire inherited Legato signal sample-exact");
+    require(render(Change::SavedGain) == reference, "refused source gain replacement leaves the run sample-exact");
+    if (loop)
+        require(render(Change::PendingLoopEdit) == reference, "a saved loop edit during the cut preserves admitted PCM");
+    std::printf("No Stop inherited Legato %s %s: cue 16800 at 72000, scene 96000, wrap %lld, stop %lld, identical PCM\n",
+                ram ? "RAM" : "paged", loop ? "loop" : "one-shot",
+                static_cast<long long>(loop ? firstWrap : 0), static_cast<long long>(finish));
 }
 
 void physicalLegatoOneShotFollowsExternalTempo() {
@@ -2318,8 +2362,10 @@ int main() {
         }
         pinnedLiveRegionEdit("end",true,true);
         physicalLegatoOneShotFollowsExternalTempo();
-        physicalLegatoOneShotRetainedByTempoScene(true);
-        physicalLegatoOneShotRetainedByTempoScene(false);
+        for (const bool ram : {true, false}) {
+            physicalLegatoRetainedByTempoScene(ram, false);
+            physicalLegatoRetainedByTempoScene(ram, true);
+        }
         physicalLegatoTempoScene(false);
         physicalLegatoTempoScene(true);
         for (const auto* mode : {"re-pitch","beats","texture"}) {
