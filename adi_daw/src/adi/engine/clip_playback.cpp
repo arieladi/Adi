@@ -851,9 +851,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
-            const bool nativeWarp = warpMode && !a->reverse && a->formantShift == 0 &&
-                (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
-                 *warpMode == audio::WarpMode::RePitch);
+            const bool nativeWarp = warpMode && a->formantShift == 0 &&
+                (*warpMode == audio::WarpMode::RePitch ||
+                 (!a->reverse && (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture)));
             const bool r3Mode = warpMode && !a->reverse &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
@@ -992,20 +992,22 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);
             };
             if(a->warpEnabled) {
+                if (clip->reverse) {
+                    // Persisted markers describe the forward file. Native PCM
+                    // pages and the clip's musical clocks use reversed order.
+                    const auto last = map.markers.back();
+                    std::reverse(map.markers.begin(), map.markers.end());
+                    for (auto& marker : map.markers)
+                        marker = {last.sourceFrame-marker.sourceFrame,last.tick-marker.tick};
+                }
                 if (stream) {
                     clip->length=sourceDuration(map.markers.back().tick);
                 } else {
                     spec.workFolder=fs::temp_directory_path()/"adi-warp";
-                    if (clip->reverse) {
-                        // Reflect the source clock before integrating the
-                        // tempo, then reflect back for the reverse page reader.
-                        const auto last = map.markers.back();
-                        std::reverse(map.markers.begin(), map.markers.end());
-                        for (auto& marker : map.markers)
-                            marker = {last.sourceFrame-marker.sourceFrame,last.tick-marker.tick};
-                    }
                     spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
                     if (clip->reverse) {
+                        // The prepared renderer still reads the forward file.
+                        // Its result is reversed when read into playback pages.
                         const auto last = spec.anchors.back();
                         std::reverse(spec.anchors.begin(), spec.anchors.end());
                         for (auto& anchor : spec.anchors)

@@ -7,6 +7,7 @@
 #include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
@@ -416,6 +417,167 @@ void steadyTempo(std::string_view mode, double bpm, float peakTolerance = 0.002f
           "steady-tempo streaming matches the prepared reference within tolerance");
 }
 
+constexpr std::uint32_t reverseStart = 257;
+constexpr std::uint32_t reverseLength = 72000;
+constexpr std::array reverseOriginalMarkers{WarpMarker{0, 0}, WarpMarker{14000, quarter},
+    WarpMarker{46000, 2 * quarter}, WarpMarker{reverseLength, 4 * quarter}};
+constexpr std::array reverseExpectedMarkers{WarpMarker{0, 0}, WarpMarker{26000, 2 * quarter},
+    WarpMarker{58000, 3 * quarter}, WarpMarker{reverseLength, 4 * quarter}};
+constexpr std::array reverseAttacks{6500u, 42000u, 50000u, 65000u};
+constexpr std::array reverseBeats{0.5, 2.5, 2.75, 3.5};
+
+void reverseSource(Project& project, bool physicalReverse, bool ramp) {
+    constexpr auto fileFrames = reverseStart + reverseLength + 509;
+    constexpr auto halfWidth = 96u;
+    std::vector<float> pcm(fileFrames * 2, 0.7f);
+    std::fill_n(pcm.data() + 2 * reverseStart, 2 * reverseLength, 0.0f);
+    for (std::size_t attack = 0; attack < reverseAttacks.size(); ++attack) {
+        const auto center = reverseAttacks[attack];
+        const auto scale = static_cast<float>(attack + 1) / 4.0f;
+        for (auto frame = center - halfWidth; frame <= center + halfWidth; ++frame) {
+            const auto distance = static_cast<double>(frame) - center;
+            const auto pulse = static_cast<float>(0.25 * (1 + std::cos(std::numbers::pi * distance / halfWidth)));
+            const auto input = reverseStart + (physicalReverse ? frame : reverseLength - 1 - frame);
+            pcm[2 * input] = scale * pulse;
+            pcm[2 * input + 1] = -0.2f * pulse;
+        }
+    }
+    {
+        audio::WavWriter writer(project.source, sourceRate, 2, audio::WavFormat::Float32);
+        writer.write(pcm.data(), fileFrames);
+        writer.close();
+    }
+    const auto digest = media::blake3File(project.source);
+    if (!digest) throw std::runtime_error("hash reversed Warp source");
+    const auto map = audio::writeWarpMap(physicalReverse ? reverseExpectedMarkers : reverseOriginalMarkers,
+                                        reverseLength);
+    if (!map) throw std::runtime_error("store the asymmetric Reverse Warp map");
+    auto& db = project.store->db();
+    SQLite::Statement mediaRow(db, "UPDATE media_files SET hash_blake3=?,frames=? WHERE id=1");
+    mediaRow.bind(1, digest.hex);
+    mediaRow.bind(2, fileFrames);
+    mediaRow.exec();
+    SQLite::Statement warp(db, "UPDATE audio_clips SET src_start_frames=?,src_len_frames=?,warp_markers=? WHERE clip_id=7");
+    warp.bind(1, reverseStart);
+    warp.bind(2, reverseLength);
+    warp.bind(3, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    warp.exec();
+    SQLite::Statement clip(db, "UPDATE clips SET length_ticks=?,loop_enabled=0,loop_len_ticks=NULL WHERE id=7");
+    clip.bind(1, 4 * quarter);
+    clip.exec();
+    if (!physicalReverse) {
+        constexpr std::array<std::int64_t, 1> clipIds{7};
+        const auto edit = clip_edit::prepareReverse(*project.store, clipIds, std::nullopt, sourceRate);
+        if (!edit.ok) throw std::runtime_error("prepare Reverse Warp: " + edit.error);
+        const auto committed = clip_edit::commitPrepared(*project.store, edit);
+        if (!committed.ok) throw std::runtime_error("commit Reverse Warp: " + committed.error);
+        SQLite::Statement stored(db, "SELECT reverse,src_start_frames,warp_markers FROM audio_clips WHERE clip_id=7");
+        if (!stored.executeStep()) throw std::runtime_error("read stored Reverse Warp clip");
+        const auto blob = stored.getColumn(2);
+        const auto bytes = std::span(static_cast<const std::byte*>(blob.getBlob()),
+                                     static_cast<std::size_t>(blob.getBytes()));
+        check(stored.getColumn(0).getInt() == 1 && stored.getColumn(1).getInt64() == reverseStart &&
+              std::ranges::equal(bytes, map.bytes),
+              "Reverse command keeps the physical start and authored AWRP bytes");
+    }
+    if (ramp) {
+        SQLite::Statement loop(db, "UPDATE clips SET length_ticks=?,loop_enabled=1,loop_start_ticks=0,loop_len_ticks=? WHERE id=7");
+        loop.bind(1, 8 * quarter);
+        loop.bind(2, 4 * quarter);
+        loop.exec();
+    }
+    project.tempo(ramp ? 1 : 0, 4 * quarter, ramp ? 140.0 : 100.0, ramp ? 120.0 : 100.0);
+}
+
+void reverseRePitch(bool ramp) {
+    Project reversed("re-pitch"), reflected("re-pitch");
+    reverseSource(reversed, false, ramp);
+    reverseSource(reflected, true, ramp);
+    const auto rate = ramp ? 44100u : sourceRate;
+    const auto width = ramp ? Precision::Float64 : Precision::Float32;
+    const auto secondsAtBeat = [ramp](double beat) {
+        if (!ramp) return 0.6 * beat;
+        const auto firstLap = 12 * std::log1p(std::min(beat, 4.0) / 24.0);
+        return firstLap + std::max(beat - 4.0, 0.0) * 60 / 140;
+    };
+    const auto outputEnd = static_cast<std::size_t>(std::llround(secondsAtBeat(ramp ? 8.0 : 4.0) * rate));
+    std::vector<StereoFrame> output(outputEnd + maxFrames), reference(output.size());
+    Session reverseSession, reflectedSession;
+    reversed.load(reverseSession, width, rate);
+    reflected.load(reflectedSession, width, rate);
+    check(reverseSession.clips()->problems().empty(), "reversed Re-Pitch streams without a prepared render");
+    render(reverseSession, width, output, 321);
+    render(reflectedSession, width, reference, 470);
+    check(output == reference, "physically reflected PCM and marker map match the Reverse command bit for bit");
+    check(std::all_of(output.data() + outputEnd, output.data() + output.size(),
+                      [](const StereoFrame& frame) { return frame == StereoFrame{}; }),
+          "reversed Re-Pitch stops at the selected end of its audio");
+
+    std::int64_t worst = 0;
+    for (int lap = 0; lap < (ramp ? 2 : 1); ++lap) {
+        for (std::size_t attack = 0; attack < reverseBeats.size(); ++attack) {
+            const auto expected = static_cast<std::int64_t>(
+                std::llround(rate * secondsAtBeat(4.0 * lap + reverseBeats[attack])));
+            const auto* begin = output.data() + expected - 512;
+            const auto* end = output.data() + expected + 512;
+            const auto* peak = std::max_element(begin, end,
+                [](const StereoFrame& a, const StereoFrame& b) { return a.left < b.left; });
+            worst = std::max(worst, std::abs(static_cast<std::int64_t>(peak - output.data()) - expected));
+            check(peak->left > 0.1f && peak->right < -0.09f, "reversed attacks keep their asymmetric stereo values");
+        }
+    }
+    check(worst <= 1, "reversed attacks hit the independent tempo integral on every lap");
+
+    if (!ramp) {
+        // #830 prepares forward PCM by reflecting the oriented output anchors,
+        // then reads the prepared WAV backward. Compare with that reference.
+        audio::WarpRenderPlan plan;
+        plan.source = reversed.source;
+        plan.workFolder = reversed.temporary.path() / "prepared-reverse";
+        plan.sourceStart = reverseStart;
+        plan.sourceFrames = reverseLength;
+        plan.outputRate = rate;
+        plan.mode = audio::WarpMode::RePitch;
+        plan.anchors = {{0, 0}, {14000, 28800}, {46000, 57600}, {reverseLength, 115200}};
+        const auto prepared = audio::prepareWarp(plan);
+        if (!prepared) throw std::runtime_error("prepare #830 reversed Re-Pitch reference");
+        audio::WavReader reader(prepared.prepared->file);
+        std::vector<float> pcm(outputEnd * 2);
+        if (reader.read(pcm.data(), static_cast<std::uint32_t>(outputEnd)) != outputEnd)
+            throw std::runtime_error("read #830 reversed Re-Pitch reference");
+        double power = 0;
+        float peakError = 0;
+        for (std::size_t frame = 0; frame < outputEnd; ++frame) {
+            const auto physicalFrame = outputEnd - 1 - frame;
+            const auto left = output[frame].left - pcm[2 * physicalFrame];
+            const auto right = output[frame].right - pcm[2 * physicalFrame + 1];
+            power += left * left + right * right;
+            peakError = std::max({peakError, std::abs(left), std::abs(right)});
+        }
+        const auto rms = std::sqrt(power / static_cast<double>(2 * outputEnd));
+        std::printf("reverse Re-Pitch against #830 steady: peak %.8f, RMS %.8f\n", peakError, rms);
+        check(peakError <= 0.01f && rms <= 0.001,
+              "steady reversed Re-Pitch follows the prepared #830 result within measured tolerance");
+    }
+
+    // Start just before oriented source frame 40960, a PCM page boundary.
+    const auto seek = static_cast<std::size_t>(std::llround(secondsAtBeat(ramp ? 6.5 : 2.5) * rate)) - 1200;
+    Session cold;
+    reversed.load(cold, width, rate);
+    cold.transport().play(false);
+    cold.transport().locate(static_cast<std::int64_t>(seek));
+    cold.transport().play();
+    std::array<StereoFrame, 2048> sought{};
+    render(cold, width, sought, 243);
+    check(std::equal(sought.begin(), sought.end(), output.data() + seek),
+          "stop and cold seek restore the same reverse PCM across pages");
+    check(reverseSession.clips()->underrunSamples() == 0 && cold.clips()->underrunSamples() == 0 &&
+          reverseSession.clips()->readErrors() == 0 && cold.clips()->readErrors() == 0,
+          "reverse PCM and cold seek each complete without page underruns or read errors");
+    std::printf("reverse Re-Pitch %s: %d laps at %u Hz, max grid error %lld samples\n",
+                ramp ? "ramp" : "steady", ramp ? 2 : 1, rate, static_cast<long long>(worst));
+}
+
 constexpr double bezierTension = 0.72;
 
 double bezierSecondsAtBeat(double beat) {
@@ -577,6 +739,8 @@ int main() {
         r3UsesLocalTempoDomain();
         steadyTempo("beats", 120.0);
         steadyTempo("re-pitch", 100.0);
+        reverseRePitch(false);
+        reverseRePitch(true);
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.
