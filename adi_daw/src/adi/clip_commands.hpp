@@ -78,6 +78,9 @@ struct PreparedSplits {
 /// Musical length; linear objects move by the held tempo immediately before it.
 [[nodiscard]] PreparedEdit prepareInsertSilence(Store&,std::int64_t atTicks,
                                                std::int64_t ticks,double referenceRate);
+/// Insert the missing time at the start of a short bar, keeping its opening meter marker in place.
+[[nodiscard]] PreparedEdit prepareCompleteFragmentaryBar(Store&,std::int64_t atTicks,
+                                                        std::int64_t missingTicks,double referenceRate);
 /// Remove time across the Set, preserving the old context at the join.
 [[nodiscard]] PreparedEdit prepareDeleteTime(Store&,std::int64_t beginTicks,
                                             std::int64_t endTicks,double referenceRate);
