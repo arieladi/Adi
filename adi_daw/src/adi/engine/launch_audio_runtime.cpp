@@ -686,8 +686,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
                      : !scheduled && !linked && !readyOnly) return true;
         const auto* pcm = call.media->clip(target.clip);
-        auto* nativePages = scheduled && pcm ? pcm->warpPageReader() : nullptr;
-        if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache()) {
+        const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
+        auto* nativePages = (scheduled || nativeImmediate) && pcm ? pcm->warpPageReader() : nullptr;
+        if (nativePages && target.mode != LaunchMode::Repeat &&
+            (nativeImmediate || !nativePages->wholeSourceFitsPageCache())) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
             // launches keep the usual reader path.
