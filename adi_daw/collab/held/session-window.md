@@ -39,8 +39,8 @@ Info Text, colour. Wiring the shell still waits for the agreed picture.
 |---|---|---|---|---|
 | merge | `5151798de` | BASE `origin/land/basics-1128c` + `origin/seats/session-chain` + `origin/wincheck/seats/session-chain`. | the full check below | pushed |
 | 1-3 | `ec19b7e56`, `bbb025515` | The model, the commands and keys, the suite (`bbb025515`: two portability spellings in the suite). | Build PC slot 18, MSVC Debug, warnings as errors, at `bbb025515` ("all"): core built, 312 of 314 suites passed, `adi_session_view_tests` among them; ui built, the four window suites passed; five validators passed. The two failures, `adi_agent_log_tests` (three child processes appending) and `adi_link_playback_tests` (4 of 139), touch nothing of this chain and both passed when rerun alone on the same head: load on the shared PC. Linux and macOS not yet run (CI, later). | pushed |
-| merge 2 | `e6e2b5315` | Round 2: BASE is now `origin/main` (`land/basics-1128c` is its ancestor); main merged, no conflict; both session branches already in (no new commits). | slot 18 "all" at `e6e2b5315`: CHECK_PENDING_MERGE | pushed |
-| round 2 | `7383664e2` | Ctrl+click picks in the model; Insert MIDI Clip, Toggle Follow Actions, Create Follow Action Chain, Duplicate (clips and scenes), Copy/Cut/Paste, clicks, rubber band, drops of clips and scenes, colour; the store side of clip copies (`session_view_edits`). | CHECK_PENDING_ROUND2 | pushed |
+| merge 2 | `e6e2b5315` | Round 2: BASE is now `origin/main` (`land/basics-1128c` is its ancestor); main merged, no conflict; both session branches already in (no new commits). | slot 18 "all" at `e6e2b5315`: core built, 310 of 314 suites passed; ui built, the four window suites passed; validators passed. The four failures are main's and the shared PC's load, nothing of this chain (the head was only a merge of main): `adi_agent_log_tests` (three child writers, as in round 1), `adi_scan_cache_tests` (a cancellation's timing, 284 s), `adi_library_tests` (timeout at 121 s), `adi_acceptance_wts01` 2a and 6a (the recording stopped early, "the input came faster than it could be written", 382976 of 384000 frames, and 6a measured on that short take). | pushed |
+| round 2 | `7383664e2`, `b6f927533`, `078f44ed`, `a3549f134` | Ctrl+click picks in the model; Insert MIDI Clip, Toggle Follow Actions, Create Follow Action Chain, Duplicate (clips and scenes), Copy/Cut/Paste, clicks, rubber band, drops of clips and scenes, colour; the store side of clip copies (`session_view_edits`); `078f44ed`: `FollowSettings` is `engine::launch::`'s (MSVC refused the first spelling); `a3549f134`: several selected clips renamed one after another. | slot 18 "core" with the filter `adi_session_view_tests\|adi_capture_scene_tests\|adi_session_` at `078f44ed`: MSVC Debug, warnings as errors, built; 9 of 9 suites passed, `adi_session_view_tests` with every round 2 check. "all" at `a3549f134`: CHECK_PENDING_ALL | pushed |
 
 ## What was built
 
@@ -123,6 +123,7 @@ on another kind starts anew), `rubberBand` (7.4: from an empty slot), `dropSlots
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy, Cut (copy, then Delete as one step), Paste: clips at the selected slot by their places (a track of the other kind passes them by; scenes added at the end where the paste reaches past the last), scenes below the selection | as Duplicate |
 | (mouse) | drop along a track: the clip moves itself, lowest first; to another track: its place cleared, then its copy; Ctrl: copies; every clip must land on a track of its kind or the drop is refused | `session.setSlotClip`, `session.clearSlot`, clip copies |
 | (menu) | colour palette: clips and tracks | `clip.setColor`, `track.setColor`; a scene is refused (no op, see Reserve) |
+| Ctrl+R, then Tab | with several clips selected, each renamed in turn (7.1), from the focus clip or, where the focus is empty, the first | `clip.setName`, one Undo step each |
 
 **Clip copies.** A copy needs the clip's rows, so a command names it (`SlotCopy{clip, track, scene, stop,
 before}`) and `prepareEdit(Store&, Outcome, Clipboard*)` builds it on the owner thread, as
@@ -315,6 +316,5 @@ deactivated grey.
    through the engine's capture; `clipboard` kept by the window (after `snapshotClipboard` for a Cut);
    `Context.nextClipId` from the snapshot (`audio_drop_detail::newClipId`) and `barTicks` from the meter.
 3. Left for a later round: Edit Info Text (waits for RE-03's `info.setText`), a scene's colour (waits for
-   `scene.setColor`), renaming several selected clips in turn (7.1: "rename several selected clips at once"),
-   track moves (Ctrl+Left/Right, the track commands'), Cut/Copy/Paste and Duplicate of track titles (the track
+   `scene.setColor`), track moves (Ctrl+Left/Right, the track commands'), Cut/Copy/Paste and Duplicate of track titles (the track
    commands'), drags between the Session and the Arrangement (7.5, the second window).
