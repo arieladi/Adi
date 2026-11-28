@@ -308,7 +308,8 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error,S
     auto failureState=State::Unavailable;
     try {
         Config resolved=config;
-        require(resolved.cacheMode==ScanCacheMode::Reuse || resolved.cacheMode==ScanCacheMode::Refresh,
+        require(resolved.cacheMode==ScanCacheMode::Reuse || resolved.cacheMode==ScanCacheMode::Refresh ||
+                resolved.cacheMode==ScanCacheMode::Clean,
                 "invalid scanner cache mode");
         if(resolved.executable.empty())resolved.executable=defaultScannerExecutable();
         if(resolved.registry.empty())resolved.registry=appdata::pluginRegistryFile();
@@ -433,8 +434,10 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             result.error.clear();
         }
         std::optional<ScanFailure> cachedFailure;
-        if(stamp) {
-            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error,config_.cacheMode);
+        if(stamp || config_.cacheMode==ScanCacheMode::Clean) {
+            const std::string emptyStamp;
+            auto admission=registry_->beginStampedScan(format,result.path,stamp?*stamp:emptyStamp,
+                                                        config_.clock(),result.error,config_.cacheMode);
             if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
         } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
         if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}

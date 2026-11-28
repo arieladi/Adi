@@ -307,8 +307,10 @@ std::optional<ScanAdmission> PluginRegistry::beginStampedScan(const std::string&
     if(audio::onAudioThread)return std::nullopt;
     error.clear();
     try {
-        require(key(format,path) && cacheStamp(stamp) && nowUtc>=0,"invalid stamped scan admission");
-        require(mode==ScanCacheMode::Reuse || mode==ScanCacheMode::Refresh,"invalid scan cache mode");
+        const bool clean=mode==ScanCacheMode::Clean;
+        require(key(format,path) && (cacheStamp(stamp) || (clean && stamp.empty())) && nowUtc>=0,
+                "invalid stamped scan admission");
+        require(mode==ScanCacheMode::Reuse || mode==ScanCacheMode::Refresh || clean,"invalid scan cache mode");
         // Reserve the short write transaction before reading so another owner
         // cannot make this WAL snapshot stale before it becomes a writer.
         SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
@@ -328,11 +330,11 @@ std::optional<ScanAdmission> PluginRegistry::beginStampedScan(const std::string&
                 block.bind(1,previous->blockId);block.bind(2,format);block.bind(3,path);
                 block.bind(4,previous->failure.reason);block.bind(5,previous->updated);owned=block.executeStep();
             }
-            if(owned && previous->stamp==stamp &&
+            if(!clean && owned && previous->stamp==stamp &&
                 ((previous->failure.kind==ScanFailureKind::Rejected && mode==ScanCacheMode::Reuse) || previous->blockId>0)) {
                 ScanAdmission result;result.cachedFailure=previous->failure;transaction.commit();return result;
             }
-            if(!owned || previous->stamp!=stamp) {
+            if(clean || !owned || previous->stamp!=stamp) {
                 if(owned && previous->blockId>0) {
                     SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? AND state='blocked'");
                     remove.bind(1,previous->blockId);remove.bind(2,format);remove.bind(3,path);

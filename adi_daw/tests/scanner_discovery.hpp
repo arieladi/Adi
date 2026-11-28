@@ -310,6 +310,62 @@ inline void parallelDiscovery() {
     }
 }
 
+inline void cleanDiscovery() {
+    using namespace std::chrono_literals;
+    using device::DiscoveryMode;using device::DiscoveryOutcome;using device::DiscoveryPhase;
+    TempDirectory scratch("discovery_operation","clean");
+    const auto root=fs::canonical(scratch.path());
+    const auto modules=root/"modules";fs::create_directories(modules);
+    std::vector<fs::path> paths;
+    for(const auto* filename:{"a.clap","b.clap","c.clap","manual.clap"}) {
+        paths.push_back(modules/filename);
+        copyClap(paths.back());
+    }
+    std::vector<std::string> serial;
+    for(const unsigned workers:{1U,4U}) {
+        scan::Config config;
+        config.executable=media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+        config.registry=root/("cache-"+std::to_string(workers)+".sqlite");
+        device::JuceDeviceLoader loader(false);
+        loader.setScanConfig(config);
+        loader.addSearchPath(juce::File(juce::String::fromUTF8(text(modules).c_str())));
+        const auto seeded=loader.discover(DiscoveryMode::Incremental);
+        require(seeded && seeded->outcome==DiscoveryOutcome::Published && seeded->catalogue->clap.size()==4,
+                "seed native Clean fixture");
+        std::string error;
+        auto registry=PluginRegistry::open(config.registry,error);
+        require(registry && registry->blockScan("clap",text(fs::canonical(paths.back())),"manual fixture",1,error),
+                "block one native module explicitly");
+        std::vector<unsigned> before;
+        for(const auto& path:paths)before.push_back(pids(path).child);
+        const auto refused=loader.discover(DiscoveryMode::Clean);
+        require(refused && refused->outcome!=DiscoveryOutcome::Published &&
+                refused->error.find("asynchronous job")!=refused->error.npos,
+                "Clean cannot scan synchronously on the caller");
+        const auto start=loader.startDiscovery(DiscoveryMode::Clean,workers);
+        require(start.job!=0,"start asynchronous Clean");
+        const auto deadline=std::chrono::steady_clock::now()+15s;
+        while(loader.discoveryProgress().phase!=DiscoveryPhase::Ready && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(1ms);
+        const auto cleaned=loader.adoptDiscovery(start.job);
+        require(cleaned && cleaned->mode==DiscoveryMode::Clean && cleaned->outcome==DiscoveryOutcome::Published &&
+                cleaned->catalogue->clap.size()==3,"adopt the complete Clean scan excluding the manual block");
+        const auto list=loader.knownPlugins();
+        if(workers==1)serial=list;
+        else require(list==serial,"Clean publishes the same ordered catalogue with K=4 and K=1");
+        const auto warm=loader.discover(DiscoveryMode::Incremental);
+        const auto cache=loader.discover(DiscoveryMode::CacheOnly);
+        require(warm && cache && warm->outcome==DiscoveryOutcome::Published &&
+                cache->outcome==DiscoveryOutcome::Published && loader.knownPlugins()==list,
+                "Incremental and CacheOnly hydrate the rebuilt catalogue");
+        for(std::size_t index=0;index<paths.size();++index) {
+            const auto observed=pids(paths[index]);
+            require(observed.child==before[index]+(index+1==paths.size()?0U:1U) && observed.parent==0,
+                    "only Clean launches each eligible module exactly once and never loads it in the owner");
+        }
+    }
+}
+
 inline void cacheStates() {
     using device::DiscoveryMode;using device::DiscoveryOutcome;
     TempDirectory scratch("discovery_operation","cache_states");scan::Config config;
@@ -608,7 +664,7 @@ inline bool scannerDiscoveryContracts() {
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
         discovery_test_detail::unreadableSearchDirectory();
         auto receipt=discovery_test_detail::modes();discovery_test_detail::refreshModes();discovery_test_detail::parallelDiscovery();
-        discovery_test_detail::cacheStates();discovery_test_detail::command();
+        discovery_test_detail::cleanDiscovery();discovery_test_detail::cacheStates();discovery_test_detail::command();
         discovery_test_detail::clapHintAndMove();discovery_test_detail::asynchronousDiscovery();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
         receipt["serial_parallel_catalogue_equal"]=true;

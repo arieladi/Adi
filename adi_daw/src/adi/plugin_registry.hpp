@@ -33,8 +33,9 @@ namespace adi {
 
 enum class ScanDisposition { Succeeded, UnstampedSuccess, Abandoned, Failed, Rejected };
 enum class ScanFailureKind { Rejected, Crashed, TimedOut };
-// Refresh retries metadata, never re-enables a manual/pending/two-strike block.
-enum class ScanCacheMode { Reuse, Refresh };
+// Refresh retries metadata and keeps all blocks. Clean also retries typed
+// automatic quarantine; manual and pending blocks persist.
+enum class ScanCacheMode { Reuse, Refresh, Clean };
 struct ScanFailure {
     ScanFailureKind kind = ScanFailureKind::Rejected;
     std::string reason;
@@ -118,7 +119,9 @@ public:
     /// failures, never pending/manual/legacy blocks. Unchanged deterministic
     /// failures or two crashes/timeouts return cachedFailure without a ticket.
     /// A first crash/timeout permits one more explicit probe; no retry loop.
-    /// Refresh bypasses matching rejected results only. Existing cache state
+    /// Refresh bypasses matching rejected results only. Clean retires typed
+    /// automatic failures and accepts an empty stamp for an unstampable module.
+    /// Manual and pending rows still block admission. Existing cache state
     /// stays until token-checked completion; abandonment preserves that state.
     std::optional<ScanAdmission> beginStampedScan(const std::string& format,
         const std::string& path, const std::string& stamp, std::int64_t nowUtc, std::string& error,

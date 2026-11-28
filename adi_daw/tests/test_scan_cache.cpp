@@ -323,6 +323,34 @@ void rescanLiftsBlocks(const fs::path& self) {
     const auto none=registry->unblockBlockedScans(f.error);
     check(none && *none==0,"nothing blocked: nothing lifted");
 }
+void cleanScans(const fs::path& self) {
+    Fixture f(self);
+    const auto automatic=f.candidate("automatic.clap","crash");
+    const auto manual=f.candidate("manual.clap","manual");
+    const auto success=f.candidate("success.clap","healthy");
+    auto registry=f.registry();
+    auto incremental=f.scanner();
+    if(!registry->blockScan("clap",utf8(fs::canonical(manual)),"manual",1,f.error))
+        throw std::runtime_error(f.error);
+    const auto first=incremental->probe("clap",automatic);
+    const auto second=incremental->probe("clap",automatic);
+    const auto blocked=incremental->probe("clap",automatic);
+    check(first.failureStrikes==1 && second.failureStrikes==2 && blocked.failureCacheHit &&
+          launches(automatic)==2 && incremental->probe("clap",success).state==State::Ready,
+          "seed a cached success and a typed automatic block");
+    write(native(utf8(automatic)+".reply"),"healthy");
+    f.config.cacheMode=ScanCacheMode::Clean;
+    auto clean=f.scanner();
+    const auto cleared=clean->probe("clap",automatic);
+    check(cleared.state==State::Ready && !cleared.cacheHit && launches(automatic)==3,
+          "Clean admits an unchanged automatic quarantine and probes it once");
+    check(clean->probe("clap",manual).state==State::Quarantined && launches(manual)==0,
+          "Clean preserves a manually blocked module without starting its helper");
+    const auto refreshed=clean->probe("clap",success);
+    check(refreshed.state==State::Ready && !refreshed.cacheHit && launches(success)==2 &&
+          incremental->probe("clap",success).cacheHit && launches(success)==2,
+          "Clean refreshes cached successes and the next Incremental reuses the rebuilt packet");
+}
 void validationAndRaces(const fs::path& self) {
     Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();scanner->probe("clap",path);
     {
@@ -856,7 +884,7 @@ void parallelProbeGate(const fs::path& self) {
 
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);refreshMetadata(self);refreshSafety(self);refreshStrikes(self);rescanLiftsBlocks(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);refreshMetadata(self);refreshSafety(self);refreshStrikes(self);rescanLiftsBlocks(self);cleanScans(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

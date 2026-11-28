@@ -39,7 +39,8 @@ struct Config {
     std::int64_t (*clock)() noexcept = systemUtcMicros;
     // Explicit batch concurrency. A custom clock must be thread-safe above one worker.
     unsigned workers = 1;
-    // Explicit Refresh bypasses successful/rejected cache metadata, not blocks.
+    // Refresh bypasses cached successes and rejections. Clean also retries typed
+    // automatic quarantine while honoring manual and pending blocks.
     // It neither purges other candidates nor changes the persisted schema.
     ScanCacheMode cacheMode = ScanCacheMode::Reuse;
     BatchProgress* progress = nullptr; // borrowed by one ordered batch through return
