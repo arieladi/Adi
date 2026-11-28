@@ -6,6 +6,16 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 19:26 IST — seats/stretcher-chain `fb59db44206426a837b24782688bc5c1b2bf404f`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. The full `ctest -LE performance` run passed 294 of 295 suites. `adi_transport_info_tests` repeated all 12 assertion failures on an isolated rerun.
+
+The tempo and three meter changes in `adi_daw/tests/test_transport_info.cpp:138–166` round down to the preceding sample. `adi_daw/src/adi/engine/session.cpp:2825–2828` now activates their metadata at that sample, while the test computes its expected bar, beat, BPM, meter and quarter remainder from the continuous inverse at line 145. The smallest fixture update is to use `std::max(inverseTicks, ticks)` for the exact rounded event sample (`delta == 0`). Keep the existing inverse oracle for each adjacent sample and the exact assertions at lines 150, 156, 161 and 163.
+
+JUCE Debug built and linked libc++ and libc++abi. All three offscreen window suites passed.
+
+The exact `session.cpp` and `test_midi_clips.cpp`, including the updated `session.hpp`, passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers.
+
 ### 28 November 2026, 18:58 IST — seats/stretcher-chain `3aa3485c1f0ff67a2fcd01932036befb18b36797`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
