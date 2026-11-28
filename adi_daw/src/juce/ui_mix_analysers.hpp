@@ -14,7 +14,10 @@ class ViewStateStore;
 class MixAnalysers final : public juce::Component {
   public:
     enum class Page {
-        All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare, ThirdOctaveBands, ColourWaveform
+        All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare, ThirdOctaveBands, ColourWaveform,
+        // held-mixview merge: the Mix View seat's line traces and pins, beside the Filled Spectrum
+        // (question A in collab/held/held-mixview.md; the director rules on this page).
+        LineSpectrum
     };
     MixAnalysers();
     ~MixAnalysers() override;
@@ -58,6 +61,10 @@ class MixAnalysers final : public juce::Component {
     void updatePinnedSpectrum(const SnapshotReader &, std::uint64_t generation, std::int64_t primary,
                               const ViewStateStore *);
     void clearPinnedSpectrum();
+    // The one trace selector lists the page's own traces; each page keeps its choice.
+    void fillTraceBox(bool line);
+    int filledTraceId_ = 2, lineTraceId_ = static_cast<int>(SharedSpectrumView::Mode::Spectrum) + 1;
+    bool traceBoxLine_ = false;
     struct PinProjectionStamp {
         const ViewStateStore *store;
         const engine::Snapshot *snapshot; // identity only

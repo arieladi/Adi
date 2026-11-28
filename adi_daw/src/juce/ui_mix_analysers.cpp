@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <utility>
 #include <map>
 
 namespace adi::ui {
@@ -934,7 +935,7 @@ MixAnalysers::MixAnalysers() {
     };
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
-                         "1 s Average", "Compare", "Bands", "Waveform"}, 1);
+                         "1 s Average", "Compare", "Bands", "Waveform", "Line Spectrum"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
     compareSpectrogram_.setTitle("Spectrogram comparison");
@@ -947,17 +948,27 @@ MixAnalysers::MixAnalysers() {
     comparisonSweep_.setTitle("Spectrogram comparison Sweep");
     comparisonSweep_.setTooltip("Switch between a scrolling comparison and a fixed display with a moving write head.");
     comparisonSweep_.onClick = [this] { spectrogramDelta_->setSweep(comparisonSweep_.getToggleState()); };
-    // held-mixview merge: the Spectrum page is the Filled Spectrum of the analysers queue (27 Nov);
-    // the Mix View seat's line traces (Realtime, the averages, Sigma) are kept in the view, not
-    // offered here, until the director rules (held-mixview.md, "For the director").
-    for (std::size_t i = 0; i < traceNames.size(); ++i)
-        spectrumTraceBox.addItem(traceNames[i], static_cast<int>(i) + 1);
+    // held-mixview merge: the Spectrum page is the Filled Spectrum of the analysers queue (27 Nov)
+    // with its four traces; the Line Spectrum page carries the Mix View seat's six line traces
+    // and pins, as that seat built them, until the director rules (held-mixview.md, question A).
     spectrumTraceBox.setTitle("Spectrum trace");
-    spectrumTraceBox.setSelectedId(traceId(FilledCurve::RealtimeMaximum), juce::dontSendNotification);
+    fillTraceBox(false);
     spectrumTraceBox.onChange = [this] {
         const auto id = spectrumTraceBox.getSelectedId();
-        if (page_ == Page::Spectrum && id > 0 && id <= static_cast<int>(traceNames.size()))
+        if (id <= 0) return;
+        if (page_ == Page::Spectrum) {
+            if (traceBoxLine_ || id > static_cast<int>(traceNames.size())) return;
+            filledTraceId_ = id;
             detail.view.setFilledSpectrumCurve(static_cast<FilledCurve>(id - 1));
+            return;
+        }
+        if (page_ != Page::LineSpectrum || !traceBoxLine_) return;
+        lineTraceId_ = id;
+        const auto mode = static_cast<Mode>(id - 1);
+        const bool canPin = SharedSpectrumView::supportsSpectrumOverlays(mode);
+        if (!canPin) clearPinnedSpectrum();
+        detail.setMode(mode);
+        pinnedTracks_.setEnabled(canPin);
     };
     phaseBandsBox_.addItemList({"Correlation", "Width", "Pan"}, 1);
     phaseBandsBox_.setSelectedId(1, juce::dontSendNotification);
@@ -1009,15 +1020,18 @@ MixAnalysers::~MixAnalysers() { compare_.reset(); table_.reset(); }
 
 void MixAnalysers::setPage(Page page) {
     const auto index = static_cast<std::size_t>(page);
-    if (index > static_cast<std::size_t>(Page::ColourWaveform)) return;
+    if (index > static_cast<std::size_t>(Page::LineSpectrum)) return;
     page_ = page;
     pageBox.setSelectedId(static_cast<int>(page) + 1, juce::dontSendNotification);
     const bool all = page == Page::All;
     const bool showTable = all || page == Page::Analysis;
     const bool comparing = page == Page::Compare;
+    const bool line = page == Page::LineSpectrum;
+    const bool traces = page == Page::Spectrum || line;
     sourceBox.setVisible(page != Page::Analysis && !comparing);
-    spectrumTraceBox.setVisible(page == Page::Spectrum);
-    if (page != Page::Spectrum) clearPinnedSpectrum();
+    if (traces) fillTraceBox(line);
+    spectrumTraceBox.setVisible(traces);
+    if (!line) clearPinnedSpectrum();
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
     if (!showTable && !comparing) {
@@ -1025,19 +1039,39 @@ void MixAnalysers::setPage(Page page) {
         else if (page == Page::Average) detail.setMode(Mode::SpectrumAverage);
         else if (page == Page::ThirdOctaveBands) detail.setMode(Mode::ThirdOctaveBands);
         else if (page == Page::ColourWaveform) detail.setMode(Mode::ColourWaveform);
+        else if (line) detail.setMode(Mode::Spectrum);
         else detail.setMode(modes[index - 1]);
-        if (page == Page::Spectrum) spectrumTraceBox.onChange();
+        if (traces) spectrumTraceBox.onChange();
     }
     const SafePointer<MixAnalysers> alive(this);
     updateSpectrogramView();
     if (!alive) return;
-    const bool canPin = page == Page::Spectrum && SharedSpectrumView::supportsSpectrumOverlays(detail.mode());
+    const bool canPin = line && SharedSpectrumView::supportsSpectrumOverlays(detail.mode());
     // The pins overlay line traces only; the Filled Spectrum page shows no pin control.
-    pinnedTracks_.setVisible(canPin);
+    pinnedTracks_.setVisible(line);
     pinnedTracks_.setEnabled(canPin);
     if (!canPin) clearPinnedSpectrum();
     compare_->setVisible(comparing);
     resized();
+}
+
+void MixAnalysers::fillTraceBox(bool line) {
+    if (traceBoxLine_ == line && spectrumTraceBox.getNumItems() > 0) return;
+    traceBoxLine_ = line;
+    spectrumTraceBox.clear(juce::dontSendNotification);
+    if (line) {
+        // The Mix View seat's six line traces, in its order and words.
+        static constexpr std::array<std::pair<Mode, const char *>, 6> lineTraces{{
+            {Mode::Spectrum, "Realtime"}, {Mode::SpectrumAverage, "Realtime Average"},
+            {Mode::SpectrumCumulativeAverage, "Cumulative Average"}, {Mode::SpectrumRealtimeSigma, "Realtime Sigma"},
+            {Mode::SpectrumMaximum, "Realtime Maximum"}, {Mode::SpectrumCumulativeMaximum, "Cumulative Maximum"}}};
+        for (const auto &[mode, name] : lineTraces) spectrumTraceBox.addItem(name, static_cast<int>(mode) + 1);
+        spectrumTraceBox.setSelectedId(lineTraceId_, juce::dontSendNotification);
+        return;
+    }
+    for (std::size_t i = 0; i < traceNames.size(); ++i)
+        spectrumTraceBox.addItem(traceNames[i], static_cast<int>(i) + 1);
+    spectrumTraceBox.setSelectedId(filledTraceId_, juce::dontSendNotification);
 }
 
 void MixAnalysers::updateSpectrogramView() {
@@ -1062,8 +1096,14 @@ void MixAnalysers::setMode(Mode mode) {
     else if (mode == Mode::Spectrum) setPage(Page::Spectrum);
     else if (mode == Mode::SpectrumMaximum || mode == Mode::SpectrumCumulativeMaximum) {
         const auto curve = mode == Mode::SpectrumMaximum ? FilledCurve::RealtimeMaximum : FilledCurve::HeldMaximum;
-        spectrumTraceBox.setSelectedId(traceId(curve), juce::dontSendNotification);
+        filledTraceId_ = traceId(curve);
+        if (!traceBoxLine_) spectrumTraceBox.setSelectedId(filledTraceId_, juce::dontSendNotification);
         setPage(Page::Spectrum);
+    }
+    else if (mode == Mode::SpectrumCumulativeAverage || mode == Mode::SpectrumRealtimeSigma) {
+        lineTraceId_ = static_cast<int>(mode) + 1;
+        if (traceBoxLine_) spectrumTraceBox.setSelectedId(lineTraceId_, juce::dontSendNotification);
+        setPage(Page::LineSpectrum);
     }
     else if (const auto found = std::ranges::find(modes, mode); found != modes.end())
         setPage(static_cast<Page>(found - modes.begin() + 1));
@@ -1162,7 +1202,7 @@ void MixAnalysers::updatePhaseBandDisplay() {
 }
 void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint64_t generation, std::int64_t primary,
                                        const ViewStateStore *viewState) {
-    if (page_ != Page::Spectrum || !SharedSpectrumView::supportsSpectrumOverlays(detail.mode()) ||
+    if (page_ != Page::LineSpectrum || !SharedSpectrumView::supportsSpectrumOverlays(detail.mode()) ||
         !pinnedTracks_.getToggleState() || !viewState) {
         clearPinnedSpectrum();
         return;
@@ -1272,8 +1312,8 @@ void MixAnalysers::suspend(bool value) {
 void MixAnalysers::resized() {
     auto area = getLocalBounds().reduced(look::border);
     auto header = area.removeFromTop(look::fieldHeight);
-    const bool showsTrace = page_ == Page::Spectrum;
-    const bool showsPins = showsTrace && pinnedTracks_.isVisible();
+    const bool showsPins = page_ == Page::LineSpectrum;
+    const bool showsTrace = page_ == Page::Spectrum || showsPins;
     const bool showsComparison = page_ == Page::Spectrogram;
     const bool showsSweep = comparisonSweep_.isVisible();
     const auto controls = showsPins || showsSweep ? 4 : showsTrace || showsComparison ? 3 : 2;

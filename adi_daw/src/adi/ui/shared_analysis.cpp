@@ -911,11 +911,11 @@ struct SharedAnalysis::Domain {
     }
     std::int64_t stripReadEnd(std::int64_t end) noexcept {
         const auto due = stripNextEnd.load(std::memory_order_relaxed);
-        const auto period = strip->period;
-        if (!period || end < due) return cursor.next;
-        const auto target = end - (end - due) % period;
+        const auto stripPeriod = strip->period;
+        if (!stripPeriod || end < due) return cursor.next;
+        const auto target = end - (end - due) % stripPeriod;
         if (target <= cursor.next) {
-            stripNextEnd.store(target + period, std::memory_order_release);
+            stripNextEnd.store(target + stripPeriod, std::memory_order_release);
             return cursor.next;
         }
         const auto first = target - request.fftSize;

@@ -1710,7 +1710,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         }
         return false;
     };
-    pages.setPage(Page::Spectrum);
+    pages.setPage(Page::LineSpectrum);
     pages.followSelection(false);
     root.frame();
     broker->pump();
@@ -1970,7 +1970,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
             const auto attachmentCount = attachments;
             const bool offered = select(pages.spectrumTraceBox, "Realtime Average");
             root.frame();
-            check(offered && pages.page() == Page::Spectrum && pages.detail.mode() == Mode::SpectrumAverage &&
+            check(offered && pages.page() == Page::LineSpectrum && pages.detail.mode() == Mode::SpectrumAverage &&
                       control->isEnabled() && control->getToggleState(),
                   "Realtime Average stays on Spectrum and keeps the pinned tracks enabled");
             if (offered) {
@@ -2060,7 +2060,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
 
             const bool offeredSigma = select(pages.spectrumTraceBox, "Realtime Sigma");
             root.frame();
-            check(offeredSigma && pages.page() == Page::Spectrum && control->isEnabled() &&
+            check(offeredSigma && pages.page() == Page::LineSpectrum && control->isEnabled() &&
                       control->getToggleState() && tapFor(main) == primaryTap && tapFor(first) == firstTap,
                   "Realtime Sigma is a Spectrum trace that keeps its existing pinned sources");
             if (offeredSigma) {
@@ -2178,7 +2178,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         check(probeFirst && probeWide && broker->stats().spectralPlans == before + 2,
               "switching to All immediately drops both pinned spectrum plans");
     }
-    pages.setPage(Page::Spectrum);
+    pages.setPage(Page::LineSpectrum);
     root.frame();
     choose(true);
     pages.setPage(Page::Compare);
@@ -2208,7 +2208,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         if (pages.holdB.onClick) pages.holdB.onClick();
         check(pages.comparisonView().status == AnalysisComparison::Status::Held && !attached(wide),
               "Hold B keeps its picture and releases its own live demand");
-        pages.setPage(Page::Spectrum);
+        pages.setPage(Page::LineSpectrum);
         root.frame();
         check(pages.comparisonView().referenceHeld && attached(wide),
               "Spectrum may reopen pinned B without clearing Compare's local hold");
@@ -2231,7 +2231,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               "returning to Compare keeps the original held bins and no live B tap");
     }
     if (rate == 48000) {
-        pages.setPage(Page::Spectrum);
+        pages.setPage(Page::LineSpectrum);
         root.frame();
         const auto primaryBefore = tapFor(main), firstBefore = tapFor(first), wideBefore = tapFor(wide);
         const auto count = attachments;
@@ -2253,7 +2253,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         check(!control->isVisible() && !attached(first) && !attached(wide) && averagePicture &&
                   averagePicture->request.fftSize == normalFft && (averagePicture->outputs & SharedAnalysis::Average1s),
               "the separate Average page releases the pins and uses its original analysis size");
-        pages.setPage(Page::Spectrum);
+        pages.setPage(Page::LineSpectrum);
         select(pages.spectrumTraceBox, "Realtime");
 
         choose(false);
@@ -2261,7 +2261,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         root.frame();
         auto &view = pages.detail.view;
         const auto selectedTap = tapFor(main);
-        check(cumulative && selectedTap && pages.page() == Page::Spectrum &&
+        check(cumulative && selectedTap && pages.page() == Page::LineSpectrum &&
                   control->isShowing() && control->isEnabled() && !attached(first) && !attached(wide) &&
                   pages.detail.resetButton.isShowing(),
               "Cumulative Average is a single-source Spectrum trace with its own Reset");
@@ -2325,7 +2325,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                       expBins.size() > toneBin && std::abs(expBins[toneBin] - 20. * std::log10(.125 * step)) < .02,
                   "the separate one-second page keeps its exponential average after the cumulative trace");
 
-            pages.setPage(Page::Spectrum);
+            pages.setPage(Page::LineSpectrum);
             // Isolate the source from the visible Main meter and the mirrored Info pane.
             constexpr std::int64_t isolatedTrack = 12;
             const bool isolatedSource = select(pages.sourceBox, "Pinned 12");
@@ -2374,7 +2374,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         }
     }
     if (rate == 96000) {
-        pages.setPage(Page::Spectrum);
+        pages.setPage(Page::LineSpectrum);
         root.frame();
         const auto oldPrimary = tapFor(main), oldFirst = tapFor(first), oldWide = tapFor(wide);
         check(oldPrimary && oldFirst && oldWide && oldPrimary->sampleRate() == 96000.,
@@ -2459,7 +2459,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
             return true;
         };
 
-        pages.setPage(Page::Spectrum);
+        pages.setPage(Page::LineSpectrum);
         choose(false);
         check(balance().isEmpty() && correlation().isEmpty() && integratedRms().isEmpty() && maxCrest().isEmpty() &&
                   samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
