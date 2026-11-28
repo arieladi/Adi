@@ -339,7 +339,7 @@ void rawAudioSeekKeepsPhysicalPhase() {
         "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(101,1,48000,0);"
         "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(101,5000000,1000000000);"
         "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,10,101,1);"
-        "INSERT INTO clip_launch(clip_id,quantization,clip_fade,ram_mode) VALUES(101,1,0,1);");
+        "INSERT INTO clip_launch(clip_id,launch_quant,clip_fade,ram_mode) VALUES(101,1,0,1);");
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
