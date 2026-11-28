@@ -1401,6 +1401,21 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
             if(!edit.ok)throw std::runtime_error(edit.error);
             for(auto& request:edit.requests)append(std::move(request));
         };
+        clip_edit::CopyIds allocated(store.db());
+        allocated.reserve("event_streams",placement.mainStream);
+        for(const auto& pass:passes)allocated.reserve("event_streams",pass.stream);
+        const auto writeControllers=[&](std::int64_t clip,std::span<const MidiControllerLane> lanes,std::int64_t length) {
+            std::set<std::pair<int,int>> addresses;
+            for(const auto& lane:lanes) {
+                if(lane.channel<0 || lane.channel>=16 || !controllers::validController(lane.controller) ||
+                   lane.points.empty() || !addresses.emplace(lane.channel,lane.controller).second)
+                    throw std::runtime_error("invalid recorded MIDI controller lane");
+                for(const auto& point:lane.points)
+                    if(point.timeTicks<0 || point.timeTicks>=length)
+                        throw std::runtime_error("MIDI recorded controller lies outside its pass");
+                append(controllers::writeRequest({allocated.next("event_streams"),clip,lane.channel,lane.controller},lane.points));
+            }
+        };
         const auto name=placement.name.empty()?std::string("MIDI Recording"):placement.name;
         for(std::size_t index=0;index<passes.size();++index) {
             const auto& pass=passes[index];
@@ -1424,6 +1439,7 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
             lane.payload={{"id",pass.take.clip},{"lane",pass.take.lane}};
             append(std::move(lane));
             writeNotes(take,pass.takeNotes,pass.length,true);
+            writeControllers(pass.take.clip,pass.takeControllers,pass.length);
             if(index!=0) {
                 // Only replace this capture's previous main image. Keeping the
                 // same identity gives each pass an exact previous-image Undo.
@@ -1433,6 +1449,7 @@ RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placem
             }
             newClip(placement.mainClip,placement.length,name);
             writeNotes(main,pass.mainNotes,placement.length,false);
+            writeControllers(placement.mainClip,pass.mainControllers,placement.length);
             result.groupEnds_.push_back(result.requests.size());
         }
         result.ok=true;

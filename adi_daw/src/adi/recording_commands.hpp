@@ -75,6 +75,8 @@ struct MidiTakePass {
     // Recorder-owned note identities. Coordinates are relative to loop start.
     // The main image is the recorder's cumulative audible result for this pass.
     std::span<const notes::NoteValues> takeNotes,mainNotes;
+    // Controller and pitch-wheel points, relative to loop start, for the take and the main image.
+    std::span<const MidiControllerLane> takeControllers{},mainControllers{};
 };
 enum class RecoveryStatus {Ready, AlreadyPlaced, Refused};
 struct RecoveryTake {

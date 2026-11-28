@@ -355,11 +355,13 @@ void midiLoopTakes() {
     std::array<std::array<notes::NoteValues,1>,3> later{};
     for(std::size_t i=0;i<later.size();++i)
         later[i][0]={.start=width/8,.duration=width/8,.id=18+i,.key=64,.velocity=90};
+    const std::array<controllers::Point,2> pedalPoints{{{1,width/8,1.},{2,width/4,0.}}};
+    const std::array<recording::MidiControllerLane,1> pedal{{{0,64,pedalPoints}}};
     const std::array<recording::MidiTakePass,4> passes{{
         {{101,201,"First"},301,width,held,held},
-        {{102,202,"Second"},302,width,later[0],held},
+        {{102,202,"Second"},302,width,later[0],held,pedal},
         {{103,203,"Third"},303,width,later[1],held},
-        {{104,204,"Partial"},304,width/2,later[2],held},
+        {{104,204,"Partial"},304,width/2,later[2],held,{},pedal},
     }};
     const recording::MidiLoopPlacement placement{23,2*width,width,200,300,"MIDI Take"};
     const auto before=digestProject(store).text;
@@ -378,6 +380,16 @@ void midiLoopTakes() {
           count("SELECT count(*) FROM lanes WHERE track_id=23 AND kind='take' AND id=101+ord")==4 &&
           count("SELECT count(*) FROM clips WHERE id=204 AND length_ticks=2882880")==1,
           "3.5 captured passes create four ordered take clips, one main clip and a half-length final take");
+    {
+        const auto take=controllers::readLanes(store,202),main=controllers::readLanes(store,200),
+                   plain=controllers::readLanes(store,203);
+        const auto pedalKept=[&](const controllers::ReadResult& read) {
+            return read.ok && read.lanes.size()==1 && read.lanes[0].controller==64 && read.lanes[0].points.size()==2 &&
+                   read.lanes[0].points[0].value==1. && read.lanes[0].points[1].timeTicks==width/4;
+        };
+        check(pedalKept(take) && pedalKept(main) && plain.ok && plain.lanes.empty(),
+              "a pass's sustain pedal lands in its take, and the main image keeps the last pass's controllers");
+    }
     const auto readSingle=[&](std::int64_t clip) {
         const auto snapshot=notes::captureNotes(store,clip);
         if(!snapshot.ok || snapshot.records().size()!=1)throw std::runtime_error("expected one stored MIDI note");

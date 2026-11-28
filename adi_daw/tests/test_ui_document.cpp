@@ -3906,15 +3906,18 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
                    static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88, midiPort) &&
               doc->session().enqueueMidiInput(lead + 121, {0, engine::EventType::Controller, 1, 0, 0, 1, .25},
                                               lead + 89, midiPort) &&
+              doc->session().enqueueMidiInput(lead + 121, {0, engine::EventType::Controller, 1, 0, 0, 64, 1.},
+                                              lead + 89, midiPort) &&
               doc->session().enqueueMidiInput(lead + 122, {0, engine::EventType::NoteExpression, 1,
                    static_cast<std::uint16_t>(ExpressionDim::Pitch), 0, 0, 1.}, lead + 90, midiPort),
-          "one held MPE note, mod wheel and channel pitch with separate played and heard timestamps");
+          "one held MPE note, mod wheel, sustain pedal and channel pitch with separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
               clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128, midiPort),
-          "the held note releases");
+    check(doc->session().enqueueMidiInput(lead + 158, {0, engine::EventType::Controller, 1, 0, 0, 64, 0.}, lead + 126, midiPort) &&
+              doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128, midiPort),
+          "the pedal lifts and the held note releases");
     block();
     while (quantize && io.streamTimeSamples < 6400)
         block();
@@ -3975,9 +3978,15 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool q
                        lane.points.front().value == value;
             });
         };
-        check(controls.ok && controls.lanes.size() == 2 && hasControl(1, .25) &&
+        check(controls.ok && controls.lanes.size() == 3 && hasControl(1, .25) &&
                   hasControl(controllers::kPitchBend, .75),
-              "MIDI-only and staged mixed publication keep the two controller lanes through Rec-Q undo");
+              "MIDI-only and staged mixed publication keep the controller lanes through Rec-Q undo");
+        const auto pedal = std::find_if(controls.lanes.begin(), controls.lanes.end(), [](const auto &lane) {
+            return lane.channel == 1 && lane.controller == 64;
+        });
+        check(pedal != controls.lanes.end() && pedal->points.size() == 2 && pedal->points[0].value == 1. &&
+                  pedal->points[1].value == 0. && pedal->points[0].timeTicks < pedal->points[1].timeTicks,
+              "the take records the sustain pedal going down and coming up");
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
@@ -4082,6 +4091,160 @@ void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) 
                   *read.clip->posTicks + lanes.lanes[1].points.front().timeTicks == tick(144 - upstream),
               "CC retains its audible or raw time, and pitch follows monitoring when the clip ends under a held note");
     }
+}
+// The director's instrument test: Arrangement Record with the Loop on, into a track with a hosted
+// instrument. With MIDI Arrangement Overdub on, the second pass adds its notes to the first and erases
+// none, and one Undo takes the whole recording back. With it off, Live keeps each pass in a take lane
+// and plays the last on the main lane. Controllers and the sustain pedal are kept either way.
+void arrangementMidiLoopRecord(const std::filesystem::path &path, bool overdub) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.keys")
+                return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
+    check(doc != nullptr, "a project for MIDI loop recording");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    constexpr std::int64_t pass = 24000; // one beat at 120 BPM and 48 kHz
+    const auto tick = [](std::int64_t sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * textproj::kPPQ / 24000.));
+    };
+    doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                          "(31,'clap','record.test.keys','Keys','instrument')");
+    check(set("chain.create", {{"id", 20}, {"track", 2}, {"ord", 0}, {"name", "Devices"}}) &&
+              set("device.insert", {{"id", 21}, {"chain", 20}, {"ord", 0}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}) &&
+              set("track.setRecordQuantize", {{"id", 2}, {"on", false}}) &&
+              set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+              set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
+              set("transport.setLoop", {{"on", true}, {"start", 0}, {"end", textproj::kPPQ}}) && doc->synchronise(),
+          "an armed instrument track and a one-beat loop");
+    doc->prepare(48000, 64);
+    const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
+    const auto before = clipCount();
+    if (!doc->startRecording(0, 0, false, 0, {}, audio::WavFormat::Float32, overdub)) {
+        check(false, overdub ? "Record with Loop and MIDI Arrangement Overdub on starts on a MIDI track"
+                             : "Record with Loop on starts on a MIDI track");
+        std::printf("loop record: %s\n", doc->error().c_str());
+        return;
+    }
+    std::array<float, 64> left{}, right{};
+    float *output[]{left.data(), right.data()};
+    engine::AudioIo io{output, nullptr, 2, 0, 64, 0};
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    // Each event goes in just before the block that plays it, as a keyboard's would.
+    bool sent = true;
+    const auto play = [&](std::int64_t sample, engine::Event event) {
+        while (io.streamTimeSamples + io.frames <= sample)
+            block();
+        sent = doc->session().enqueueMidiInput(sample, event, sample) && sent;
+    };
+    using engine::EventType;
+    play(4800, {0, EventType::NoteOn, 1, 60, 1, 0, .8});
+    play(4800, {0, EventType::Controller, 1, 0, 0, 1, .5});
+    play(4800, {0, EventType::Controller, 1, 0, 0, 64, 1.});
+    play(9600, {0, EventType::NoteOff, 1, 60, 1, 0, 0});
+    play(pass + 12000, {0, EventType::NoteOn, 1, 64, 2, 0, .7});
+    play(pass + 13000, {0, EventType::Controller, 1, 0, 0, 64, 0.});
+    play(pass + 16800, {0, EventType::NoteOff, 1, 64, 2, 0, 0});
+    while (io.streamTimeSamples < 2 * pass + 2048)
+        block();
+    check(sent, "the keyboard's notes, mod wheel and pedal reach the session over two passes");
+    const auto live = doc->liveMidiTakes();
+    const auto shownKeys = [&] {
+        std::vector<int> keys;
+        if (!live.empty())
+            for (const auto &note : live.front().notes)
+                keys.push_back(note.key);
+        return keys;
+    };
+    check(live.size() == 1 && live.front().start == 0 && live.front().end == textproj::kPPQ &&
+              (overdub ? shownKeys() == std::vector<int>{60, 64} : shownKeys().empty()) && clipCount() == before,
+          overdub ? "the growing loop take shows both passes' notes inside the brace"
+                  : "the growing loop take shows the current pass inside the brace");
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "the loop take settles");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 1 && doc->liveMidiTakes().empty(),
+          "the loop take lands one main-lane clip");
+    if (!landed || !landed->ok || landed->clips.size() != 1) {
+        if (landed)
+            std::printf("loop record: %s\n", landed->message.c_str());
+        return;
+    }
+    const auto read = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);
+    check(read.clip && read.clip->trackId == 2 && read.clip->posTicks && *read.clip->posTicks == 0 &&
+              read.clip->lengthTicks && *read.clip->lengthTicks == textproj::kPPQ && !read.clip->laneId,
+          "the main-lane clip fills the brace");
+    if (!read.clip)
+        return;
+    std::vector<std::pair<int, std::int64_t>> notes;
+    for (const auto &note : read.clip->notes)
+        notes.emplace_back(note.key, note.startTicks);
+    std::sort(notes.begin(), notes.end());
+    const auto controls = controllers::readLanes(doc->store(), landed->clips.front());
+    const auto lane = [&](int controller) -> const controllers::Lane * {
+        for (const auto &entry : controls.lanes)
+            if (entry.channel == 1 && entry.controller == controller)
+                return &entry;
+        return nullptr;
+    };
+    if (overdub) {
+        check(notes == std::vector<std::pair<int, std::int64_t>>{{60, tick(4800)}, {64, tick(12000)}},
+              "the second pass adds its note where it was played and erases none of the first");
+        const auto *pedal = lane(64);
+        const auto *mod = lane(1);
+        check(controls.ok && pedal && pedal->points.size() == 2 && pedal->points[0].value == 1. &&
+                  pedal->points[0].timeTicks == tick(4800) && pedal->points[1].value == 0. &&
+                  pedal->points[1].timeTicks == tick(13000) && mod && mod->points.size() == 1 &&
+                  mod->points.front().value == .5,
+              "the sustain pedal and mod wheel of both passes are kept inside the brace");
+        const auto step = doc->ops().nextUndo();
+        check(step && doc->ops().undo().ok && clipCount() == before,
+              "one Undo takes back the whole loop take");
+        check(doc->ops().redo().ok && clipCount() == before + 1, "one Redo returns it");
+        return;
+    }
+    check(notes == std::vector<std::pair<int, std::int64_t>>{{64, tick(12000)}},
+          "the main lane plays the last complete pass where the stopped pass is silent");
+    SQLite::Statement takes(doc->store().db(),
+        "SELECT c.id FROM clips c JOIN lanes l ON l.id=c.lane_id WHERE c.track_id=2 AND l.kind='take' ORDER BY l.ord");
+    std::vector<std::vector<int>> passes;
+    while (takes.executeStep()) {
+        const auto take = engine::readClipDetails(doc->store(), takes.getColumn(0).getInt64(), true, true);
+        std::vector<int> keys;
+        if (take.clip)
+            for (const auto &note : take.clip->notes)
+                keys.push_back(note.key);
+        passes.push_back(std::move(keys));
+    }
+    check(passes.size() == 3 && std::count(passes.begin(), passes.end(), std::vector<int>{60}) == 1 &&
+              std::count(passes.begin(), passes.end(), std::vector<int>{64}) == 1 &&
+              std::count(passes.begin(), passes.end(), std::vector<int>{}) == 1,
+          "every pass is kept in its own take lane, the first one's note included");
+    const auto *pedal = lane(64);
+    check(controls.ok && pedal && pedal->points.size() == 1 && pedal->points.front().value == 0. &&
+              pedal->points.front().timeTicks == tick(13000),
+          "the main lane keeps the pedal of the pass it plays");
+    for (int i = 0; i < 3; ++i)
+        check(doc->ops().undo().ok, "Undo one recorded pass");
+    check(clipCount() == before, "three Undos take back the three passes");
+    for (int i = 0; i < 3; ++i)
+        check(doc->ops().redo().ok, "Redo one recorded pass");
+    check(clipCount() == before + 4, "and Redo returns three takes and the main-lane clip");
 }
 void mixedPunchKeepsMidi(const std::filesystem::path &dir, bool keepSecondAudio = false) {
     std::string error;
@@ -5871,6 +6034,8 @@ int main(int argc, char **argv) {
         arrangementMidiRecord(quantizedRecordingDir.path() / "quantized-mixed.adi", true, true);
         arrangementMidiAutoTiming(recordDir.path() / "midi-auto.adi", false);
         arrangementMidiAutoTiming(recordDir.path() / "midi-auto-overdub.adi", true);
+        arrangementMidiLoopRecord(recordDir.path() / "midi-loop-overdub.adi", true);
+        arrangementMidiLoopRecord(recordDir.path() / "midi-loop-takes.adi", false);
         test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
         mixedPunchKeepsMidi(punchRecoveryDir.path());
         test::TempDirectory partialPunchDir("ui_document", "mixed-punch-partial");

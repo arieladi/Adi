@@ -95,11 +95,23 @@ struct ProjectDocument::MidiRecording {
         std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
         std::map<std::pair<int, int>, std::vector<controllers::Point>> controllerPoints;
+        // What lands on the main lane: the take itself, or a loop take folded into the brace.
+        std::vector<notes::NoteValues> landedNotes;
+        std::map<std::pair<int, int>, std::vector<controllers::Point>> landedControllers;
+    };
+    // Arrangement Record with the Loop on. Live adds each pass's notes to one clip with MIDI Arrangement
+    // Overdub on, and keeps each pass in a take lane with the last on the main lane with it off.
+    struct Loop {
+        std::int64_t beginSample = 0, endSample = 0, beginTick = 0, endTick = 0;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
     std::vector<Track> tracks;
+    // The take on one running clock. In a loop take, pass n lies n loop lengths after the first.
     std::vector<LiveMidiTake> preview;
+    std::vector<LiveMidiTake> folded; // a loop take as the Arrangement shows it, inside the brace
+    std::vector<std::pair<std::int64_t, std::int64_t>> placed; // each track's landed start and length
+    std::optional<Loop> loop;
     bool started = false, overdub = false;
     std::int64_t firstStreamSample = 0;
     engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
@@ -112,6 +124,34 @@ struct ProjectDocument::MidiRecording {
             return tick;
         const auto next = tempo->ticksToSeconds(tick + 1);
         return next - seconds < seconds - tempo->ticksToSeconds(tick) ? tick + 1 : tick;
+    }
+    // The running clock of a loop take: a song sample in pass n becomes n loop lengths later.
+    std::int64_t runningSample(std::int64_t timeline, std::uint64_t pass) const noexcept {
+        return loop ? timeline + static_cast<std::int64_t>(pass) * (loop->endSample - loop->beginSample) : timeline;
+    }
+    std::int64_t runningTick(std::int64_t sample) const noexcept {
+        if (!loop || sample < loop->endSample)
+            return tickAt(sample);
+        const auto length = loop->endSample - loop->beginSample;
+        const auto passes = (sample - loop->beginSample) / length;
+        return tickAt(sample - passes * length) + passes * (loop->endTick - loop->beginTick);
+    }
+    // Where a running tick sounds inside the brace, and in which pass. A tick before the brace's first
+    // wrap (a take started before or inside the brace) keeps its place in pass zero.
+    std::pair<std::int64_t, std::int64_t> foldTick(std::int64_t tick) const noexcept {
+        if (!loop || tick < loop->endTick)
+            return {tick, 0};
+        const auto length = loop->endTick - loop->beginTick;
+        const auto offset = tick - loop->beginTick;
+        return {loop->beginTick + offset % length, offset / length};
+    }
+    bool wrapped(const LiveMidiTake &take) const noexcept { return loop && take.end > loop->endTick; }
+    // A loop take that wrapped lands from the earlier of its start and the brace's start to the brace's end.
+    std::pair<std::int64_t, std::int64_t> landedSpan(const LiveMidiTake &take) const noexcept {
+        if (!wrapped(take))
+            return {take.start, take.end - take.start};
+        const auto start = std::min(take.start, loop->beginTick);
+        return {start, loop->endTick - start};
     }
 
     bool monitorsAt(const Track &track, std::int64_t sample) const noexcept {
@@ -129,13 +169,13 @@ struct ProjectDocument::MidiRecording {
         if (packet.kind == engine::MidiCapturePacket::Kind::Span) {
             if (!started)
                 firstStreamSample = packet.streamSample;
-            const auto firstSample = packet.timelineSample;
+            const auto firstSample = runningSample(packet.timelineSample, packet.pass);
             const auto lastSample = firstSample + packet.frames;
             // The authored brace can share a sample with several nearby ticks.
-            const auto start = punchWindow.in && firstSample == punchWindow.in->sample
-                ? punchWindow.in->tick : tickAt(firstSample);
-            const auto end = punchWindow.out && lastSample == punchWindow.out->sample
-                ? punchWindow.out->tick : tickAt(lastSample);
+            const auto start = !loop && punchWindow.in && firstSample == punchWindow.in->sample
+                ? punchWindow.in->tick : runningTick(firstSample);
+            const auto end = !loop && punchWindow.out && lastSample == punchWindow.out->sample
+                ? punchWindow.out->tick : runningTick(lastSample);
             for (auto &take : preview) {
                 if (!started)
                     take.start = start;
@@ -154,7 +194,8 @@ struct ProjectDocument::MidiRecording {
         if (control && (event.channel >= 16 || !controllers::validController(address) ||
                         !std::isfinite(controlValue) || controlValue < 0. || controlValue > 1.))
             return;
-        const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
+        const auto heard = runningSample(packet.timelineSample, packet.pass);
+        const auto played = runningTick(heard - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             if (!track.filter.matches(packet.port, event.channel))
@@ -166,7 +207,7 @@ struct ProjectDocument::MidiRecording {
                 ? monitorsAt(track, packet.timelineSample)
                 : held != track.held.end() && held->second.monitored;
             // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
-            const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
+            const auto tick = monitored ? runningTick(heard - track.monitor->instrumentArrival) : played;
             const auto at = std::clamp(tick, take.start, take.end - 1);
             if (control) {
                 if (!monitored && packet.inputSample < firstStreamSample)
@@ -223,10 +264,40 @@ struct ProjectDocument::MidiRecording {
                 shown.end = preview[i].end;
                 tracks[i].notes[item.second.index].duration = shown.end - shown.start;
             }
+        fold();
+    }
+
+    // The Arrangement shows a loop take inside the brace: every pass with Overdub on, the current pass with it off.
+    void fold() {
+        if (!loop)
+            return;
+        folded.resize(preview.size());
+        for (std::size_t i = 0; i < preview.size(); ++i) {
+            const auto &take = preview[i];
+            auto &shown = folded[i];
+            const auto [start, length] = landedSpan(take);
+            shown.track = take.track;
+            shown.start = start;
+            shown.end = start + length;
+            shown.notes.clear();
+            const auto current = foldTick(take.end - 1).second;
+            for (const auto &note : take.notes) {
+                const auto [at, pass] = foldTick(note.start);
+                if (overdub || pass == current)
+                    shown.notes.push_back({at, std::min(shown.end, at + (note.end - note.start)), note.key});
+            }
+        }
     }
 
     bool finished() const noexcept {
         return state != engine::MidiCaptureState::Waiting && state != engine::MidiCaptureState::Recording;
+    }
+
+    // With Overdub off a loop take that wrapped lands pass by pass in take lanes.
+    bool landsInTakeLanes() const noexcept {
+        return loop && !overdub && std::any_of(preview.begin(), preview.end(), [this](const auto &take) {
+            return wrapped(take);
+        });
     }
 
     struct Placement {
@@ -239,16 +310,32 @@ struct ProjectDocument::MidiRecording {
         placement.expressions.resize(tracks.size());
         placement.controllers.resize(tracks.size());
         placement.takes.reserve(tracks.size());
+        placed.assign(tracks.size(), {});
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             const auto &span = preview[i];
+            const auto [start, length] = landedSpan(span);
+            placed[i] = {start, length};
+            // An Overdub loop take folds every pass into the brace, so each pass adds its notes to the clip.
+            track.landedNotes = track.notes;
+            track.landedControllers = track.controllerPoints;
+            if (wrapped(span)) {
+                for (auto &note : track.landedNotes) {
+                    const auto at = foldTick(span.start + note.start).first;
+                    note.start = at - start;
+                    note.duration = std::max<std::int64_t>(1, std::min(note.duration, start + length - at));
+                }
+                for (auto &[address, points] : track.landedControllers)
+                    for (auto &point : points)
+                        point.timeTicks = foldTick(span.start + point.timeTicks).first - start;
+            }
             for (auto &[key, points] : track.expression) {
-                const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
+                const auto &note = track.landedNotes[static_cast<std::size_t>(key.first - 1)];
                 std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
                 if (!points.empty())
                     placement.expressions[i].push_back({key.first, key.second, points});
             }
-            for (auto &[address, points] : track.controllerPoints) {
+            for (auto &[address, points] : track.landedControllers) {
                 // Crossing a Monitor Auto boundary can change the clock for the next control.
                 std::stable_sort(points.begin(), points.end(), [](const auto &a, const auto &b) {
                     return a.timeTicks < b.timeTicks;
@@ -256,11 +343,99 @@ struct ProjectDocument::MidiRecording {
                 placement.controllers[i].push_back({address.first, address.second, points});
             }
             auto name = shownTrackName(current, span.track);
-            placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
+            placement.takes.push_back({span.track, rows.next("clips"), start, length,
                                        name.empty() ? std::string("Take") : std::move(name),
-                                       track.notes, placement.expressions[i], overdub, placement.controllers[i]});
+                                       track.landedNotes, placement.expressions[i], overdub, placement.controllers[i]});
         }
         return placement;
+    }
+
+    // A loop take with Overdub off: a take lane for each pass, and the last pass on the main lane.
+    struct LoopTake {
+        recording::MidiLoopPlacement placement;
+        std::vector<std::vector<notes::NoteValues>> takeNotes, mainNotes;
+        std::vector<std::map<std::pair<int, int>, std::vector<controllers::Point>>> takePoints, mainPoints;
+        std::vector<std::vector<recording::MidiControllerLane>> takeControllers, mainControllers;
+        std::vector<recording::MidiTakePass> passes;
+    };
+    // Allocate one track's identities after the previous track's passes are committed.
+    std::unique_ptr<LoopTake> loopTake(std::size_t i, RowIds &rows, const SnapshotReader &current) const {
+        auto out = std::make_unique<LoopTake>();
+        const auto loopLength = loop->endTick - loop->beginTick;
+        {
+            const auto &track = tracks[i];
+            const auto &span = preview[i];
+            auto &take = *out;
+            auto name = shownTrackName(current, span.track);
+            take.placement = {span.track, loop->beginTick, loopLength, rows.next("clips"), rows.next("event_streams"),
+                              name.empty() ? std::string("Take") : name};
+            const auto count = static_cast<std::size_t>(foldTick(span.end - 1).second + 1);
+            const auto lengthOf = [&](std::size_t pass) {
+                return pass + 1 < count ? loopLength
+                                        : span.end - loop->beginTick - static_cast<std::int64_t>(pass) * loopLength;
+            };
+            take.takeNotes.resize(count);
+            take.mainNotes.resize(count);
+            take.takePoints.resize(count);
+            take.mainPoints.resize(count);
+            // Rec-Q snaps each recorded start inside its own pass. A take before the brace is not kept.
+            for (auto note : track.notes) {
+                const auto heard = span.start + note.start;
+                if (heard < loop->beginTick)
+                    continue;
+                const auto [at, pass] = foldTick(heard);
+                const auto index = static_cast<std::size_t>(pass);
+                auto start = at - loop->beginTick;
+                if (track.quantizeGrid > 0) {
+                    const auto grid = track.quantizeGrid;
+                    start = std::clamp((at + grid / 2) / grid * grid - loop->beginTick, std::int64_t{0}, lengthOf(index) - 1);
+                }
+                note.start = start;
+                take.takeNotes[index].push_back(note);
+                note.duration = std::max<std::int64_t>(1, std::min(note.duration, loopLength - start));
+                take.mainNotes[index].push_back(note);
+            }
+            for (const auto &[address, points] : track.controllerPoints)
+                for (auto point : points) {
+                    const auto heard = span.start + point.timeTicks;
+                    if (heard < loop->beginTick)
+                        continue;
+                    const auto [at, pass] = foldTick(heard);
+                    point.timeTicks = at - loop->beginTick;
+                    take.takePoints[static_cast<std::size_t>(pass)][address].push_back(point);
+                    take.mainPoints[static_cast<std::size_t>(pass)][address].push_back(point);
+                }
+            // A last pass that stops early leaves the pass before it playing after the stop.
+            if (const auto last = count - 1; count > 1 && lengthOf(last) < loopLength) {
+                const auto stop = lengthOf(last);
+                for (const auto &note : take.mainNotes[last - 1])
+                    if (note.start >= stop)
+                        take.mainNotes[last].push_back(note);
+                for (const auto &[address, points] : take.mainPoints[last - 1])
+                    for (const auto &point : points)
+                        if (point.timeTicks >= stop)
+                            take.mainPoints[last][address].push_back(point);
+            }
+            const auto lanes = [](auto &images, auto &controllersOut) {
+                controllersOut.resize(images.size());
+                for (std::size_t pass = 0; pass < images.size(); ++pass)
+                    for (auto &[address, points] : images[pass]) {
+                        std::stable_sort(points.begin(), points.end(), [](const auto &a, const auto &b) {
+                            return a.timeTicks < b.timeTicks;
+                        });
+                        controllersOut[pass].push_back({address.first, address.second, points});
+                    }
+            };
+            lanes(take.takePoints, take.takeControllers);
+            lanes(take.mainPoints, take.mainControllers);
+            const auto clipName = take.placement.name;
+            take.passes.reserve(count);
+            for (std::size_t pass = 0; pass < count; ++pass)
+                take.passes.push_back({{rows.next("lanes"), rows.next("clips"), clipName}, rows.next("event_streams"),
+                                       lengthOf(pass), take.takeNotes[pass], take.mainNotes[pass],
+                                       take.takeControllers[pass], take.mainControllers[pass]});
+        }
+        return out;
     }
 };
 
@@ -3539,13 +3714,17 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     engine::AudioRecordingSpec spec;
     const auto playingSample = playing ? std::optional{mailbox_.position()} : std::nullopt;
+    std::optional<engine::AudioRecordingLoop> midiLoop;
     if (current->transport.loopEnabled && !session_.recordingStartsAfterLoop(insertTick, playingSample)) {
-        if (!armed.midi.empty()) {
-            error_ = "Loop recording supports audio tracks. Disarm MIDI tracks or turn off the loop.";
-            return false;
-        }
         if (!armed.audio.empty() && !session_.configureArrangementLoopRecording(spec, error_))
             return false;
+        if (!armed.midi.empty()) {
+            // MIDI passes run on the same brace and authored clock as audio passes.
+            engine::AudioRecordingSpec bounds;
+            if (!session_.configureArrangementLoopRecording(bounds, error_))
+                return false;
+            midiLoop = std::move(bounds.loop);
+        }
     }
     if (!playing && !mailbox_.hasRoom()) {
         error_ = "Transport command queue is full";
@@ -3557,6 +3736,9 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         midi->tempo = current->tempo;
         midi->overdub = overdub;
         midi->sampleRate = engineRate_;
+        if (midiLoop)
+            midi->loop = MidiRecording::Loop{midiLoop->beginSample, midiLoop->endSample,
+                                             midi->tickAt(midiLoop->beginSample), midi->tickAt(midiLoop->endSample)};
         midi->tracks.resize(armed.midi.size());
         midi->preview.resize(armed.midi.size());
         const SnapshotReader source(current);
@@ -3674,7 +3856,7 @@ std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
         midi = takePublication_->midi.get();
     if (!midi || !midi->started || cancelTake_)
         return {};
-    return midi->preview;
+    return midi->loop ? midi->folded : midi->preview;
 }
 bool ProjectDocument::startTakeRecovery(const engine::recording_recovery::LaunchTake &take) {
     if (recording_ || landing_ || store_->readOnly()) {
@@ -3827,12 +4009,12 @@ void ProjectDocument::finishMidiTake(const MidiRecording &midi, const recording:
     bool keptInTakeLane = false;
     for (std::size_t i = 0; i < edit.midiLandings.size(); ++i) {
         const auto &landing = edit.midiLandings[i];
-        const auto &span = midi.preview[i];
+        const auto [start, length] = midi.placed[i];
         outcome.clips.push_back(landing.clip);
         keptInTakeLane = keptInTakeLane || landing.inTakeLane;
         const auto grid = midi.tracks[i].quantizeGrid;
         if (grid != 0 && !landing.noteIds.empty())
-            targets.push_back({landing.clip, landing.sourceStart, span.start, span.end - span.start, grid, landing.noteIds});
+            targets.push_back({landing.clip, landing.sourceStart, start, length, grid, landing.noteIds});
     }
     if (keptInTakeLane)
         outcome.message += " Kept overdub in a Take Lane where merging would change other material.";
@@ -3861,6 +4043,38 @@ ProjectDocument::TakeLanded ProjectDocument::commitMidiTake(MidiRecording &midi,
         return {false, {}, "Could not add the recorded take. " + why + "." + audioLocation};
     };
     TakeLanded outcome;
+    if (midi.landsInTakeLanes()) {
+        try {
+            std::size_t passes = 0;
+            // Each track's passes commit with one Undo per pass, as audio loop passes do.
+            for (std::size_t i = 0; i < midi.tracks.size(); ++i) {
+                RowIds rows(store_->db());
+                const auto passTakes = midi.loopTake(i, rows, SnapshotReader(view_.current()));
+                const auto &take = *passTakes;
+                auto edit = recording::prepareMidiLoopCommit(*store_, take.placement, take.passes);
+                if (!edit.ok)
+                    return fail(edit.error);
+                const auto committed = ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) {
+                    return recording::commit(store, edit, actor);
+                });
+                if (!committed)
+                    return fail(committed.error);
+                outcome.clips.push_back(take.placement.mainClip);
+                passes = std::max(passes, take.passes.size());
+            }
+            outcome.message = passes == 1 ? "Recorded one pass of the loop."
+                                          : "Recorded " + std::to_string(passes) + " passes of the loop, a take each.";
+            if (const auto problem = midiRecordingFailure(midi.state); !problem.empty())
+                outcome.message += " MIDI recording ended: " + problem + ".";
+            if (!audioProblem.empty())
+                outcome.message += " Audio recording ended: " + audioProblem + "." + audioLocation;
+        } catch (const std::exception &error) {
+            return fail(error.what());
+        }
+        outcome.ok = true;
+        synchronise();
+        return outcome;
+    }
     try {
         RowIds rows(store_->db());
         const auto placement = midi.placements(rows, SnapshotReader(view_.current()));
@@ -3986,8 +4200,18 @@ void ProjectDocument::landTake() {
         landing_ = false;
         TakeLanded outcome;
         std::vector<std::int64_t> lastPassClips;
+        // The MIDI tracks armed beside the audio record the same passes and land after them.
+        const auto landMidi = [&](TakeLanded &into) {
+            if (!hasMidi)
+                return;
+            auto played = commitMidiTake(*midi, {}, {});
+            into.ok = into.ok || played.ok;
+            into.clips.insert(into.clips.end(), played.clips.begin(), played.clips.end());
+            into.message += (into.message.empty() ? "" : " ") + played.message;
+        };
         const auto refuse = [&](const std::string &reason) {
             landed_ = TakeLanded{false, {}, attachmentFailure(*audio, reason)};
+            landMidi(*landed_);
         };
         try {
             RowIds rows(store_->db());
@@ -4056,6 +4280,7 @@ void ProjectDocument::landTake() {
         if (!audio->recoveryWarning().empty()) outcome.message += " " + audio->recoveryWarning();
         if (!audioProblem.empty())
             outcome.message += " Capture stopped because " + audioProblem + ".";
+        landMidi(outcome);
         landed_ = std::move(outcome);
         return;
     }

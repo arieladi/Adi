@@ -21729,7 +21729,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // CT-02: loop audio can record, while armed MIDI still needs pass placement.
+    // CT-02: loop recording takes audio and armed MIDI passes alike.
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
@@ -21738,9 +21738,15 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         root.arrangement.placeInsertMarker(textproj::kPPQ);
         block();
         frame();
-        check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("MIDI") != std::string::npos,
-              "SC-27: loop recording explains why it cannot start with an armed MIDI track");
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "SC-27: the Record command starts loop recording with an armed MIDI track");
+        check(root.command(AppCommands::Stop), "stop the mixed loop take");
+        block();
+        check(document->settleRecording() && !document->recording() && !document->landingTake(),
+              "SC-27: the mixed loop take stops and settles");
+        (void)document->takeLanded();
+        block();
+        frame();
         OpRequest disarm;
         disarm.opType = "track.setArm";
         disarm.payload = {{"id", 3}, {"armed", false}};
