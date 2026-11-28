@@ -76,6 +76,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -635,6 +636,9 @@ private:
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : GraphTransportState {
+        TimingView(TempoMap map, double rate)
+            : tempo(std::move(map)), tempoClock(tempo, rate), sampleRate(rate) {}
+
         std::shared_ptr<const GestureControls> generationControls;
         std::shared_ptr<GestureAudio> gestureAudio;
         std::uint64_t gestureGeneration=0;
@@ -649,12 +653,12 @@ private:
         std::int64_t loopBegin=0,loopEnd=0;
     std::int64_t punchOutSample=0; // brace end without the one-frame minimum for loops
         TempoMap tempo;
+        WarpArrangementClock tempoClock;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
         std::uint64_t midiHardwareRouting = 0;
-        std::optional<WarpArrangementClock> playQuantizeClock;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;

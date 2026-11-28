@@ -62,13 +62,19 @@ struct Instrument final:device::DeviceInstance {
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
     EventFlow flow = EventFlow::Consume;
     bool audible=false;int voices=0;
+    bool wantsClock = false;
+    std::array<DeviceTransport,32> positions{};
+    std::size_t positionCount = 0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     bool processesDouble()const noexcept override{return true;}
     EventFlow eventFlow()const noexcept override{return flow;}
+    bool wantsDeviceTransport()const noexcept override{return wantsClock;}
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
+        if (io.deviceTransport && positionCount < positions.size())
+            positions[positionCount++] = *io.deviceTransport;
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
         if(audible) {
             auto event=io.events.begin();
@@ -104,6 +110,7 @@ struct Fixture {
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;Instrument* otherInstrument=nullptr;
     double rate;int block;Precision width;std::int64_t clock=0;
     EventFlow firstDeviceFlow = EventFlow::Consume;
+    bool firstDeviceWantsClock = false;
     explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
@@ -119,7 +126,10 @@ struct Fixture {
         const auto loader = [this](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
             if (request.device->id == 2) return std::make_unique<LatencyEffect>();
             auto instance = std::make_unique<Instrument>();
-            if (request.device->id == 1) instance->flow = firstDeviceFlow;
+            if (request.device->id == 1) {
+                instance->flow = firstDeviceFlow;
+                instance->wantsClock = firstDeviceWantsClock;
+            }
             (request.device->id == 3 ? otherInstrument : instrument) = instance.get();
             return instance;
         };
@@ -1133,6 +1143,126 @@ void livePlayQuantizeRamp() {
         }
     }
 }
+void indexedSessionTransport() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr int lead = 96;
+    constexpr double ppq = static_cast<double>(quarter);
+    for (const double rate : {44100.0,48000.0,96000.0}) {
+        Fixture f(rate,257);
+        f.firstDeviceWantsClock = true;
+        auto& db = f.store->db();
+        db.exec("UPDATE tracks SET monitor_mode=1 WHERE id=1;DELETE FROM tempo_map");
+        {
+            SQLite::Statement row(db,"INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(?,?,?,?)");
+            const auto save = [&](int beat, double bpm, int curve, double tension = 0) {
+                row.bind(1,beat*quarter); row.bind(2,bpm); row.bind(3,curve); row.bind(4,tension);
+                row.exec(); row.reset();
+            };
+            for (int beat = 0; beat < lead; ++beat)
+                save(beat,static_cast<double>(75+(beat*37)%115),beat%3,beat%2 ? 0.75 : -0.5);
+            save(lead,90,1);
+            save(lead+4,210,0);
+            save(lead+5,90,2,1);
+            save(lead+9,210,0);
+        }
+        OpRequest setting;
+        setting.opType = "track.setPlayQuantize";
+        setting.payload = {{"id",1},{"on",true},{"grid","1/4"},{"forgivenessMs",0.0}};
+        if (!OpJournal(*f.store).commit(setting).ok) throw std::runtime_error("save monitored Play-Q");
+        f.store.reset();
+        StoreError error{};
+        f.store = Store::open(f.dir.path()/"session.adi",error);
+        if (!f.store) throw std::runtime_error("reopen the mixed tempo map");
+        f.load();
+
+        const auto tempo = TempoMap::fromRows(f.session.model().tempo);
+        const auto sampleAt = [&](std::int64_t tick) {
+            return static_cast<std::int64_t>(std::llround(
+                static_cast<long double>(tempo.ticksToSeconds(tick))*rate));
+        };
+        const auto quartersAt = [&](std::int64_t sample, std::int64_t tick) {
+            const auto remainder = static_cast<double>(sample)/rate - tempo.ticksToSeconds(tick);
+            return static_cast<double>(tick)/ppq + remainder*tempo.bpmAt(tick)/60.0;
+        };
+        bool queries = true, devices = true;
+        constexpr std::array beats{lead-1,lead,lead+2,lead+4,lead+5,lead+7,lead+9};
+        for (const int beat : beats) {
+            const auto tick = beat*quarter;
+            const auto at = sampleAt(tick);
+            f.clock = at-1;
+            f.session.transport().locate(f.clock);
+            {
+                const audio::CallbackScope scope;
+                auto block = f.session.beginRender();
+                queries &= block.valid() && block.sampleAtTick(tick) == at &&
+                    block.bpmAtTick(tick) == tempo.bpmAt(tick);
+                for (auto sample = at-1; sample <= at+1; ++sample) {
+                    const auto expected = tempo.secondsToTicks(static_cast<double>(sample)/rate);
+                    queries &= block.tickAtSample(sample) == expected &&
+                        block.beatAtSample(sample) == quartersAt(sample,expected);
+                }
+            }
+            const auto compareDevice = [&](const DeviceTransport& clock, std::int64_t sample) {
+                const auto whole = tempo.secondsToTicks(static_cast<double>(sample)/rate);
+                auto snapped = whole;
+                auto quarters = quartersAt(sample,whole);
+                auto next = std::numeric_limits<std::int64_t>::max();
+                for (const auto& row : tempo.events) {
+                    const auto edge = sampleAt(row.posTicks);
+                    if (edge > sample) { next = edge; break; }
+                    snapped = std::max(snapped,row.posTicks);
+                    quarters = std::max(quarters,static_cast<double>(row.posTicks)/ppq);
+                }
+                return clock.playing && clock.sample == sample && clock.quarterNotes == quarters &&
+                    clock.bpm == tempo.bpmAt(snapped) && clock.nextChange == next &&
+                    clock.bar == snapped/(4*quarter);
+            };
+            const bool splits = beat != lead+2 && beat != lead+7;
+            f.instrument->positionCount = 0;
+            f.render(3);
+            devices &= f.instrument->positionCount == (splits ? 2u : 1u) &&
+                compareDevice(f.instrument->positions[0],at-1);
+            if (splits) devices &= compareDevice(f.instrument->positions[1],at);
+            else {
+                f.clock = at+1;
+                f.session.transport().locate(f.clock);
+                f.instrument->positionCount = 0;
+                f.render(1);
+                devices &= f.instrument->positionCount == 1 && compareDevice(f.instrument->positions[0],at+1);
+            }
+        }
+
+        // The final linear and Bezier segments both go from 90 to 210 BPM
+        // over four beats. Integrate each midpoint independently of the index.
+        const auto s = 1.0-std::sqrt(0.5);
+        const auto shapedSeconds = 480.0 * (std::atan(s*std::sqrt(120.0/90.0))/std::sqrt(90.0*120.0) -
+            std::log1p(120.0*s*s/90.0)/240.0);
+        const std::array<double,2> midpointSeconds{
+            tempo.ticksToSeconds(lead*quarter) + 2.0*std::log(150.0/90.0),
+            tempo.ticksToSeconds((lead+5)*quarter) + shapedSeconds,
+        };
+        bool queued = true;
+        for (const double midpoint : midpointSeconds) {
+            const auto release = static_cast<std::int64_t>(std::ceil(midpoint*rate));
+            f.clock = release-32;
+            f.session.transport().locate(f.clock);
+            f.instrument->count = 0;
+            queued &= f.session.enqueueMidiInput(release-8,{0,EventType::NoteOn,0,66,1,0,.75}) &&
+                f.session.enqueueMidiInput(release+5,{0,EventType::NoteOff,0,66,1,0,0});
+            f.render(64);
+            const auto& on = f.instrument->heard[0];
+            const auto& off = f.instrument->heard[1];
+            queued &= f.instrument->count == 2 && on.e.type == EventType::NoteOn &&
+                off.e.type == EventType::NoteOff && on.clock == release && off.clock == release+13 &&
+                on.e.noteId == off.e.noteId;
+        }
+        std::printf("Mixed Session clock %.0f Hz: transport %d, device PPQ %d, monitored Play-Q %d\n",
+                    rate,queries,devices,queued);
+        check(queries && devices && queued && f.session.problems().empty(),
+              "one saved mixed clock keeps exact transport samples, device PPQ and monitored MIDI grid edges");
+    }
+}
+
 void activeFlag() {
     Fixture f(48000,128);f.clip(1,0,240240,5765760);
     auto mute = [&] {
@@ -2197,6 +2327,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "play-quantize-ramp") livePlayQuantizeRamp(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "indexed-transport") indexedSessionTransport(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }

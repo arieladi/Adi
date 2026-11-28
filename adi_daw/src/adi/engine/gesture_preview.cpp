@@ -547,7 +547,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         playback.tempo=owner->playbackTempo(image->model);
         const auto& previousGraph = owner->devices_.rebuildSpec();
         const auto* previousTiming = dynamic_cast<const Session::TimingView*>(previousGraph.transportState.get());
-        auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
+        auto timing=std::make_shared<Session::TimingView>(TempoMap::fromRows(playback.tempo),owner->spec_.sampleRate);
+        timing->session=owner;
         timing->spec=owner->spec_;
         owner->prepareMidiHardware(*timing, image->model, previousTiming);
         if (preserveReaders && previousTiming && previousTiming->spec.sampleRate == owner->spec_.sampleRate &&
@@ -573,9 +574,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->controls=controls(image->model,excluded);
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
-        timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
+        timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->stripLanes=out->controls->lanes;
-        timing->tempo = TempoMap::fromRows(playback.tempo);
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
@@ -584,7 +584,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->outputSlice64.resize(timing->outputSlice.size());
         owner->prepareSourceReadiness(*timing, *out->clips);
         auto sample=[&](std::int64_t tick){
-            const long double value=static_cast<long double>(timing->tempo.ticksToSeconds(tick))*owner->spec_.sampleRate;
+            const long double value=static_cast<long double>(timing->tempoClock.ticksToSeconds(tick))*owner->spec_.sampleRate;
             if(!std::isfinite(value) || value<0 || value>static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
                 throw std::runtime_error("preview transport time is unrepresentable");
             return static_cast<std::int64_t>(std::llround(value));

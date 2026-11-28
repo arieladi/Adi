@@ -23,6 +23,9 @@ public:
     [[nodiscard]] double tickAtFrame(double frame) const noexcept;
     /// Preserve TempoMap's seconds projection where an existing caller
     /// makes its own sample-rounding decision.
+    [[nodiscard]] double ticksToSeconds(std::int64_t tick) const noexcept;
+    [[nodiscard]] std::int64_t secondsToTicks(double seconds) const noexcept;
+    [[nodiscard]] double bpmAt(std::int64_t tick) const noexcept;
     [[nodiscard]] long double secondsAtPosition(long double tick) const noexcept;
     [[nodiscard]] long double positionAtSeconds(long double seconds) const noexcept;
     [[nodiscard]] double framesPerTickAt(double tick) const noexcept;
@@ -36,10 +39,10 @@ private:
     struct Segment;
     [[nodiscard]] const Segment& segmentAtTick(double tick) const noexcept;
     [[nodiscard]] const Segment& segmentAtFrame(double frame) const noexcept;
-    [[nodiscard]] double secondsAtTick(std::int64_t tick) const noexcept;
-    [[nodiscard]] std::int64_t ticksAtSeconds(double seconds) const noexcept;
+    [[nodiscard]] const Segment& segmentAtExactTick(std::int64_t tick) const noexcept;
 
     double sampleRate_;
+    double leadInBpm_;
     double minimumBpm_ = 0;
     double maximumBpm_ = 0;
     std::vector<Segment> segments_;
