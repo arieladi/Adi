@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 13:46 IST — libcxx/control/agent-chain `f11ae67a1ca3542afdb6254898982c87f6a07388`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The Darwin-only `<sys/random.h>` include fixed the `getentropy` declaration error. The exact corrected `session_discovery.cpp` passed strict Clang 20 syntax checks against the macOS 26.1 SDK for Apple Silicon, as well as strict Linux Clang/libc++ and GCC/libstdc++ syntax checks.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 13:35 IST — control/agent-chain `289611a34eb8296338a2cf457c25115f8f238514`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
