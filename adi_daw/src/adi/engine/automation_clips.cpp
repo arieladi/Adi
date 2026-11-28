@@ -3,6 +3,7 @@
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -15,17 +16,19 @@ struct AutomationClock {
     struct Knot { long double tick=0, seconds=0, ticksPerSecond=0; };
     double rate=0;
     std::vector<Knot> knots;
-    std::optional<TempoMap> rampClock;
+    std::optional<WarpArrangementClock> rampClock;
     long double secondsAt(long double tick) const noexcept {
         if (rampClock) return rampClock->secondsAtPosition(tick);
-        auto i=std::upper_bound(knots.begin(),knots.end(),tick,[](long double t,const Knot& k){return t<k.tick;});
-        if(i!=knots.begin())--i;
+        const auto* first = knots.data();
+        auto i=std::upper_bound(first,first+knots.size(),tick,[](long double t,const Knot& k){return t<k.tick;});
+        if(i!=first)--i;
         return i->seconds+(tick-i->tick)/i->ticksPerSecond;
     }
     long double ticksAt(long double seconds) const noexcept {
-        if (rampClock) return rampClock->positionAtSeconds(seconds);
-        auto i=std::upper_bound(knots.begin(),knots.end(),seconds,[](long double t,const Knot& k){return t<k.seconds;});
-        if(i!=knots.begin())--i;
+        if (rampClock) return rampClock->tickAtFrame(static_cast<double>(seconds * rate));
+        const auto* first = knots.data();
+        auto i=std::upper_bound(first,first+knots.size(),seconds,[](long double t,const Knot& k){return t<k.seconds;});
+        if(i!=first)--i;
         return i->tick+(seconds-i->seconds)*i->ticksPerSecond;
     }
 };
@@ -58,9 +61,6 @@ std::int64_t sampleAtNs(std::int64_t ns,double rate) {
 }
 std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double rate) {
     auto clock=std::make_shared<AutomationClock>();clock->rate=rate;
-    if (std::any_of(model.tempo.begin(), model.tempo.end(),
-                    [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
-        clock->rampClock = TempoMap::fromRows(model.tempo);
     const auto initialBpm = model.tempo.empty() ? 120.0L : static_cast<long double>(model.tempo.front().bpm);
     clock->knots.push_back({0, 0, 5765760.0L * initialBpm / 60.0L});
     for(const auto& row:model.tempo) {
@@ -74,6 +74,9 @@ std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double 
             throw std::runtime_error("invalid clip envelope tempo map");
         if(t==clock->knots.back().tick)clock->knots.back()=knot;else clock->knots.push_back(knot);
     }
+    if (std::any_of(model.tempo.begin(), model.tempo.end(),
+                    [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
+        clock->rampClock.emplace(model.tempo,rate);
     return clock;
 }
 std::optional<std::int64_t> deviceTrack(const rows::Model& model,std::int64_t device) {
@@ -171,25 +174,28 @@ void changesFor(const ClipEnvelope& e,const AutomationClock& clock,std::vector<s
 } // namespace
 std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::int64_t sample,bool held) noexcept {
     if(!lane.clipClock || lane.clipRegions.empty())return {};
-    const auto& regions=lane.clipRegions;
-    auto r=std::upper_bound(regions.begin(),regions.end(),sample,[](auto at,const auto& v){return at<v.begin;});
-    if(r==regions.begin())return {};
+    const auto* regions = lane.clipRegions.data();
+    auto r=std::upper_bound(regions,regions+lane.clipRegions.size(),sample,[](auto at,const auto& v){return at<v.begin;});
+    if(r==regions)return {};
     --r;if(sample>=r->end)return {};
-    const auto& e=lane.clipEnvelopes[r->envelope];const auto& points=e.points;
+    const auto& e=lane.clipEnvelopes[r->envelope];
+    const auto* first = e.points.data();
+    const auto* last = first + e.points.size();
     const auto cycle=cycleAt(e,*lane.clipClock,sample);
     const auto wrap=wrapBoundary(e,*lane.clipClock,sample,cycle);
-    const auto time=sourceTime(e,*lane.clipClock,sample,cycle,wrap);
-    auto p=std::upper_bound(points.begin(),points.end(),sample,[&](std::int64_t at,const auto& v){return at<pointSample(v,e,*lane.clipClock,cycle);});
-    if(p==points.begin())return p->value;
-    if(p==points.end())return points.back().value;
+    auto p=std::upper_bound(first,last,sample,[&](std::int64_t at,const auto& v){return at<pointSample(v,e,*lane.clipClock,cycle);});
+    if(p==first)return p->value;
+    if(p==last)return (last-1)->value;
     const auto& a=*(p-1);const auto& b=*p;
     if(held || (!wrap && pointSample(a,e,*lane.clipClock,cycle)==sample))return a.value;
+    const auto time=sourceTime(e,*lane.clipClock,sample,cycle,wrap);
     const auto x=static_cast<double>((time-static_cast<long double>(a.time))/
         (static_cast<long double>(b.time)-static_cast<long double>(a.time)));
     return curveValue(a.value,b.value,x,a.curve,a.tension);
 }
 void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane& row,
-    const rows::Model& model,double rate,std::vector<std::string>& problems) {
+    const rows::Model& model,double rate,std::shared_ptr<const AutomationClock>& clipClock,
+    std::vector<std::string>& problems) {
     const auto prefix="automation_lanes#"+std::to_string(row.id)+": ";
     if(std::none_of(model.automationData.begin(),model.automationData.end(),[&](const auto& d){return d.laneId==row.id && d.clipId.has_value();}))return;
     if(lane.points.size()>budget){problems.push_back(prefix+"clip-envelope boundary budget exceeded");return;}
@@ -216,7 +222,10 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
                 if(route!=model.routing.end() && route->kind=="send" && route->srcKind=="track")track=route->srcId;
             }
             if(!track || *track!=c->trackId)throw std::runtime_error("clip does not belong to lane owner's track");
-            if(!lane.clipClock)lane.clipClock=clockFor(model,rate);
+            if (!lane.clipClock) {
+                if (!clipClock) clipClock = clockFor(model,rate);
+                lane.clipClock = clipClock;
+            }
             const auto& clock=*lane.clipClock;ClipEnvelope e;e.clipId=c->id;e.nanos=row.timeBase==1;e.loop=c->loopEnabled;
             if(c->timeBase==0) {
                 if(!c->posTicks || !c->lengthTicks || *c->posTicks<0 || *c->lengthTicks<=0 ||
