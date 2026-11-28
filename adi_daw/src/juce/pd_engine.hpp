@@ -142,7 +142,18 @@ public:
     /// WholeBlocks is a caller guarantee about EVERY process segment, not just
     /// prepare's maximum. Event-split callers must use Buffered for user patches.
     /// A violation is counted and silenced; latency never changes mid-stream.
-    enum class BlockMode { Buffered, WholeBlocks };
+    ///
+    /// Automatic is DEV-13's contract (the director's Q-K2 answer of 5
+    /// November): no added delay while the host buffer and every segment are
+    /// whole multiples of 64 -- whole Pd ticks, each event at the start of the
+    /// tick that holds it, as Pd schedules control messages anyway. A buffer
+    /// that is not a multiple at prepare runs one reported, compensated
+    /// 64-sample block from the start. A segment that is not a multiple
+    /// arriving later (a host that splits a block at an event inside a tick)
+    /// switches the engine to that one block for the rest of the preparation:
+    /// counted, the latency epoch moves, the graph re-compensates, and the
+    /// audio is never silenced. The patch's own reported delay always adds.
+    enum class BlockMode { Buffered, WholeBlocks, Automatic };
     /// `patchDir` and `patchFile` are passed to `libpd_openfile` unchanged.
     ///
     /// `inChannels` is how many `inlet~` the patch has and `outChannels` how
@@ -196,15 +207,53 @@ public:
     void requestLatencyReport() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    /// DEV-14: one MIDI message a patch sent out ([noteout], [ctlout],
+    /// [bendout], [touchout], [polytouchout], [pgmout]). MIDI 1 by
+    /// construction: 7-bit values, channel 0..15, bend -8192..8191.
+    struct MidiOut {
+        enum class Kind : std::uint8_t { NoteOn, NoteOff, Control, Program, PitchBend,
+                                         ChannelPressure, PolyPressure };
+        std::int32_t frame = 0;   ///< block-relative, like an engine::Event
+        Kind kind = Kind::NoteOn;
+        std::uint8_t channel = 0;
+        std::uint8_t data = 0;    ///< pitch, controller or program
+        std::int16_t value = 0;   ///< velocity, controller value, pressure or bend
+    };
+    /// AUDIO THREAD, after process(): what the patch sent during that call,
+    /// each at the frame where its sound comes out -- Pd's logical time within
+    /// its tick (so [pipe] and [delay] land on the exact sample), plus the
+    /// adapter's queue: an audio patch's notes come out with its audio, one
+    /// block late when the adapter holds a block. Valid until the next process.
+    [[nodiscard]] const MidiOut* midiOut() const noexcept { return midiOut_.data(); }
+    [[nodiscard]] std::int32_t midiOutCount() const noexcept { return midiOutCount_; }
+    /// True when this call's output overflowed its fixed array: the caller
+    /// releases every note it holds from this device (DEV-14). Counted too.
+    [[nodiscard]] bool midiOutOverflowed() const noexcept { return midiOutOverflowed_; }
+
+    /// DEV-14: a bang to the patch's `$0-adi-reset` (queued like sendFloat,
+    /// delivered before the next tick): the host's reset on prepare, stop,
+    /// bypass and panic. False when the patch does not listen for it.
+    bool hostReset() noexcept override;
+
     [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
 
-    /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd.
     /// A patch whose transport receiver is bound (it has [adi.transport]), or
     /// a native core that uses the graph's position. Decided in open().
     [[nodiscard]] bool wantsPosition() const noexcept override { return wantsPosition_; }
+    /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd;
+    /// for Automatic, zero until it has had to take that block.
     [[nodiscard]] std::int32_t adapterLatencySamples() const noexcept override {
-        return adapterLatency_;
+        return adapterLatency_.load(std::memory_order_acquire);
     }
+    /// Moves whenever adapterLatencySamples() changes after prepare.
+    [[nodiscard]] std::uint64_t adapterEpoch() const noexcept override {
+        return adapterEpoch_.load(std::memory_order_acquire);
+    }
+    /// DEV-13: the split a host should keep a Pd device's block on to get no
+    /// added delay -- 64 for a Pd patch in WholeBlocks or Automatic, 1 for a
+    /// native core or Buffered. Split a block only at multiples of it and hand
+    /// each segment the events that fall inside it.
+    [[nodiscard]] std::int32_t segmentQuantum() const noexcept override;
 
     /// The patch's `$0`. Zero until opened.
     [[nodiscard]] int dollarZero() const noexcept { return dollarZero_; }
@@ -342,6 +391,10 @@ public:
         std::int64_t consoleDropped = 0;
         /// DEV-09: message-thread sends lost because their ring was full.
         std::int64_t sendsDropped = 0;
+        /// DEV-13: times Automatic had to take its one reported block.
+        std::int64_t blockFallbacks = 0;
+        /// DEV-14: MIDI messages from the patch lost to a full array.
+        std::int64_t midiOutDropped = 0;
     };
     [[nodiscard]] Counters counters() const noexcept;
 
@@ -395,7 +448,11 @@ private:
     void* patch_ = nullptr;           ///< libpd_openfile handle
     int dollarZero_ = 0;
     std::int32_t block_ = 64;
-    std::int32_t adapterLatency_ = 0;
+    std::atomic<std::int32_t> adapterLatency_{0};
+    std::atomic<std::uint64_t> adapterEpoch_{0};
+    /// Automatic: running whole ticks with no added delay (false: one block).
+    bool wholeTicks_ = false;
+    std::atomic<std::int64_t> blockFallbacks_{0};
     double sampleRate_ = 44100.0;
     bool dspOn_ = false;
     Execution execution_;
@@ -476,7 +533,32 @@ private:
     struct FloatSend {
         void* symbol = nullptr;   ///< t_symbol*, resolved under the lock by sendFloat
         float value = 0.f;
+        bool bang = false;        ///< a bang rather than the value (hostReset)
     };
+    bool enqueueSend(const char* suffix, float value, bool bang) noexcept;
+
+    // DEV-14: the patch's MIDI output. Hooks stamp each message with the
+    // absolute output sample its tick's audio comes out at plus Pd's logical
+    // offset within the tick; process() hands out those due in its segment.
+    struct PendingOut { std::int64_t at = 0; MidiOut message{}; };
+    static constexpr std::size_t kMidiOut = 512;
+    std::vector<MidiOut> midiOut_;
+    std::vector<PendingOut> midiPending_;
+    std::int32_t midiOutCount_ = 0;
+    std::size_t midiPendingCount_ = 0;
+    bool midiOutOverflowed_ = false;
+    std::atomic<std::int64_t> midiOutDropped_{0};
+    std::int64_t popped_ = 0;              ///< output frames handed out since prepare
+    std::int64_t tickOutputAt_ = 0;        ///< where the running tick's audio comes out
+    double tickStartTime_ = 0.0;           ///< Pd's logical time at the running tick
+    void collectMidi(MidiOut::Kind kind, int channel, int data, int value) noexcept;
+    void emitDueMidi(std::int32_t blockOffset, std::int32_t frames) noexcept;
+    static void noteOnHook(int channel, int pitch, int velocity);
+    static void controlHook(int channel, int controller, int value);
+    static void programHook(int channel, int value);
+    static void bendHook(int channel, int value);
+    static void pressureHook(int channel, int value);
+    static void polyPressureHook(int channel, int pitch, int value);
     static constexpr std::uint64_t kSendSlots = 256;
     std::array<FloatSend, kSendSlots> sends_{};
     std::atomic<std::uint64_t> sendHead_{0}, sendTail_{0};

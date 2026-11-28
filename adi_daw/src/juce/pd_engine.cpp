@@ -334,6 +334,13 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     libpd_set_floathook(&floatHook);
     setConsoleOwner(instance_, this);
     libpd_set_printhook(&LibPdEngine::printHookThunk);
+    // DEV-14: the patch's MIDI output, per instance like the other hooks.
+    libpd_set_noteonhook(&LibPdEngine::noteOnHook);
+    libpd_set_controlchangehook(&LibPdEngine::controlHook);
+    libpd_set_programchangehook(&LibPdEngine::programHook);
+    libpd_set_pitchbendhook(&LibPdEngine::bendHook);
+    libpd_set_aftertouchhook(&LibPdEngine::pressureHook);
+    libpd_set_polyaftertouchhook(&LibPdEngine::polyPressureHook);
 
     block_ = PdRuntime::blockSize();
     if (block_ <= 0) block_ = 64;
@@ -397,7 +404,7 @@ void LibPdEngine::close() noexcept {
     native_.reset();
     nativeLatency_ = nullptr;
     nativePrepared_ = false;
-    adapterLatency_ = 0;
+    adapterLatency_.store(0, std::memory_order_release);
     paramSymbols_.clear();
     // A t_symbol* comes from the instance's own table (dogensym takes the
     // instance) and pdinstance_free frees that table: never kept past close.
@@ -443,7 +450,7 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
         sampleRate_ = static_cast<double>(rate);
         native_->prepare(sampleRate_, maxFrames);
         nativePrepared_ = true;
-        adapterLatency_ = 0;
+        adapterLatency_.store(0, std::memory_order_release);
         if (native_->usesTypedMidi()) {
             nativeMidiScratch_.resize(static_cast<std::size_t>(std::max(
                 engine::Graph::deriveEventCapacity(sampleRate_, maxFrames, 32), 512)));
@@ -496,6 +503,13 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     // scratch, because a segment shorter than a tick hands its events on.
     pendingMidi_.assign(midiScratch_.size() * 2, engine::MpeOut{});
     pendingMidiCount_ = 0;
+    // DEV-14: the patch's MIDI output, both arrays fixed here.
+    midiOut_.assign(kMidiOut, MidiOut{});
+    midiPending_.assign(kMidiOut, PendingOut{});
+    midiOutCount_ = 0;
+    midiPendingCount_ = 0;
+    midiOutOverflowed_ = false;
+    popped_ = 0;
 
     // Prime the output with one block of silence. This is what makes the delay
     // CONSTANT: every segment can then pop exactly as many frames as it pushed,
@@ -505,8 +519,17 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     inFill_ = 0;
     carried_ = {};
     tickStart_ = {};
-    outFill_ = blockMode_ == BlockMode::Buffered ? block_ : 0;
-    adapterLatency_ = outFill_;
+    // Automatic (DEV-13): whole ticks with no added delay when the buffer is a
+    // multiple of 64; otherwise the one reported block from the start.
+    wholeTicks_ = blockMode_ == BlockMode::WholeBlocks ||
+                  (blockMode_ == BlockMode::Automatic && maxFrames > 0 && maxFrames % block_ == 0);
+    outFill_ = wholeTicks_ ? 0 : block_;
+    adapterLatency_.store(outFill_, std::memory_order_release);
+}
+
+std::int32_t LibPdEngine::segmentQuantum() const noexcept {
+    if (native_ != nullptr || patch_ == nullptr) return 1;
+    return blockMode_ == BlockMode::Buffered ? 1 : block_;
 }
 
 void LibPdEngine::requestLatencyReport() {
@@ -521,6 +544,8 @@ void LibPdEngine::requestLatencyReport() {
 
 void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     const std::int32_t n = io.frames;
+    midiOutCount_ = 0;            // DEV-14: this call's output starts empty
+    midiOutOverflowed_ = false;
     if (n <= 0) return;
 
     // Not open, or not prepared: pass through rather than silence. A device
@@ -545,6 +570,18 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
                 if (io.out[c] != nullptr)
                     std::fill_n(io.out[c] + io.blockOffset, n, 0.f);
         return;
+    }
+    if (native_ == nullptr && blockMode_ == BlockMode::Automatic && wholeTicks_ &&
+        n % block_ != 0) {
+        // DEV-13: a segment inside a Pd tick. From here on, one block: a block
+        // of silence goes ahead of the queue (the one gap, at the switch), the
+        // latency is reported and its epoch moves so the graph re-compensates.
+        wholeTicks_ = false;
+        std::fill_n(out_.begin(), static_cast<std::size_t>(block_) * static_cast<std::size_t>(outCh_), 0.f);
+        outFill_ = block_;
+        adapterLatency_.store(block_, std::memory_order_release);
+        adapterEpoch_.fetch_add(1, std::memory_order_acq_rel);
+        blockFallbacks_.fetch_add(1, std::memory_order_relaxed);
     }
 
     selectInstance();
@@ -646,8 +683,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // them at capacity, silently discarding input. WholeBlocks tiles stay on
     // Pd boundaries even if prepare's maximum was not itself a multiple.
     const auto capacity = static_cast<std::int32_t>(in_.size()) / inCh_ - block_;
-    const auto chunk = blockMode_ == BlockMode::WholeBlocks
-                         ? (capacity / block_) * block_ : capacity;
+    const auto chunk = wholeTicks_ ? (capacity / block_) * block_ : capacity;
     for (std::int32_t offset = 0; offset < n;) {
         auto part = io;
         part.frames = std::min(chunk, n - offset);
@@ -696,6 +732,10 @@ bool LibPdEngine::lockedTick() noexcept {
     // own pd_globallock checks the mark.
     pd_this->pd_islocked = 1;
     adi_pd_set_audio_tick(1);
+    // DEV-14: where this tick's audio comes out, and Pd's time at its start,
+    // for the MIDI the patch sends during it.
+    tickOutputAt_ = popped_ + outFill_;
+    tickStartTime_ = clock_getlogicaltime();
     deliverPendingLocked();
     // libpd_process_float's body for one tick, without its sys_lock (blocking)
     // and its sys_pollgui (sockets and GUI, never on the audio thread).
@@ -725,7 +765,10 @@ void LibPdEngine::deliverPendingLocked() noexcept {
     for (; tail != head; ++tail) {
         const auto& send = sends_[static_cast<std::size_t>(tail % kSendSlots)];
         auto* const symbol = static_cast<t_symbol*>(send.symbol);
-        if (symbol != nullptr && symbol->s_thing != nullptr) pd_float(symbol->s_thing, send.value);
+        if (symbol != nullptr && symbol->s_thing != nullptr) {
+            if (send.bang) pd_bang(symbol->s_thing);
+            else pd_float(symbol->s_thing, send.value);
+        }
     }
     sendTail_.store(tail, std::memory_order_release);
     // Then the parameters (ADR-0188 d3), the latest value of each.
@@ -855,6 +898,70 @@ void LibPdEngine::processPdAudio(const engine::NodeIo& io, std::int32_t segmentF
                      out_.data() + static_cast<std::size_t>(pop) * static_cast<std::size_t>(outCh_),
                      static_cast<std::size_t>(outFill_) * static_cast<std::size_t>(outCh_) * sizeof(float));
     }
+    emitDueMidi(io.blockOffset, n);
+}
+
+void LibPdEngine::collectMidi(MidiOut::Kind kind, int channel, int data, int value) noexcept {
+    // Inside the locked tick: Pd's logical time says where in the tick.
+    const double offset = std::max(0.0, clock_gettimesincewithunits(tickStartTime_, 1, 1));
+    if (midiPendingCount_ >= midiPending_.size()) {
+        midiOutDropped_.fetch_add(1, std::memory_order_relaxed);
+        midiOutOverflowed_ = true;
+        return;
+    }
+    PendingOut& p = midiPending_[midiPendingCount_++];
+    p.at = tickOutputAt_ + static_cast<std::int64_t>(std::floor(offset + 1e-9));
+    p.message.kind = kind;
+    p.message.channel = static_cast<std::uint8_t>(std::clamp(channel, 0, 15));
+    p.message.data = static_cast<std::uint8_t>(std::clamp(data, 0, 127));
+    p.message.value = static_cast<std::int16_t>(std::clamp(value, -8192, 8191));
+}
+
+void LibPdEngine::emitDueMidi(std::int32_t blockOffset, std::int32_t frames) noexcept {
+    // Messages whose sample came out in this segment, in order; the rest wait.
+    const std::int64_t end = popped_ + frames;
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < midiPendingCount_; ++i) {
+        PendingOut& p = midiPending_[i];
+        if (p.at < end) {
+            if (static_cast<std::size_t>(midiOutCount_) < midiOut_.size()) {
+                MidiOut m = p.message;
+                m.frame = blockOffset + static_cast<std::int32_t>(std::max<std::int64_t>(0, p.at - popped_));
+                midiOut_[static_cast<std::size_t>(midiOutCount_++)] = m;
+            } else {
+                midiOutDropped_.fetch_add(1, std::memory_order_relaxed);
+                midiOutOverflowed_ = true;
+            }
+        } else {
+            midiPending_[kept++] = p;
+        }
+    }
+    midiPendingCount_ = kept;
+    popped_ = end;
+}
+
+namespace {
+LibPdEngine* midiOwner() noexcept { return consoleOwner(static_cast<void*>(libpd_this_instance())); }
+}  // namespace
+
+void LibPdEngine::noteOnHook(int channel, int pitch, int velocity) {
+    if (auto* e = midiOwner())
+        e->collectMidi(velocity > 0 ? MidiOut::Kind::NoteOn : MidiOut::Kind::NoteOff, channel, pitch, velocity);
+}
+void LibPdEngine::controlHook(int channel, int controller, int value) {
+    if (auto* e = midiOwner()) e->collectMidi(MidiOut::Kind::Control, channel, controller, value);
+}
+void LibPdEngine::programHook(int channel, int value) {
+    if (auto* e = midiOwner()) e->collectMidi(MidiOut::Kind::Program, channel, value, 0);
+}
+void LibPdEngine::bendHook(int channel, int value) {
+    if (auto* e = midiOwner()) e->collectMidi(MidiOut::Kind::PitchBend, channel, 0, value);
+}
+void LibPdEngine::pressureHook(int channel, int value) {
+    if (auto* e = midiOwner()) e->collectMidi(MidiOut::Kind::ChannelPressure, channel, 0, value);
+}
+void LibPdEngine::polyPressureHook(int channel, int pitch, int value) {
+    if (auto* e = midiOwner()) e->collectMidi(MidiOut::Kind::PolyPressure, channel, pitch, value);
 }
 
 void LibPdEngine::bindArrays(const PdDeclarations& decls) {
@@ -894,6 +1001,12 @@ const engine::PublishedArray* LibPdEngine::publishedArray(std::int32_t id) const
 }
 
 bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
+    return enqueueSend(suffix, value, false);
+}
+
+bool LibPdEngine::hostReset() noexcept { return enqueueSend("adi-reset", 0.f, true); }
+
+bool LibPdEngine::enqueueSend(const char* suffix, float value, bool bang) noexcept {
     if (patch_ == nullptr || suffix == nullptr) return false;
     selectInstance();
     const std::string recv = std::to_string(dollarZero_) + "-" + suffix;
@@ -912,7 +1025,7 @@ bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
         sendsDropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    sends_[static_cast<std::size_t>(head % kSendSlots)] = {static_cast<void*>(symbol), value};
+    sends_[static_cast<std::size_t>(head % kSendSlots)] = {static_cast<void*>(symbol), value, bang};
     sendHead_.store(head + 1, std::memory_order_release);
     return true;
 }
@@ -1109,7 +1222,9 @@ LibPdEngine::Counters LibPdEngine::counters() const noexcept {
             rejectedSegments_.load(std::memory_order_relaxed),
             skippedTicks_.load(std::memory_order_relaxed),
             consoleDropped_.load(std::memory_order_relaxed),
-            sendsDropped_.load(std::memory_order_relaxed)};
+            sendsDropped_.load(std::memory_order_relaxed),
+            blockFallbacks_.load(std::memory_order_relaxed),
+            midiOutDropped_.load(std::memory_order_relaxed)};
 }
 
 

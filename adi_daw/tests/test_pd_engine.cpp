@@ -2594,6 +2594,221 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
 // DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
 // builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
 // (ADR-0207 d2); every suite runs in both configurations.
+// DEV-13 (the director's Q-K2 answer): a user patch adds no delay when the
+// host buffer is a multiple of 64 and the host keeps the block split on the
+// 64-sample grid (each event at the start of the tick that holds it: the
+// research's segment contract, buffers 64/128/256, event offsets 1, 63, 64,
+// 65, 127); a buffer that is not a multiple runs one reported block; a split
+// inside a tick, arriving later, falls back to that block once, counted, never
+// silenced. The patch here is a plain pass-through (adi-proof.pd at gain 1),
+// so "no added delay" is an exact null.
+void testUserPatchDelayOnTheTickGrid() {
+    section("DEV-13 -- no added delay on the 64-sample grid; one reported block otherwise");
+    std::vector<float> sig(64 * 400);
+    for (std::size_t i = 0; i < sig.size(); ++i)
+        sig[i] = static_cast<float>(0.4 * std::sin(0.0173 * static_cast<double>(i)) +
+                                    0.1 * std::sin(0.31 * static_cast<double>(i)));
+    auto delayedBy = [&](const std::vector<float>& out, std::size_t delay, std::size_t from) {
+        for (std::size_t i = from; i < out.size(); ++i)
+            if (out[i] != (i >= delay ? sig[i - delay] : 0.f)) return false;
+        return true;
+    };
+    bool contract = true;
+    for (const int buffer : {64, 128, 256}) {
+        for (const int offset : {1, 63, 64, 65, 127}) {
+            if (offset >= buffer) continue;
+            const int split = (offset / 64) * 64;   // the host keeps the grid
+            const std::vector<int> segments = split == 0 ? std::vector<int>{buffer}
+                                                         : std::vector<int>{split, buffer - split};
+            LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                            LibPdEngine::BlockMode::Automatic);
+            PdLatencyReceiver latency;
+            std::string err;
+            if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+            eng.prepare(48000.0, buffer);
+            const auto out = runSegmented(eng, sig, 0.f, segments);
+            contract &= eng.segmentQuantum() == 64 && eng.adapterLatencySamples() == 0 &&
+                        eng.counters().blockFallbacks == 0 && delayedBy(out, 0, 0);
+        }
+    }
+    check(contract, "buffers 64, 128, 256 with events at 1, 63, 64, 65, 127 on the grid: no added "
+                    "delay, an exact null against the input");
+    {
+        LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        std::string err;
+        if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+        eng.prepare(48000.0, 511);
+        const auto out = runSegmented(eng, sig, 0.f, {511});
+        check(eng.adapterLatencySamples() == 64 && delayedBy(out, 64, 0),
+              "a 511 buffer runs one reported block from the start: the input, 64 samples late");
+    }
+    {
+        // AR5: a 256 block split at an event on frame 1. Kept on the grid by the
+        // host it is one 256 segment and nulls; split inside the tick, the
+        // engine falls back once, then runs continuous at the reported 64.
+        LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        std::string err;
+        if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+        eng.prepare(48000.0, 256);
+        const auto grid = runSegmented(eng, sig, 0.f, {256});
+        check(delayedBy(grid, 0, 0), "AR5 on the grid (1 + 255 kept as 256): an exact null, no delay");
+        LibPdEngine off(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver offLatency;
+        if (!off.open(offLatency, err)) { check(false, "open: " + err); return; }
+        off.prepare(48000.0, 256);
+        const auto epoch = off.adapterEpoch();
+        const auto out = runSegmented(off, sig, 0.f, {256, 256, 1, 255, 256});
+        const auto counters = off.counters();
+        check(counters.blockFallbacks == 1 && off.adapterLatencySamples() == 64 &&
+                  off.adapterEpoch() != epoch && counters.rejectedSegments == 0,
+              "AR5 split inside a tick: one counted fallback to the reported block, its epoch moved");
+        check(delayedBy(out, 0, 0) == false && delayedBy(std::vector<float>(out.begin(), out.begin() + 512), 0, 0) &&
+                  [&] {
+                      for (std::size_t i = 512 + 64; i < out.size(); ++i)
+                          if (out[i] != sig[i - 64]) return false;
+                      return true;
+                  }(),
+              "exact before the split, the input 64 samples late after it; never silenced beyond the one block");
+    }
+    LibPdEngine buffered(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                         LibPdEngine::BlockMode::Buffered);
+    PdLatencyReceiver bl;
+    std::string err;
+    if (buffered.open(bl, err)) {
+        buffered.prepare(48000.0, 256);
+        check(buffered.segmentQuantum() == 1 && buffered.adapterLatencySamples() == 64,
+              "Buffered asks for no grid and reports its block, as before");
+    }
+}
+
+// DEV-14 (AR9's timing half; the note identities are DEV-17's): a patch's
+// MIDI output comes back to the host at the frame where it happened -- a
+// synchronous transform keeps its input frame, [pipe 101] lands exactly 4,848
+// samples later at 48 kHz (48 into a tick), an audio patch through the one-block adapter
+// declares its notes one block late with its audio -- and an overflow is
+// counted and flagged so the host releases everything.
+struct OutNote {
+    std::int64_t frame;
+    LibPdEngine::MidiOut::Kind kind;
+    int data, value;
+};
+std::vector<OutNote> playMidi(LibPdEngine& eng, std::int64_t total, int segment,
+                              const std::vector<engine::Event>& events) {
+    Buffers b(2, static_cast<int>(total));
+    std::vector<OutNote> out;
+    for (std::int64_t at = 0; at < total; at += segment) {
+        std::vector<engine::Event> here;
+        for (const auto& e : events)
+            if (e.frame >= at && e.frame < at + segment) here.push_back(e);
+        auto io = b.io(2, static_cast<int>(total), static_cast<int>(at), segment);
+        io.events.first = here.data();
+        io.events.count = static_cast<std::int32_t>(here.size());
+        eng.process(io);
+        for (std::int32_t i = 0; i < eng.midiOutCount(); ++i) {
+            const auto& m = eng.midiOut()[i];
+            out.push_back({m.frame, m.kind, m.data, m.value});
+        }
+    }
+    return out;
+}
+
+void testAPatchsMidiOutputComesBackOnItsFrame() {
+    section("DEV-14 -- a patch's MIDI output comes back at its frame; [pipe] on the exact sample");
+    TempDir tmp("midi-out");
+    tmp.write("octave.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 notein;\n#X obj 10 50 + 12;\n"
+                           "#X obj 10 90 noteout;\n#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n"
+                           "#X connect 0 1 2 1;\n#X connect 0 2 2 2;\n");
+    tmp.write("pipe.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 notein;\n#X obj 10 40 pack f f;\n"
+                         "#X obj 10 70 pipe 0 0 101;\n#X obj 10 100 unpack f f;\n#X obj 10 130 noteout 1;\n"
+                         "#X connect 0 0 1 0;\n#X connect 0 1 1 1;\n#X connect 1 0 2 0;\n"
+                         "#X connect 2 0 3 0;\n#X connect 3 0 4 0;\n#X connect 3 1 4 1;\n");
+    tmp.write("reset.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 r \\$0-adi-reset;\n"
+                          "#X obj 10 40 print adi-reset;\n#X connect 0 0 1 0;\n");
+    auto open = [&](LibPdEngine& eng, PdLatencyReceiver& latency) {
+        std::string err;
+        const bool ok = eng.open(latency, err);
+        if (!ok) check(false, "open: " + err);
+        return ok;
+    };
+    {   // zero delay, whole ticks: the transform keeps its input frame
+        LibPdEngine eng(tmp.str(), "octave.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        if (!open(eng, latency)) return;
+        eng.prepare(48000.0, 128);
+        const auto out = playMidi(eng, 128 * 8, 128, {pdNoteOn(1, 60, 1.0, 256), pdNoteOff(1, 60, 640)});
+        const bool ok = out.size() == 2 && out[0].kind == LibPdEngine::MidiOut::Kind::NoteOn &&
+                        out[0].data == 72 && out[0].frame == 256 &&
+                        out[1].kind == LibPdEngine::MidiOut::Kind::NoteOff && out[1].data == 72 &&
+                        out[1].frame == 640;
+        check(ok, "[notein] -> [+ 12] -> [noteout]: 72 on at frame 256 and off at 640, the input's frames");
+    }
+    {   // the one-block adapter: the notes come out with the audio, 64 late
+        LibPdEngine eng(tmp.str(), "octave.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Buffered);
+        PdLatencyReceiver latency;
+        if (!open(eng, latency)) return;
+        eng.prepare(48000.0, 128);
+        const auto out = playMidi(eng, 128 * 8, 128, {pdNoteOn(1, 60, 1.0, 256)});
+        check(out.size() == 1 && out[0].frame == 256 + 64,
+              "through the one-block adapter a note is declared one block late, with its audio");
+    }
+    {   // logical time: [pipe 101] 4,848 samples after its input, mid-tick, exactly
+        LibPdEngine eng(tmp.str(), "pipe.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        if (!open(eng, latency)) return;
+        eng.prepare(48000.0, 256);
+        const auto out = playMidi(eng, 256 * 30, 256, {pdNoteOn(1, 60, 1.0, 512)});
+        check(out.size() == 1 && out[0].frame == 512 + 4848 && out[0].data == 60,
+              "[pipe 101] lands on the exact sample, 4,848 after its input, 48 into a tick (" +
+                  (out.empty() ? std::string("none") : std::to_string(out[0].frame)) + ")");
+    }
+    {   // overflow: one note makes the patch send 600; 512 come back, the rest counted
+        tmp.write("burst.pd", "#N canvas 0 0 300 300 12;\n#X obj 10 10 notein;\n#X obj 10 40 t b;\n"
+                              "#X msg 10 70 600;\n#X obj 10 100 until;\n#X obj 10 130 f;\n"
+                              "#X obj 60 130 + 1;\n#X obj 10 160 mod 128;\n#X obj 10 190 noteout 1;\n"
+                              "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 2 0 3 0;\n"
+                              "#X connect 3 0 4 0;\n#X connect 4 0 5 0;\n#X connect 5 0 4 1;\n"
+                              "#X connect 4 0 6 0;\n#X connect 6 0 7 0;\n");
+        LibPdEngine eng(tmp.str(), "burst.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        if (!open(eng, latency)) return;
+        eng.prepare(48000.0, 256);
+        const auto note = pdNoteOn(1, 60, 1.0, 0);
+        Buffers b(2, 256);
+        auto io = b.io(2, 256, 0, 256);
+        io.events.first = &note;
+        io.events.count = 1;
+        eng.process(io);
+        check(eng.midiOutCount() == 512 && eng.midiOutOverflowed() && eng.counters().midiOutDropped == 88,
+              "a patch sending 600 at once: 512 come back, the call is flagged so the host releases, 88 counted");
+        auto quiet = b.io(2, 256, 0, 256);
+        eng.process(quiet);
+        check(!eng.midiOutOverflowed() && eng.midiOutCount() == 0, "and the next call starts clean");
+    }
+    {   // the host's reset bang
+        LibPdEngine eng(tmp.str(), "reset.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        if (!open(eng, latency)) return;
+        eng.prepare(48000.0, 64);
+        check(eng.hostReset(), "the host's reset reaches [r $0-adi-reset]");
+        Buffers b(2, 64);
+        auto io = b.io(2, 64, 0, 64);
+        eng.process(io);
+        bool banged = false;
+        for (const auto& line : eng.consoleLines()) banged |= line.find("adi-reset: bang") != std::string::npos;
+        check(banged, "as a bang, before the next tick");
+    }
+}
+
 void testThePdTierHasTheBuildsPrecision() {
     section("DEV-09 AR17 -- t_float and t_sample have the width PD_FLOATSIZE names");
     eqi(static_cast<long long>(sizeof(t_float) * 8), PD_FLOATSIZE, "t_float");
@@ -2710,6 +2925,8 @@ int main() {
     testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits();
     testAnAbstractionFreedLeavesNoDanglingHashA();
     testThePdTierHasTheBuildsPrecision();
+    testUserPatchDelayOnTheTickGrid();
+    testAPatchsMidiOutputComesBackOnItsFrame();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
