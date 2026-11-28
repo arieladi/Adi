@@ -26,11 +26,16 @@
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
+#include "adi/rack_drums.hpp"
 #include "adi/store.hpp"
 #include "adi/track_image.hpp"
+#include "adi/store_rows.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -640,6 +645,135 @@ void testInsertRejectsVca() {
           "refused inserts leave neither rows nor audit entries");
     check(run(*s, "device.insert", {{"id",14},{"chain",5},{"ord",0}}),
           "the same fresh op still inserts on an audio track");
+void testChainZones() {
+    section("DEV-02 -- exact chain zone bytes and admission");
+    using namespace adi::rack;
+    const std::array<std::byte, 4> code{std::byte{1}, std::byte{9}, std::byte{5}, std::byte{7}};
+    const auto decoded = decodeZone(code);
+    check(decoded == Zone{1, 9, 5, 7} && !decodeZone(std::span(code).first(3)),
+          "zone decode preserves all four integers and rejects an unknown extent");
+    const std::array gain{0.0, 0.25, 0.5, 0.75, 1.0};
+    bool bothLaws = true;
+    for (std::size_t i = 0; i < gain.size(); ++i) {
+        const auto key = static_cast<int>(i) + 1;
+        const auto linear = zoneWeight(decoded, key, FadeLaw::Gain);
+        const auto power = zoneWeight(decoded, key, FadeLaw::Power);
+        bothLaws = bothLaws && linear == gain[i] && power &&
+                   std::abs(*power - std::sqrt(gain[i])) < 1e-12;
+    }
+    check(bothLaws && zoneWeight(decoded, 8, FadeLaw::Gain) == 0.5 &&
+              zoneWeight(decoded, 9, FadeLaw::Power) == 0.0 &&
+              !zoneWeight(decoded, 0, FadeLaw::Gain) && !zoneWeight(decoded, 10, FadeLaw::Gain),
+          "integer gains and power law match both fade edges and do not admit outside notes");
+    check(zoneWeight(Zone{64, 64, 64, 64}, 64, FadeLaw::Power) == 1.0,
+          "equal bounds give one admitted key with zero fade width");
+
+    Scratch scratch("rack-zones");
+    auto store = project(scratch / "zones.adi");
+    if (!store || !seedChainAndDevice(*store)) {
+        check(false, "create native zone fixture");
+        return;
+    }
+    store->db().exec(
+        "UPDATE device_chains SET key_zone=X'01090507',chain_zone=X'00320028' WHERE id=5;"
+        "INSERT INTO device_chains(id,track_id,ord,key_zone,vel_zone,chain_zone) "
+        "VALUES(6,1,1,X'06640350',X'00800080',X'00140014');");
+    const auto model = rows::readModel(*store);
+    const auto id = [&](std::int64_t which) {
+        return std::find_if(model.deviceChains.begin(), model.deviceChains.end(),
+                            [&](const auto &chain) { return chain.id == which; });
+    };
+    const auto valid = id(5), malformed = id(6);
+    check(valid != model.deviceChains.end() && malformed != model.deviceChains.end(),
+          "a malformed rack chain does not truncate its neighbors in the model");
+    if (valid == model.deviceChains.end() || malformed == model.deviceChains.end())
+        return;
+    check(valid->zones.key == decoded && valid->zones.velocity == Zone{} &&
+              valid->zones.selector == Zone{0, 50, 0, 40},
+          "stored SQL NULL means a full velocity range alongside both authored zones");
+    const auto ordinary = evaluateZones(valid->zones, RackKind::Instrument, 3, 127, 45, FadeLaw::Gain);
+    const auto midi = evaluateZones(valid->zones, RackKind::MidiEffect, 3, 127, 45, FadeLaw::Power);
+    check(ordinary && ordinary->key == 0.5 && ordinary->velocity == 1 &&
+              ordinary->selector == 0.5 && ordinary->combined() == 0.25 &&
+              midi && std::abs(midi->combined() - 0.5) < 1e-12,
+          "instrument and MIDI effect racks require all three applicable factors");
+    check(!malformed->zones.key && !malformed->zones.velocity &&
+              !evaluateZones(malformed->zones, RackKind::Instrument, 4, 5, 6, FadeLaw::Gain) &&
+              std::any_of(model.problems.begin(), model.problems.end(), [](const auto &s) {
+                  return s == "device_chains#6: invalid key zone";
+              }),
+          "malformed rows are diagnosed and block applicable note admission");
+    const auto audio = evaluateZones(malformed->zones, RackKind::AudioEffect, -1, -1, 10, FadeLaw::Gain);
+    const auto drum = evaluateZones(malformed->zones, RackKind::Drum, -1, -1, -1, FadeLaw::Gain);
+    check(audio && audio->combined() == 1.0 && drum && drum->combined() == 1.0,
+          "audio racks only consult selector and drum admission uses its separate pad mapping");
+}
+
+void testDrumPadRouting() {
+    section("DEV-04 -- native Drum Rack Receive and Play mapping");
+    using namespace adi::rack;
+    using Status = DrumPadMap::Status;
+    const std::array<DrumChainMapping, 6> mappings{{
+        {0, {}, {}, {}}, {11, 36, 48, 1}, {12, 37, 127, 16},
+        {13, {}, 1, {}}, {14, 36, 0, 1}, {15, 127, 42, {}}}};
+    std::string error;
+    const auto map = DrumPadMap::compile(mappings, error);
+    check(map.has_value() && error.empty(), "owner compiles physical pads and All Notes chains");
+    if (!map)
+        return;
+    std::array<DrumDestination, 6> output{};
+    const auto was = output;
+    const auto shortBuffer = map->route(36, std::span(output).first(3));
+    check(shortBuffer.status == Status::InsufficientSpace && shortBuffer.size == 4 &&
+              output == was, "short space leaves an entire multi-pad fan-out unwritten");
+    DrumPadMap::Result first;
+    {
+        audio::CallbackScope callback;
+        first = map->route(36, output);
+    }
+    const std::array<DrumDestination, 4> expected{{
+        {0, 36, {}}, {11, 48, 1}, {13, 1, {}}, {14, 0, 1}}};
+    check(first.status == Status::Ready && first.size == expected.size() &&
+              std::equal(expected.begin(), expected.end(), output.begin()),
+          "Multi pads and All Notes chains keep row order, explicit pitch and choke tags");
+    const auto top = map->route(127, output);
+    check(top.status == Status::Ready && top.size == 3 && output[0] == DrumDestination{0, 127, {}} &&
+              output[2] == DrumDestination{15, 42, {}},
+          "the highest MIDI key can be routed and translated");
+    const auto lowest = map->route(0, output);
+    check(lowest.status == Status::Ready && lowest.size == 2 &&
+              output[0] == DrumDestination{0, 0, {}} && output[1] == DrumDestination{13, 1, {}},
+          "an unoccupied pad still reaches the All Notes chains");
+    check(map->route(-1, output).status == Status::InvalidKey &&
+              map->route(128, output).status == Status::InvalidKey,
+          "keys outside 0 to 127 receive no routes");
+
+    auto swapped = mappings;
+    std::swap(swapped[1].receive, swapped[2].receive);
+    const auto remapped = DrumPadMap::compile(swapped, error);
+    const auto after = remapped ? remapped->route(36, output) : DrumPadMap::Result{};
+    check(remapped && after.size == 4 && output[1] == DrumDestination{12, 127, 16},
+          "a pad swap changes only where the original played key routes");
+    check(map->route(36, output).size == 4 && output[1] == DrumDestination{11, 48, 1},
+          "the held routing generation keeps its original immutable assignments");
+
+    swapped[1].chain = swapped[2].chain;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "duplicate chain identity refuses all new mappings");
+    swapped = mappings;
+    swapped[2].choke = 17;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "a choke group above sixteen refuses all new mappings");
+    swapped = mappings;
+    swapped[2].play = 128;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "a played pitch outside the MIDI range is refused");
+    bool rejected = false;
+    {
+        audio::CallbackScope callback;
+        rejected = !DrumPadMap::compile(mappings, error);
+    }
+    check(rejected && error == "callback", "the audio driver can route through a prepared map only");
 }
 
 // --- main ---------------------------------------------------------------------
@@ -666,6 +800,8 @@ int main() {
     testTheExpressionRoute();
     testThePanel();
     testInsertRejectsVca();
+    testChainZones();
+    testDrumPadRouting();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

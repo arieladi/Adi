@@ -462,7 +462,8 @@ Model readModel(const Store& store) {
           });
 
     query(m, db, "device_chains",
-          "SELECT id, parent_device_id, track_id, ord, name, muted, soloed "
+          "SELECT id, parent_device_id, track_id, ord, name, muted, soloed, "
+          "key_zone, vel_zone, chain_zone "
           "FROM device_chains ORDER BY track_id, parent_device_id, ord, id",
           [&](const SQLite::Statement& st) {
               DeviceChain c;
@@ -473,6 +474,22 @@ Model readModel(const Store& store) {
               c.name = st.getColumn(4).getString();
               c.muted = flag(st, 5);
               c.soloed = flag(st, 6);
+              const auto readZone = [&](int index, const char *name) -> std::optional<rack::Zone> {
+                  const auto value = st.getColumn(index);
+                  if (value.isNull())
+                      return rack::Zone{};
+                  if (value.getType() == SQLITE_BLOB && value.getBytes() == 4) {
+                      const auto *bytes = static_cast<const std::byte *>(value.getBlob());
+                      if (const auto zone = rack::decodeZone({bytes, 4}))
+                          return zone;
+                  }
+                  m.problems.push_back("device_chains#" + std::to_string(c.id) +
+                                       ": invalid " + name + " zone");
+                  return {};
+              };
+              c.zones.key = readZone(7, "key");
+              c.zones.velocity = readZone(8, "velocity");
+              c.zones.selector = readZone(9, "selector");
               m.deviceChains.push_back(std::move(c));
           });
 
