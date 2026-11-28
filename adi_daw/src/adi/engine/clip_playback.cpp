@@ -1992,7 +1992,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     }
                 }
                 const auto pinned = prepared.physicalStartFrame >= 0;
-                if (keepsRawLoopAperture && usePins && !pinned && setting.ramMode &&
+                if (keepsRawLoopAperture && usePins && !pinned &&
                     !slot.legato && !slot.fade && slot.mode == LaunchMode::Trigger && !setting.follow.enabled &&
                     clip->timeBase == 0 && clip->loopEnabled && !clip->contentOffsetNs && !clip->sourceEndNs &&
                     !clip->loopBeginNs && !clip->loopEndNs && slot.startTick < slot.loopEndTick &&
@@ -2002,14 +2002,31 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     sameRawSlotSource(adoptedRawBank,*clip)) {
                     const auto* old = adoptedRawBank.bank->clip(clip->id);
                     const auto loopEndFrame = fixedFrame(slot.loopEndTick);
-                    if (old && !old->usesPages() && !old->followsTempo() && old->rate() == rate &&
+                    if (old && !old->followsTempo() && old->rate() == rate &&
                         loopEndFrame >= 0 && loopEndFrame < audioRow->srcLenFrames &&
-                        old->frames() > static_cast<std::uint64_t>(loopEndFrame) && old->bytes() <= remaining) {
-                        // The original PCM spans the shorter musical lap and
-                        // preserves the live run’s source phase.
-                        pcm.push_back(*old);
-                        remaining -= old->bytes();
-                        continue;
+                        old->frames() > static_cast<std::uint64_t>(loopEndFrame)) {
+                        if (setting.ramMode && !old->usesPages() && old->bytes() <= remaining) {
+                            // The original PCM spans the shorter musical lap and
+                            // preserves the live run’s source phase.
+                            pcm.push_back(*old);
+                            remaining -= old->bytes();
+                            continue;
+                        }
+                        const auto* reader = old->pageReader();
+                        if (!setting.ramMode && reader && old->latencySamples() == 0 &&
+                            reader->matchesFormat(rate,channels,maxFrames) &&
+                            old->frames() == static_cast<std::uint64_t>(fixedFrame(slot.endTick))) {
+                            const auto first = fixedFrame(slot.startTick);
+                            const auto head = fixedFrame(slot.loopStartTick);
+                            // On every read, the existing raw pager must still
+                            // request a full head block at its reference wrap,
+                            // even if the musical wrap arrives earlier.
+                            if (reader->firstFrame(slot.clip) == first && loopEndFrame > std::max(first,head) &&
+                                loopEndFrame - std::min(first,head) <= ClipPlayback::readAheadFrames(rate) - maxFrames) {
+                                pcm.push_back(*old);
+                                continue;
+                            }
+                        }
                     }
                 }
                 // LaunchSlot still owns the musical End. The reader must have

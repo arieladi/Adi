@@ -1423,17 +1423,23 @@ void legacyTickLoopIgnoresOneShotEnd() {
     }
 }
 
-void persistedLegacyRawLoopRetime(int bpm) {
-    constexpr std::int64_t start = 12000, loopHead = 24000;
-    constexpr std::int64_t cut = 12000, stop = 60000;
+void persistedLegacyRawLoopRetime(int bpm, bool ram = true) {
+    constexpr auto startTick = quarter/2;
+    constexpr std::int64_t start = 12000;
+    const std::int64_t loopHead = ram ? 24000 : 8184;
+    const auto loopBeginTick = ram ? quarter : 341*quarter/1000;
+    const auto loopEndTick = ram ? 5*quarter/2 : 7*quarter/8;
+    const auto cutTick = ram ? quarter/2 : quarter/8;
+    const std::int64_t cut = ram ? 12000 : 3000;
+    const std::int64_t stop = ram ? 60000 : 18000;
     std::vector<float> source(2*rate);
     for (std::size_t frame = 0; frame < source.size(); ++frame)
         source[frame] = (static_cast<float>(frame)-48000.f)/262144.f;
     test::TempDirectory folder{"legacy_raw_loop","ordinary-retime"};
-    auto store = residentLegacyRawSlot(folder,source,false,true,quarter/2,3*quarter);
+    auto store = residentLegacyRawSlot(folder,source,false,ram,startTick,3*quarter);
     OpRequest loop;
     loop.opType = "clip.setLoop";
-    loop.payload = {{"id",101},{"on",true},{"start",quarter},{"length",3*quarter/2}};
+    loop.payload = {{"id",101},{"on",true},{"start",loopBeginTick},{"length",loopEndTick-loopBeginTick}};
     require(OpJournal(*store).commit(loop).ok,"save the unwarped tick-only loop");
     store.reset();
     StoreError error{};
@@ -1442,15 +1448,44 @@ void persistedLegacyRawLoopRetime(int bpm) {
             store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() == 0,
             "reopen the saved Start, End and Loop without source pins");
 
+    bool reused = true;
+    if (!ram && bpm != 120) {
+        const auto rows = rows::readModel(*store);
+        const auto project = readClipProject(*store,rows,true);
+        auto clock = TempoMap::fromRows(rows.tempo);
+        std::vector<std::string> problems;
+        const auto flat = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,1,problems);
+        const auto* old = flat ? flat->clip(101) : nullptr;
+        auto* reader = old ? old->pageReader() : nullptr;
+        require(reader && problems.empty(),"seed the normal paged loop Start and head");
+        bool headReady = false;
+        {
+            const audio::CallbackScope callback;
+            if (reader->reserveCue(101,loopHead,32,false)) {
+                const auto returned = reader->read(101,loopHead,32);
+                const auto head = reader->channel(0);
+                headReady = returned && head.size() == 32 && std::equal(head.begin(),head.end(),source.begin()+loopHead);
+                reader->releaseCue(101);
+            }
+        }
+        clock.events.push_back({cutTick,static_cast<double>(bpm),0,0});
+        const auto retimed = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,1,problems,
+            kSessionResidentPcmBudget,{}, {},{},false,{project.get(),flat.get()});
+        const auto* next = retimed ? retimed->clip(101) : nullptr;
+        reused = headReady && next && next->pageReader() == reader && problems.empty();
+        std::printf("Legacy paged Loop: existing head ready %d, adopted reader reused %d\n",headReady,reused);
+    }
+
     Session session;
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
-    const auto wrap = cut + static_cast<std::int64_t>(std::llround(1.5 * rate * 60 / bpm));
+    const auto remaining = static_cast<double>(loopEndTick - startTick - cutTick) / static_cast<double>(quarter);
+    const auto wrap = cut + static_cast<std::int64_t>(std::llround(remaining * rate * 60 / bpm));
     std::vector<float> pcm(static_cast<std::size_t>(stop+blockFrames));
     Playback playback{session,pcm};
     scene(*store,session,10);
     playback.through(cut/2);
     const auto initial = trackState(session);
-    const auto accepted = bpm == 120 || session.setExternalTempoAt(*store,bpm,quarter/2);
+    const auto accepted = bpm == 120 || session.setExternalTempoAt(*store,bpm,cutTick);
     playback.through(wrap-139);
     const auto before = trackState(session);
     playback.through(wrap-139+blockFrames);
@@ -1473,15 +1508,15 @@ void persistedLegacyRawLoopRetime(int bpm) {
         }
     }
     const auto actualStop = playback.count == 2 ? playback.edges[1].sample : -1;
-    std::printf("Legacy Loop %d BPM: accepted %d, clock %.0f, wrap %lld laps %llu/%llu, wrap PCM %.6f, "
+    std::printf("Legacy %s Loop %d BPM: accepted %d, clock %.0f, wrap %lld laps %llu/%llu, wrap PCM %.6f, "
                 "Stop %lld, first mismatch %lld, allocations %u, callback file I/O %u\n",
-                bpm,accepted,actualBpm,static_cast<long long>(wrap),
+                ram ? "RAM" : "paged",bpm,accepted,actualBpm,static_cast<long long>(wrap),
                 static_cast<unsigned long long>(before.completedLoops),static_cast<unsigned long long>(after.completedLoops),
                 static_cast<double>(pcm[static_cast<std::size_t>(wrap)]),
                 static_cast<long long>(actualStop),static_cast<long long>(mismatch),
                 callbackAllocations,audio::callbackFileIo.load());
     for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
-    require(accepted && actualBpm == bpm && mismatch == -1 &&
+    require(accepted && actualBpm == bpm && mismatch == -1 && reused &&
             initial.clip == 101 && initial.run != 0 && before.run == initial.run && after.run == initial.run &&
             before.completedLoops == 0 && after.completedLoops == 1 &&
             beforeStop.run == initial.run && beforeStop.completedLoops == 1 &&
@@ -4391,6 +4426,8 @@ int main() {
         legacyTickLoopIgnoresOneShotEnd();
         persistedLegacyRawLoopRetime(120);
         persistedLegacyRawLoopRetime(140);
+        persistedLegacyRawLoopRetime(120,false);
+        persistedLegacyRawLoopRetime(140,false);
         protectResidentLegacyNonzeroStartAdoption();
         residentLegacyBudgetKeepsBothSlots();
         fadedLegacyRawSceneAtFirstAdoption();
