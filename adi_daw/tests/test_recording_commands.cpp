@@ -327,6 +327,7 @@ void mixedLinearTake() {
     const auto committed = recording::commit(store, prepared);
     if (!committed.ok)
         throw std::runtime_error(committed.error);
+    const auto recorded = digestProject(store).text;
     const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
     check(count("SELECT count(*) FROM clips WHERE track_id=21 AND lane_id IS NULL") == 3 &&
               count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL") == 3 &&
@@ -343,6 +344,9 @@ void mixedLinearTake() {
     check(history.redo().ok && count("SELECT count(*) FROM clips WHERE lane_id IS NULL") == 6 &&
               count("SELECT count(*) FROM clips WHERE lane_id IS NOT NULL") == 2,
           "one Redo restores both audio and MIDI, their surviving fragments and their archived takes");
+    // SC-252: the "Previous Take" lane and its copies come back row for row.
+    check(digestProject(store).text == recorded,
+          "SC-252: Redo of a take that archived what it covered repeats every project row");
 }
 
 void midiLoopTakes() {
