@@ -161,13 +161,18 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
         }
     }
+    // Narrow transport fields can now cross the gap between the original text masks.
+    const juce::Rectangle<int> maskGap(198, 5, 30, 34);
+    const auto compactBarMask = root.transport.position.getBounds().intersects(maskGap)
+                                    ? maskGap.getIntersection(root.transport.getBounds()) : juce::Rectangle<int>();
     // Platform font metrics and native button fonts are deliberately outside this
-    // structural golden. Their labels and activation are checked independently.
+    // structural golden. Their labels, bounds and activation are checked independently.
     {
         juce::Graphics g(image);
         g.setColour(juce::Colours::black);
         g.fillRect(8, 5, 190, 34);
         g.fillRect(228, 5, root.getWidth() - 228, 34);
+        g.fillRect(compactBarMask);
         g.fillRect(0, 54, root.getWidth(), 30);
         // The ruler's numbers and the headers' track names are typography as well.
         const auto area = root.arrangement.getBounds();
@@ -311,7 +316,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
     if (equal)
         for (int y = 0; y < image.getHeight(); ++y)
             for (int x = 0; x < image.getWidth(); ++x)
-                if (image.getPixelAt(x, y) != expected.getPixelAt(x, y))
+                if (image.getPixelAt(x, y) != expected.getPixelAt(x, y) && !compactBarMask.contains(x, y))
                     ++differences;
     check(equal && differences == 0, name);
     if (differences) {
@@ -2332,6 +2337,48 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
     root.setSize(1440, 900);
     root.frame();
     auto &bar = root.transport;
+    const auto separated = [&bar] {
+        const auto &children = bar.getChildren();
+        for (int i = 0; i < children.size(); ++i) {
+            const auto *item = dynamic_cast<const BarItem *>(children[i]);
+            if (item == nullptr || !item->isVisible())
+                continue;
+            const auto bounds = item->getBounds();
+            if (bounds.isEmpty() || !bar.getLocalBounds().contains(bounds))
+                return false;
+            for (int j = i + 1; j < children.size(); ++j)
+                if (const auto *next = dynamic_cast<const BarItem *>(children[j]);
+                    next != nullptr && next->isVisible() && bounds.intersects(next->getBounds()))
+                    return false;
+        }
+        return true;
+    };
+    const auto widePosition = bar.position.getBounds();
+    const auto wideWorkspace = bar.arrangementPage.getBounds();
+    check(separated() && widePosition.getX() == 446 && widePosition.getWidth() == 82 &&
+              wideWorkspace.getX() == 1440 - 223 - 2 * look::workspaceSegmentWidth &&
+              bar.arrangementPage.text == "Arrangement" && bar.mix.text == "Mix View",
+          "SC-446: the regular-width Control Bar keeps its positions and full workspace labels");
+    bar.beginLoopStartEdit();
+    root.setSize(960, 540);
+    const bool primaryVisible = bar.play.isVisible() && bar.stop.isVisible() && bar.record.isVisible() &&
+                                bar.position.isVisible() && bar.loopStart.isVisible() && bar.loopLength.isVisible() &&
+                                bar.loop.isVisible() && bar.metronome.isVisible() && bar.cpu.isVisible();
+    check(separated() && primaryVisible && bar.arrangementPage.text == "Arr" && bar.mix.text == "Mix",
+          "SC-446: the 960 px bar fits the transport, numeric fields, workspace and indicators without overlap");
+    check(bar.editing() == &bar.loopStart && bar.fieldEditor.getBounds() == bar.loopStart.getBounds(),
+          "SC-446: an open field editor follows the field it is editing during a resize");
+    bar.fieldEditor.setVisible(false);
+    bool widthsFit = true;
+    for (const int width : {520, 600, 800, 1050, 1180}) {
+        root.setSize(width, 540);
+        widthsFit &= separated() && bar.play.isVisible() && bar.stop.isVisible() && bar.record.isVisible();
+    }
+    check(widthsFit, "SC-446: the transport remains separate through the minimum window width");
+    root.setSize(1440, 900);
+    check(separated() && bar.position.getBounds() == widePosition && bar.arrangementPage.getBounds() == wideWorkspace &&
+              bar.link.isVisible() && bar.arrangementPage.text == "Arrangement",
+          "SC-446: growing restores the original positions, labels and unavailable slots");
     const auto up = juce::KeyPress(juce::KeyPress::upKey);
     const auto down = juce::KeyPress(juce::KeyPress::downKey);
     const auto left = juce::KeyPress(juce::KeyPress::leftKey);
