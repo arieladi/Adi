@@ -9,6 +9,15 @@
 #include <set>
 #include <span>
 namespace adi::engine {
+struct TempoMap;
+struct MidiClipPlacement {
+    std::int64_t originTick = 0, lengthTicks = 0;
+    double startSeconds = 0, originSeconds = 0;
+    std::int64_t beginSample = 0, endSample = 0;
+};
+/// Owner-side projection shared by playback and per-track scale timing.
+[[nodiscard]] MidiClipPlacement projectMidiClipPlacement(const rows::Clip &, const TempoMap &,
+                                                           double sampleRate);
 // Message-thread registry; its per-track note state is used ONLY by the audio
 // consumer. Shared by successive immutable source generations, never copied
 // while the consumer is running. Graph publication decides which one executes.

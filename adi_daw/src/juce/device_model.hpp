@@ -277,6 +277,7 @@ public:
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
+    [[nodiscard]] virtual bool wantsDeviceScale() const noexcept { return false; }
     [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredLatency*/) noexcept { return false; }
     virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
     /// Actual graph suspension transition, on the same serialized audio owner.
@@ -656,6 +657,9 @@ public:
     void process(const engine::NodeIo& io) noexcept override;
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override {
         return inst_ && inst_->wantsDeviceTransport();
+    }
+    [[nodiscard]] bool wantsDeviceScale() const noexcept override {
+        return inst_ && inst_->wantsDeviceScale();
     }
     [[nodiscard]] bool canProcessOnWorker() const noexcept override {
         return inst_ && inst_->canProcessOnWorker();

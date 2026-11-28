@@ -2195,7 +2195,7 @@ void testFixedSingleFeedNeedsNoHeadroom() {
     SumNode fixed, main, side, multi;
     Graph graph;
     const auto source = graph.addNode(moving);
-    const auto junction = graph.addNode(fixed, 0);
+    const auto junction = graph.addNode(fixed, std::nullopt, 0);
     const auto mainOnly = graph.addNode(main), sideOnly = graph.addNode(side), both = graph.addNode(multi);
     graph.connect(source, junction);
     graph.connect(junction, mainOnly);

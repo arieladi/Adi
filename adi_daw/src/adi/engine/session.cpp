@@ -1450,6 +1450,11 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    auto scale = compileScaleTimeline(model_);
+    timing->scaleTimeline = std::move(scale.timeline);
+    deviceScaleProblem_ = std::move(scale.error);
+    timing->trackScaleTimeline = compileTrackScaleTimeline(playbackModel_, timing->tempo,
+                                                           spec_.sampleRate, trackScaleProblem_);
     timing->prepareDeviceClockChanges();
     std::shared_ptr<ClipPlayback> nextClips;
     std::shared_ptr<MidiClips> nextMidi;
@@ -1594,6 +1599,11 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
     const auto append = [&](const std::vector<std::string>& found) {
         problems.insert(problems.end(), found.begin(), found.end());
     };
+    // DEV-19: playback continues without the scale; it is reported, never blocking.
+    if (includeUnavailable && !deviceScaleProblem_.empty())
+        problems.push_back("Device scale unavailable: " + deviceScaleProblem_);
+    if (includeUnavailable && !trackScaleProblem_.empty())
+        problems.push_back("Clip scale unavailable for devices: " + trackScaleProblem_);
     if (midi_) append(midi_->problems());
     if (auto* c = clips()) {
         if (includeUnavailable) c->appendPlaybackProblems(problems);
@@ -2895,6 +2905,17 @@ void Session::TimingView::prepareDeviceClockChanges() {
     for (const auto& event : tempo.events) add(event.posTicks);
     for (const auto& meter : signatures) add(meter.posTicks);
     std::sort(deviceClockChanges.begin(), deviceClockChanges.end());
+    deviceScaleChanges.clear();
+    if (scaleTimeline) {
+        deviceScaleChanges.reserve(scaleTimeline->events().size());
+        for (const auto &event : scaleTimeline->events()) {
+            const auto sample = sampleForTick(event.posTicks);
+            if (!deviceScaleChanges.empty() && deviceScaleChanges.back().first == sample)
+                deviceScaleChanges.back().second = &event.context;
+            else
+                deviceScaleChanges.emplace_back(sample, &event.context);
+        }
+    }
 }
 
 double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
@@ -2915,6 +2936,16 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
+    if (scaleTimeline) {
+        const auto scale = std::upper_bound(deviceScaleChanges.begin(), deviceScaleChanges.end(),
+                                            sample, [](auto at, const auto &row) {
+                                                return at < row.first;
+                                            });
+        result.scale = scale == deviceScaleChanges.begin() ? scaleTimeline->atTicks(-1)
+                                                          : std::prev(scale)->second;
+        if (scale != deviceScaleChanges.end())
+            result.nextScaleChange = scale->first;
+    }
     const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
     if (next != deviceClockChanges.end()) result.nextChange = next->first;
@@ -2980,6 +3011,10 @@ const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     blockInfo.deviceClockContext = this;
     blockInfo.devicePosition = [](const void* context, std::int64_t sample) noexcept {
         return static_cast<const TimingView*>(context)->deviceAt(sample);
+    };
+    blockInfo.trackScalePosition = [](const void *context, std::int64_t track,
+                                      std::int64_t sample) noexcept {
+        return static_cast<const TimingView *>(context)->trackScaleTimeline.at(track, sample);
     };
     if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;
