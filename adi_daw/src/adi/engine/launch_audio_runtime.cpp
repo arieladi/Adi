@@ -714,10 +714,12 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
         const auto stopCount = static_cast<std::size_t>(
             std::ranges::count(actions,TimedSceneActionKind::Stop,&TimedSceneAction::kind));
         if (startCount + stopCount != actions.size()) {
-            if (stopCount != 0 || startCount + 1 != actions.size()) return false;
-            if (actions.size() != 3 &&
-                std::ranges::find(actions,TimedSceneActionKind::Continue,&TimedSceneAction::kind) == actions.end())
-                return false;
+            if (stopCount != 0) return false;
+            const auto continuations = static_cast<std::size_t>(
+                std::ranges::count(actions,TimedSceneActionKind::Continue,&TimedSceneAction::kind));
+            const bool threeTrackIdle = actions.size() == 3 && startCount == 2 &&
+                std::ranges::find(actions,TimedSceneActionKind::KeepIdle,&TimedSceneAction::kind) != actions.end();
+            if (!threeTrackIdle && startCount + continuations != actions.size()) return false;
         }
     }
 

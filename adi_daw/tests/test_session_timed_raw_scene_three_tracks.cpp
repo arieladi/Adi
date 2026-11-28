@@ -578,19 +578,23 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
                 count,savedStopCount,idleTrack ? "(one idle) " : "",mode,playback.edgeCount,playback.sceneCount);
 }
 
-enum class WideContinueCase { Warm, Cold, UserStop, Idle, SavedStop };
+enum class WideContinueCase { Warm, Cold, UserStop, Idle, SavedStop, StopSecond };
 
-void exerciseWideContinue(WideContinueCase scenario) {
+void exerciseWideContinue(WideContinueCase scenario, bool twoContinuations = false) {
     constexpr std::size_t count = 6;
-    constexpr std::size_t continued = 2;
+    constexpr std::array<std::size_t,2> continuingTracks{2,4};
+    const auto continued = std::span(continuingTracks).first(twoContinuations ? 2u : 1u);
+    const auto continues = [&](std::size_t index) { return std::ranges::find(continued,index) != continued.end(); };
     constexpr auto end = cut + 3 * blockFrames;
-    constexpr auto gainAt = cut - 1000;
+    constexpr std::array gainAt{cut - 1500,cut - 1000};
+    constexpr std::array gains{0.5f,0.25f};
     const bool warm = scenario == WideContinueCase::Warm;
     const bool cold = scenario == WideContinueCase::Cold;
-    const bool userStop = scenario == WideContinueCase::UserStop;
+    const bool userStop = scenario == WideContinueCase::UserStop || scenario == WideContinueCase::StopSecond;
+    const auto stoppedByUser = scenario == WideContinueCase::StopSecond ? continued.back() : continued.front();
     const bool idle = scenario == WideContinueCase::Idle;
     const bool savedStop = scenario == WideContinueCase::SavedStop;
-    constexpr std::array names{"warm","cold","user-stop","idle","with-saved-stop"};
+    constexpr std::array names{"warm","cold","user-stop-first","idle","with-saved-stop","user-stop-second"};
     const auto* mode = names[static_cast<std::size_t>(scenario)];
     test::TempDirectory folder{"wide_raw_timed_continue",mode};
     constexpr std::array<std::size_t,1> stopped{1};
@@ -600,14 +604,13 @@ void exerciseWideContinue(WideContinueCase scenario) {
         auto& db = store->db();
         SQLite::Transaction change(db);
         SQLite::Statement cell(db,"UPDATE clip_slots SET clip_id=NULL,has_stop=0 WHERE clip_id=?");
-        cell.bind(1,manyClip(continued,true));
-        cell.exec();
         SQLite::Statement discard(db,"DELETE FROM clips WHERE id=?");
-        discard.bind(1,manyClip(continued,true));
-        discard.exec();
         SQLite::Statement paged(db,"UPDATE clip_launch SET ram_mode=0 WHERE clip_id=?");
-        paged.bind(1,manyClip(continued,false));
-        paged.exec();
+        for (const auto track : continued) {
+            cell.bind(1,manyClip(track,true)); cell.exec(); cell.reset();
+            discard.bind(1,manyClip(track,true)); discard.exec(); discard.reset();
+            paged.bind(1,manyClip(track,false)); paged.exec(); paged.reset();
+        }
         change.commit();
     }
     store.reset();
@@ -637,10 +640,15 @@ void exerciseWideContinue(WideContinueCase scenario) {
         request.clip = manyClip(index,false);
         require(session.postLaunchGesture({&request,1}),"launch the saved outgoing slot");
     };
-    if (!idle) start(continued,0);
-    if (cold) start(count - 1,blockFrames);
+    if (!idle) start(continued.front(),0);
+    if (cold) {
+        require(starts[5] + cut - blockFrames > 3 * ClipPlayback::readAheadFrames(rate),
+                "the final inherited target is outside its initially primed window");
+        start(count - 1,blockFrames);
+    }
+    if (!idle && twoContinuations) start(continued.back(),6000);
     for (std::size_t index = 0; index < count; ++index) {
-        if (index != continued && !(cold && index == count - 1))
+        if (!continues(index) && !(cold && index == count - 1))
             start(index,cut - 8'000 + 1'000 * static_cast<std::int64_t>(index));
     }
     const auto read = [&] {
@@ -650,17 +658,21 @@ void exerciseWideContinue(WideContinueCase scenario) {
         return rows;
     };
     if (!idle) {
-        playback.through(gainAt);
-        require(session.postLaunchClipGainEdit({3,manyClip(continued,false),session.launchIncarnation(),
-                read()[continued].run,0.5f,ClipUpdateRate::None}),"apply half gain to the continuing paged run");
+        for (std::size_t voice = 0; voice < continued.size(); ++voice) {
+            playback.through(gainAt[voice]);
+            const auto track = continued[voice];
+            require(session.postLaunchClipGainEdit({static_cast<std::int64_t>(track + 1),manyClip(track,false),
+                session.launchIncarnation(),read()[track].run,gains[voice],ClipUpdateRate::None}),
+                "apply separate live gains to the continuing paged runs");
+        }
     }
     playback.through(prepareAt);
     const auto old = read();
-    const auto initialEdges = idle ? count - 1 : count;
+    const auto initialEdges = idle ? count - continued.size() : count;
     require(playback.edgeCount == initialEdges && playback.sceneCount == 0,
             "all requested outgoing slots are active before staging");
     for (std::size_t index = 0; index < count; ++index) {
-        if (idle && index == continued)
+        if (idle && continues(index))
             require(old[index].clip == 0 && old[index].run == 0,"the wider idle No Stop control has no run");
         else
             require(old[index].clip == manyClip(index,false) && old[index].run != 0,"each commanded old run is active");
@@ -672,7 +684,7 @@ void exerciseWideContinue(WideContinueCase scenario) {
         playback.through(cut);
         OpRequest command;
         command.opType = "session.stopTrack";
-        command.payload = {{"track",continued + 1},{"incarnation",session.launchIncarnation()}};
+        command.payload = {{"track",stoppedByUser + 1},{"incarnation",session.launchIncarnation()}};
         require(OpJournal(*store).commit(command).ok,"queue StopTrack on the continued track at the old cut opening");
     }
     playback.through(end);
@@ -680,36 +692,46 @@ void exerciseWideContinue(WideContinueCase scenario) {
     const auto after = read();
     require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
             playback.sceneCount == (warm ? 1u : 0u) &&
-            playback.edgeCount == initialEdges + (warm ? count - 1 : userStop ? 1u : 0u),
-            "the clock, receipt, and five Starts resolve in a single driver decision");
+            playback.edgeCount == initialEdges + (warm ? count - continued.size() : userStop ? 1u : 0u),
+            "the clock, receipt, and inherited Starts resolve in a single driver decision");
     if (warm) {
         require(playback.scene.sample == cut && playback.scene.tick == bar && playback.scene.tempoBpm == 140,
                 "the accepted wider Scene emits one receipt on the exact cut");
     } else if (userStop) {
         const auto& edge = playback.edges[initialEdges];
-        require(edge.track == 3 && edge.oldRun == old[continued].run && edge.newClip == 0 &&
-                edge.sample == cut && edge.tick == bar && after[continued].run == 0,
+        require(edge.track == static_cast<std::int64_t>(stoppedByUser + 1) &&
+                edge.oldClip == old[stoppedByUser].clip && edge.oldRun == old[stoppedByUser].run && edge.newClip == 0 &&
+                edge.sample == cut && edge.tick == bar && after[stoppedByUser].run == 0,
                 "the independent Stop closes the paged run once on the old Bar");
     }
     auto edgeIndex = initialEdges;
     for (std::size_t index = 0; index < count; ++index) {
-        if (warm && index != continued) {
+        if (warm && !continues(index)) {
             const auto& edge = playback.edges[edgeIndex++];
             require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut && edge.tick == bar &&
                     edge.oldRun == old[index].run && edge.newClip == manyClip(index,true) &&
                     after[index].clip == edge.newClip && after[index].run != old[index].run,
                     "every replacement has a new run at the same exact performed sample");
-        } else if (!(userStop && index == continued)) {
+        } else if (!(userStop && index == stoppedByUser)) {
             require(after[index].clip == old[index].clip && after[index].run == old[index].run,
                     "each continued, idle, or refused track keeps its exact old run state");
+            if (!idle && continues(index)) {
+                const auto durationFrames = durationNs * rate / 1'000'000'000;
+                require(after[index].remainingSamples == durationFrames - (end - startedAt[index]) &&
+                        after[index].completedLoops == 0,
+                        "each continued run keeps its own physical age and End on the selected clock");
+            }
         }
     }
     for (auto sample = std::int64_t{0}; sample < end; ++sample) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < count; ++index) {
-            if (sample < startedAt[index] || (index == continued && (idle || (userStop && sample >= cut)))) continue;
-            const auto prototype = index % 3 + (warm && index != continued && sample >= cut ? 3 : 0);
-            const auto gain = index == continued && sample >= gainAt ? 0.5f : 1.0f;
+            if (sample < startedAt[index] || (idle && continues(index)) ||
+                (userStop && index == stoppedByUser && sample >= cut)) continue;
+            const auto prototype = index % 3 + (warm && !continues(index) && sample >= cut ? 3 : 0);
+            auto gain = 1.0f;
+            for (std::size_t voice = 0; voice < continued.size(); ++voice)
+                if (index == continued[voice] && sample >= gainAt[voice]) gain = gains[voice];
             expected += gain * signal(prototype,sample - startedAt[index] + starts[prototype]);
         }
         require(pcm[static_cast<std::size_t>(sample)] == expected,
@@ -717,14 +739,17 @@ void exerciseWideContinue(WideContinueCase scenario) {
     }
     require(test::sceneClockCallbackAllocations() == allocations && audio::callbackFileIo.load() == fileIo,
             "wider timed continuation performs no callback allocation or file reads");
-    std::printf("Six-track raw Scene No Stop %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
-                mode,playback.edgeCount,playback.sceneCount);
+    std::printf("Six-track raw Scene with %zu No Stop cells %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
+                continued.size(),mode,playback.edgeCount,playback.sceneCount);
 }
 
 } // namespace
 
 namespace adi::test {
 void runThreeTrackTimedRawSceneTests() {
+    for (const auto scenario : {WideContinueCase::Warm,WideContinueCase::Cold,WideContinueCase::UserStop,
+                                WideContinueCase::StopSecond,WideContinueCase::SavedStop})
+        exerciseWideContinue(scenario,true);
     for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack})
         exerciseManyTracks(4,outcome,2,true);
     for (const auto tracks : {std::size_t{4},std::size_t{6}})
