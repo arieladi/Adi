@@ -301,6 +301,7 @@ add_library(adi_core STATIC
     src/adi/sync/midi_sync_wire.cpp
     src/adi/sync/midi_clock_follower.cpp
     src/adi/sync/midi_clock_transport.cpp
+    src/adi/interchange/compound_file.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
@@ -2289,6 +2290,9 @@ add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 add_executable(adi_smf_tests tests/test_smf.cpp)
 target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
+add_executable(adi_compound_file_tests tests/test_compound_file.cpp)
+target_link_libraries(adi_compound_file_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_compound_file_tests COMMAND adi_compound_file_tests)
 
 
 
