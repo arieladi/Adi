@@ -2059,11 +2059,11 @@ void MixerStrip::enableSend(std::size_t index, bool on) {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
-void MixerStrip::setSendPan(std::size_t index, double pan) {
+void MixerStrip::setSendPan(std::size_t index, double sendPan) {
     const auto current = panel_.root.current();
     if (!current || index >= returns_.size())
         return;
-    auto edit = adi::ui::setSendPan(*current, track_, returns_[index], pan);
+    auto edit = adi::ui::setSendPan(*current, track_, returns_[index], sendPan);
     if (!edit.refusal.empty())
         panel_.root.say(edit.refusal);
     else
@@ -2096,9 +2096,12 @@ juce::PopupMenu MixerStrip::sendMenuItems(std::size_t index) {
         const auto *send = current ? findSend(current->sends, track_, returns_[index]) : nullptr;
         const double now = send != nullptr ? send->pan : 0.0;
         juce::PopupMenu panned;
-        for (const auto &[name, value] : std::initializer_list<std::pair<const char *, double>>{
-                 {"Left", -1.0}, {"50L", -.5}, {"Center", 0.0}, {"50R", .5}, {"Right", 1.0}})
-            panned.addItem(name, true, std::abs(now - value) < 1e-6, [this, index, value] { setSendPan(index, value); });
+        // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
+        for (const auto &place : std::initializer_list<std::pair<const char *, double>>{
+                 {"Left", -1.0}, {"50L", -.5}, {"Center", 0.0}, {"50R", .5}, {"Right", 1.0}}) {
+            const double value = place.second;
+            panned.addItem(place.first, true, std::abs(now - value) < 1e-6, [this, index, value] { setSendPan(index, value); });
+        }
         m.addSubMenu("Send Pan", panned);
     }
     // Where this send taps its track (ADR-0245 d10; DF-W33): Live's three, the one it uses ticked.
