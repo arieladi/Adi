@@ -23,6 +23,9 @@
 #else
 #include <cerrno>
 #include <signal.h>
+#if defined(__APPLE__)
+#include <sys/random.h>
+#endif
 #include <unistd.h>
 #endif
 
