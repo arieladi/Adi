@@ -661,11 +661,11 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     previous.incarnation = beforeClock_->incarnation();
     candidate.incarnation = project_->incarnation();
     previous.followPass = candidate.followPass = driver.pass_;
-    auto after = project_->view();
-    after.tracks = tracks_;
+    auto candidateView = project_->view();
+    candidateView.tracks = tracks_;
     if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
     std::array<TimedSceneAction,kMaximumTimedRawSceneTracks> plan{};
-    const auto count = driver.launcher_.planTimedSceneActions(candidate,after,*candidate.preparedScene,plan);
+    const auto count = driver.launcher_.planTimedSceneActions(candidate,candidateView,*candidate.preparedScene,plan);
     if (!count || *count != tracks_.size()) return false;
     const auto actions = std::span(plan).first(*count);
     const auto startCount = std::ranges::count(actions,TimedSceneActionKind::Start,&TimedSceneAction::kind);
