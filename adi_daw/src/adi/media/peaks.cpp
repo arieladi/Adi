@@ -124,7 +124,7 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
     if(audio::onAudioThread)return failed(PeakProblem::audioThread);
     return buildMediaPeaks(store,id,maximum,stop,supplied,&defaultAnalysisCache(),resolution);
 }
-PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,AnalysisCache* shared,PeakCacheResolution resolution) {
+PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,AnalysisCache* shared,PeakCacheResolution resolution,AnalysisFileWrites writes) {
     if(audio::onAudioThread)return failed(PeakProblem::audioThread);
     if(stop.stop_requested())return failed(PeakProblem::cancelled);
     if(maximum==0 || maximum>kMaxPeakValues)return failed(PeakProblem::invalidRequest);
@@ -174,7 +174,7 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
         }
         cancelled(stop);const auto hash=blake3File(path,stop);if(hash.error==HashError::cancelled)throw Cancelled{};
         if(!hash || hash.hex!=data.contentHash)return fallback(PeakProblem::invalidSource,"source changed during peaks read");
-        if(shared) {
+        if(shared && writes == AnalysisFileWrites::Enabled) {
             try {
                 std::string error;
                 const auto written=shared->update({data.contentHash,data.sampleRate,data.channels,data.frames},"APKS",{1,0,encodePeaks(data)},error,stop);

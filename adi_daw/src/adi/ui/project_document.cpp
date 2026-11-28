@@ -8,6 +8,7 @@
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/freeze_commands.hpp"
 #include "adi/gesture_navigation_detail.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/midi_capture.hpp"
@@ -81,6 +82,7 @@ struct WaveformSource {
     std::filesystem::path path;
     std::optional<std::filesystem::path> activeReader;
     std::unique_ptr<Store> idleReader;
+    media::AnalysisFileWrites analysisFileWrites = media::AnalysisFileWrites::Enabled;
 };
 struct ProjectDocument::MidiRecording {
     struct Track {
@@ -400,6 +402,12 @@ std::unique_ptr<library::Index> openSampleDefaults(const std::filesystem::path &
 WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
     return [source = std::move(source)](std::optional<std::int64_t> mediaId, const std::string &stateHash,
                                        std::stop_token stop) {
+        // Create Analysis Files (TM-MD-04), taken when this request begins.
+        media::AnalysisFileWrites writes;
+        {
+            std::lock_guard lock(source->mutex);
+            writes = source->analysisFileWrites;
+        }
         WaveformSource::Read read(*source);
         auto &reader = read.store;
         if (!reader) {
@@ -415,7 +423,8 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
         constexpr std::uint32_t fineBinsPerChannel = 65536;
         if (mediaId)
             return media::buildMediaPeaks(*reader, *mediaId, fineBinsPerChannel, stop, nullptr,
-                                         media::PeakCacheResolution::PreferRequested);
+                                         &media::defaultAnalysisCache(),
+                                         media::PeakCacheResolution::PreferRequested, writes);
         try {
             if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
             const auto bytes = reader->getStateBlob(stateHash);
@@ -560,6 +569,11 @@ ProjectDocument::~ProjectDocument() {
     for (const auto& item : limiterReductionSources_)
         if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
     analysis_->shutdown();
+}
+void ProjectDocument::setCreateAnalysisFiles(bool enabled) {
+    std::lock_guard lock(waveformSource_->mutex);
+    waveformSource_->analysisFileWrites = enabled ? media::AnalysisFileWrites::Enabled
+                                                  : media::AnalysisFileWrites::Disabled;
 }
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,

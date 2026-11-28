@@ -1816,6 +1816,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return false;
         }
         if (appControl_) appControl_->attach(nullptr);
+        next->setCreateAnalysisFiles(settings_->get(settings::kCreateAnalysisFilesKey) == true);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         hotSwap_.reset();
@@ -3503,6 +3504,8 @@ class AdiApplication final : public juce::JUCEApplication,
                     startLibrary();
                     refreshCacheLimits();
                     refreshTestTone();
+                    if (document_)
+                        document_->setCreateAnalysisFiles(settings_->get(settings::kCreateAnalysisFilesKey) == true);
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
                         if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
