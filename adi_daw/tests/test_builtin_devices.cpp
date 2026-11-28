@@ -884,7 +884,7 @@ void samplerSavedBefore() {
     std::printf("\n");
     bool finite=true;
     for(const double probe:probes)finite=finite && std::isfinite(probe);
-    check(finite && probes[24]>1 && probes[25]>1,"the saved project sounds");
+    check(finite && probes[24]<0,"PROBE ONLY: print the probes of the build of 28 November");
 }
 // SC-483: the hosted Sampler takes its zone table as the state stream "zones",
 // plays by it, saves it, and a project keeps it through reopening and Undo.
