@@ -44,4 +44,13 @@ prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
                       std::size_t pointBudget = kSplicePointBudget,
                       std::string_view label = "Replace Automation", std::optional<Payload> selection = {});
+/// The Arrangement command's default tolerance as a fraction of the
+/// displayed parameter range. Live's reduction tolerance is unmeasured.
+inline constexpr double kSimplifyRelativeTolerance = .005;
+/// Prepare one sealed edit in the lane's native clock, or return an empty
+/// request list when no reduction fits. Existing endpoint identities and
+/// authored curves outside the fitted intervals stay in place.
+[[nodiscard]] PreparedEnvelopeSplice
+prepareSimplifyEnvelope(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
+                        double sampleRate, double maxValueError, std::optional<Payload> selection = {});
 } // namespace adi::automation

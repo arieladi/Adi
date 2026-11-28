@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/recording_commands.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/engine/audio_memory.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -101,6 +103,25 @@ std::string identity(Store& store) {
     SQLite::Statement query(store.db(),"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
     throw std::runtime_error("recording needs a project connection");
+}
+std::string projectUuid(const SQLite::Database& db) {
+    SQLite::Statement query(db,"SELECT value FROM adi_meta WHERE key='project_uuid'");
+    return query.executeStep()?query.getColumn(0).getString():std::string{};
+}
+std::string receiptKey(const std::string& id) {
+    return "recording.placed."+id;
+}
+bool hasReceipt(const SQLite::Database& db,const std::string& id) {
+    SQLite::Statement query(db,"SELECT 1 FROM adi_meta WHERE key=?");
+    query.bind(1,receiptKey(id));
+    return query.executeStep();
+}
+bool isRecordingDestination(const SQLite::Database& db,std::int64_t id) {
+    SQLite::Statement track(db,"SELECT kind,locked FROM tracks WHERE id=?");
+    track.bind(1,id);
+    if(!track.executeStep() || track.getColumn(1).getInt()!=0)return false;
+    const auto kind=track.getColumn(0).getString();
+    return kind=="audio" || kind=="midi";
 }
 struct Read {
     std::optional<SQLite::Transaction> transaction;
@@ -417,6 +438,36 @@ Payload recordedMidiImage(Store& store, const MidiLinearTake& take, clip_edit::C
         })});
     }
 
+    std::set<std::pair<int, int>> controllerAddresses;
+    for (const auto& lane : take.controllers) {
+        if (lane.channel < 0 || lane.channel >= 16 || !controllers::validController(lane.controller) ||
+            lane.points.empty() || lane.points.size() > StreamReader<AutomationPoint>::kMaxRecordsAtOnce ||
+            !controllerAddresses.emplace(lane.channel, lane.controller).second)
+            throw std::runtime_error("invalid recorded MIDI controller lane");
+        std::vector<AutomationPoint> points;
+        std::set<std::uint64_t> pointIds;
+        points.reserve(lane.points.size());
+        std::int64_t previous = -1;
+        for (const auto& point : lane.points) {
+            if (!point.id || !pointIds.insert(point.id).second || point.timeTicks < 0 ||
+                point.timeTicks < previous || point.timeTicks >= take.length || !std::isfinite(point.value) ||
+                point.value < 0. || point.value > 1. || !std::isfinite(point.tension) ||
+                point.tension < -1.f || point.tension > 1.f || point.curve > static_cast<std::uint8_t>(Curve::Bezier))
+                throw std::runtime_error("invalid recorded MIDI controller point");
+            previous = point.timeTicks;
+            points.push_back({.time = point.timeTicks, .value = point.value, .tension = point.tension,
+                              .curve = point.curve, .flags = point.flags, .reserved = 0, .point_id = point.id});
+        }
+        if (!children.contains("event_streams"))
+            children["event_streams"] = Payload::array();
+        const bool pitch = lane.controller == controllers::kPitchBend;
+        children["event_streams"].push_back(edit::defaultRow(store.db(), "event_streams", {
+            {"id", allocated.next("event_streams")}, {"clip_id", take.clip}, {"channel", lane.channel},
+            {"stream_kind", pitch ? "pitchbend" : "cc"}, {"controller", pitch ? Payload(nullptr) : Payload(lane.controller)},
+            {"data", binary(writeStream<AutomationPoint>(FourCC::Controller, points, 1, StreamFlags::SortedByTime))},
+        }));
+    }
+
     auto row = edit::defaultRow(store.db(), "clips", {
         {"id", take.clip}, {"track_id", take.track}, {"kind", "midi"}, {"time_base", 0},
         {"name", take.name.empty() ? std::string("MIDI Recording") : take.name},
@@ -435,6 +486,44 @@ OpRequest recordingRows(const edit::RowEdits& rows, std::int64_t clip, const cha
     request.targetKind = "clip";
     request.targetId = clip;
     return request;
+}
+
+std::optional<std::vector<OpRequest>> prepareControllerOverdub(Store& store, const MidiLinearTake& take,
+    std::int64_t clip, std::int64_t offset, clip_edit::CopyIds& ids, const char* label) {
+    std::vector<OpRequest> requests;
+    if (take.controllers.empty())
+        return requests;
+    const auto existing = controllers::readLanes(store, clip);
+    if (!existing.ok)
+        return std::nullopt;
+    for (const auto& lane : take.controllers) {
+        const auto found = std::find_if(existing.lanes.begin(), existing.lanes.end(), [&](const auto& entry) {
+            return entry.channel == lane.channel && entry.controller == lane.controller;
+        });
+        auto points = std::vector<controllers::Point>(lane.points.begin(), lane.points.end());
+        for (auto& point : points)
+            point.timeTicks += offset;
+        OpRequest request;
+        if (found == existing.lanes.end()) {
+            request = controllers::writeRequest({ids.next("event_streams"), clip, lane.channel, lane.controller}, points);
+        } else {
+            if (!found->error.empty() ||
+                found->points.size() > StreamReader<AutomationPoint>::kMaxRecordsAtOnce - points.size())
+                return std::nullopt;
+            // The owner-side writer allocates point IDs without rewriting any existing records.
+            for (auto& point : points)
+                point.id = 0;
+            auto prepared = controllers::prepareWrite(store, clip, lane.channel, lane.controller, points);
+            if (!prepared.ok || prepared.address.id != found->id)
+                return std::nullopt;
+            request = std::move(prepared.request);
+        }
+        request.label = label;
+        request.targetKind = "clip";
+        request.targetId = clip;
+        requests.push_back(std::move(request));
+    }
+    return requests;
 }
 
 // An in-place overdub needs the recorded span to map to one unique source interval. On a
@@ -478,8 +567,16 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
                 clip->loopStartTicks >= 0 && clip->loopStartTicks <= tickLimit &&
                 clip->contentOffsetTicks + *clip->lengthTicks <= clip->loopStartTicks + *clip->loopLengthTicks :
             !clip->endMarkerTicks || sourceEnd <= *clip->endMarkerTicks;
-        if (visible && (clip->notesRecordSize == 0 || clip->notesRecordSize == sizeof(NoteRecord))) {
+        const bool editable = visible &&
+            (take.notes.empty() || clip->notesRecordSize == 0 || clip->notesRecordSize == sizeof(NoteRecord));
+        auto controllerOps = editable ? prepareControllerOverdub(store, take, clipId, sourceStart, ids, label) : std::nullopt;
+        if (controllerOps) {
+            const auto appendControllers = [&] {
+                result.requests.insert(result.requests.end(), std::make_move_iterator(controllerOps->begin()),
+                                       std::make_move_iterator(controllerOps->end()));
+            };
             if (take.notes.empty()) {
+                appendControllers();
                 landing = {clipId, sourceStart, {}, false};
                 return true;
             }
@@ -536,12 +633,13 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
                     }
                     result.requests.push_back(recordingRows(expressions, clipId, label));
                 }
+                appendControllers();
                 landing = {clipId, sourceStart, std::move(newIds), false};
                 return true;
             }
         }
     }
-    if (take.notes.empty()) {
+    if (take.notes.empty() && take.controllers.empty()) {
         landing = {clipId, 0, {}, false};
         return true;
     }
@@ -607,6 +705,99 @@ StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path
     return result;
 }
 
+bool configureRecovery(Store& store,engine::AudioRecordingSpec& spec,std::string& error) {
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("configure recording recovery off callback");
+        if(store.readOnly())throw std::runtime_error("project is read-only");
+        const auto source=identity(store);
+        if(source.empty())throw std::runtime_error("recording recovery needs a saved project");
+        auto uuid=projectUuid(store.db());
+        if(uuid.empty()) {
+            SQLite::Statement persist(store.db(),
+                "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE COALESCE(adi_meta.value,'')=''");
+            persist.bind(1,store.clientId());
+            persist.exec();
+            uuid=projectUuid(store.db());
+        }
+        spec.sourceProject=source;
+        spec.recoveryProjectUuid=std::move(uuid);
+        error.clear();
+        return true;
+    } catch(const std::exception& failure) {
+        error=failure.what();
+        return false;
+    }
+}
+RecoveryTake recoverInterrupted(Store& store,const fs::path& recordingRoot,const fs::path& directory) {
+    if (store.readOnly()) return {RecoveryStatus::Refused, {}, "project is read-only"};
+    return prepareInterrupted(store,recordingRoot,directory,{},{});
+}
+RecoveryTake prepareInterrupted(Store& store,const fs::path& recordingRoot,const fs::path& directory,
+                                std::string_view expectedRecording,std::stop_token stop) {
+    RecoveryTake result;
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("recover recording off callback");
+        for(const auto& component:directory) {
+            if(component=="..")
+                throw std::runtime_error("recording path contains a parent traversal");
+        }
+        if(recordingRoot.empty() || directory.empty() || directory.filename().empty() ||
+           fs::canonical(recordingRoot)!=fs::canonical(directory.parent_path()))
+            throw std::runtime_error("recording directory is outside the known recording root");
+        const auto root=fs::canonical(recordingRoot);
+        const auto ownedDirectory=root/directory.filename();
+        auto owned=engine::recording_recovery::openInactive(ownedDirectory);
+        if (!expectedRecording.empty() && owned.plan.recordingId != expectedRecording)
+            throw std::runtime_error("the interrupted take changed after launch");
+        const auto source=identity(store);
+        if(owned.plan.projectUuid!=projectUuid(store.db()) || owned.plan.sourceProject!=source)
+            throw std::runtime_error("recording belongs to a different project");
+        if(hasReceipt(store.db(),owned.plan.recordingId)) {
+            result.status=RecoveryStatus::AlreadyPlaced;
+            return result;
+        }
+        for(const auto& target:owned.plan.targets) {
+            if(!isRecordingDestination(store.db(),target.trackId))
+                throw std::runtime_error("recording track "+std::to_string(target.trackId)+" no longer accepts a take");
+        }
+        result.capture=engine::AudioRecordingResult::fromInterrupted(std::move(owned),ownedDirectory,source,stop);
+        result.status=RecoveryStatus::Ready;
+    } catch(const std::exception& failure) {
+        result.error=failure.what();
+    }
+    return result;
+}
+std::vector<engine::recording_recovery::LaunchTake> discoverInterrupted() {
+    auto candidates = engine::recording_recovery::findLaunchTakes();
+    std::vector<engine::recording_recovery::LaunchTake> admitted;
+    for (auto &candidate : candidates) {
+        try {
+            StoreError error{};
+            const auto project=Store::open(media::pathFromUtf8(candidate.sourceProject),error,true);
+            if (!project || candidate.sourceProject!=identity(*project) ||
+                candidate.projectUuid!=projectUuid(project->db()) ||
+                hasReceipt(project->db(),candidate.recordingId)) continue;
+            auto &db = project->db();
+            SQLite::Statement title(db, "SELECT name FROM project WHERE id=1");
+            if (title.executeStep()) candidate.projectName = title.getColumn(0).getString();
+            SQLite::Statement track(db, "SELECT name FROM tracks WHERE id=?");
+            for (const auto id : candidate.tracks) {
+                track.bind(1, id);
+                auto name = track.executeStep() ? track.getColumn(0).getString() : std::string{};
+                if (name.empty()) name = "Track " + std::to_string(id);
+                if (!candidate.trackNames.empty()) candidate.trackNames += ", ";
+                candidate.trackNames += name;
+                track.reset();
+            }
+            admitted.push_back(std::move(candidate));
+        } catch(const std::exception&) {
+            // A candidate whose project cannot be read stays in its private
+            // recording folder, available when the project opens again.
+        }
+    }
+    return admitted;
+}
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
     try {
@@ -624,6 +815,12 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
     result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
     if(recorded.sourceProject().empty() || recorded.sourceProject()!=result.sourceProject)throw std::runtime_error("recording belongs to a different project");
+    if(!recorded.recordingId().empty()) {
+        if(recorded.recoveryProjectUuid()!=projectUuid(store.db()))
+            throw std::runtime_error("recording project identity changed");
+        if(hasReceipt(store.db(),recorded.recordingId()))
+            throw std::runtime_error("recording is already placed");
+    }
     if(!recorded.hasAttachableAudio() || recorded.sampleRate<8000 || recorded.sampleRate>768000 ||
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
@@ -899,8 +1096,40 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
         auto prepared = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), placement, allocated, label);
         if (!prepared.ok)
             throw std::runtime_error(prepared.error);
+        const auto changes = edit_plan::describe(prepared);
+        if (!changes.ok)
+            throw std::runtime_error(changes.error);
         for (auto& request : prepared.requests)
             result.requests.push_back(std::move(request));
+
+        // The comp still replaces just the covered span. Keep each displaced
+        // original whole in a lane from the same transaction, including the
+        // offsets, fades, note streams and expression it had before the cut.
+        std::map<std::int64_t, std::int64_t> lanes;
+        OpContext context{store, store.db()};
+        edit::RowEdits archived(store.db());
+        for (const auto& effect : changes.effects) {
+            if (!effect.before || effect.before->lane.lane)
+                continue;
+            const auto track = effect.before->lane.track;
+            auto original = clip_edit::captureImage(context, effect.before->id);
+            // A linked clip does not own the material it plays. Let the
+            // normal splice manage its owner's references without adding one.
+            if (!original.at("row").at("alias_of").is_null())
+                continue;
+            auto [lane, inserted] = lanes.try_emplace(track, 0);
+            if (inserted) {
+                lane->second = allocated.next("lanes");
+                auto request = createTakeLane(store, lane->second, track, "Previous Take");
+                request.label = label;
+                result.requests.push_back(std::move(request));
+            }
+            auto copy = clip_edit::cloneImage(original, allocated.next("clips"), allocated);
+            copy.at("row")["lane_id"] = lane->second;
+            clip_edit::createImage(archived, copy);
+        }
+        if (!lanes.empty())
+            result.requests.push_back(recordingRows(archived, 0, label));
         result.ok = true;
     } catch (const std::exception& exception) {
         result.error = exception.what();
@@ -1444,6 +1673,19 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     auto options=edit.options;const auto previous=options.beforeCommit;const auto hooks=edit.publicationHooks;
     options.beforeCommit=[files,previous,rollback,hooks](SQLite::Database& db,std::int64_t transaction,std::string& error) {
         if(previous && !previous(db,transaction,error))return false;
+        if(!files->source.recordingId().empty()) {
+            if(files->source.recoveryProjectUuid()!=projectUuid(db)) {
+                error="recording project identity changed";
+                return false;
+            }
+            SQLite::Statement receipt(db,"INSERT OR IGNORE INTO adi_meta(key,value) VALUES(?,?)");
+            receipt.bind(1,receiptKey(files->source.recordingId()));
+            receipt.bind(2,std::to_string(transaction));
+            if(receipt.exec()!=1) {
+                error="recording is already placed";
+                return false;
+            }
+        }
         if (files->stagedTake) {
             try {
                 requireRecordingFolder(files->stagedTake->folder);
@@ -1486,7 +1728,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
         return true;
     };
     auto requests=edit.requests;for(auto& request:requests)request.actor=actor;
-    auto result=edit.groupEnds_.empty()?OpJournal(store).commit(requests,options):
+    auto result=(edit.groupEnds_.empty() || files->source.recovered())?OpJournal(store).commit(requests,options):
         OpJournal(store).commitGrouped(requests,edit.groupEnds_,options);
     if(result.ok) {
         rollback->committed=true;

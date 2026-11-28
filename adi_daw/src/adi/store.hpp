@@ -8,7 +8,7 @@
 //
 //   SPEC §2    application_id is verified before any table is trusted
 //   SPEC §3.1  the pragmas a new file is created with
-//   SPEC §3.2  WAL while open
+//   SPEC §3.2  local WAL and synchronized project journaling
 //   SPEC §3.3  THE CLOSE POLICY -- a cleanly closed .adi is exactly ONE file
 //   SPEC §11   a newer major schema opens read-only, never read-write
 //   ADR-0009   one blob per editable object, never wider
@@ -16,6 +16,7 @@
 #pragma once
 
 #include "adi/blob.hpp"
+#include "adi/media/publish_file.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -55,6 +56,8 @@ enum class StoreError {
     SchemaCorrupt,
     SqlError,
     MigrationFailed, // an older 1.x file could not be upgraded; it is unchanged (ADR-0144)
+    SyncJournalUnavailable, // the writable connection could not leave WAL safely
+    MigrationBackupFailed, // the safety copy could not be published, so no upgrade ran
 };
 
 const char* toString(StoreError);
@@ -70,7 +73,23 @@ struct StoreFileResult {
     std::string warning;
 };
 
+struct ProjectBackup {
+    std::filesystem::path path;
+    std::int64_t createdUtc = 0; // microseconds
+    media::FileRevision revision{};
+    unsigned collisionIndex = 0;
+    [[nodiscard]] std::shared_ptr<media::ProjectFileLease> leaseForTrash() const;
+};
+
+namespace backup {
+struct Job;
+StoreFileResult prepare(Store&, std::int64_t, Job&);
+StoreFileResult recover(const std::filesystem::path&, const std::filesystem::path&, std::stop_token);
+}
+
 enum class StoreSaveKind { copy, saveAs, firstSave };
+/// Backups and relocation preserve identity. Shared copies always remove private audit data.
+enum class StoreCopyPolicy { share, shareWithUndo, preserve };
 enum class StoreSavePhase { copying, relocating, publishing };
 struct StoreSaveProgress {
     StoreSavePhase phase = StoreSavePhase::copying;
@@ -100,6 +119,8 @@ private:
     struct Data;
     std::unique_ptr<Data> data_;
     friend class Store;
+    friend StoreFileResult backup::prepare(Store&, std::int64_t, backup::Job&);
+    friend StoreFileResult backup::recover(const std::filesystem::path&, const std::filesystem::path&, std::stop_token);
 };
 
 /// An open `.adi`.
@@ -120,11 +141,10 @@ public:
     /// project is not a thing this function will do quietly.
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
 
-    /// Application New: create the project row, Main and the Live default's
-    /// two MIDI/two audio tracks, A Reverb/B Delay returns and their sends,
-    /// native wet-only effects, mixer strips and 120 BPM / 4/4 maps at the
-    /// history root. No ops or protected UI undo step. Window callers replace
-    /// their track.create bootstrap with this single factory.
+    /// Application New: create the project row, Main, two MIDI and two audio
+    /// tracks, mixer strips and 120 BPM / 4/4 maps at the history root.
+    /// Returns, sends and effects can be added after New or loaded from an
+    /// existing project. New adds no ops or protected UI undo step.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
     /// Capture the caller's app recording defaults for the four initial
     /// tracks in the history root. Invalid choices create no file.
@@ -162,9 +182,21 @@ public:
     /// Owner thread, outside any SQL transaction. Snapshot committed WAL data
     /// into a new file. Existing files require ReplaceConfirmed, supplied only
     /// after the save dialog's explicit confirmation. Active Store files and
-    /// aliases refuse replacement. Rebase media
-    /// paths in both rows and captured history so undo/redo still finds audio.
-    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// aliases refuse replacement. Shared copies start new undo history by default.
+    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail,
+                                          StoreCopyPolicy=StoreCopyPolicy::share,
+                                          std::stop_token={}) const;
+    /// File-worker operations use their own read connection. The active
+    /// project and the recovery source are kept in place.
+    [[nodiscard]] static StoreFileResult writeProjectBackup(const std::filesystem::path& project,
+                                                           std::int64_t createdUtc, std::stop_token = {});
+    /// Managed copies for this project, newest first. Missing folders have no copies.
+    [[nodiscard]] static std::vector<ProjectBackup> projectBackups(const std::filesystem::path& project,
+                                                                   bool requireSourceIdentity = false);
+    [[nodiscard]] static StoreFileResult restoreProjectBackup(const std::filesystem::path& project,
+                                                             const std::filesystem::path& backup,
+                                                             std::filesystem::path& restored, std::stop_token = {},
+                                                             const std::filesystem::path& recoveryFolder = {});
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
@@ -184,7 +216,8 @@ public:
     /// committed database (including WAL) at invocation.
     [[nodiscard]] StoreFileResult prepareFileSave(const std::filesystem::path&, StoreSaveKind, StoreFileSave&,
                                                   StoreFileCollision = StoreFileCollision::Fail,
-                                                  const media::FileIdentity* expectedTarget = nullptr);
+                                                  const media::FileIdentity* expectedTarget = nullptr,
+                                                  StoreCopyPolicy = StoreCopyPolicy::share);
     /// Owner finalization for Save As. Retains the completed copy and the
     /// current Store if the source changed since preflight.
     [[nodiscard]] StoreFileResult adoptFileSave(StoreFileSave&);
@@ -192,20 +225,31 @@ public:
     /// save the new locations atomically. Owner thread; no live SQL statements
     /// or transaction. Refresh readers after success. No undo step is appended.
     [[nodiscard]] StoreFileResult collectAllAndSave();
-    /// Portable ZIP of a committed snapshot, including undo/branch media.
-    /// The active project is unchanged; the destination must not exist.
-    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
+    /// Portable ZIP of a committed snapshot. The destination must not exist.
+    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&, bool keepUndoHistory = false) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
+    [[nodiscard]] bool synchronizedLocation() const noexcept { return synchronizedLocation_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
     [[nodiscard]] int schemaMinor() const { return minor_; }
     /// The minor the file had before this open upgraded it; nullopt when no
     /// upgrade happened (ADR-0144).
     [[nodiscard]] std::optional<int> upgradedFromMinor() const { return upgradedFrom_; }
+    [[nodiscard]] const std::filesystem::path& upgradeBackupPath() const { return upgradeBackup_; }
 
     [[nodiscard]] SQLite::Database& db() { return *db_; }
     [[nodiscard]] const SQLite::Database& db() const { return *db_; }
+
+    // The open document's starting state, retained only for this visit.
+    // A point with no sequence refers to the original, pre-edit state.
+    struct OpeningHistoryPoint { std::optional<std::int64_t> seq; };
+    void retainOpeningHistory(std::optional<std::int64_t> seq) noexcept {
+        openingHistory_ = OpeningHistoryPoint{seq};
+    }
+    [[nodiscard]] std::optional<OpeningHistoryPoint> openingHistory() const noexcept {
+        return openingHistory_;
+    }
 
     // --- blob persistence, at the ADR-0009 granularity bound -----------------
     // One blob per editable object. `clipId` scopes a note stream; a lane and an
@@ -267,12 +311,14 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
+    static std::filesystem::path copyBeforeMigration(SQLite::Database&, int fromMinor, std::int64_t now,
+                                                      const std::shared_ptr<media::ProjectFileLease>&);
     friend class StoreFileSave;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,StoreCopyPolicy,std::stop_token) const;
     static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
         const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision,
         const std::function<void(SQLite::Database&)>&, std::stop_token = {}, const StoreFileSave::Progress& = {},
-        const StoreFileSave* pending = nullptr);
+        const StoreFileSave* pending = nullptr, StoreCopyPolicy = StoreCopyPolicy::preserve);
     StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,
         std::unique_ptr<Store>& retired, const StoreFileSave* pending = nullptr);
     StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,StoreSaveKind,
@@ -289,12 +335,15 @@ private:
     std::filesystem::path path_;
     bool readOnly_ = false;
     bool closed_ = false;
+    bool synchronizedLocation_ = false;
     int major_ = kSchemaMajor;
     int minor_ = kSchemaMinor;
     std::optional<int> upgradedFrom_;
     mutable std::string lastError_;
     std::string clientId_;
     std::string clientLabel_;
+    std::filesystem::path upgradeBackup_;
+    std::optional<OpeningHistoryPoint> openingHistory_;
 };
 
 // --- upgrading an older 1.x file (ADR-0144, SPEC §11) -------------------------

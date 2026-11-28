@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/track_recording.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -61,12 +63,13 @@ inline TrackEdit armTracks(const SnapshotTracks &tracks, const RecordStates &sta
     return edit;
 }
 // The monitoring switch (manual 21.4): In, Auto or Off on the clicked track, or on every selected track
-// when the clicked one is among them. A track already on that choice is left alone. One batch.
+// when the clicked one is among them. Without a choice, each track returns to its own type's default.
+// A track already on that choice is left alone. One batch.
 inline const char *monitorName(Monitor m) noexcept {
     return m == Monitor::In ? "In" : m == Monitor::Auto ? "Auto" : "Off";
 }
 inline TrackEdit setMonitor(const SnapshotTracks &tracks, const RecordStates &states, std::int64_t clicked,
-                            const std::vector<std::int64_t> &selected, Monitor mode) {
+                            const std::vector<std::int64_t> &selected, std::optional<Monitor> mode) {
     using namespace track_edits_detail;
     TrackEdit edit;
     const auto *t = find(tracks, clicked);
@@ -76,13 +79,14 @@ inline TrackEdit setMonitor(const SnapshotTracks &tracks, const RecordStates &st
     }
     const bool together =
         selected.size() > 1 && std::find(selected.begin(), selected.end(), clicked) != selected.end();
-    const std::string label = std::string("Monitor ") + monitorName(mode);
+    const std::string label = mode ? std::string("Monitor ") + monitorName(*mode) : "Reset Monitor";
     for (const auto &k : tracks) {
         if (!k || !armable(*k) || (together ? std::find(selected.begin(), selected.end(), k->id) == selected.end()
                                             : k->id != clicked))
             continue;
-        if (recordState(states, k->id).monitor != mode)
-            edit.ops.push_back(op("track.setMonitorMode", {{"id", k->id}, {"mode", static_cast<std::int64_t>(mode)}},
+        const auto choice = mode ? *mode : static_cast<Monitor>(initialTrackMonitorMode(k->kind));
+        if (recordState(states, k->id).monitor != choice)
+            edit.ops.push_back(op("track.setMonitorMode", {{"id", k->id}, {"mode", static_cast<std::int64_t>(choice)}},
                                   label.c_str()));
     }
     return edit;

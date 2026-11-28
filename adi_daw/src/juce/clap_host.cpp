@@ -2037,7 +2037,7 @@ std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& p
 scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Config& config) {
     scan::Report report;
     if(audio::onAudioThread){report.complete=false;return report;}
-    const auto bundles=findBundles(paths);
+    const auto bundles=scan::findCandidates(paths, ".clap", &report.failures);
     std::vector<ClapPluginRef> found;
     const auto probe = [&](scan::Scanner& scanner, std::size_t index) {
         const auto& path = bundles[index];

@@ -289,14 +289,55 @@ bool arrangerInverse(OpContext& context,const Payload& payload,Payload& inverse,
     if(inverse.contains("loop"))std::swap(inverse["loop"]["before"],inverse["loop"]["after"]);
     return true;
 }
+void validSourceReplacement(const Payload& payload) {
+    const auto& changes=payload.at("changes");
+    const auto id=detail::signedInteger(payload.at("id"));
+    if(changes.size()!=1 || changes[0].at("table")!="audio_clips" || detail::signedInteger(changes[0].at("id"))!=id)
+        throw std::runtime_error("sample replacement edits exactly one audio source");
+    const auto& before=changes[0].at("before");
+    const auto& after=changes[0].at("after");
+    if(!before.is_object() || !after.is_object() || detail::signedInteger(before.at("clip_id"))!=id ||
+       detail::signedInteger(after.at("clip_id"))!=id)
+        throw std::runtime_error("sample replacement requires an existing audio clip");
+    for(auto field=before.begin();field!=before.end();++field) {
+        const auto& name=field.key();
+        if(name!="media_id" && name!="src_start_frames" && name!="src_len_frames" && name!="warp_markers" && after.at(name)!=field.value())
+            throw std::runtime_error("sample replacement cannot change other clip settings");
+    }
+}
+bool sourceReplacementApply(OpContext& context,const Payload& payload,std::string& error) {
+    try {
+        validSourceReplacement(payload);
+        if(!context.replay) {
+            const auto& source=payload.at("changes")[0].at("after");
+            const auto start=detail::signedInteger(source.at("src_start_frames"));
+            const auto count=detail::signedInteger(source.at("src_len_frames"));
+            SQLite::Statement media(context.db,"SELECT frames,embedded,missing FROM media_files WHERE id=?");
+            media.bind(1,detail::signedInteger(source.at("media_id")));
+            if(!media.executeStep() || media.getColumn(1).getInt()!=0 || media.getColumn(2).getInt()!=0 || start<0 || count<=0)
+                throw std::runtime_error("sample replacement needs a playable source window");
+            if(!media.getColumn(0).isNull()) {
+                const auto frames=media.getColumn(0).getInt64();
+                if(start>frames || count>frames-start)throw std::runtime_error("replacement source window exceeds the sample");
+            }
+        }
+        return edit::applyRows(context,payload,error);
+    }
+    catch(const std::exception& exception){error=exception.what();return false;}
+}
+bool sourceReplacementInverse(OpContext& context,const Payload& payload,Payload& inverse,std::string& error) {
+    try{validSourceReplacement(payload);return edit::inverseRows(context,payload,inverse,error);}
+    catch(const std::exception& exception){error=exception.what();return false;}
+}
 constexpr std::array<Field,4> fields={{{"id",FieldType::Int},{"in",FieldType::Object,false},{"out",FieldType::Object,false},{"_restore",FieldType::Object,false}}};
 constexpr std::array<Field,2> changeFields={{{"id",FieldType::Int},{"changes",FieldType::Array}}};
 constexpr std::array<Field,3> arrangerFields={{{"id",FieldType::Int},{"changes",FieldType::Array},{"loop",FieldType::Object,false}}};
-const std::array<OpDescriptor,5> descriptors={{
+const std::array<OpDescriptor,6> descriptors={{
     {"arranger.splice","Apply a captured arrangement edit",Scope::Edit,EngineImpact::GraphRebuild,arrangerFields,false,false,arrangerApply,arrangerInverse,""},
     {"clip.split","Split a clip with captured source clocks",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<false>,splitInverse<false>,"clip.join"},
     {"clip.join","Restore the pieces of a captured split",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<true>,splitInverse<true>,"clip.split"},
     {"clip.duplicate","Paste a captured independent clip",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,duplicateApply,duplicateInverse,"clip.delete"},
+    {"audioClip.setSource","Replace one audio clip's sample",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,sourceReplacementApply,sourceReplacementInverse,""},
     {"clip.setFades","Set audio clip fade handles and continuous curvature",Scope::Edit,EngineImpact::Snapshot,fields,false,false,fadeApply,fadeInverse,""}
 }};
 }

@@ -15,6 +15,8 @@
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
+#include <utility>
 namespace adi::engine {
 namespace {
 constexpr std::size_t maxActive = 128;
@@ -92,7 +94,7 @@ struct ControlState {
          confirmedKnown = false;
 };
 struct TrackState {
-    std::array<ControlState, 2048> controls{};
+    std::array<ControlState, kControllerAddressCount> controls{};
     const std::uint32_t controlPrefix = allocateControllerSourcePrefix();
     std::uint16_t controlCursor = 0;
     std::atomic<std::uint32_t> droppedControls{0};
@@ -124,6 +126,7 @@ public:
     bool monitorInputOnly = false;
     bool meterNotes = false;
     std::shared_ptr<const MidiControllerProgram> controls;
+    std::uint16_t pitchChase = 0;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
         if(!active.note.identity.note || byIdentity.empty())return nullptr;
@@ -137,9 +140,10 @@ public:
     bool canRetainPendingEvent(const Event& event)const noexcept override {
         if(!transport.playing() || state->revision!=transport.revision() || state->expected!=transport.sampleAt(0))return false;
         if(event.type==EventType::Controller) {
-            if((event.noteId>>32)!=state->controlPrefix || event.channel>15 || event.paramId>127 ||
+            if((event.noteId>>32)!=state->controlPrefix || event.channel>15 ||
+               !controllers::validController(event.paramId) ||
                state->controllerGeneration!=controllerGeneration)return false;
-            const auto& controlState=state->controls[event.channel*128+event.paramId];
+            const auto& controlState=state->controls[controllerAddress(event.channel, static_cast<int>(event.paramId))];
             const auto serial=static_cast<std::uint32_t>(event.noteId);
             // Earlier curve samples can still be queued after a newer value
             // was issued, and another route may have acknowledged them first.
@@ -157,9 +161,9 @@ public:
     }
     void pendingEventRetained(const Event& event)noexcept override {
         retainedTransportRevision=transport.revision();
-        if(event.type==EventType::Controller && event.channel<=15 && event.paramId<=127 &&
+        if(event.type==EventType::Controller && event.channel<=15 && controllers::validController(event.paramId) &&
            (event.noteId>>32)==state->controlPrefix) {
-            auto& controlState=state->controls[event.channel*128+event.paramId];
+            auto& controlState=state->controls[controllerAddress(event.channel, static_cast<int>(event.paramId))];
             const auto serial=static_cast<std::uint32_t>(event.noteId);
             if(serial==controlState.serial){controlState.retainedGeneration=generation;controlState.retainedSerial=serial;}
         } else for(auto& active:state->active)if(active.used && active.note.start.noteId==event.noteId) {
@@ -182,9 +186,12 @@ public:
     std::uint32_t controllerSourcePrefix() const noexcept override {
         return state->controlPrefix;
     }
-    static bool pedal(std::uint16_t address) noexcept {
-        const auto cc = address % 128;
-        return cc == 64 || cc == 66 || cc == 69;
+    static constexpr std::array<int, 4> releaseControllers{64, 66, 69, controllers::kPitchBend};
+    static bool managesRelease(std::uint16_t address) noexcept {
+        return std::ranges::find(releaseControllers, controllerNumber(address)) != releaseControllers.end();
+    }
+    static double neutralValue(std::uint16_t address) noexcept {
+        return address >= kCcAddressCount ? .5 : 0.;
     }
     bool control(EventList &out, std::int32_t frame, std::uint16_t address, double value,
                  bool force = false) noexcept {
@@ -194,8 +201,8 @@ public:
         Event e;
         e.type = EventType::Controller;
         e.frame = frame;
-        e.channel = static_cast<std::uint8_t>(address / 128);
-        e.paramId = address % 128;
+        e.channel = controllerChannel(address);
+        e.paramId = static_cast<std::uint32_t>(controllerNumber(address));
         e.value = value;
         auto serial = c.serial + 1;
         if (!serial)
@@ -210,18 +217,20 @@ public:
         c.requestedValid = true;
         c.pending = true;
         c.retry = false;
-        if (pedal(address)) {
-            if (value > 0)
+        if (managesRelease(address)) {
+            const bool neutral = value == neutralValue(address);
+            if (!neutral)
                 c.held = true;
-            c.releaseDesired = value == 0;
+            c.releaseDesired = neutral;
         }
         return true;
     }
     void controllerDelivered(const Event &e) noexcept override {
-        if (e.type != EventType::Controller || e.channel > 15 || e.paramId > 127 ||
+        if (e.type != EventType::Controller || e.channel > 15 || !controllers::validController(e.paramId) ||
             (e.noteId >> 32) != state->controlPrefix)
             return;
-        auto &c = state->controls[e.channel * 128 + e.paramId];
+        const auto address = controllerAddress(e.channel, static_cast<int>(e.paramId));
+        auto &c = state->controls[address];
         const auto seq = static_cast<std::uint32_t>(e.noteId);
         const auto delta = seq - c.confirmedSeq;
         if (!c.confirmedKnown || (delta != 0 && delta < 0x80000000u)) {
@@ -231,46 +240,47 @@ public:
         }
         if (seq == c.serial) {
             c.pending = false;
-            if (e.value == 0 && !c.retry)
+            if (e.value == neutralValue(address) && !c.retry)
                 c.held = false;
         }
     }
     void controllerRejected(const Event &e) noexcept override {
-        if (e.type != EventType::Controller || e.channel > 15 || e.paramId > 127 ||
+        if (e.type != EventType::Controller || e.channel > 15 || !controllers::validController(e.paramId) ||
             (e.noteId >> 32) != state->controlPrefix)
             return;
-        auto &c = state->controls[e.channel * 128 + e.paramId];
+        const auto address = controllerAddress(e.channel, static_cast<int>(e.paramId));
+        auto &c = state->controls[address];
         if (static_cast<std::uint32_t>(e.noteId) != c.serial)
             return;
         c.pending = false;
         c.retry = true;
-        if (pedal(static_cast<std::uint16_t>(e.channel * 128 + e.paramId)) && e.value == 0) {
+        if (managesRelease(address) && e.value == neutralValue(address)) {
             c.held = true;
             c.releaseDesired = true;
         }
     }
-    bool releasePedals(EventList &out, std::int32_t frame, bool force = false, bool changedOnly = false,
-                       std::int64_t time = 0) noexcept {
+    bool releaseControls(EventList &out, std::int32_t frame, bool force = false, bool changedOnly = false,
+                         std::int64_t time = 0) noexcept {
         bool ok = true;
         if (changedOnly) {
             if (!controls)
                 return true;
             for (std::size_t i = 0; i < controls->size(); ++i) {
                 const auto address = controls->address(i);
-                if (pedal(address) && controls->changesOwnerAt(i, time)) {
+                if (managesRelease(address) && controls->changesOwnerAt(i, time)) {
                     auto &c = state->controls[address];
                     if (c.held || c.retry)
-                        ok = control(out, frame, address, 0, force) && ok;
+                        ok = control(out, frame, address, neutralValue(address), force) && ok;
                     c.requestedValid = false;
                 }
             }
         } else
             for (std::uint16_t channel = 0; channel < 16; ++channel)
-                for (auto cc : {64, 66, 69}) {
-                    const auto address = static_cast<std::uint16_t>(channel * 128 + cc);
+                for (const auto controller : releaseControllers) {
+                    const auto address = controllerAddress(channel, controller);
                     auto &c = state->controls[address];
                     if (c.held || c.retry)
-                        ok = control(out, frame, address, 0, force) && ok;
+                        ok = control(out, frame, address, neutralValue(address), force) && ok;
                 }
         return ok;
     }
@@ -279,14 +289,16 @@ public:
             for (std::size_t i = 0; i < controls->size(); ++i)
                 state->controls[controls->address(i)].requestedValid = false;
     }
+    static std::int32_t controllerReserve(const EventList& out) noexcept {
+        // Keep room for note-ons and all owned note-offs.
+        return std::min(out.capacity(),
+                        std::max(3, std::min(out.capacity() / 2, static_cast<std::int32_t>(maxActive * 2))));
+    }
     void evaluateControls(EventList &out, std::int32_t frame, std::int64_t time) noexcept {
         if (!controls || !controls->size())
             return;
-        // Keep room for note-ons and all owned note-offs. Rotate the first
-        // address so a small output list cannot starve later controllers.
-        const auto reserve =
-            std::min(out.capacity(),
-                     std::max(3, std::min(out.capacity() / 2, static_cast<std::int32_t>(maxActive * 2))));
+        // Rotate the first address so a small output list cannot starve later controllers.
+        const auto reserve = controllerReserve(out);
         const auto size = controls->size();
         const auto start = static_cast<std::size_t>(state->controlCursor) % size;
         for (std::size_t j = 0; j < size; ++j) {
@@ -306,6 +318,26 @@ public:
             control(out, frame, address, value);
         }
         state->controlCursor = static_cast<std::uint16_t>((start + 1) % size);
+    }
+    void chasePitchAtStart(EventList& out, std::int64_t sample, bool regularChase) noexcept {
+        const auto channels = std::exchange(pitchChase, std::uint16_t{0});
+        if (!channels || !controls) return;
+        const auto reserve = controllerReserve(out);
+        // Addresses are sorted. The last sixteen possible lanes are pitch wheels.
+        for (auto i = controls->size(); i > 0;) {
+            const auto address = controls->address(--i);
+            if (address < kCcAddressCount) break;
+            if (!(channels & (1u << controllerChannel(address))) || controls->changesOwnerAt(i, sample))
+                continue; // An owner change already performs its own release and chase.
+            double value = 0;
+            if (!controls->valueAt(i, sample, value)) continue;
+            state->controls[address].requestedValid = false;
+            if (regularChase) continue;
+            if (out.capacity() - out.size() > reserve)
+                control(out, 0, address, value);
+            else
+                ++state->droppedControls; // Retry on the normal controller cadence.
+        }
     }
     std::weak_ptr<void> owner;
     Source(Transport& t,std::shared_ptr<TrackState> s,std::uint64_t g):transport(t),state(std::move(s)),generation(g){}
@@ -457,12 +489,12 @@ public:
     void scheduleEvents(EventList& out,std::int32_t frames) noexcept {
         if (frames <= 0)
             return;
-        // A rejected zero must remain owned even after its lane disappears.
+        // A rejected neutral value must remain owned even after its lane disappears.
         for (std::uint16_t channel = 0; channel < 16; ++channel)
-            for (auto cc : {64, 66, 69}) {
-                const auto address = static_cast<std::uint16_t>(channel * 128 + cc);
+            for (const auto controller : releaseControllers) {
+                const auto address = controllerAddress(channel, controller);
                 const auto &c = state->controls[address];
-                if (c.releaseDesired && c.retry && !control(out, 0, address, 0))
+                if (c.releaseDesired && c.retry && !control(out, 0, address, neutralValue(address)))
                     return;
             }
         const auto first=transport.sampleAt(0);
@@ -473,14 +505,15 @@ public:
         bool controlChase=false;
         bool expressionBlocked=false;
         if(!transport.playing()) {
-            if (releasePedals(out, 0, newGeneration) && flush(out, 0, newGeneration))
+            pitchChase = 0;
+            if (releaseControls(out, 0, newGeneration) && flush(out, 0, newGeneration))
                 state->generation = generation;
             state->expected=-1;return;
         }
         if(discontinuity) {
             const bool changedControls=state->controllerGeneration!=controllerGeneration;
             if(moved || changedControls) {
-                if(!releasePedals(out,0,newGeneration))return;
+                if(!releaseControls(out,0,newGeneration))return;
                 invalidateControls();
                 controlsReset=true;
                 controlChase=true;
@@ -501,6 +534,7 @@ public:
             if (a.used && ((a.releasing && !a.pending) || a.note.off <= first))
                 if (!stop(a, out, 0))
                     return;
+        chasePitchAtStart(out, first, controlChase);
         for(auto& active:state->active)if(active.used && !active.sounding && active.retryOn && !active.releasing) {
             std::size_t owned=0;for(const auto& note:state->active)owned+=note.used?1u:0u;
             if(out.capacity()-out.size()<static_cast<std::int32_t>(owned)+3)return;
@@ -518,7 +552,7 @@ public:
             const auto time=transport.sampleAt(frame);
             const auto count=transport.contiguousFrames(frame,frames-frame);
             if (frame > 0) {
-                if (!releasePedals(out, frame) || !flush(out, frame))
+                if (!releaseControls(out, frame) || !flush(out, frame))
                     return;
                 invalidateControls();
                 discontinuity = true;
@@ -549,7 +583,7 @@ public:
                     break;
                 const auto at = frame + static_cast<std::int32_t>(due - time);
                 if (due == boundary && !(controlsReset && due == time) &&
-                    !releasePedals(out, at, false, true, due))
+                    !releaseControls(out, at, false, true, due))
                     return;
                 // Releases precede the new controller state; note-ons follow it.
                 for (; it != eventEnd && it->time == due && !it->on; ++it)
@@ -674,6 +708,7 @@ std::shared_ptr<MidiClipState> makeMidiClipState(){return std::make_shared<MidiC
 struct MidiClips::Impl {
     std::map<std::int64_t,std::shared_ptr<Source>> tracks;
     std::vector<std::string> problems;
+    std::unordered_set<std::int64_t> unavailableClips;
     std::weak_ptr<MidiClipState> state;
     const Transport* transport = nullptr;
     double rate = 0;
@@ -914,6 +949,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             if(!expressionProblem.empty())impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+expressionProblem);
         } catch(const std::exception& e) {
             source.notes.resize(before);source.expressionSamples.resize(expressionBefore);
+            impl_->unavailableClips.insert(clip.id);
             impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+e.what());
         }
     }
@@ -953,6 +989,11 @@ std::uint64_t MidiClips::droppedControllers() const noexcept {
     return count;
 }
 std::vector<Node*> MidiClips::sourcesFor(std::int64_t id){const auto i=impl_->tracks.find(id);return i==impl_->tracks.end()?std::vector<Node*>{}:std::vector<Node*>{i->second.get()};}
+std::shared_ptr<std::uint16_t> MidiClips::pitchChaseFor(std::int64_t track) const noexcept {
+    if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
+        return {impl_, &source->second->pitchChase};
+    return {};
+}
 std::span<const MidiMonitorRange> MidiClips::monitorRanges(std::int64_t track) const noexcept {
     if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
         return source->second->monitorRanges;
@@ -966,4 +1007,5 @@ MidiNoteActivity MidiClips::noteActivity(std::int64_t track) const noexcept {
     return {static_cast<std::uint32_t>(reading >> 1), (reading & 1u) != 0};
 }
 const std::vector<std::string>& MidiClips::problems() const noexcept{return impl_->problems;}
+bool MidiClips::clipUnavailable(std::int64_t clipId) const noexcept{return impl_->unavailableClips.contains(clipId);}
 }

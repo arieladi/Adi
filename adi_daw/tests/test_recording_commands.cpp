@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/warp_commands.hpp"
 #include "adi/audio/warp_map.hpp"
@@ -7,12 +8,14 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/scan_process.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <exception>
@@ -21,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <future>
 #include <limits>
@@ -41,12 +45,25 @@ struct Fixture {
         store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','One',1),(22,'audio','Two',1),(9,'master','Main',0)");}
     static float sample(std::size_t frame){return static_cast<float>(frame%17)/32-0.25f;}
     AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300,
-        const std::filesystem::path& workFolder={},std::int64_t startSample=512) {
+        const std::filesystem::path& workFolder={},std::int64_t startSample=512,
+        bool recoverable=false,audio::WavFormat encoding=audio::WavFormat::Float32) {
         Session session;SessionSpec format{2,48000,128};format.precision=precision;session.graph().setFadeFrames(0);
         if(!session.load(*store,{},format))throw std::runtime_error(session.error());
         AudioRecordingSpec request;request.workFolder=workFolder.empty()?temporary.path():workFolder;request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
         if(loop)request.loop=AudioRecordingLoop{512,640,8};
-        std::string error;if(!session.startRecording(request,error))throw std::runtime_error(error);
+        request.format=encoding;
+        std::string error;
+        if(recoverable && !recording::configureRecovery(*store,request,error))throw std::runtime_error(error);
+        if(!session.startRecording(request,error))throw std::runtime_error(error);
+        if(recoverable) {
+            for(const auto& entry:std::filesystem::directory_iterator(request.workFolder)) {
+                if(!std::filesystem::is_regular_file(entry.path()/"take.json"))continue;
+                check(!std::filesystem::exists(entry.path()/"start.json"),
+                      "the immutable recording plan reaches disk before the first input block");
+                check(recording::recoverInterrupted(*store,request.workFolder,entry.path()).status==
+                      recording::RecoveryStatus::Refused,"a live recorder holds the recovery lease");
+            }
+        }
         if(loop)session.transport().loop(512,640);
         session.transport().locate(startSample);session.transport().play();std::array<float,128> source{};const float* inputs[]={source.data()};std::array<float,256> out{};float* outputs[]={out.data(),out.data()+128};
         std::int64_t stream=0;
@@ -172,22 +189,34 @@ void midiOverdub() {
     auto& db = store.db();
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','One period'),(24,'midi','Repeated')");
     const std::array<notes::NoteValues, 1> oldNotes{{{.start=100, .duration=60, .id=17, .key=60, .velocity=80}}};
+    const std::array modBefore{controllers::Point{1, 100, .25}};
+    const std::array pedalBefore{controllers::Point{1, 80, 1.}};
+    const std::array<recording::MidiControllerLane, 2> oldControls{{{1, 1, modBefore}, {1, 64, pedalBefore}}};
     const std::array<recording::MidiLinearTake, 2> original{{
-        {23, 7, 960, 960, "One period", oldNotes, {}},
-        {24, 8, 960, 960, "Repeated", oldNotes, {}},
+        {23, 7, 960, 960, "One period", oldNotes, {}, false, oldControls},
+        {24, 8, 960, 960, "Repeated", oldNotes, {}, false, oldControls},
     }};
     auto seed = recording::prepareMidiLinearCommit(store, original, 48000);
     if (!seed.ok || !recording::commit(store, seed).ok)
         throw std::runtime_error("seed the overdub's original clips");
     db.exec("UPDATE clips SET length_ticks=1920 WHERE id=8");
     const auto before = digestProject(store).text;
+    const auto firstControls = controllers::readLanes(store, 7);
+    const auto repeatControls = controllers::readLanes(store, 8);
+    check(firstControls.ok && firstControls.lanes.size() == 2 && repeatControls.ok && repeatControls.lanes.size() == 2,
+          "linear take images retain independently addressed mod and sustain lanes");
 
     const std::array<notes::NoteValues, 1> input{{{.start=120, .duration=90, .id=17, .key=67, .velocity=90}}};
     const std::array<ExpressionPoint, 1> bend{{{0, 2.f, 0.f, 0, 0, {}}}};
     const std::array<recording::MidiExpressionLane, 1> expression{{{17, ExpressionDim::Pitch, bend}}};
+    const std::array modInput{controllers::Point{1, 120, .875}};
+    const std::array pitchInput{controllers::Point{1, 80, .75}};
+    const std::array<recording::MidiControllerLane, 2> controllerInput{{
+        {1, 1, modInput}, {1, controllers::kPitchBend, pitchInput},
+    }};
     const std::array<recording::MidiLinearTake, 2> overdub{{
-        {23, 9, 1200, 240, "Merge", input, expression, true},
-        {24, 10, 2160, 240, "Repeat Safety", input, expression, true},
+        {23, 9, 1200, 240, "Merge", input, expression, true, controllerInput},
+        {24, 10, 2160, 240, "Repeat Safety", input, expression, true, controllerInput},
     }};
     auto edit = recording::prepareMidiLinearCommit(store, overdub, 48000);
     check(edit.ok && edit.midiLandings.size() == 2 && digestProject(store).text == before,
@@ -213,6 +242,19 @@ void midiOverdub() {
               saved.clip->notes.size() == 1 && saved.clip->noteExpressions.curves.size() == 1 &&
               repeat.clip && repeat.clip->lengthTicks == 1920 && repeat.clip->notes.size() == 1,
           "taking a later loop occurrence preserves the recorded notes and leaves the repeating clip intact");
+    const auto mergedLanes = controllers::readLanes(store, 7);
+    const auto fallbackLanes = controllers::readLanes(store, 10);
+    check(firstControls.lanes.size() == 2 && mergedLanes.ok && mergedLanes.lanes.size() == 3 &&
+              mergedLanes.lanes[0].id == firstControls.lanes[0].id &&
+              mergedLanes.lanes[0].points == std::vector<controllers::Point>{{1, 100, .25}, {2, 360, .875}} &&
+              mergedLanes.lanes[1] == firstControls.lanes[1] && mergedLanes.lanes[2].controller == controllers::kPitchBend &&
+              mergedLanes.lanes[2].points == std::vector<controllers::Point>{{1, 320, .75}},
+          "overdub adds shifted points with fresh identities and preserves the other envelope bytes");
+    check(fallbackLanes.ok && fallbackLanes.lanes.size() == 2 &&
+              fallbackLanes.lanes[0].points == std::vector<controllers::Point>(modInput.begin(), modInput.end()) &&
+              fallbackLanes.lanes[1].points == std::vector<controllers::Point>(pitchInput.begin(), pitchInput.end()) &&
+              controllers::readLanes(store, 8).lanes == repeatControls.lanes,
+          "a fallback take keeps the new trajectories and preserves the repeating source envelopes");
 
     const std::array<recording::MidiRecordQuantize, 1> targets{{{7, merge.sourceStart, 1200, 240, 240, merge.noteIds}}};
     const auto quantize = recording::prepareRecordQuantize(store, targets);
@@ -228,6 +270,35 @@ void midiOverdub() {
     check(raw.clip && raw.clip->notes.size() == 2 && raw.clip->notes[1].startTicks == 360 &&
               history.undo().ok && digestProject(store).text == before,
           "Undo first restores the raw overdub, then removes the new note and the separate take lane");
+}
+
+void midiControllerOnlyTake() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Wheels')");
+    const std::array points{controllers::Point{1, 120, .5}};
+    const std::array<recording::MidiControllerLane, 1> wheel{{{15, controllers::kPitchBend, points}}};
+    const std::array<recording::MidiLinearTake, 1> fresh{{{23, 7, 1000, 1000, "Wheel", {}, {}, false, wheel}}};
+    auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
+    check(seed.ok && recording::commit(store, seed).ok, "record a new pitch-only Arrangement take");
+    if (!seed.ok)
+        return;
+    const auto original = controllers::readLanes(store, 7);
+    const auto prior = digestProject(store).text;
+    const std::array moved{controllers::Point{1, 120, .125}};
+    const std::array<recording::MidiControllerLane, 1> movedWheel{{{15, controllers::kPitchBend, moved}}};
+    const std::array<recording::MidiLinearTake, 1> take{{{23, 8, 1000, 800, "Move", {}, {}, true, movedWheel}}};
+    auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
+    check(overdub.ok && recording::commit(store, overdub).ok, "overdub a pitch-only take into its existing source");
+    const auto landed = controllers::readLanes(store, 7);
+    check(original.ok && original.lanes.size() == 1 && landed.ok && landed.lanes.size() == 1 &&
+              landed.lanes.front().id == original.lanes.front().id && landed.lanes.front().channel == 15 &&
+              landed.lanes.front().points == std::vector<controllers::Point>{{1, 120, .5}, {2, 120, .125}},
+          "same-tick overdub preserves the old point and orders the captured wheel value after it");
+    History history(store);
+    check(history.undo().ok && digestProject(store).text == prior &&
+              history.redo().ok && controllers::readLanes(store, 7).lanes == landed.lanes,
+          "one undo or redo restores the complete controller-only overdub");
 }
 
 void mixedLinearTake() {
@@ -256,8 +327,8 @@ void mixedLinearTake() {
     if (!committed.ok)
         throw std::runtime_error(committed.error);
     const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
-    check(count("SELECT count(*) FROM clips WHERE track_id=21") == 3 &&
-              count("SELECT count(*) FROM clips WHERE track_id=23") == 3 &&
+    check(count("SELECT count(*) FROM clips WHERE track_id=21 AND lane_id IS NULL") == 3 &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL") == 3 &&
               count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio' AND name='New Audio'") == 1 &&
               count("SELECT count(*) FROM clips WHERE id=10 AND kind='midi'") == 1,
           "one mixed splice splits both covered clips and reserves both incoming IDs before allocating the fragments");
@@ -268,8 +339,9 @@ void mixedLinearTake() {
     check(history.nextUndo() && history.nextUndo()->label == "Record" && history.undo().ok &&
               digestProject(store).text == before,
           "one Undo removes the mixed take and restores the original clips whole");
-    check(history.redo().ok && count("SELECT count(*) FROM clips") == 6,
-          "one Redo restores both audio and MIDI and their surviving fragments");
+    check(history.redo().ok && count("SELECT count(*) FROM clips WHERE lane_id IS NULL") == 6 &&
+              count("SELECT count(*) FROM clips WHERE lane_id IS NOT NULL") == 2,
+          "one Redo restores both audio and MIDI, their surviving fragments and their archived takes");
 }
 
 void midiLoopTakes() {
@@ -347,6 +419,60 @@ void midiLoopTakes() {
               "Redo restores one literal MIDI pass");
     check(readSingle(200)==main && readSingle(204).start==width/8,
           "pass redo preserves note identities and the unquantized captured timing");
+}
+
+void saveAsRecoveryContract() {
+    Fixture fixture;
+    auto& store=*fixture.store;
+    AudioRecordingSpec stale;
+    stale.workFolder=fixture.temporary.path();
+    stale.sampleRate=48000;stale.maxFrames=128;stale.ringFrames=4096;stale.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(store,stale,error))throw std::runtime_error(error);
+    Session session;
+    if(!session.load(store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    const auto successor=fixture.temporary.path()/"successor.adi";
+    const auto saved=store.saveAs(successor);
+    if(!saved.ok || !session.refresh(store))throw std::runtime_error(saved.ok?session.error():saved.error);
+    AudioRecordingSpec fresh=stale;
+    if(!recording::configureRecovery(store,fresh,error))throw std::runtime_error(error);
+    check(fresh.sourceProject!=stale.sourceProject && std::filesystem::equivalent(store.path(),successor),
+          "Save As switches the Store to the successor and configures a distinct recording path");
+    const auto finalize=[&](bool discard) {
+        session.recording().stop(discard);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline) {
+            if(auto result=session.recording().poll(true))return *result;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        throw std::runtime_error("Save As recorder did not stop");
+    };
+    const bool acceptedStale=session.startRecording(stale,error);
+    check(!acceptedStale && error.find("different project")!=std::string::npos,
+          "recording options saved before Save As are refused");
+    if(acceptedStale) {
+        auto discarded=finalize(true);
+        if(auto cleanup=discarded.discard())throw std::runtime_error(cleanup.message());
+    }
+    const bool acceptedFresh=session.startRecording(fresh,error);
+    check(acceptedFresh,error.empty()?"fresh successor recovery options are accepted":error.c_str());
+    if(!acceptedFresh)return;
+    session.transport().locate(512);
+    session.transport().play();
+    std::array<float,128> input{},left{},right{};
+    for(std::size_t i=0;i<input.size();++i)input[i]=Fixture::sample(i);
+    const float* channels[]{input.data()};
+    float* output[]{left.data(),right.data()};
+    AudioIo io;io.in=channels;io.numIn=1;io.out=output;io.numOut=2;io.frames=128;
+    session.process(io);
+    auto captured=finalize(false);
+    check(captured.failure==RecordingFailure::None && captured.sourceProject()==fresh.sourceProject &&
+          captured.frames==input.size() && !captured.recordingId().empty(),
+          "the new project's recording receipt points to the successor");
+    const std::array<recording::ClipIds,1> ids={{{901,902,"After Save As"}}};
+    auto ready=recording::prepareCommit(store,captured,ids);
+    check(ready.ok && recording::commit(store,ready).ok && History(store).undo().ok,
+          "the successor places its take and can undo it");
 }
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
@@ -628,6 +754,8 @@ void unwarpedRecordingTempoChanges() {
     auto prepared = recording::prepareCommit(*f.store, recorded, ids);
     if (!recording::commit(*f.store, prepared).ok)
         throw std::runtime_error("could not publish the recording");
+    // Recorded takes follow the Set by default (SC-248). Turn Warp off
+    // through the Clip View command to exercise SC-11.
     clip_edit::WarpOptions warp;
     warp.enabled = false;
     const auto unwarped = clip_edit::prepareSetWarp(*f.store, 7, warp, 48000);
@@ -682,6 +810,12 @@ void linearTakeReplacesWhatItCovers() {
     check(count("SELECT count(*) FROM clips WHERE id=17 AND name='Second'")==1 &&
           count("SELECT count(*) FROM clips WHERE id=7")==1,
           "the take keeps its id and name; the left part keeps the covered clip's id");
+    check(count("SELECT count(*) FROM clips c JOIN lanes l ON l.id=c.lane_id "
+                "JOIN audio_clips a ON a.clip_id=c.id "
+                "WHERE l.track_id=21 AND c.name='First' AND a.media_id=8 AND a.src_start_frames=0 "
+                "AND c.pos_ticks=(SELECT pos_ticks FROM clips WHERE id=7) "
+                "AND c.pos_ticks+c.length_ticks=(SELECT max(pos_ticks+length_ticks) FROM clips WHERE lane_id IS NULL)") == 1,
+          "SC-252: the full earlier recording is retained on a take lane with the original source");
     const auto heard=f.play(Precision::Float32);
     bool exact=true;
     for(std::size_t frame=0;frame<heard.size();++frame) {
@@ -1276,12 +1410,332 @@ void loopReuseRefusesUnprovedExtents() {
     check(physical.ok && preparedTakeLane(physical,200)==70,"nanosecond clip ending exactly at pass start is reusable");
 }
 
+void recoverInterruptedLoop() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto root=f.temporary.path()/"recordings";
+    fs::path original;
+    {
+        auto stopped=f.capture(true,Precision::Float32,true,317,root,512,true);
+        original=stopped.directory();
+        check(stopped.failure==RecordingFailure::None && !stopped.recordingId().empty() &&
+              fs::exists(original/"take.json") && fs::exists(original/"start.json"),
+              "Record saves a plan and the actual first sample, independently of the Stop result");
+        check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::Refused,
+              "a finishing take still owns the original plan");
+    }
+    const auto duringSession=recording::discoverInterrupted();
+    check(std::none_of(duringSession.begin(),duringSession.end(),
+          [&](const auto& item){return item.directory==original;}),
+          "startup ignores an unplaced take when its process still holds the session lock");
+    const auto damaged=original/"take-0.wav";
+    {
+        std::fstream file(damaged,std::ios::in|std::ios::out|std::ios::binary);
+        const std::array<char,4> stale{};
+        file.seekp(4);
+        file.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        file.seekp(90); // Mono recorder Float32 data size.
+        file.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        if(!file)throw std::runtime_error("cannot make the stale recorder header");
+    }
+    const auto hash=media::blake3File(damaged);
+    check(hash && !hash.hex.empty(),"read original interrupted recorder bytes");
+    // Reopen the project through a new owner and leave the original media on disk.
+    const auto project=f.store->path();
+    f.store.reset();
+    StoreError error{};
+    auto readOnly=Store::open(project,error,true);
+    if(!readOnly)throw std::runtime_error(toString(error));
+    check(recording::recoverInterrupted(*readOnly,root,original).status==recording::RecoveryStatus::Refused,
+          "a read-only project never prepares interrupted audio");
+    readOnly.reset();
+    f.store=Store::open(project,error);
+    if(!f.store)throw std::runtime_error(toString(error));
+    Fixture different;
+    check(recording::recoverInterrupted(*different.store,root,original).status==recording::RecoveryStatus::Refused,
+          "an interrupted recording cannot be attached to another project");
+    check(recording::recoverInterrupted(*f.store,root,original.parent_path()/".."/"recordings"/original.filename()).status==
+          recording::RecoveryStatus::Refused,"a parent traversal is rejected before reading its plan");
+    auto recovered=recording::recoverInterrupted(*f.store,root,original);
+    check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.recovered(),
+          recovered.error.empty()?"reopen a stale-header recorder take from its plan":recovered.error.c_str());
+    if(recovered.status!=recording::RecoveryStatus::Ready)return;
+    check(recovered.capture.frames==317 && recovered.capture.startSample==512 &&
+          recovered.capture.passes().size()==3 && recovered.capture.passes().back().frames==61,
+          "recovery keeps completed loop passes and the captured prefix of the last pass");
+    {
+        audio::WavReader audio(recovered.capture.tracks.at(0).file);
+        std::vector<float> heard(317);
+        const auto frames=audio.read(heard.data(),317);
+        bool exact=frames==317;
+        for(std::size_t i=0;i<heard.size();++i) {
+            if(heard[i]!=Fixture::sample(i))exact=false;
+        }
+        check(exact && media::blake3File(damaged).hex==hash.hex,
+              "header repair matches captured PCM and leaves the original untouched");
+    }
+    auto refused=recording::prepareLoopCommit(*f.store,recovered.capture,loopIds(recovered.capture));
+    refused.options.beforeCommit=[](SQLite::Database&,std::int64_t,std::string& text) {
+        text="injected recovery commit refusal";
+        return false;
+    };
+    check(refused.ok && !recording::commit(*f.store,refused).ok,"failed recovery can still be placed");
+    auto edit=recording::prepareLoopCommit(*f.store,recovered.capture,loopIds(recovered.capture));
+    const auto committed=recording::commit(*f.store,edit);
+    check(committed.ok && takeOrder(*f.store).size()==3,
+          committed.error.empty()?"recovery places the same track and loop passes as Stop":committed.error.c_str());
+    if(!committed.ok)return;
+    check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
+          "a committed recording ID skips a leftover original plan");
+    check(History(*f.store).undo().ok && takeOrder(*f.store).empty(),"one Undo removes every recovered pass");
+    f.store.reset();
+    f.store=Store::open(project,error);
+    if(!f.store)throw std::runtime_error(toString(error));
+    check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
+          "one Undo does not resurrect a committed interrupted recording");
+    check(History(*f.store).redo().ok && takeOrder(*f.store).size()==3,"one Redo restores the entire recovered recording");
+}
+void recoverPcm24AndReportDeletedTrack() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto root=f.temporary.path()/"recordings";
+    fs::path original;
+    {
+        auto stopped=f.capture(false,Precision::Float32,false,129,root,512,true,audio::WavFormat::Pcm24);
+        check(stopped.failure==RecordingFailure::None,"make an owned odd-length PCM24 source");
+        original=stopped.directory();
+    }
+    {
+        auto recovered=recording::recoverInterrupted(*f.store,root,original);
+        check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==129,
+              recovered.error.empty()?"PCM24 padding is excluded from the recovered frames":recovered.error.c_str());
+        if(recovered.status==recording::RecoveryStatus::Ready) {
+            check(media::blake3File(recovered.capture.tracks.at(0).file).hex==
+                  media::blake3File(original/"take-0.wav").hex,
+                  "already complete PCM24 remains byte-identical after repair");
+        }
+    }
+    f.store->db().exec("DELETE FROM tracks WHERE id=21");
+    const auto refused=recording::recoverInterrupted(*f.store,root,original);
+    check(refused.status==recording::RecoveryStatus::Refused && refused.error.find("21")!=std::string::npos,
+          "a deleted recovery target is named and its private files stay available");
+    check(fs::is_regular_file(original/"take-0.wav"),"unplaced source remains recoverable for inspection");
+}
+void recoverRf64() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    fs::create_directories(root/"rf64");
+    const auto directory=fs::canonical(root)/"rf64";
+    const auto file=directory/"take-0.wav";
+    const std::array<float,5> samples{0.25f,-0.25f,-0.5f,0.0f,0.5f};
+    {
+        audio::WavWriter writer(file,48000,1,audio::WavFormat::Float32,nullptr,8);
+        writer.write(samples.data(),static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+    }
+    AudioRecordingSpec spec;
+    spec.sampleRate=48000;
+    spec.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(*fixture.store,spec,error))throw std::runtime_error(error);
+    {
+        const auto plan=recording_recovery::begin(spec,directory,spec.recoveryProjectUuid);
+        (void)recording_recovery::writeStart(directory,plan.plan.recordingId,512);
+    }
+    {
+        std::fstream header(file,std::ios::in|std::ios::out|std::ios::binary);
+        const std::array<char,24> stale{};
+        header.seekp(20);
+        header.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        if(!header)throw std::runtime_error("cannot make a stale RF64 header");
+    }
+    const auto sourceHash=media::blake3File(file);
+    auto repaired=recording::recoverInterrupted(*fixture.store,root,directory);
+    check(repaired.status==recording::RecoveryStatus::Ready,
+          repaired.error.empty()?"recover an RF64 capture with stale ds64 sizes":repaired.error.c_str());
+    if(repaired.status!=recording::RecoveryStatus::Ready)return;
+    {
+        audio::WavReader reader(repaired.capture.tracks.at(0).file);
+        std::array<float,5> actual{};
+        check(reader.frames()==samples.size() && reader.read(actual.data(),5)==5 && actual==samples,
+              "RF64 repair recovers the exact PCM from the recorder-owned data chunk");
+    }
+    check(media::blake3File(file).hex==sourceHash.hex,"RF64 header repair leaves original bytes unchanged");
+}
+void refuseReboundRecoveryFile() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    fs::path take;
+    {
+        const auto recording=fixture.capture(false,Precision::Float32,false,128,root,512,true);
+        take=recording.tracks.at(0).file;
+    }
+    const auto original=fs::canonical(fixture.temporary.path())/"original.wav";
+    fs::rename(take,original);
+    fs::copy_file(original,take);
+    const auto verified=media::blake3File(take);
+    const auto refused=recording::recoverInterrupted(*fixture.store,root,take.parent_path());
+    check(refused.status==recording::RecoveryStatus::Refused &&
+          refused.error.find("identity")!=std::string::npos &&
+          verified && media::blake3File(take).hex==verified.hex &&
+          media::blake3File(original).hex==verified.hex,
+          "a byte-identical replacement recording is refused using native identity and both files remain intact");
+}
+void ordinaryStopUsesTheSameRecordingReceipt() {
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    const auto recorded=fixture.capture(false,Precision::Float32,false,128,root,512,true);
+    const auto original=recorded.directory();
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Ordinary Stop"}}};
+    auto edit=recording::prepareCommit(*fixture.store,recorded,ids);
+    const auto committed=recording::commit(*fixture.store,edit);
+    SQLite::Statement receipt(fixture.store->db(),"SELECT value FROM adi_meta WHERE key=?");
+    receipt.bind(1,"recording.placed."+recorded.recordingId());
+    check(committed.ok && receipt.executeStep() && receipt.getColumn(0).getInt64()==committed.txnId &&
+          !std::filesystem::exists(original),
+          "ordinary Stop writes the same transaction receipt before discarding its private plan");
+}
+void stagedStopUsesTheSameRecordingReceipt() {
+    Fixture fixture;
+    const auto root = fixture.temporary.path() / "recordings";
+    const auto recorded = fixture.capture(false, Precision::Float32, false, 128, root, 512, true);
+    const auto original = recorded.directory();
+    const std::array<recording::ClipIds, 1> ids{{{7, 8, "Staged Stop"}}};
+    auto staged = recording::stageTake(recorded, media::projectFolder(*fixture.store));
+    auto edit = recording::prepareStagedCommit(*fixture.store, staged, ids, {}, recorded.placementOffsetSamples);
+    const bool published = staged.ok && edit.ok && recording::publishStagedTake(edit);
+    check(published, "SC-250: publish the normal asynchronous take");
+    if (!published) return;
+    const auto committed = recording::commit(*fixture.store, edit);
+    SQLite::Statement receipt(fixture.store->db(), "SELECT value FROM adi_meta WHERE key=?");
+    receipt.bind(1, "recording.placed." + recorded.recordingId());
+    check(committed.ok && receipt.executeStep() && receipt.getColumn(0).getInt64() == committed.txnId,
+          "SC-250: asynchronous placement commits its receipt with its audio op");
+    check(recording::cleanupStagedTake(edit).empty() && !std::filesystem::exists(original),
+          "SC-250: asynchronous cleanup removes the completed plan after placement");
+}
+int crashRecordingChild(const std::filesystem::path& project,const std::filesystem::path& root,bool beforeAudio) {
+    namespace fs=std::filesystem;
+    StoreError openError{};
+    auto store=Store::open(project,openError);
+    if(!store)throw std::runtime_error(toString(openError));
+    Session session;
+    if(!session.load(*store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    AudioRecordingSpec spec;
+    spec.workFolder=root;
+    spec.sampleRate=48000;
+    spec.maxFrames=128;
+    spec.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(*store,spec,error) || !session.startRecording(spec,error))
+        throw std::runtime_error(error);
+    if(beforeAudio)std::_Exit(37);
+    session.transport().locate(512);
+    session.transport().play();
+    std::array<float,128> samples{};
+    for(std::size_t frame=0;frame<samples.size();++frame)samples[frame]=Fixture::sample(frame);
+    const float* in[]={samples.data()};
+    std::array<float,128> left{},right{};
+    float* out[]={left.data(),right.data()};
+    AudioIo io;
+    io.in=in;
+    io.numIn=1;
+    io.out=out;
+    io.numOut=2;
+    io.frames=128;
+    session.process(io);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(std::chrono::steady_clock::now()<deadline) {
+        for(const auto& entry:fs::directory_iterator(root)) {
+            std::error_code sizeError;
+            const auto size=fs::file_size(entry.path()/"take-0.wav",sizeError);
+            if(!sizeError && size>=94+128*sizeof(float) && fs::is_regular_file(entry.path()/"start.json"))
+                std::_Exit(37); // Bypass Stop and all C++ destructors.
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return 38;
+}
+void recoverAfterProcessExit(const std::filesystem::path& executable) {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto project=fixture.store->path();
+    const auto root=fixture.temporary.path()/"crash-recordings";
+    fixture.store.reset();
+    const auto child=scan::runProcess(fs::canonical(executable),
+        {"--crash-recording",media::pathUtf8(project),media::pathUtf8(root)});
+    if(child.status!=scan::ProcessStatus::Exited || child.exitCode!=37) {
+        const auto description="interrupted fixture child did not reach the live write (status "+
+            std::to_string(static_cast<unsigned>(child.status))+", exit "+std::to_string(child.exitCode)+
+            "): "+child.output;
+        check(false,description.c_str());
+        return;
+    }
+    StoreError error{};
+    fixture.store=Store::open(project,error);
+    if(!fixture.store)throw std::runtime_error(toString(error));
+    const auto directory=fs::directory_iterator(root)->path();
+    const auto known=fs::canonical(directory);
+    const auto launched=recording::discoverInterrupted();
+    const auto candidate=std::find_if(launched.begin(),launched.end(),
+        [&](const auto& item){return item.directory==known;});
+    check(candidate!=launched.end() && candidate->tracks==std::vector<std::int64_t>{21} &&
+          !candidate->projectUuid.empty() && !candidate->recordingId.empty(),
+          "startup finds the unclosed process's recording without being given its directory");
+    auto recovered=recording::recoverInterrupted(*fixture.store,root,directory);
+    check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==128 &&
+          recovered.capture.startSample==512,
+          recovered.error.empty()?"recover a live take after the recording process exits":recovered.error.c_str());
+    if(recovered.status!=recording::RecoveryStatus::Ready)return;
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Interrupted take"}}};
+    auto edit=recording::prepareCommit(*fixture.store,recovered.capture,ids);
+    const auto committed=recording::commit(*fixture.store,edit);
+    check(committed.ok,committed.error.empty()?"place recovered live PCM through linear Stop":committed.error.c_str());
+    if(committed.ok) {
+        check(History(*fixture.store).undo().ok,"the recovered live take is one Undo step");
+        const auto after=recording::discoverInterrupted();
+        check(std::none_of(after.begin(),after.end(),[&](const auto& item){return item.directory==known;}),
+              "startup suppresses placed recording IDs even when their original files remain and the edit is undone");
+    }
+    const auto emptyRoot=fixture.temporary.path()/"unstarted-recording";
+    fixture.store.reset();
+    const auto unstarted=scan::runProcess(fs::canonical(executable),
+        {"--crash-before-audio",media::pathUtf8(project),media::pathUtf8(emptyRoot)});
+    check(unstarted.status==scan::ProcessStatus::Exited && unstarted.exitCode==37 && fs::is_directory(emptyRoot),
+          "another process exits after registration and before its first audio");
+    const auto afterward=recording::discoverInterrupted();
+    check(std::none_of(afterward.begin(),afterward.end(),[&](const auto& item) {
+        return fs::exists(emptyRoot) && item.directory.parent_path()==fs::canonical(emptyRoot);
+    }),"startup skips an interrupted session that accepted no audio");
+}
 }
 int main(int argc,char** argv){try{
+    if(argc==4) {
+        const std::string_view command=argv[1];
+        if(command=="--crash-recording" || command=="--crash-before-audio")
+            return crashRecordingChild(media::pathFromUtf8(argv[2]),media::pathFromUtf8(argv[3]),
+                                       command=="--crash-before-audio");
+    }
+    // Parent and interrupted children share an isolated recording registry.
+    // Its directory outlives the process's static session owner lease.
+    static const test::TempDirectory recoveryHome("recording_commands", "launch-registry");
+#if defined(_WIN32)
+    if (_wputenv_s(L"ADI_HOME", recoveryHome.path().c_str()) != 0)
+#else
+    if (setenv("ADI_HOME", recoveryHome.path().c_str(), 1) != 0)
+#endif
+        throw std::runtime_error("could not set the recording fixture's application directory");
+    if(argc==2 && std::string_view(argv[1])=="--save-as-recovery-contract") {
+        saveAsRecoveryContract();
+        std::printf("%d checks, %d failures\n",checks,failures);
+        return failures?1:0;
+    }
     latencyCompensatedPlacement();
     recordedTakeFollowsTempo();
     latencyCompensationKeepsPunchProtection();
-    midiLinearTakes();midiOverdub();mixedLinearTake();
+    midiLinearTakes();midiOverdub();midiControllerOnlyTake();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
@@ -1289,6 +1743,10 @@ int main(int argc,char** argv){try{
     unwarpedRecordingTempoChanges();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
+    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();refuseReboundRecoveryFile();
+    ordinaryStopUsesTheSameRecordingReceipt();
+    stagedStopUsesTheSameRecordingReceipt();
+    recoverAfterProcessExit(media::pathFromUtf8(argv[0]));
     if(argc==3) {
         const auto captureFolder=media::pathFromUtf8(argv[2]);
         crossVolumePublication(captureFolder);
