@@ -50,6 +50,7 @@
 #include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
@@ -653,7 +654,7 @@ private:
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
         std::uint64_t midiHardwareRouting = 0;
-        std::uint32_t playQuantizeRate = 0;
+        std::optional<WarpArrangementClock> playQuantizeClock;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;

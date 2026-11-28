@@ -20,8 +20,8 @@ std::int64_t playDelay(const LiveMidiInput::Route& route, const LiveMidiInput::P
         return 0;
     const auto timeline = transport.sampleAt(frame);
     const auto grid = static_cast<double>(route.playGrid);
-    const auto release = clock.effectiveTempo
-        ? playQuantizeReleaseOnTempoMap(timeline, *clock.effectiveTempo, clock.sampleRate, grid, route.playForgiveness)
+    const auto release = clock.projectClock
+        ? playQuantizeReleaseOnClock(timeline, *clock.projectClock, grid, route.playForgiveness)
         : playQuantizeRelease(timeline, clock.tempo, clock.sampleRate, grid, route.playForgiveness);
     if (!release)
         return 0;

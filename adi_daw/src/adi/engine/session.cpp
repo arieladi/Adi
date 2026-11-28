@@ -1222,8 +1222,6 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     decltype(midiHistories_) histories;
     const bool validPlayRate = std::isfinite(timing.sampleRate) && timing.sampleRate >= 1 &&
                                timing.sampleRate <= std::numeric_limits<std::uint32_t>::max();
-    if (validPlayRate)
-        timing.playQuantizeRate = static_cast<std::uint32_t>(std::llround(timing.sampleRate));
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
         const bool armed = recordArmed(track);
@@ -1304,6 +1302,9 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         route.processes = true;
         timing.midiInputRoutes.push_back(std::move(route));
     }
+    if (std::any_of(timing.midiInputRoutes.begin(), timing.midiInputRoutes.end(),
+                    [](const auto& route) { return route.processes && route.playGrid != 0; }))
+        timing.playQuantizeClock.emplace(timing.tempo, timing.sampleRate);
     midiHistories_.swap(histories);
     prepareMidiPreview(timing, model);
 }
@@ -3262,8 +3263,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
+        const auto* playClock = timing->playQuantizeClock ? &*timing->playQuantizeClock : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories, session_.transport_,
-                                    {{}, timing->playQuantizeRate, &timing->tempo}, capture, punch, punchWindow);
+                                    {{}, 0, playClock}, capture, punch, punchWindow);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     const auto* midiSink = timing && timing->spec.performanceState && !block.exporting && !io.exporting &&

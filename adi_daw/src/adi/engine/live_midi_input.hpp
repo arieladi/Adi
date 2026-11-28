@@ -29,7 +29,7 @@ public:
     struct PlayClock {
         std::span<const PlayTempoPoint> tempo;
         std::uint32_t sampleRate = 0;
-        const TempoMap* effectiveTempo = nullptr;
+        const WarpArrangementClock* projectClock = nullptr;
     };
     struct Voices {
         enum class Bend : std::uint8_t { None, Controller, Expression };
