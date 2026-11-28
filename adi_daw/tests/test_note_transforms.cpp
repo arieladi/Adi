@@ -157,6 +157,19 @@ void modes() {
     check(large.quant({1}, options).ok && large.get(1).start_ticks == 9007199254740990LL,
           "quantize keeps int64 tick precision above the double integer range");
 }
+void mixedGrids() {
+    Project project({note(1, 80, 40), note(2, 100, 40), note(3, 151, 40)});
+    const auto before = project.blob();
+    notes::QuantizeSettings options{120};
+    options.alternateGridTicks = 80;
+    check(project.quant({1, 2, 3}, options).ok &&
+              project.get(1).start_ticks == 80 && project.get(2).start_ticks == 120 &&
+              project.get(3).start_ticks == 160 && project.get(3).dur_ticks == 40,
+          "SC-453: a mixed grid snaps to either subdivision and exact ties choose the later point");
+    History history(*project.store);
+    check(history.undo().ok && project.blob() == before && history.redo().ok && project.get(3).start_ticks == 160,
+          "SC-453: mixed-grid settings survive undo and replay");
+}
 void extremeAndMalformed() {
     const auto maximum = std::numeric_limits<std::int64_t>::max();
     Project wide({note(1, maximum - 1000, 20)});
@@ -264,6 +277,7 @@ int main() {
     try {
         basic();
         modes();
+        mixedGrids();
         extremeAndMalformed();
         transposeAndBatch();
         refusalAndReplay();

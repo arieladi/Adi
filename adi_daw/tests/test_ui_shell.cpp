@@ -10290,6 +10290,68 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
 
     check(add(20, 2 * beat + 3 * step / 4, beat, 66), "a beat-long note just before a sixteenth");
     ed.select({20});
+    using C = AppCommands;
+    std::unique_ptr<juce::Component> quantizeDialog;
+    panel.onQuantizeSettings = [&](std::unique_ptr<juce::Component> content) { quantizeDialog = std::move(content); };
+    const juce::KeyPress quantizeSettingsKey('u', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+    check(ed.keyPressed(quantizeSettingsKey) &&
+              quantizeDialog && quantizeDialog->getLocalBounds() == juce::Rectangle<int>(0, 0, 340, 156),
+          "SC-453: the registered shortcut requests a Quantize Settings dialog");
+    if (quantizeDialog) {
+        const auto control = [&](const char *name) -> juce::Component * {
+            for (auto *child : quantizeDialog->getChildren())
+                if (child->getTitle() == name)
+                    return child;
+            return nullptr;
+        };
+        auto *to = dynamic_cast<juce::ComboBox *>(control("Quantize To"));
+        auto *start = dynamic_cast<juce::ToggleButton *>(control("Adjust Note Start"));
+        auto *end = dynamic_cast<juce::ToggleButton *>(control("Adjust Note End"));
+        auto *amount = dynamic_cast<juce::Slider *>(control("Amount"));
+        juce::TextButton *ok = nullptr;
+        for (auto *child : quantizeDialog->getChildren())
+            if (auto *button = dynamic_cast<juce::TextButton *>(child); button && button->getButtonText() == "OK")
+                ok = button;
+        check(to && to->getNumItems() == 10 && start && end && amount && ok,
+              "SC-453: the dialog shows all Quantize To values, both endpoint controls and Amount");
+        if (to && start && end && amount && ok) {
+            const auto original = note(20);
+            const auto other = note(drawn);
+            to->setSelectedId(2, juce::dontSendNotification); // 1/4
+            start->setToggleState(false, juce::dontSendNotification);
+            end->setToggleState(true, juce::dontSendNotification);
+            amount->setValue(50, juce::dontSendNotification);
+            ok->onClick();
+            check(note(20).startTicks == original.startTicks && note(20).durationTicks == beat - 3 * step / 8 &&
+                      note(drawn).startTicks == other.startTicks && note(drawn).durationTicks == other.durationTicks &&
+                      root.undoTitle(false) == "Undo Quantize Notes",
+                  "SC-453: OK quantizes just the selected notes' ends by the chosen amount in one edit");
+            check(root.command(C::Undo), "SC-453: quantizing from the dialog is undoable");
+            root.frame();
+        }
+    }
+    panel.onQuantizeSettings = {};
+    panel.quantizeStarts = true;
+    panel.quantizeEnds = false;
+    panel.quantizeAmount = 100;
+    panel.chooseQuantize(1);
+    bool arrangementSettings = false;
+    panel.onQuantizeSettings = [&](std::unique_ptr<juce::Component>) { arrangementSettings = true; };
+    check(!root.noteEditorHasContext() && commands.key(quantizeSettingsKey, root) && arrangementSettings,
+          "SC-229: the Settings shortcut is active with an Arrangement MIDI clip selected");
+    panel.onQuantizeSettings = {};
+    root.arrangement.geometry.grid.fixed = true;
+    root.arrangement.geometry.grid.fixedQuarters = .25;
+    const bool quantizedInArrangement = root.canQuantizeArrangement() && commands.key(key('u'), root);
+    root.frame();
+    check(quantizedInArrangement && note(20).startTicks == window.toSource(2 * beat + step),
+          "SC-229: the Command key route quantizes a MIDI clip selected in Arrangement");
+    if (root.undoTitle(false) == "Undo Quantize Notes") {
+        check(root.command(C::Undo), "SC-229: Arrangement quantize is undoable");
+        root.frame();
+    }
+    root.arrangement.geometry.grid = arrangementGrid;
+    ed.select({20});
     check(ed.keyPressed(key('u')) && note(20).startTicks == window.toSource(2 * beat + step) && note(20).durationTicks == beat,
           "Ctrl/Cmd+U quantizes to the sixteenth while keeping the note's length");
     check(ed.keyPressed(key('e')) && ed.selected().size() == 4 && note(20).durationTicks == step,
@@ -12122,19 +12184,30 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
     }
 
-    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab.
+    // The inline Quantize controls at the foot of the Functions tab.
     {
         using Field = ClipViewPanel::Field;
         using Tool = ClipViewPanel::Tool;
         const auto click = [&](juce::Rectangle<int> box) {
+            if (box.isEmpty())
+                return;
             panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
             panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
         };
-        const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        const auto quantizeIsUndoable = [&](std::int64_t previous) {
+            const auto next = submitter.nextUndo();
+            return next && next->txnId != previous && next->label == "Quantize Notes" && next->opCount == 1;
+        };
+        const auto previousEdit = [&] {
+            const auto next = submitter.nextUndo();
+            return next ? next->txnId : 0;
+        };
+        const auto undoQuantize = [&](std::int64_t previous) {
+            return quantizeIsUndoable(previous) && root.command(AppCommands::Undo);
         };
         panel.setToolsTab(0);
-        check(ed.keyPressed(key('u', command | shift)) && panel.toolsTab() == 1, "Ctrl+Shift+U shows the Quantize settings: the Functions tab");
+        click(panel.tabBox(1));
+        check(panel.toolsTab() == 1, "the Functions tab opens the inline Quantize controls");
         {
             const std::vector<juce::Rectangle<int>> boxes = {panel.toolBox(Tool::RestrictPolyphony), panel.toolBox(Tool::Quantize),
                                                              panel.quantizeChooserBox(),             panel.quantizeStartBox(),
@@ -12147,30 +12220,34 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             check(apart, "the Quantize button, its value chooser, Start, End, the amount and swing each have their own place under the note functions");
         }
         check(panel.quantizeValue() == 0 && panel.quantizeAmount == 100 && panel.quantizeSwing == 0 && panel.quantizeStarts && !panel.quantizeEnds &&
-                  panel.quantizeGrid() == ed.gridTicks() && panel.quantizeMenu().getNumItems() == 8,
-              "as Live's defaults: to the editing grid, starts, in full");
+                  panel.quantizeGrid() == ed.gridTicks() && panel.quantizeMenu().getNumItems() == 10,
+              "ten Quantize To values, defaulting to the editing grid and full adjustment of note starts");
         // A note an eighth of a beat late.
         check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 80}, {"start", 6 * beat + beat / 8}, {"dur", beat}, {"key", 72}}, "Add Note")).ok,
               "a C4 an eighth of a beat after beat 6 of the clip");
         root.frame();
         check(panel.chooseQuantize(2) && panel.quantizeGrid() == beat, "the value chosen as 1/4");
         ed.select({80});
+        auto before = previousEdit();
         click(panel.toolBox(Tool::Quantize));
-        check(note(80).startTicks == 6 * beat && note(80).durationTicks == beat && undoIs("Quantize Notes", 1),
+        check(note(80).startTicks == 6 * beat && note(80).durationTicks == beat && quantizeIsUndoable(before),
               "the Quantize button moves the note's start to the beat, its length kept: one undo step");
-        check(root.command(AppCommands::Undo), "undo");
+        check(undoQuantize(before), "undo the inline Quantize");
         root.frame();
+        before = previousEdit();
         check(panel.typeField(Field::QuantizeAmount, "50") && panel.quantizeAmount == 50 && ed.keyPressed(key('u', command)) &&
                   note(80).startTicks == 6 * beat + beat / 16,
               "with the amount at 50 per cent, Ctrl+U moves it half the way");
-        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeAmount, "100"), "undo; in full again");
+        check(undoQuantize(before), "undo the 50 per cent Quantize");
+        check(panel.typeField(Field::QuantizeAmount, "100"), "restore the full adjustment amount");
         root.frame();
         click(panel.quantizeEndBox());
         click(panel.quantizeStartBox());
+        before = previousEdit();
         check(panel.quantizeEnds && !panel.quantizeStarts && ed.keyPressed(key('u', command)) && note(80).startTicks == 6 * beat + beat / 8 &&
                   note(80).startTicks + note(80).durationTicks == 7 * beat,
               "End alone: the note's end goes to the beat and its start stays");
-        check(root.command(AppCommands::Undo), "undo");
+        check(undoQuantize(before), "undo quantizing only the end");
         root.frame();
         click(panel.quantizeEndBox());
         click(panel.quantizeStartBox());
@@ -12178,10 +12255,12 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         // Swing (ADI's addition): every other division is delayed.
         check(panel.typeField(Field::QuantizeSwing, "50") && panel.quantizeSwing == 50, "swing at 50 per cent");
         ed.select({2, 3});
+        before = previousEdit();
         check(ed.keyPressed(key('u', command)) && note(2).startTicks > beat && note(2).startTicks <= beat + beat / 2 && note(3).startTicks == 2 * beat &&
-                  undoIs("Quantize Notes", 1),
+                  quantizeIsUndoable(before),
               "a note on the second beat is delayed, by no more than half a beat; one on the third stays");
-        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeSwing, "0") && panel.chooseQuantize(1), "undo; no swing; the editing grid again");
+        check(undoQuantize(before), "undo the swing adjustment");
+        check(panel.typeField(Field::QuantizeSwing, "0") && panel.chooseQuantize(1), "restore zero swing and the editing grid");
         root.frame();
         check(note(2).startTicks == beat, "and the note is back on its beat");
         ed.select({});
@@ -12771,12 +12850,16 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "with time selected the time commands are live, and Crop and Split name the time selection");
         ed.keyPressed(key(juce::KeyPress::escapeKey));
         const auto narrow = ed.time.grid.narrow;
+        bool requestedQuantizeSettings = false;
+        panel.onQuantizeSettings = [&](std::unique_ptr<juce::Component>) { requestedQuantizeSettings = true; };
         check(ed.chooseContextItem(NoteEditor::kGridItems + 31) && !ed.time.grid.snap && ed.chooseContextItem(NoteEditor::kGridItems + 31) && ed.time.grid.snap &&
                   ed.time.grid.narrow == narrow && ed.chooseContextItem(NoteEditor::kFoldToNotes) && ed.folded() &&
                   ed.chooseContextItem(NoteEditor::kFoldToNotes) && !ed.folded() && ed.chooseContextItem(NoteEditor::kHighlightScale) &&
-                  ed.chooseContextItem(NoteEditor::kHighlightScale) && ed.chooseContextItem(NoteEditor::kQuantizeSettings) && panel.toolsTab() == 1 &&
+                  ed.chooseContextItem(NoteEditor::kHighlightScale) && ed.chooseContextItem(NoteEditor::kQuantizeSettings) &&
+                  requestedQuantizeSettings &&
                   !ed.chooseContextItem(999),
               "the grid's submenu, the folds, Highlight Scales and Quantize Settings from the menu");
+        panel.onQuantizeSettings = {};
         panel.setToolsTab(0);
         ed.select({});
     }
@@ -12894,10 +12977,10 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.keyPressed(key(juce::KeyPress::escapeKey));
         ed.select({2});
         // With the keyboard elsewhere.
-        check(!root.noteEditorHasContext() && root.noteEditorShown() && !active(C::InvertSelection) && !active(C::Quantize) && !active(C::QuantizeSettings) &&
+        check(!root.noteEditorHasContext() && root.noteEditorShown() && !active(C::InvertSelection) && active(C::Quantize) && active(C::QuantizeSettings) &&
                   !active(C::CropClip) && !root.command(C::InvertSelection) && !root.command(C::CropClip) && ed.selected() == std::vector<std::uint64_t>{2} &&
                   info(C::Split).shortName == "Split",
-              "with the keyboard elsewhere the editor's Edit commands are greyed and do nothing, and Delete and Split are the arrangement's");
+              "Arrangement offers quantizing a selected MIDI clip while note-only commands still need the editor");
         const bool wasFolded = ed.folded(), wasHighlit = ed.highlightScale, wasDrawing = ed.drawMode();
         check(active(C::FoldToNotes) && ticked(C::FoldToNotes) == wasFolded && root.command(C::FoldToNotes) && ed.folded() != wasFolded &&
                   ticked(C::FoldToNotes) != wasFolded && root.command(C::FoldToNotes) && ed.folded() == wasFolded,
@@ -12932,8 +13015,11 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "Edit > Invert Selection selects the other four notes");
         ed.select({2});
         panel.setToolsTab(0);
-        check(active(C::Quantize) && active(C::QuantizeSettings) && root.command(C::QuantizeSettings) && panel.toolsTab() == 1,
-              "Quantize is offered, and Quantize Settings shows the Functions tab");
+        bool requestedQuantizeSettings = false;
+        panel.onQuantizeSettings = [&](std::unique_ptr<juce::Component>) { requestedQuantizeSettings = true; };
+        check(active(C::Quantize) && active(C::QuantizeSettings) && root.command(C::QuantizeSettings) && requestedQuantizeSettings,
+              "Quantize is offered, and Quantize Settings requests its own dialog");
+        panel.onQuantizeSettings = {};
         panel.setToolsTab(0);
         check(info(C::Split).shortName == "Chop Notes on Grid" && info(C::CropClip).shortName == "Crop Clip" && active(C::CropClip) && !active(C::DuplicateTime) &&
                   !active(C::DeleteTime) && !active(C::InsertSilence) && !active(C::CutTime) && !active(C::CopyTime) && !active(C::PasteTime) &&

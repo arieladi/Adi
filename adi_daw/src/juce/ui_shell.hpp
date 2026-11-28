@@ -1104,12 +1104,14 @@ class AdiRootComponent final : public juce::Component,
     void toggleClipViewFull();
     // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
     bool noteEditorHasContext() const;
+    bool canQuantizeArrangement() const noexcept;
     // Whether the Clip View shows a MIDI clip's notes: its folding and scale switches can then be
     // thrown from the menus, with the keyboard anywhere.
     bool noteEditorShown() const;
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    bool quantizeArrangement();
     bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);

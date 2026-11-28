@@ -8,6 +8,7 @@ struct QuantizeSettings {
     // up to half a division. Integers make the tick arithmetic ABI independent.
     int strength = 10000, swing = 0;
     bool starts = true, ends = false;
+    std::int64_t alternateGridTicks = 0;
 };
 OpRequest quantizeRequest(std::int64_t clip, std::span<const std::uint64_t> ids, const QuantizeSettings &);
 OpRequest transposeRequest(std::int64_t clip, std::span<const std::uint64_t> ids, int semitones);

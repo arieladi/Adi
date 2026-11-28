@@ -864,12 +864,14 @@ note releases it on the next published playback callback.
 Implemented transform payloads:
 
 - `note.quantize {clip, note_ids[], grid_ticks, origin_ticks, strength, swing,
-  starts, ends}` supplies every setting explicitly. `note_ids` is a nonempty,
+  starts, ends, alternate_grid_ticks?}` supplies every setting explicitly. `note_ids` is a nonempty,
   duplicate-free array of positive uint64 IDs. `grid_ticks` is positive and at
   most INT64_MAX/2; `origin_ticks` is signed. Strength and swing are fixed-point
   percentages from 0 to 10000 (100.00%). Swing delays odd divisions by up to half
-  a grid division. Nearest-grid ties choose the later line; fractional strength
-  rounds the integer movement toward its target on a half tick. Starts and ends
+  a grid division. A positive optional alternate grid adds its lines at the same
+  origin, applying swing to each grid independently. Nearest-grid ties choose the
+  later line; fractional strength rounds the integer movement toward its target
+  on a half tick. Starts and ends
   may be chosen independently. Start-only preserves duration. Independently
   quantized endpoints that collapse keep a one-tick duration. Overflow refuses
   the complete op. All arithmetic uses integers, including above 2^53 ticks.

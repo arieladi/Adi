@@ -1175,21 +1175,24 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     // The Note Editor's own (manual 10.5.2, 10.5.8, 10.7.1): Invert Selection on Ctrl/Cmd+Shift+A,
     // Quantize on Ctrl/Cmd+U and its settings on Ctrl/Cmd+Shift+U, Crop Clip on Ctrl/Cmd+Shift+J.
-    // They act while the editor has the keyboard; what each reads and whether it can act is the
-    // editor's entry, below.
+    // The editor supplies the note context below. Quantize can also use a selected Arrangement clip.
     case InvertSelection:
         info.addDefaultKeypress('a', cmd | shift);
         info.setActive(false);
         break;
     case Quantize:
-        info.addDefaultKeypress('u', cmd);
-        info.setActive(active_ && active_->state().clipView && active_->clipView.audio() &&
-                       active_->clipView.sample.hasKeyboardFocus(true) && active_->clipView.sample.canQuantize());
+    case QuantizeSettings: {
+        info.addDefaultKeypress('u', id == Quantize ? cmd : cmd | shift);
+        const bool sampleContext = active_ && active_->state().clipView && active_->clipView.audio() &&
+                                   active_->clipView.sample.hasKeyboardFocus(true);
+        const bool enabled = active_ && (id == Quantize && sampleContext ? active_->clipView.sample.canQuantize()
+                                                                        : active_->canQuantizeArrangement());
+        info.setActive(enabled);
+        if (!enabled)
+            info.description = sampleContext && id == Quantize ? "Warp the audio clip before quantizing it."
+                                                               : "Select a MIDI clip or its notes to use Quantize.";
         break;
-    case QuantizeSettings:
-        info.addDefaultKeypress('u', cmd | shift);
-        info.setActive(false);
-        break;
+    }
     case CropClip:
         info.addDefaultKeypress('j', cmd | shift);
         info.setActive(false);
@@ -1306,6 +1309,13 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         return allowComputerMidi && root.pressComputerMidiToggle(physical);
     if (id == PreviewSelected)
         return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
+    if (id == Quantize || id == QuantizeSettings) {
+        const auto *focus = juce::Component::getCurrentlyFocusedComponent();
+        if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
+            return false;
+        if (!root.noteEditorHasContext() && !root.canQuantizeArrangement())
+            return root.command(id);
+    }
     if (id == HotSwap && (!root.devices.hasHotSwapContext() ||
                          (root.transport.keyboard.getToggleState() && key == juce::KeyPress('q'))))
         return false;
@@ -4151,6 +4161,41 @@ std::int64_t AdiRootComponent::midiClipForExport() const noexcept {
             return selection.clip;
     return 0;
 }
+bool AdiRootComponent::canQuantizeArrangement() const noexcept {
+    const auto snapshot = view_.current();
+    if (!snapshot)
+        return false;
+    const auto selectedMidi = [&](const auto &clip) {
+        return clip && !clip->audio && arrangement.geometry.clipSelected(clip->id);
+    };
+    return std::ranges::any_of(snapshot->tracks, [&](const auto &track) {
+        return track && isMidiTrack(*track) &&
+               (std::ranges::any_of(track->clips, selectedMidi) || std::ranges::any_of(track->takeClips, selectedMidi));
+    });
+}
+bool AdiRootComponent::quantizeArrangement() {
+    if (!canQuantizeArrangement())
+        return fail("Select a MIDI clip or its notes to use Quantize.");
+    const auto settings = clipView.quantizeSettings();
+    const auto grid = clipView.quantizeGrid(true);
+    std::vector<OpRequest> batch;
+    for (const auto id : arrangement.geometry.selectedClips()) {
+        const auto read = engine::readClipDetails(editStore(), id);
+        if (!read.clip) {
+            if (!read.error.empty())
+                return fail(read.error);
+            continue;
+        }
+        if (read.clip->kind != "midi")
+            continue;
+        auto edit = quantizeNotes(*read.clip, {}, grid, ClipWindow::of(*read.clip).toSource(0), settings);
+        if (!edit.refusal.empty())
+            return fail(std::move(edit.refusal));
+        for (auto &operation : edit.ops)
+            batch.push_back(std::move(operation));
+    }
+    return batch.empty() || submitEdits(std::move(batch));
+}
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
     return dropAudioFiles({{utf8Path, name}}, track, pos, false);
@@ -6240,6 +6285,15 @@ bool AdiRootComponent::command(int id) {
         }
         if (clipView.sample.command(id))
             return true;
+        if (id == AppCommands::Quantize)
+            return fail("Warp the audio clip before quantizing it.");
+    }
+    if (id == AppCommands::Quantize)
+        return quantizeArrangement();
+    if (id == AppCommands::QuantizeSettings) {
+        if (!canQuantizeArrangement())
+            return fail("Select a MIDI clip or its notes to use Quantize.");
+        return clipView.showQuantizeSettings([this] { return quantizeArrangement(); });
     }
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
