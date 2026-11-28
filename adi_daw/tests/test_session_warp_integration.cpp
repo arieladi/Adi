@@ -166,7 +166,7 @@ void sceneWithGain(Store& store, const Session& session, int sceneId, int clipId
     require(OpJournal(store).commit(operations).ok, "commit the authored gain change with the tempo scene");
 }
 
-std::vector<float> exercise(bool paged = false) {
+std::vector<float> exercise(bool paged = false, double storedTranspose = 0) {
     test::TempDirectory temporary{"session_warp_integration", "project"};
     auto store = sceneProject(temporary.path());
     auto& db = store->db();
@@ -175,6 +175,9 @@ std::vector<float> exercise(bool paged = false) {
     addClip(*store, temporary.path(), 101, 10, 3, false);
     addClip(*store, temporary.path(), 102, 20, 4, true);
     if (paged) db.exec("UPDATE clip_launch SET ram_mode=0");
+    SQLite::Statement transpose(db, "UPDATE audio_clips SET transpose_semis=? WHERE clip_id IN (101,102)");
+    transpose.bind(1, storedTranspose);
+    transpose.exec();
 
     Session session;
     session.graph().setFadeFrames(0);
@@ -223,6 +226,10 @@ std::vector<float> exercise(bool paged = false) {
     require(session.problems().empty(), "prepare the persisted media under a ramp without slot problems");
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,
             "the native slot callback performs no allocation or file I/O");
+    SQLite::Statement stored(db, "SELECT count(*) FROM audio_clips WHERE transpose_semis=? AND clip_id IN (101,102)");
+    stored.bind(1, storedTranspose);
+    require(stored.executeStep() && stored.getColumn(0).getInt()==2,
+        "Re-Pitch leaves the saved transpose values intact");
     return pcm;
 }
 
@@ -517,7 +524,10 @@ void residentModeRamp(const char* mode, std::int64_t tolerance) {
 int main() {
     try {
         const auto resident = exercise();
-        require(exercise(true) == resident, "paged and resident Warp play the same samples through the ramp and loop");
+        require(exercise(false, 7) == resident,
+            "resident Re-Pitch follows the same ramp and Legato phase with a saved pitch edit");
+        require(exercise(true, 7) == resident,
+            "paged Re-Pitch follows the same ramp and Legato phase with a saved pitch edit");
         preparedTempoScene(false);
         preparedTempoScene(true);
         continuingTempoScene(false);

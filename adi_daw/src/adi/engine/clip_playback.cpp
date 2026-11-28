@@ -1492,7 +1492,7 @@ static std::optional<audio::WarpMode> nativeLaunchWarpMode(const rows::AudioClip
     if (!clip.warpEnabled || clip.formantShift != 0) return {};
     const auto mode=audio::parseWarpMode(clip.warpMode);
     if (mode && (*mode == audio::WarpMode::Beats || *mode == audio::WarpMode::Texture ||
-                 (*mode == audio::WarpMode::RePitch && clip.transposeSemis == 0))) return mode;
+                 *mode == audio::WarpMode::RePitch)) return mode;
     return {};
 }
 
@@ -1537,7 +1537,7 @@ static LaunchAudioClip prepareStreamingLaunchClip(const ClipProject& project, co
     plan.source=std::move(source);
     plan.sourceStart=start;plan.sourceFrames=count;plan.outputRate=rate;
     plan.mode=mode;
-    plan.transposeSemis=audioRow.transposeSemis;
+    plan.transposeSemis=mode==audio::WarpMode::RePitch?0.0:audioRow.transposeSemis;
     LaunchWarpMedia prepared{clock,std::move(plan),std::move(markers.markers),input.wav.sampleRate(),
         nativeChannels,static_cast<int>(audioRow.channelMode),static_cast<float>(std::pow(10.0,clip.gainDb/20.0)),endTick};
     return LaunchAudioClip::fromWarp(clip.id,channels,static_cast<std::uint64_t>(referenceFrames),
