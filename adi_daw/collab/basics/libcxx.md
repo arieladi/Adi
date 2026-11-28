@@ -6,6 +6,16 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 13:35 IST — control/agent-chain `289611a34eb8296338a2cf457c25115f8f238514`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The exact `adi_daw/src/adi/control/session_discovery.cpp` translation unit failed a Clang 20 syntax check on Linux targeting `arm64-apple-macos14.0` with macOS 26.1 SDK headers. The diagnostic at `117:21` is `no member named 'getentropy' in the global namespace`. Darwin declares it in `<sys/random.h>`. The smallest fix adds that direct include under `__APPLE__`. [Apple XNU declaration](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/random.h#L33-L42)
+
+The same Darwin syntax configuration passed `agent_process.cpp`, `loopback_listener.cpp`, `consent_file.cpp` and `app_control.cpp` at this revision. The header fix is queued for the complete Linux gate.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 13:16 IST — seats/stretcher-chain `d6b090b109aa224bba8b51734302157af39e2c05`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 286 registered non-performance CTest suites passed with `ctest -LE performance`.
