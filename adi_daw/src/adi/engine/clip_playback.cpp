@@ -1781,11 +1781,11 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
     return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm), directPcm);
 }
 
-std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
+static std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchBank(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
     std::span<const std::int64_t> warmWarpClips, StoredLaunchPageReuse priorPinnedPages,
-    bool allowColdPinnedPages) {
+    bool allowColdPinnedPages, bool fixedProjection) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -1794,8 +1794,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     const auto streamingClock=std::make_shared<const WarpArrangementClock>(clock,rate);
     const bool steadyWarp = streamingClock->constantFramesPerTick() != 0;
     const bool hasPreparedClock = preparedBpm.has_value() || steadyWarp;
-    const bool useNativeWarp = !steadyWarp ||
-        std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; });
+    const bool useNativeWarp = !fixedProjection && (!steadyWarp ||
+        std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; }));
     TempoMap fixedClock;
     fixedClock.events.push_back({0, bpm, 0});
     TempoMap nativeReferenceClock;
@@ -2047,6 +2047,20 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         std::make_shared<const LaunchFollowPlayer>(data), incarnation, std::move(midiTracks), true, std::move(sceneClocks));
 }
 
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
+    const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
+    std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
+    std::span<const std::int64_t> warmWarpClips, StoredLaunchPageReuse priorPinnedPages, bool allowColdPinnedPages) {
+    return prepareStoredLaunchBank(original,clock,rate,channels,maxFrames,incarnation,problems,residentBudget,
+                                   preparedBpm,warmWarpClips,priorPinnedPages,allowColdPinnedPages,false);
+}
+
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchHistoryBank(const ClipProject& original,
+    const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
+    std::vector<std::string>& problems, std::uint64_t residentBudget) {
+    return prepareStoredLaunchBank(original,clock,rate,channels,maxFrames,incarnation,problems,residentBudget,
+                                   {},{},{},false,true);
+}
 
 bool ClipPlayback::preparePitchComparison(std::int64_t id, audio::PitchCompareSide initial,
                                           std::string& error, std::uint32_t crossfadeFrames,
@@ -2105,6 +2119,7 @@ void ClipPlayback::endPitchComparison() {
 void ClipPlayback::collectPitchComparisons() {
     if(!audio::onAudioThread) impl_->pitchComparisons.collect();
 }
+
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};

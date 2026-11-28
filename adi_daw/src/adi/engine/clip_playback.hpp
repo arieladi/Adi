@@ -46,6 +46,10 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
     std::span<const std::int64_t> warmWarpClips = {}, StoredLaunchPageReuse priorPinnedPages = {},
     bool allowColdPinnedPages = false);
+/// Each retained scene period needs a fixed audio projection on its own clock.
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchHistoryBank(const ClipProject&, const TempoMap&,
+    std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
+    std::vector<std::string>& problems, std::uint64_t residentBudget);
 class ClipPlayback {
 public:
     enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };

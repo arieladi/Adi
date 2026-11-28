@@ -1108,9 +1108,15 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
         auto& bank = prepared[period.bpm];
         if (!bank) {
             if (reuse) bank = previous->launchAudio->bankAtTempo(period.bpm);
+            // A native Warp source uses absolute timeline frames. A flattened
+            // period clock is suitable only for fixed source projections.
+            if (bank && std::ranges::any_of(bank->view().slots,[&](const LaunchSlot& slot) {
+                    const auto* pcm = bank->clip(slot.clip);
+                    return pcm && pcm->followsTempo();
+                })) bank.reset();
             if (!bank) {
                 const TempoMap clock{{{0,period.bpm,0}}};
-                bank = prepareStoredLaunchProject(*clipProject_,clock,rate,channels,timing.spec.maxFrames,
+                bank = prepareStoredLaunchHistoryBank(*clipProject_,clock,rate,channels,timing.spec.maxFrames,
                     storedLaunchIncarnation_,diagnostics,budget);
             }
             if (!bank || bank->residentBytes() > budget || std::ranges::any_of(model.slotClips,[&](const rows::Clip& clip) {
@@ -3017,8 +3023,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                     return false;
                 }
                 std::ranges::sort(continuingWarp);
-                const auto duplicates = std::ranges::unique(continuingWarp);
-                continuingWarp.erase(duplicates.begin(),duplicates.end());
+                const auto uniqueEnd = std::unique(continuingWarp.begin(),continuingWarp.end());
+                continuingWarp.erase(uniqueEnd,continuingWarp.end());
                 // Retain clock history for ordinary resident clips. A paged,
                 // continuing Warp, worker, or physical Legato run instead
                 // needs the exact outgoing source and phase across the cut.
