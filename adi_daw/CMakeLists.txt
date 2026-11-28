@@ -1982,7 +1982,7 @@ target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_min
 add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 
 # linux/collect-export: only this assignment's sources and test targets.
-target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp src/adi/media/analysis_cache.cpp)
+target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp src/adi/media/analysis_cache.cpp src/adi/media/project_backup.cpp)
 add_executable(adi_analysis_cache_tests tests/test_analysis_cache.cpp)
 target_link_libraries(adi_analysis_cache_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analysis_cache_tests COMMAND adi_analysis_cache_tests)
@@ -2000,6 +2000,10 @@ target_link_libraries(adi_collect_export_tests PRIVATE adi_core adi_warnings adi
 add_dependencies(adi_collect_export_tests adi_tool)
 target_compile_definitions(adi_collect_export_tests PRIVATE ADI_TOOL_PATH="$<TARGET_FILE:adi_tool>")
 add_test(NAME adi_collect_export_tests COMMAND adi_collect_export_tests)
+
+add_executable(adi_project_backup_tests tests/test_project_backup.cpp)
+target_link_libraries(adi_project_backup_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_backup_tests COMMAND adi_project_backup_tests)
 
 # No-clobber publication platform boundary.
 target_sources(adi_core PRIVATE src/adi/media/publish_file.cpp)
