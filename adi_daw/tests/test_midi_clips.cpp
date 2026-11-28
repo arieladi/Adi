@@ -745,7 +745,8 @@ void noteEditorAudition() {
     fixture.render();
     auto& other = *fixture.otherInstrument;
     check(keyOn(1, 60) && keyOn(1, 72) && !keyOn(3, 72) && player.count >= 5 && other.count == 2 &&
-              pluginNoteId(player.heard[4].e.noteId) != pluginNoteId(other.heard[0].e.noteId),
+              // DEV-17 keeps runtime IDs whole up to each native host's own map.
+              player.heard[4].e.noteId != other.heard[0].e.noteId,
           "the mask carries playback and the held audition, with distinct runtime IDs from Track input");
     std::array<MidiCapturePacket, 16> packets{};
     const auto count = session.midiInputCapture().drain(packets);
