@@ -24,6 +24,7 @@ public:
     /// Preserve TempoMap's seconds projection where an existing caller
     /// makes its own sample-rounding decision.
     [[nodiscard]] long double secondsAtPosition(long double tick) const noexcept;
+    [[nodiscard]] long double positionAtSeconds(long double seconds) const noexcept;
     [[nodiscard]] double framesPerTickAt(double tick) const noexcept;
     /// Minimum and maximum over a half-open interval, including ramp limits.
     /// Used during owner-side source preparation.
@@ -36,6 +37,7 @@ private:
     [[nodiscard]] const Segment& segmentAtTick(double tick) const noexcept;
     [[nodiscard]] const Segment& segmentAtFrame(double frame) const noexcept;
     [[nodiscard]] double secondsAtTick(std::int64_t tick) const noexcept;
+    [[nodiscard]] std::int64_t ticksAtSeconds(double seconds) const noexcept;
 
     double sampleRate_;
     double minimumBpm_ = 0;

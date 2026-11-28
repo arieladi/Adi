@@ -59,7 +59,7 @@ std::int64_t sampleAtNs(std::int64_t ns,double rate) {
     }
     return sampleAt(static_cast<long double>(ns)*1e-9L,rate);
 }
-std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double rate) {
+std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,const TempoMap& tempo,double rate) {
     auto clock=std::make_shared<AutomationClock>();clock->rate=rate;
     const auto initialBpm = model.tempo.empty() ? 120.0L : static_cast<long double>(model.tempo.front().bpm);
     clock->knots.push_back({0, 0, 5765760.0L * initialBpm / 60.0L});
@@ -76,7 +76,7 @@ std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double 
     }
     if (std::any_of(model.tempo.begin(), model.tempo.end(),
                     [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
-        clock->rampClock.emplace(model.tempo,rate);
+        clock->rampClock.emplace(tempo,rate);
     return clock;
 }
 std::optional<std::int64_t> deviceTrack(const rows::Model& model,std::int64_t device) {
@@ -99,9 +99,8 @@ std::int64_t roundedSample(long double seconds,double rate) noexcept {
     if(!std::isfinite(value))return INT64_MAX;
     return static_cast<std::int64_t>(std::llround(value));
 }
-long double cycleAt(const ClipEnvelope& e,const AutomationClock& clock,std::int64_t sample) noexcept {
+long double cycleAt(const ClipEnvelope& e,const AutomationClock& clock,std::int64_t sample,long double tick) noexcept {
     if(!e.loop)return 0;
-    const auto tick=clock.ticksAt(static_cast<long double>(sample)/static_cast<long double>(clock.rate))-e.originTick+e.offsetTicks;
     auto cycle=tick>=e.loopStart?std::floor((tick-e.loopStart)/e.loopLength):0;
     const auto next=clock.secondsAt(e.originTick+e.loopStart+(cycle+1)*e.loopLength-e.offsetTicks);
     if(roundedSample(next,clock.rate)<=sample)++cycle;
@@ -111,24 +110,33 @@ long double cycleAt(const ClipEnvelope& e,const AutomationClock& clock,std::int6
 bool wrapBoundary(const ClipEnvelope& e,const AutomationClock& clock,std::int64_t sample,long double cycle) noexcept {
     return e.loop && cycle>0 && roundedSample(clock.secondsAt(e.originTick+e.loopStart+cycle*e.loopLength-e.offsetTicks),clock.rate)==sample;
 }
-long double sourceTime(const ClipEnvelope& e,const AutomationClock& clock,std::int64_t sample,long double cycle,bool wrap) noexcept {
+long double sourceTime(const ClipEnvelope& e,const AutomationClock& clock,std::int64_t sample,long double loopTick,
+                       long double cycle,bool wrap) noexcept {
     const auto seconds=sample==e.begin?e.originSeconds:static_cast<long double>(sample)/static_cast<long double>(clock.rate);
-    auto ticks=sample==e.begin?e.offsetTicks:clock.ticksAt(seconds)-e.originTick+e.offsetTicks;
+    if(e.nanos && !e.loop)return (seconds-e.originSeconds+e.originWithOffsetSeconds-e.originSeconds)*1e9L;
+    auto ticks=e.offsetTicks;
+    if(sample!=e.begin)ticks=e.loop?loopTick:clock.ticksAt(seconds)-e.originTick+e.offsetTicks;
     if(e.loop) {
         ticks-=cycle*e.loopLength;
         if(cycle>0 || e.offsetTicks>=e.loopStart)ticks=std::clamp(ticks,e.loopStart,e.loopStart+e.loopLength);
         if(wrap)ticks=e.loopStart;
     }
     if(!e.nanos)return ticks;
-    if(!e.loop)return (seconds-e.originSeconds+clock.secondsAt(e.originTick+e.offsetTicks)-e.originSeconds)*1e9L;
     return (clock.secondsAt(e.originTick+ticks)-e.originSeconds)*1e9L;
 }
+long double pointTick(const AutomationPoint& point,const ClipEnvelope& e) noexcept {
+    return e.nanos ? e.nanosLoopTicks[static_cast<std::size_t>(&point-e.points.data())] : static_cast<long double>(point.time);
+}
+long double absolutePointSeconds(const AutomationPoint& point,const ClipEnvelope& e) noexcept {
+    return e.originSeconds+static_cast<long double>(point.time)*1e-9L-(e.originWithOffsetSeconds-e.originSeconds);
+}
 std::int64_t pointSample(const AutomationPoint& p,const ClipEnvelope& e,const AutomationClock& clock,long double cycle) noexcept {
-    if(e.nanos && !e.loop)return roundedSample(e.originSeconds+static_cast<long double>(p.time)*1e-9L-
-        (clock.secondsAt(e.originTick+e.offsetTicks)-e.originSeconds),clock.rate);
-    const auto tick=e.nanos?clock.ticksAt(e.originSeconds+static_cast<long double>(p.time)*1e-9L)-e.originTick:
-        static_cast<long double>(p.time);
+    if(e.nanos && !e.loop)return roundedSample(absolutePointSeconds(p,e),clock.rate);
+    const auto tick=pointTick(p,e);
     return roundedSample(clock.secondsAt(e.originTick+tick-e.offsetTicks+cycle*e.loopLength),clock.rate);
+}
+long double storedTickAt(const AutomationClock& clock,long double seconds) noexcept {
+    return clock.rampClock ? clock.rampClock->positionAtSeconds(seconds) : clock.ticksAt(seconds);
 }
 void changesFor(const ClipEnvelope& e,const AutomationClock& clock,std::vector<std::int64_t>& out) {
     auto add=[&](long double seconds) {
@@ -141,17 +149,18 @@ void changesFor(const ClipEnvelope& e,const AutomationClock& clock,std::vector<s
         }
     };
     out.push_back(e.begin);out.push_back(e.end);
-    const auto elapsedEnd=clock.ticksAt(static_cast<long double>(e.end)/clock.rate)-e.originTick;
+    const auto elapsedEnd=e.loop ? storedTickAt(clock,static_cast<long double>(e.end)/clock.rate)-e.originTick : 0;
     const auto loopEnd=e.loopStart+e.loopLength;
     if(e.loop && elapsedEnd/e.loopLength+2>static_cast<long double>(budget))
         throw std::runtime_error("clip-envelope repeat budget exceeded");
     for(const auto& p:e.points) {
-        const long double tick=e.nanos?clock.ticksAt(e.originSeconds+static_cast<long double>(p.time)*1e-9L)-e.originTick:
-            static_cast<long double>(p.time);
+        if(e.nanos && !e.loop) {
+            add(absolutePointSeconds(p,e));
+            continue;
+        }
+        const auto tick=pointTick(p,e);
         if(!e.loop) {
-            if(e.nanos)add(e.originSeconds+static_cast<long double>(p.time)*1e-9L-
-                (clock.secondsAt(e.originTick+e.offsetTicks)-e.originSeconds));
-            else if(tick>=e.offsetTicks)add(clock.secondsAt(e.originTick+tick-e.offsetTicks));
+            if(tick>=e.offsetTicks)add(clock.secondsAt(e.originTick+tick-e.offsetTicks));
             continue;
         }
         if(e.offsetTicks<e.loopStart && tick>=e.offsetTicks && tick<loopEnd)
@@ -179,22 +188,24 @@ std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::i
     if(r==regions)return {};
     --r;if(sample>=r->end)return {};
     const auto& e=lane.clipEnvelopes[r->envelope];
+    const auto& clock=*lane.clipClock;
     const auto* first = e.points.data();
     const auto* last = first + e.points.size();
-    const auto cycle=cycleAt(e,*lane.clipClock,sample);
-    const auto wrap=wrapBoundary(e,*lane.clipClock,sample,cycle);
-    auto p=std::upper_bound(first,last,sample,[&](std::int64_t at,const auto& v){return at<pointSample(v,e,*lane.clipClock,cycle);});
+    const auto loopTick=e.loop?clock.ticksAt(static_cast<long double>(sample)/clock.rate)-e.originTick+e.offsetTicks:0;
+    const auto cycle=cycleAt(e,clock,sample,loopTick);
+    const auto wrap=wrapBoundary(e,clock,sample,cycle);
+    auto p=std::upper_bound(first,last,sample,[&](std::int64_t at,const auto& v){return at<pointSample(v,e,clock,cycle);});
     if(p==first)return p->value;
     if(p==last)return (last-1)->value;
     const auto& a=*(p-1);const auto& b=*p;
-    if(held || (!wrap && pointSample(a,e,*lane.clipClock,cycle)==sample))return a.value;
-    const auto time=sourceTime(e,*lane.clipClock,sample,cycle,wrap);
+    if(held || (!wrap && pointSample(a,e,clock,cycle)==sample))return a.value;
+    const auto time=sourceTime(e,clock,sample,loopTick,cycle,wrap);
     const auto x=static_cast<double>((time-static_cast<long double>(a.time))/
         (static_cast<long double>(b.time)-static_cast<long double>(a.time)));
     return curveValue(a.value,b.value,x,a.curve,a.tension);
 }
 void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane& row,
-    const rows::Model& model,double rate,std::shared_ptr<const AutomationClock>& clipClock,
+    const rows::Model& model,const TempoMap& tempo,double rate,std::shared_ptr<const AutomationClock>& clipClock,
     std::vector<std::string>& problems) {
     const auto prefix="automation_lanes#"+std::to_string(row.id)+": ";
     if(std::none_of(model.automationData.begin(),model.automationData.end(),[&](const auto& d){return d.laneId==row.id && d.clipId.has_value();}))return;
@@ -223,7 +234,7 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             }
             if(!track || *track!=c->trackId)throw std::runtime_error("clip does not belong to lane owner's track");
             if (!lane.clipClock) {
-                if (!clipClock) clipClock = clockFor(model,rate);
+                if (!clipClock) clipClock = clockFor(model,tempo,rate);
                 lane.clipClock = clipClock;
             }
             const auto& clock=*lane.clipClock;ClipEnvelope e;e.clipId=c->id;e.nanos=row.timeBase==1;e.loop=c->loopEnabled;
@@ -235,7 +246,8 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             } else if(c->timeBase==1) {
                 if(!c->posNs || !c->lengthNs || *c->posNs<0 || *c->lengthNs<=0 || *c->posNs>INT64_MAX-*c->lengthNs)
                     throw std::runtime_error("invalid linear placement");
-                e.originSeconds=static_cast<long double>(*c->posNs)*1e-9L;e.originTick=clock.ticksAt(e.originSeconds);
+                e.originSeconds=static_cast<long double>(*c->posNs)*1e-9L;
+                e.originTick=storedTickAt(clock,e.originSeconds);
                 e.begin=sampleAtNs(*c->posNs,rate);e.end=sampleAtNs(*c->posNs+*c->lengthNs,rate);
             } else throw std::runtime_error("unknown clip time base");
             if(e.end<=e.begin || static_cast<long double>(c->contentOffsetTicks)<-maxTime || c->loopStartTicks<0)throw std::runtime_error("invalid clip interval or offset");
@@ -244,6 +256,7 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             if(e.offsetTicks>maxTime || e.loopStart>maxTime || e.loopLength>maxTime ||
                 (e.loop && (e.loopLength<=0 || c->loopStartTicks>INT64_MAX-c->loopLenTicks.value_or(0))))
                 throw std::runtime_error("invalid clip loop");
+            if(e.nanos && !e.loop)e.originWithOffsetSeconds=clock.secondsAt(e.originTick+e.offsetTicks);
             if(e.loop)for(const auto& knot:clock.knots)
                 if(e.loopLength/knot.ticksPerSecond*static_cast<long double>(rate)<1)
                     throw std::runtime_error("clip loop shorter than one session sample");
@@ -252,12 +265,17 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             const StreamReader<AutomationPoint> reader(data.blob,FourCC::Automation);
             if(!reader.ok() || reader.count()>budget-compiledPoints || (reader.header().flags&~(StreamFlags::SortedByTime|StreamFlags::TimeIsNanos))!=0 ||
                 (((reader.header().flags&StreamFlags::TimeIsNanos)!=0)!=e.nanos))throw std::runtime_error("invalid stream or time unit");
+            if(e.nanos && e.loop)e.nanosLoopTicks.reserve(reader.count());
             for(std::uint32_t n=0;n<reader.count();++n) {
                 const auto p=reader.at(n);
                 if(!p || p->time<0 || p->reserved || p->curve>kMaxCurve || !std::isfinite(p->value) || !std::isfinite(p->tension) ||
                     (row.minValue && p->value<*row.minValue) || (row.maxValue && p->value>*row.maxValue) ||
                     (!e.points.empty() && p->time<e.points.back().time))throw std::runtime_error("invalid point; whole clip envelope refused");
                 e.points.push_back(*p);
+                if(e.nanos && e.loop) {
+                    const auto at = e.originSeconds + static_cast<long double>(p->time)*1e-9L;
+                    e.nanosLoopTicks.push_back(storedTickAt(clock,at)-e.originTick);
+                }
             }
             if(e.points.empty())continue; // empty clips do not mask arrangement automation
             if(lane.clipEnvelopes.size()>=16384)throw std::runtime_error("clip-envelope placement budget exceeded");

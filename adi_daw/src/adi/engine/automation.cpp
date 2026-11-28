@@ -133,7 +133,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
         const auto data = std::find_if(model.automationData.begin(), model.automationData.end(),
                                        [&](const rows::AutomationData& d) { return d.laneId == row.id && !d.clipId; });
         if (data == model.automationData.end()) {   // no points: the lane reads its default
-            compileClipEnvelopes(lane, row, model, rate_, clipClock, problems_);
+            compileClipEnvelopes(lane, row, model, tempo, rate_, clipClock, problems_);
             lanes_.push_back(std::move(lane));
             continue;
         }
@@ -203,7 +203,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
             continue;
         }
         lane.points = std::move(points);
-        compileClipEnvelopes(lane, row, model, rate_, clipClock, problems_);
+        compileClipEnvelopes(lane, row, model, tempo, rate_, clipClock, problems_);
         lanes_.push_back(std::move(lane));
     }
     std::sort(lanes_.begin(), lanes_.end(),

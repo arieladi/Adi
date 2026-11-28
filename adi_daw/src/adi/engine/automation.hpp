@@ -49,8 +49,10 @@ struct ClipEnvelope {
     std::int64_t clipId = 0, begin = 0, end = 0;
     long double originTick = 0, originSeconds = 0, offsetTicks = 0;
     long double loopStart = 0, loopLength = 0;
+    long double originWithOffsetSeconds = 0;
     bool nanos = false, loop = false;
     std::vector<AutomationPoint> points; // original clip-relative units/curves
+    std::vector<long double> nanosLoopTicks; // one per point for nanosecond loops
 };
 struct ClipAutomationRegion {
     std::int64_t begin = 0, end = 0;
