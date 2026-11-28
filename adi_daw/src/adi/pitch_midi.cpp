@@ -193,8 +193,9 @@ struct Clock {
         if (static_cast<std::uint64_t>(next->sourceFrame) == frame) return next->tick;
         const auto& previous = *std::prev(next);
         const auto local = frame - static_cast<std::uint64_t>(previous.sourceFrame);
-        const auto fraction = static_cast<long double>(local) / (next->sourceFrame - previous.sourceFrame);
-        return previous.tick + std::llround(fraction * (next->tick - previous.tick));
+        const auto fraction = static_cast<long double>(local) /
+            static_cast<long double>(next->sourceFrame - previous.sourceFrame);
+        return previous.tick + std::llround(fraction * static_cast<long double>(next->tick - previous.tick));
     }
 
     [[nodiscard]] std::int64_t relativeTicks(std::int64_t elapsed) const {
