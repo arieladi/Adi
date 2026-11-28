@@ -5650,6 +5650,26 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
                   sel.clip == 0 && sel.pickedClips.empty(),
               "SC-175: a clip body drag keeps its press point as the anchor and selects only time");
     };
+
+    // SC-180: a time selection moves only the material it covers.
+    dragInsideClip(2, bar / 2, bar);
+    const auto beforeArrow = document->ops().nextUndo();
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "SC-180: Left moves part of the clip");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{
+                            {0, bar / 4}, {bar / 4, bar / 2}, {bar, bar}, {3 * bar, bar / 2}},
+          "SC-180: the moved part overwrites the destination overlap and keeps the outer pieces");
+    check(sel.clip == 0 && sel.start == bar / 4 && sel.end == 3 * bar / 4 && sel.insert == bar / 4,
+          "SC-180: the time selection follows the moved material");
+    const auto afterArrow = document->ops().nextUndo();
+    check(beforeArrow && afterArrow && beforeArrow->txnId != afterArrow->txnId && root.command(AppCommands::Undo),
+          "SC-180: undo the time selection move");
+    root.frame();
+    const auto undoneArrow = document->ops().nextUndo();
+    check(beforeArrow && undoneArrow && beforeArrow->txnId == undoneArrow->txnId &&
+              clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2 * bar}, {3 * bar, bar / 2}},
+          "SC-180: one Undo rejoins the original clip");
+
     dragInsideClip(2, bar / 2, bar);
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "SC-175: Delete the dragged range");
     root.frame();
@@ -6647,6 +6667,19 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
               selectedCopy(2, offset) && selectedCopy(20, offset + 2 * bar),
           "SC-179: both duplicates are selected");
     undoOne("SC-179: undo Duplicate");
+
+    pickBoth();
+    // The later clip is between grid lines, so both must use the earlier clip's step size.
+    arrangement.geometry.grid.fixed = true;
+    arrangement.geometry.grid.fixedQuarters = 16.;
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
+    root.frame();
+    check(clipsOf(2) == Clips{{bar, bar / 2}, {4 * bar, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{6 * bar, bar / 2}},
+          "SC-180: both clips move by the earlier clip's grid step and keep their track offsets");
+    check(sel.clip == 61 && sel.pickedClips == std::vector<std::int64_t>{50},
+          "SC-180: both moved clips stay selected");
+    undoOne("SC-180: undo the picked clips' move");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();
@@ -6994,6 +7027,64 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
 }
 // E3: the …Time commands and Insert Silence (Live 12 manual 6.11, 41.5; N17): across every track,
 // locators and the loop moving with the time.
+void consolidateMidiCommand(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "consolidate-midi.adi", error);
+    check(store != nullptr, "SC-178 MIDI project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Consolidate MIDI')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    constexpr auto bar = textproj::kWhole;
+    std::vector<OpRequest> fixture(3);
+    fixture[0].opType = "track.create";
+    fixture[0].payload = {{"id",1},{"kind","midi"},{"name","Keys"}};
+    for (std::size_t i = 1; i < fixture.size(); ++i) {
+        fixture[i].opType = "clip.create";
+        fixture[i].payload = {{"id",10+i},{"track",1},{"kind","midi"},{"pos",static_cast<std::int64_t>(i*2)*bar},
+                              {"length",bar}};
+    }
+    if (!submitter.submit(std::move(fixture)).ok) {
+        check(false, "SC-178 two MIDI clips with a gap");
+        return;
+    }
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "consolidate-midi");
+    root.setSize(1200, 720);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &sel = arrangement.geometry.selection;
+    sel.track = 1;
+    sel.start = sel.insert = 2*bar;
+    sel.end = 5*bar;
+    sel.marked = true;
+    const auto menu = arrangement.contextMenuItems(false);
+    bool hasCommand = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        if (it.getItem().itemID == AppCommands::ConsolidateMidi)
+            hasCommand = it.getItem().isEnabled;
+    check(hasCommand, "SC-178 the eligible Arrangement range offers Consolidate");
+    check(root.setMixView(true, false), "SC-178 switch to the docked Mix View");
+    check(!root.canConsolidateMidi() && !root.command(AppCommands::ConsolidateMidi),
+          "SC-178 Consolidate cannot edit the Arrangement while its workspace is hidden");
+    check(root.setMixView(false, false), "SC-178 return to the Arrangement");
+    check(root.keyPressed(juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)),
+          "SC-178 Ctrl/Cmd+J consolidates in the Arrangement");
+    root.frame();
+    const auto *track = root.reader().findTrack(1);
+    check(track != nullptr && track->clips.size() == 1 && track->clips.front()->id == sel.clip &&
+              track->clips.front()->posTicks == 2*bar && track->clips.front()->lengthTicks == 3*bar,
+          "SC-178 one selected clip spans the range including its gap");
+    check(root.command(AppCommands::Undo), "SC-178 one Undo reverses Consolidate");
+    root.frame();
+    track = root.reader().findTrack(1);
+    check(track != nullptr && track->clips.size() == 2 && track->clips[0]->id == 11 && track->clips[1]->id == 12,
+          "SC-178 one Undo restores the two source clips");
+}
 void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "time.adi", true, {}, error);
@@ -30024,7 +30115,7 @@ int main(int argc, char **argv) {
                       C::ToggleCollectionRed == C::ToggleFavorite + 1 && C::ToggleCollectionGray == C::ToggleCollectionRed + 6 &&
                       C::ReverseAudio == C::ToggleCollectionGray + 1 &&
                       C::LockEnvelopes == C::ReverseAudio + 1 && C::OpenBackup == C::LockEnvelopes + 1 &&
-                      C::LastId == C::OpenBackup,
+                      C::ConsolidateMidi == C::OpenBackup + 1 && C::LastId == C::ConsolidateMidi,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -30032,7 +30123,8 @@ int main(int argc, char **argv) {
                   "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, "
                   "Volume, Pan and Meters, Switch Clip and Device Views, Arrangement Record (Alternate Start), "
                   "Computer MIDI Keyboard, MIDI import and export, About, Audio Import, Browser Preview controls, "
-                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), Lock Envelopes, and Open Backup");
+                  "Hot-Swap, Manage Project Files, the Favorite and Collection commands, Reverse Clip(s), Lock Envelopes, "
+                  "Open Backup and Consolidate");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -30089,11 +30181,12 @@ int main(int argc, char **argv) {
                                                 C::DeleteTrack, C::DeleteAutomation, 0,
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
-                                                C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
+                                                C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split,
+                                                C::CropClip, C::ConsolidateMidi, 0,
                                                 C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Delete Automation, then the …Time commands and Insert Silence "
               "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
-              "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
+              "Split, Crop Clip and Consolidate, then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
               "Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -30877,10 +30970,24 @@ int main(int argc, char **argv) {
                     sel.start = pos0;
                     sel.end = pos0 + step;
                     integrated.say({});
-                    check(step < length0 && press(juce::KeyPress::rightKey) && sel.start == pos0 &&
-                              sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
-                              integrated.error().find("split") != std::string::npos,
-                          "a selection holding part of a clip stays, and the Status Bar says it waits for split");
+                    const auto beforeRangeMove = integrated.undoTitle(false);
+                    const bool movedRange = press(juce::KeyPress::rightKey);
+                    integrated.frame();
+                    const auto snapshotAfterMove = integrated.current();
+                    const auto *trackAfterMove = snapshotAfterMove ? snapshotAfterMove->findTrack(clipTrack) : nullptr;
+                    const bool rangeMoveRecorded = integrated.undoTitle(false) == "Undo Move Material";
+                    check(step < length0 && movedRange && sel.start == pos0 + step && sel.end == pos0 + 2 * step &&
+                              trackAfterMove != nullptr &&
+                              std::any_of(trackAfterMove->clips.begin(), trackAfterMove->clips.end(), [&](const auto &clip) {
+                                  return clip->posTicks == pos0 + step && clip->lengthTicks == step;
+                              }) &&
+                              rangeMoveRecorded,
+                          "Right moves the selected slice by the grid in one undo step");
+                    const bool restoredRange = rangeMoveRecorded && integrated.command(AppCommands::Undo);
+                    integrated.frame();
+                    check(restoredRange && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
+                              clipAt()->lengthTicks == length0 && integrated.undoTitle(false) == beforeRangeMove,
+                          "one Undo restores the whole clip before the resize checks");
                     point(end0);
                     const auto undoBefore = integrated.undoTitle(false);
                     check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
@@ -32701,6 +32808,7 @@ int main(int argc, char **argv) {
     trace("trimClipStart", [&] { trimClipStart(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("trackClipboard", [&] { trackClipboard(commands, temp.path()); });
+    trace("consolidateMidiCommand", [&] { consolidateMidiCommand(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });

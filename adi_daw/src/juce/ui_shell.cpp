@@ -10,7 +10,6 @@
 #include "ui_computer_midi_keys.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
-#include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
@@ -416,6 +415,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
+        {"edit.consolidate", "Edit"}, // ConsolidateMidi
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -665,7 +665,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup..."};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -698,6 +698,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     switch (id) {
     case PlayStop:
         info.addDefaultKeypress(juce::KeyPress::spaceKey, 0);
+        break;
+    case ConsolidateMidi:
+        info.addDefaultKeypress('j', cmd);
+        info.setActive(active_ != nullptr && active_->canConsolidateMidi());
         break;
     case Undo:
         info.addDefaultKeypress('z', cmd);
@@ -2950,6 +2954,51 @@ std::int64_t AdiRootComponent::pasteOrigin() const {
         if (const auto *t = reader().findTrack(id); t != nullptr && arrangement.geometry.shown(id) && holdsClips(*t))
             return id;
     return 0;
+}
+clip_edit::MidiConsolidation AdiRootComponent::prepareMidiConsolidation() const {
+    clip_edit::MidiConsolidation unavailable;
+    unavailable.edit.error = "Select at least two whole MIDI clips on the same Arrangement track.";
+    const auto current = view_.current();
+    const auto &geo = arrangement.geometry;
+    const auto &sel = geo.selection;
+    if (!current || !arrangement.isVisible() || arrangement.canvas.hasAutomationSelection() ||
+        noteEditorHasContext() || sel.track == 0)
+        return unavailable;
+    if (submitter_.store().readOnly()) {
+        unavailable.edit.error = "This project is read-only.";
+        return unavailable;
+    }
+    auto tracks = geo.selectedTracks(reader());
+    if (tracks.size() != 1 || !geo.shown(tracks.front()))
+        return unavailable;
+    const auto *track = current->findTrack(tracks.front());
+    if (track == nullptr || (track->kind != "midi" && track->kind != "instrument"))
+        return unavailable;
+    auto begin = std::min(sel.start, sel.end), end = std::max(sel.start, sel.end);
+    std::vector<std::int64_t> picked;
+    if (sel.clip != 0) {
+        picked = geo.selectedClips();
+        if (picked.size() < 2)
+            return unavailable;
+        begin = std::numeric_limits<std::int64_t>::max();
+        end = 0;
+        std::size_t found = 0;
+        for (const auto &clip : track->clips)
+            if (geo.clipSelected(clip->id)) {
+                begin = std::min(begin, clip->posTicks);
+                end = std::max(end, clip->posTicks + clip->lengthTicks);
+                ++found;
+            }
+        if (found != picked.size())
+            return unavailable;
+    }
+    if (begin >= end)
+        return unavailable;
+    const edit_plan::Options options{editRate(), edit_plan::capturePolicy(commands_.settings())};
+    return clip_edit::prepareMidiConsolidation(submitter_.store(), {std::move(tracks), {0, begin}, {0, end}}, picked, options);
+}
+bool AdiRootComponent::canConsolidateMidi() const {
+    return prepareMidiConsolidation().edit.ok;
 }
 bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     const auto current = view_.current();
@@ -6664,6 +6713,13 @@ bool AdiRootComponent::command(int id) {
         arrangement.selectedMeter = markerAt(current->meters, pos) != 0 ? pos : -1;
         return arrangement.scrub.beginMeterEdit(pos, true);
     }
+    case AppCommands::ConsolidateMidi: {
+        auto prepared = prepareMidiConsolidation();
+        if (!commitEdit(std::move(prepared.edit)))
+            return false;
+        selectClip(prepared.clip);
+        return true;
+    }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
         if (!trackGroupingContext() || !groupTracks(id == AppCommands::UngroupTracks))
@@ -6855,13 +6911,14 @@ const std::vector<MenuEntries> &menuBar() {
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
-        // clipboard's and the selection's, with Crop Clip (10.7.1); Consolidate will join them.
+        // clipboard's and the selection's, with Crop Clip (10.7.1) and Consolidate.
         // Invert Selection follows Select All, as measured on Live 12; Quantize and its settings
         // (10.5.8) have a group of their own, with Fit to Time Range (10.5.5); the group's place in
         // Live's menu is to be read on Live.
         {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::DeleteAutomation, 0, C::CutTime, C::CopyTime,
                   C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll,
-                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
+                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, C::ConsolidateMidi, 0,
+                  C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create

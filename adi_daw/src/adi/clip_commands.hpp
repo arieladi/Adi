@@ -95,6 +95,14 @@ struct RangeCopy {
     bool clearsRange=true; // explicit clips clear only where their images land
 };
 struct RangeCut {RangeCopy copy;PreparedEdit edit;};
+struct MidiConsolidation {
+    PreparedEdit edit;
+    std::int64_t clip = 0;
+};
+/// A single MIDI track with wholly contained, single-pass material and unique note IDs.
+/// With picked clips, every clip overlapped by the output must be in that pick.
+[[nodiscard]] MidiConsolidation prepareMidiConsolidation(Store&,const RangeSelection&,
+    std::span<const std::int64_t> picked,const edit_plan::Options&);
 /// Ordinary material ranges select only main-lane clips (NULL lane_id).
 /// A sole surviving side keeps its clip and material-child identities.
 /// insertTime shifts the whole Set but pastes the selected main-lane material;
@@ -116,6 +124,7 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
     TimePoint at,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,const edit_plan::Options&);
+[[nodiscard]] PreparedEdit prepareMoveRange(Store&,const RangeSelection&,TimePoint destination,const edit_plan::Options&);
 /// Splice the selected portion of a take onto its track's main lane.
 [[nodiscard]] PreparedEdit prepareTakeToMain(Store&, std::int64_t track, std::int64_t lane,
                                              TimePoint begin, TimePoint end, double referenceRate);

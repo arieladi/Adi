@@ -9,6 +9,7 @@
 #include "adi/edit_time.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/note_stream_detail.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -17,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <stdexcept>
 #include <set>
@@ -1047,7 +1049,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 namespace {
 RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
                         std::optional<std::int64_t> lane={},std::span<const std::int64_t> selectedClips={},
-                        bool copyClipEnvelopes=false) {
+                        bool copyClipEnvelopes=false,bool rejectLinked=false) {
     RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
@@ -1069,7 +1071,10 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
                 if(root.at(length).is_null())throw std::runtime_error("copy range needs finite clip extents");
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
                 if(result.clearsRange && last<=begin)continue;
-                auto image=captureDeleted(context,id);captureMediaKeys(store,image);
+                auto image=captureDeleted(context,id);
+                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
+                    throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
                 if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
                 if(result.clearsRange && last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
@@ -1086,6 +1091,11 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+void captureRangeEnvelopes(Store& store,RangeCopy& copy,const edit::TimeMap& time,double referenceRate) {
+    for(const auto track:copy.selection.tracks)
+        copy.envelopes.push_back(edit::copyAutomationMaterial(store,time,track,
+            copy.selection.begin,copy.selection.end,referenceRate));
+}
 } // namespace
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return copyRange(store,selection,edit_plan::Options{referenceRate,{}});
@@ -1097,9 +1107,7 @@ RangeCopy copyRange(Store& store,const RangeSelection& selection,const edit_plan
         result=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane);
         if(result.ok && options.policy.automationFollowsClips) {
             const edit::TimeMap time(store.db());
-            for(const auto track:selection.tracks)
-                result.envelopes.push_back(edit::copyAutomationMaterial(store,time,track,
-                    selection.begin,selection.end,options.referenceRate));
+            captureRangeEnvelopes(store,result,time,options.referenceRate);
         }
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -1153,6 +1161,178 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,con
         }
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Delete Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& selection,
+    std::span<const std::int64_t> picked, const edit_plan::Options& options) {
+    MidiConsolidation result;
+    try {
+        validRange(selection);
+        constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
+        if (selection.tracks.size() != 1 || selection.begin.base != 0 || selection.end.value > tickLimit)
+            throw std::runtime_error("Consolidate currently needs a musical time range on one MIDI track.");
+        const auto trackId = selection.tracks.front();
+        auto& db = store.db();
+        Read read(db);
+        SQLite::Statement track(db, "SELECT kind FROM tracks WHERE id=?");
+        track.bind(1, trackId);
+        if (!track.executeStep() || (track.getColumn(0).getString() != "midi" &&
+                                     track.getColumn(0).getString() != "instrument"))
+            throw std::runtime_error("Consolidate currently supports MIDI tracks only.");
+        CopyIds ids(db);
+        const auto output = ids.next("clips");
+        struct PositionedNote {
+            notes::Record record;
+            notes::NoteValues values;
+        };
+        struct CapturedClip {
+            std::vector<PositionedNote> notes;
+            Payload expression;
+        };
+        std::vector<CapturedClip> sources;
+        std::set<std::uint64_t> reservedNoteIds;
+        std::string name;
+        OpContext context{store,db};
+        edit::TimeMap time(db);
+        SQLite::Statement clips(db, "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY pos_ticks,id");
+        clips.bind(1, trackId);
+        while (clips.executeStep()) {
+            const auto id = clips.getColumn(0).getInt64();
+            const auto row = *edit::row(db, "clips", id);
+            const int base = static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first = detail::signedInteger(row.at(base == 0 ? "pos_ticks" : "pos_ns"));
+            const auto end = coordinate(selection.end, base, time);
+            if (first >= end)
+                continue;
+            const auto length = detail::signedInteger(row.at(base == 0 ? "length_ticks" : "length_ns"));
+            const auto last = edit::addTime(first, length);
+            const auto begin = coordinate(selection.begin, base, time);
+            if (last <= begin)
+                continue;
+            if (!picked.empty() && std::find(picked.begin(), picked.end(), id) == picked.end())
+                throw std::runtime_error("Consolidate would cover an unselected clip.");
+            if (base != 0 || length <= 0 || first < begin || last > end || row.at("kind") != "midi")
+                throw std::runtime_error("Consolidate currently needs whole MIDI clips on the musical timeline.");
+            const auto offset = detail::signedInteger(row.at("content_offset_ticks"));
+            if (offset < -tickLimit || offset > tickLimit)
+                throw std::runtime_error("MIDI clip source offset is outside the supported timeline.");
+            const auto finish = edit::addTime(offset, length);
+            if (detail::signedInteger(row.at("loop_enabled")) != 0) {
+                const auto loopStart = detail::signedInteger(row.at("loop_start_ticks"));
+                const auto& loopLength = row.at("loop_len_ticks");
+                if (loopLength.is_null() || loopStart < 0 || loopStart > offset ||
+                    finish > edit::addTime(loopStart, detail::signedInteger(loopLength)))
+                    throw std::runtime_error("Consolidate cannot yet assign note IDs to repeated MIDI notes.");
+            }
+            auto image = captureDeleted(context, id);
+            auto& sourceChildren = image.at("children");
+            if (detail::signedInteger(row.at("muted")) != 0 || !row.at("alias_of").is_null() ||
+                !image.at("alias_links").empty() || !sourceChildren.at("automation_data").empty() ||
+                !sourceChildren.at("automation_segment_ranges").empty() || !sourceChildren.at("audio_clips").empty() ||
+                !sourceChildren.at("clip_properties").empty() || !sourceChildren.at("clip_playback_details").empty() ||
+                !sourceChildren.at("clip_warp_fade_domains").empty())
+                throw std::runtime_error("Consolidate cannot yet combine muted, linked or specially configured clips.");
+            if (sources.empty())
+                name = row.at("name").get<std::string>();
+            auto& captured = sources.emplace_back();
+            const auto& streams = sourceChildren.at("event_streams");
+            if (streams.size() > 1 || (streams.size() == 1 && (streams[0].at("stream_kind") != "notes" ||
+                !streams[0].at("channel").is_null() || !streams[0].at("controller").is_null())))
+                throw std::runtime_error("Consolidate cannot yet merge MIDI controller or other event streams.");
+            std::set<std::uint64_t> sourceIds;
+            if (!streams.empty()) {
+                const auto& raw = streams[0].at("data").get_binary();
+                std::string error;
+                auto source = notes::detail::decodeNotes(std::as_bytes(std::span(raw.data(), raw.size())), error);
+                if (!source)
+                    throw std::runtime_error(error);
+                if (notes::detail::streamVersion(*source) != 1 || !source->trailer.empty() ||
+                    notes::detail::recordStride(*source) != notes::detail::notePrefixBytes)
+                    throw std::runtime_error("Consolidate cannot merge extended MIDI note streams without losing data.");
+                captured.notes.reserve(source->records.size());
+                for (auto& record : source->records) {
+                    auto note = notes::values(record, error);
+                    if (!note)
+                        throw std::runtime_error(error);
+                    if (note->start < offset || note->start >= finish || note->duration > finish - note->start)
+                        throw std::runtime_error("Consolidate cannot yet trim notes at a source boundary.");
+                    sourceIds.insert(note->id);
+                    reservedNoteIds.insert(note->id);
+                    note->start = (first - begin) + (note->start - offset);
+                    captured.notes.push_back({std::move(record), *note});
+                }
+            }
+            for (const auto& expression : sourceChildren.at("note_expression"))
+                if (!sourceIds.contains(notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")))))
+                    throw std::runtime_error("Consolidate found expression without its source note.");
+            captured.expression = std::move(sourceChildren.at("note_expression"));
+        }
+        if (sources.size() < 2 || (!picked.empty() && sources.size() != picked.size()))
+            throw std::runtime_error("Select at least two whole MIDI clips on the same track.");
+
+        auto children = Payload::object();
+        auto expressions = Payload::array();
+        notes::Diff noteDiff;
+        // Reserve every source ID before assigning any replacement. A note in
+        // a later clip keeps its ID even if it is an early allocation candidate.
+        std::set<std::uint64_t> seenNoteIds;
+        std::uint64_t nextNoteId = 1;
+        for (auto& source : sources) {
+            std::map<std::uint64_t, std::uint64_t> remapped;
+            for (auto& note : source.notes) {
+                if (!seenNoteIds.insert(note.values.id).second) {
+                    while (!reservedNoteIds.insert(nextNoteId).second) {
+                        if (nextNoteId == std::numeric_limits<std::uint64_t>::max())
+                            throw std::runtime_error("Consolidate ran out of MIDI note IDs.");
+                        ++nextNoteId;
+                    }
+                    remapped.emplace(note.values.id, nextNoteId);
+                    note.values.id = nextNoteId;
+                }
+                std::string error;
+                auto placed = notes::withValues(note.record, note.values, error);
+                if (!placed)
+                    throw std::runtime_error(error);
+                noteDiff.added.push_back(std::move(*placed));
+            }
+            for (auto& expression : source.expression) {
+                const auto original = notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")));
+                if (const auto found = remapped.find(original); found != remapped.end())
+                    expression["note_id"] = notes::detail::expressionSqlId(found->second);
+                expression["id"] = ids.next("note_expression");
+                expression["clip_id"] = output;
+                expressions.push_back(std::move(expression));
+            }
+        }
+        if (!expressions.empty())
+            children["note_expression"] = std::move(expressions);
+        if (!noteDiff.added.empty()) {
+            const auto combined = notes::detail::planRecords(notes::detail::emptyNotes(), noteDiff);
+            if (!combined.ok || !combined.changed)
+                throw std::runtime_error(combined.error);
+            std::vector<std::uint8_t> bytes;
+            bytes.reserve(combined.bytes.size());
+            for (const auto byte : combined.bytes)
+                bytes.push_back(std::to_integer<std::uint8_t>(byte));
+            children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams", {
+                {"id",ids.next("event_streams")},{"clip_id",output},{"stream_kind","notes"},
+                {"data",Payload::binary(std::move(bytes))},
+            })});
+        }
+        const auto begin = selection.begin.value, end = selection.end.value;
+        auto row = edit::defaultRow(db, "clips", {{"id",output},{"track_id",trackId},{"kind","midi"},
+            {"name",name.empty() ? std::string("Consolidated MIDI") : std::move(name)},
+            {"time_base",0},{"pos_ticks",begin},{"length_ticks",end-begin}});
+        edit_plan::detail::PlacementBatch batch;
+        batch.incoming.push_back({{"id",output},{"row",std::move(row)},{"children",std::move(children)},
+                                  {"alias_links",Payload::array()}});
+        const auto scope = edit_plan::materialScope(selection.tracks, edit_plan::PlacementClock::Ticks, {begin,end});
+        result.edit = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), options, ids, "Consolidate");
+        if (result.edit.ok)
+            result.clip = output;
+    } catch (const std::exception& error) {
+        result.edit.error = error.what();
+    }
     return result;
 }
 PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoint begin,TimePoint end,
@@ -1235,8 +1415,9 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
-PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
-                                TimePoint at,const edit_plan::Options& options) {
+namespace {
+PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                   TimePoint at,const edit_plan::Options& options,bool move) {
     PreparedEdit result;
     try {
         if(!copy.ok)throw std::runtime_error(copy.error);
@@ -1259,6 +1440,13 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
         // A linear image can extend past the musical range at a faster tempo.
         // Admit each complete image. Only a time selection clears the gaps.
         auto scopeBegin=std::min(beginNs,sourceBeginNs),scopeEnd=std::max(endNs,sourceEndNs);
+        // Clear source envelopes before placing destinations, which may overlap them.
+        if(move)
+            for(const auto track:copy.selection.tracks) {
+                batch.clear.push_back({{track,std::nullopt},{sourceBeginNs,sourceEndNs}});
+                if(options.policy.automationFollowsClips)
+                    batch.envelopes.push_back({track,copy.selection.begin,copy.selection.end,Payload::array()});
+            }
         if(copy.clearsRange) {
             for(std::size_t index=0;index<tracks.size();++index) {
                 batch.clear.push_back({{tracks[index],std::nullopt},{beginNs,endNs}});
@@ -1291,8 +1479,32 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
             if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
         const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
         const auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,{scopeBegin,scopeEnd});
-        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Material");
+        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,move?"Move Material":"Paste Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+} // namespace
+PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                TimePoint at,const edit_plan::Options& options) {
+    return prepareRangePlacement(store,copy,tracks,at,options,false);
+}
+PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimePoint at,const edit_plan::Options& options) {
+    PreparedEdit result;
+    try {
+        validRange(selection);validRate(options.referenceRate);Read read(store.db());
+        const edit::TimeMap time(store.db());
+        if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
+            auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{}, {},
+                                    false,/*rejectLinked=*/true);
+            if(!copy.ok)throw std::runtime_error(copy.error);
+            if(!copy.images.empty()) {
+                if(options.policy.automationFollowsClips)
+                    captureRangeEnvelopes(store,copy,time,options.referenceRate);
+                return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
+            }
+        }
+        result.sourceFile=filename(store);result.ok=true;
+    } catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
 PreparedEdit prepareTakeToMain(Store& store, std::int64_t track, std::int64_t lane,
