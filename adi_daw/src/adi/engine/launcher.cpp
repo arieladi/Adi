@@ -1126,8 +1126,8 @@ void Launcher::abandonSelectedScene(std::uint64_t token) noexcept {
     lastPreparedScene_ = std::max(lastPreparedScene_,token);
 }
 
-std::optional<std::size_t> Launcher::planTimedSceneStarts(const LaunchBlock& block, const LaunchView& candidate,
-        const PreparedSceneLaunch& scene, std::span<TimedSceneStart> result) const noexcept {
+std::optional<std::size_t> Launcher::planTimedSceneActions(const LaunchBlock& block, const LaunchView& candidate,
+        const PreparedSceneLaunch& scene, std::span<TimedSceneAction> result) const noexcept {
     if (!timedPrefix_ || !block.sampleAtTick || timedPrefix_->sample != block.sample ||
         timedPrefix_->incarnation != block.incarnation || timedPrefix_->followPass != block.followPass ||
         timedPrefix_->token != scene.token || scene.token <= lastPreparedScene_ ||
@@ -1143,12 +1143,21 @@ std::optional<std::size_t> Launcher::planTimedSceneStarts(const LaunchBlock& blo
             track.user || track.back || track.gateStop || track.follow || track.repeat ||
             track.dueScene || track.sceneFollow) return {};
         const auto action = preparedFollower(track,candidate,pending,block.sample,scene.tick);
-        if (!action || action->action != Action::Start) continue;
+        if (!action) continue;
 
-        const auto& target = *findSlot(candidate,track.id,scene.scene);
+        const auto* cell = findSlot(candidate,track.id,scene.scene);
         const auto& run = track.run;
         const auto* previous = run.clip ? findClip(candidate,track.id,run.clip) : nullptr;
         if (run.clip && !occupied(previous)) return {};
+        if (action->action == Action::Stop) {
+            if (!cell || !cell->hasStop || !previous || !run.serial || previous->physicalStartFrame < 0 ||
+                previous->physicalFrames <= 0 || previous->physicalLoopEndFrame || previous->fade ||
+                previous->mode != LaunchMode::Trigger) return {};
+            result[count++] = {track.id,0,run.clip,run.serial,{}};
+            continue;
+        }
+        if (action->action != Action::Start || !occupied(cell)) return {};
+        const auto& target = *cell;
         const auto lap = cuedPhysicalLap(previous,run.completedLoops,run.physicalCueFrame);
         auto sourceTick = run.sourceTick;
         if (previous && lap.startFrame < 0) {

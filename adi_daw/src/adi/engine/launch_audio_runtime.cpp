@@ -664,13 +664,19 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     auto after = project_->view();
     after.tracks = tracks_;
     if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
-    std::array<TimedSceneStart,kMaximumTimedRawSceneTracks> starts{};
-    const auto count = driver.launcher_.planTimedSceneStarts(candidate,after,*candidate.preparedScene,starts);
+    std::array<TimedSceneAction,kMaximumTimedRawSceneTracks> plan{};
+    const auto count = driver.launcher_.planTimedSceneActions(candidate,after,*candidate.preparedScene,plan);
     if (!count || *count != tracks_.size()) return false;
-    const auto actions = std::span(starts).first(*count);
-    if (std::ranges::none_of(actions,[](const auto& action) { return action.outgoingRun != 0; })) return false;
+    const auto actions = std::span(plan).first(*count);
+    const auto stops = std::ranges::count(actions,0,&TimedSceneAction::clip);
+    const auto inherited = std::ranges::count_if(actions,[](const auto& action) {
+        return action.clip != 0 && action.outgoingRun != 0;
+    });
+    if (inherited == 0 || (stops != 0 && (stops != 1 || actions.size() != 3 || inherited != 2)))
+        return false;
 
     for (const auto& action : actions) {
+        if (action.clip == 0) continue;
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto* ranges = trackRanges(action.track);

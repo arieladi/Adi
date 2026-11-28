@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -43,6 +44,7 @@ constexpr std::array<std::int64_t,6> clips{101,102,103,201,202,203};
 constexpr std::array<std::int64_t,6> starts{2400,3600,4200,4800,6000,7200};
 constexpr std::array<std::int64_t,3> nearStarts{88'000,90'000,92'000};
 constexpr std::array<float,6> levels{.125f,.25f,.375f,-.125f,-.25f,-.375f};
+static_assert(starts[4] + cut - blockFrames > 3 * ClipPlayback::readAheadFrames(rate));
 static_assert(starts[5] + cut - blockFrames > 3 * ClipPlayback::readAheadFrames(rate));
 static_assert(starts[3] + cut - nearStarts[0] < ClipPlayback::readAheadFrames(rate));
 static_assert(starts[4] + cut - nearStarts[1] < ClipPlayback::readAheadFrames(rate));
@@ -56,7 +58,9 @@ float signal(std::size_t index, std::int64_t frame) {
     return levels[index] + static_cast<float>((frame % (239 + 2 * static_cast<std::int64_t>(index))) - 119) / 8192.f;
 }
 
-std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder) {
+enum class ThirdCell { Start, Stop, NoStop };
+
+std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCell thirdCell) {
     StoreError error{};
     const auto project = folder.path() / "scene.adi";
     auto store = Store::createEmpty(project,error);
@@ -69,6 +73,11 @@ std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder) {
             "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
             "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(10,0,120,0),(20,1,140,1);");
     for (std::size_t index = 0; index < clips.size(); ++index) {
+        if (index == clips.size() - 1 && thirdCell != ThirdCell::Start) {
+            SQLite::Statement slot(db,"INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(3,20,NULL,?)");
+            slot.bind(1,thirdCell == ThirdCell::Stop ? 1 : 0); slot.exec();
+            continue;
+        }
         const auto id = clips[index];
         const auto track = static_cast<std::int64_t>(index % 3 + 1);
         const bool target = index >= 3;
@@ -155,18 +164,23 @@ std::array<LaunchTrackStatus,3> readTracks(const Session& session) {
     return rows;
 }
 
-enum class Outcome { Warm, ColdThird, StopTrack };
+enum class Outcome { Warm, ColdThird, StopTrack, SavedStop, ColdSavedStop, CompetingSavedStop, NoStop };
 
 void exercise(Outcome outcome) {
-    const bool warm = outcome == Outcome::Warm;
-    const bool coldThird = outcome == Outcome::ColdThird;
-    const bool stop = outcome == Outcome::StopTrack;
-    const auto mode = warm ? "warm" : coldThird ? "cold-third" : "stop";
+    const bool warm = outcome == Outcome::Warm || outcome == Outcome::SavedStop;
+    const bool savedStop = outcome == Outcome::SavedStop || outcome == Outcome::ColdSavedStop ||
+        outcome == Outcome::CompetingSavedStop;
+    const bool noStop = outcome == Outcome::NoStop;
+    const std::optional<std::size_t> manualStop = outcome == Outcome::StopTrack ? std::optional<std::size_t>{1} :
+        outcome == Outcome::CompetingSavedStop ? std::optional<std::size_t>{0} : std::nullopt;
+    constexpr std::array names{"warm","cold-third","stop","saved-stop","cold-saved-stop","competing-saved-stop","no-stop"};
+    const auto* mode = names[static_cast<std::size_t>(outcome)];
     auto startedAt = nearStarts;
-    if (coldThird) startedAt[2] = blockFrames;
+    if (outcome == Outcome::ColdThird) startedAt[2] = blockFrames;
+    if (outcome == Outcome::ColdSavedStop) startedAt[1] = blockFrames;
     constexpr auto end = cut + 3 * blockFrames;
     test::TempDirectory folder{"three_raw_timed_scene",mode};
-    auto store = prepareProject(folder);
+    auto store = prepareProject(folder,savedStop ? ThirdCell::Stop : noStop ? ThirdCell::NoStop : ThirdCell::Start);
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
@@ -176,7 +190,8 @@ void exercise(Outcome outcome) {
     Playback playback{session,pcm};
     const auto initialAllocations = test::sceneClockCallbackAllocations();
     const auto initialFileIo = audio::callbackFileIo.load();
-    const auto order = coldThird ? std::array<std::size_t,3>{2,0,1} : std::array<std::size_t,3>{0,1,2};
+    std::array<std::size_t,3> order{0,1,2};
+    std::ranges::sort(order,{},[&](auto index) { return startedAt[index]; });
     for (const auto index : order) {
         playback.through(startedAt[index]);
         LaunchRequest start;
@@ -192,36 +207,44 @@ void exercise(Outcome outcome) {
     for (std::size_t index = 0; index < old.size(); ++index)
         require(old[index].clip == clips[index] && old[index].run != 0,"keep every outgoing run alive up to the Scene");
     require(playback.edgeCount == 3 && playback.sceneCount == 0,"only the three outgoing slots have launched");
-    if (!session.prepareSceneLaunch(*store,20,bar)) throw std::runtime_error(session.error());
-    if (stop) {
+    const bool staged = session.prepareSceneLaunch(*store,20,bar);
+    if (noStop) require(!staged,"No Stop is outside timed raw admission");
+    else if (!staged) throw std::runtime_error(session.error());
+    if (manualStop) {
         playback.through(crossing);
         OpRequest command;
         command.opType = "session.stopTrack";
-        command.payload = {{"track",2},{"incarnation",session.launchIncarnation()}};
+        command.payload = {{"track",*manualStop + 1},{"incarnation",session.launchIncarnation()}};
         require(OpJournal(*store).commit(command).ok,"queue competing StopTrack on the old clock");
     }
     playback.through(end);
 
     const auto after = readTracks(session);
     require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
-            playback.sceneCount == (warm ? 1u : 0u) && playback.edgeCount == (warm ? 6u : stop ? 4u : 3u),
+            playback.sceneCount == (warm ? 1u : 0u) && playback.edgeCount == (warm ? 6u : manualStop ? 4u : 3u),
             "clock, receipt and all three Starts are one driver decision");
     if (warm) require(playback.scene.sample == cut && playback.scene.tempoBpm == 140,
                       "the single receipt uses the same exact 140 BPM cut");
-    if (stop) {
+    if (manualStop) {
+        const auto index = *manualStop;
         const auto& edge = playback.edges[3];
-        require(edge.track == 2 && edge.oldClip == clips[1] && edge.oldRun == old[1].run &&
-                edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
-                "B stops exactly once on the old clock while the timed Scene refuses");
+        require(edge.track == static_cast<std::int64_t>(index + 1) && edge.oldClip == clips[index] &&
+                edge.oldRun == old[index].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
+                "the manual Stop alone dispatches on the old clock while the timed Scene refuses");
     }
+    const auto stopsAtCut = [&](std::size_t index) {
+        return (manualStop && *manualStop == index) || (warm && savedStop && index == 2);
+    };
     for (std::size_t index = 0; index < after.size(); ++index) {
         if (warm) {
             const auto& edge = playback.edges[3 + index];
-            require(edge.sample == cut && edge.oldClip == clips[index] && edge.newClip == clips[index + 3] &&
-                    after[index].clip == clips[index + 3] && after[index].run != old[index].run,
-                    "all three warmed readers launch at the exact same sample");
-        } else if (stop && index == 1) {
-            require(after[index].clip == 0,"B stays stopped after the refused Scene");
+            const auto expectedClip = stopsAtCut(index) ? 0 : clips[index + 3];
+            require(edge.sample == cut && edge.tick == bar && edge.oldClip == clips[index] &&
+                    edge.oldRun == old[index].run && edge.newClip == expectedClip &&
+                    after[index].clip == expectedClip && after[index].run != old[index].run,
+                    "every saved Start or Stop takes effect at the exact performed sample");
+        } else if (stopsAtCut(index)) {
+            require(after[index].clip == 0,"only the manual Stop persists after the refused Scene");
         } else {
             require(after[index].clip == old[index].clip && after[index].run == old[index].run,
                     "every track unaffected by Stop keeps its original run");
@@ -230,7 +253,7 @@ void exercise(Outcome outcome) {
     for (auto sample = std::int64_t{0}; sample < end; ++sample) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < startedAt.size(); ++index) {
-            if (sample < startedAt[index] || (stop && index == 1 && sample >= cut)) continue;
+            if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index))) continue;
             const auto clip = warm && sample >= cut ? index + 3 : index;
             expected += signal(clip,sample - startedAt[index] + starts[clip]);
         }
@@ -246,6 +269,7 @@ void exercise(Outcome outcome) {
 
 namespace adi::test {
 void runThreeTrackTimedRawSceneTests() {
-    for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack}) exercise(outcome);
+    for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack,Outcome::SavedStop,
+                               Outcome::ColdSavedStop,Outcome::CompetingSavedStop,Outcome::NoStop}) exercise(outcome);
 }
 } // namespace adi::test

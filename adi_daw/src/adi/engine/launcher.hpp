@@ -191,8 +191,8 @@ struct LaunchSink {
     std::int64_t (*legacyRawAnchor)(void*, std::int64_t clip, std::int64_t tick) noexcept = nullptr;
 };
 
-struct TimedSceneStart {
-    std::int64_t track, clip, outgoingClip;
+struct TimedSceneAction {
+    std::int64_t track, clip, outgoingClip; // zero destination clip is a saved Stop
     std::uint64_t outgoingRun;
     LaunchSourceCue cue;
 };
@@ -214,11 +214,11 @@ public:
     [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&, const LaunchSlot* prepared = nullptr) noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     // Freeze an empty ingress at an exact old-clock cut, then resolve only
-    // uncontested starts. A command seen before freezing uses the normal path.
+    // uncontested Scene actions. Commands seen before freezing use the normal path.
     bool freezeTimedScenePrefix(const LaunchBlock&, std::uint64_t token) noexcept;
     void abandonSelectedScene(std::uint64_t token) noexcept;
-    [[nodiscard]] std::optional<std::size_t> planTimedSceneStarts(const LaunchBlock&, const LaunchView&,
-        const PreparedSceneLaunch&, std::span<TimedSceneStart>) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> planTimedSceneActions(const LaunchBlock&, const LaunchView&,
+        const PreparedSceneLaunch&, std::span<TimedSceneAction>) const noexcept;
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
     /// Driver only. Drain a stopped block's valid gestures. A surviving fresh

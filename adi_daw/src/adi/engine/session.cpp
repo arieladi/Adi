@@ -79,16 +79,20 @@ bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot&
         (!clip->pageReader() || clip->pageReader()->allPhysicalPhasesPrimed(slot.clip));
 }
 
-// Admit only raw, non-looping audio tracks with long disk targets that
-// need exact cue-page leases. The caller validates both transport clocks.
+// Admit raw, non-looping audio tracks with long disk targets that need
+// exact cue-page leases. One of three tracks may explicitly stop.
 bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcept {
     const auto view = before.view();
     if (!before.stored() || !supportsTimedRawSceneTrackCount(view.tracks.size()) ||
         std::ranges::any_of(view.tracks,[&](auto track) { return before.isMidiTrack(track); })) return false;
     auto targets = std::size_t{0};
+    auto stops = std::size_t{0};
     for (const auto& slot : view.slots) {
         if (slot.clip == 0) {
-            if (slot.scene == scene) return false;
+            if (slot.scene == scene) {
+                if (!slot.hasStop) return false;
+                ++stops;
+            }
             continue;
         }
         const auto* clip = before.clip(slot.clip);
@@ -100,7 +104,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
             return false;
         ++targets;
     }
-    return targets == view.tracks.size();
+    return targets + stops == view.tracks.size() && targets >= 2 && stops <= 1;
 }
 
 bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
@@ -1203,7 +1207,8 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
             for (const auto& target : before) {
                 const bool retained = retainedPinnedLegatoLoop(target,before,preparedScene_->scene);
-                if (!retained && !pinnedLegatoTarget(target,preparedScene_->scene)) continue;
+                const bool timedStop = timedRaw && target.scene == preparedScene_->scene && !target.clip && target.hasStop;
+                if (!retained && !timedStop && !pinnedLegatoTarget(target,preparedScene_->scene)) continue;
                 for (const auto& oldSlot : before) {
                     if (!oldSlot.clip || oldSlot.track != target.track || (retained && oldSlot.clip != target.clip)) continue;
                     const auto newSlot = std::ranges::find(after,oldSlot.clip,&LaunchSlot::clip);
