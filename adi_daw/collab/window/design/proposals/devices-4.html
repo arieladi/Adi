@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI built-in devices sheet 4</title>
+<style>html,body{margin:0;background:#0c0c0e}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script><script src="../src/devlib.js"></script>
+<script>
+// ADI, the built-in devices' panels, sheet 4 (28 November 2026). SC-455. The look of the third sheet, agreed
+// by the director the same day, on six more devices: EQ Eight, Utility, Overdrive, Redux, Hybrid Reverb,
+// and Echo opened in full. Every control is one the device declares (pd/devices/*.pd).
+const W=1920,H=1080;let s='';
+const Y0=70,H0=392,Y1=494,H1=566;
+// ---- EQ Eight ----
+{const x=20,y=Y0,w=860;s+=card(x,y,w,H0,'EQ',{open:false});
+ s+=cap(x+66,y+60,'BAND 3',{a:'middle'});
+ s+=kb(x+66,y+118,30,0.6,G,'FREQ','1.00 kHz',{vz:10})+kb(x+66,y+210,30,0.66,G,'GAIN','+5.0 dB',{bi:1,vz:10})+kb(x+66,y+302,26,0.3,G,'Q','0.71',{vz:10.5});
+ const gx=x+124,gy=y+52,gw=w-124-140,gh=262,mid=gy+gh/2,px=gh/2/15;
+ const dB=u=>(u<0.09?-(0.09-u)/0.09*26:0)-4*Math.exp(-Math.pow((u-0.24)/0.05,2))+5*Math.exp(-Math.pow((u-0.5)/0.07,2))-3*Math.exp(-Math.pow((u-0.66)/0.04,2))+4/(1+Math.exp(-(u-0.84)/0.02));
+ s+=screen(gx,gy,gw,gh,()=>{let g=grid(gx,gy,gw,gh,{db:['+12','+6','0','-6','-12']})+spectrum(gx,gy+gh*0.3,gw,gh*0.7,41,'url(#fS)',0.3);
+  let d='';for(let k=0;k<=240;k++){const u=k/240;d+=(k?'L':'M')+(gx+gw*u).toFixed(1)+' '+(mid-dB(u)*px).toFixed(1)}
+  g+=`<path d="${d}L${gx+gw} ${mid}L${gx} ${mid}Z" fill="${O}" opacity=".12"/>`+`<path d="${d}" fill="none" stroke="${O}" stroke-width="2.4" filter="url(#glow2)"/>`;return g});
+ const cols=[O,V,G,Y,'#6b6e77','#6b6e77',B,'#6b6e77'],on=[1,1,1,1,0,0,1,0],bu=[0.09,0.24,0.5,0.66,0,0,0.84,0];
+ [0,1,2,3,6].forEach(k=>{const bx=gx+gw*bu[k],by=mid-dB(bu[k])*px;s+=`<g filter="url(#glow2)">`+CI(bx,by,k===2?11:9,cols[k])+`</g>`+T(bx,by+4,String(k+1),{z:k===2?12:10.5,w:700,a:'middle',f:INK})});
+ const shapes=['M0 11L5 11Q9 11 10 2L24 2','M0 11Q8 11 12 6.5Q16 2 24 2','M0 7L7 7Q12 -6 17 7L24 7','M0 7L7 7Q12 -6 17 7L24 7','M0 7L7 7Q12 -6 17 7L24 7','M0 7L7 7Q12 -6 17 7L24 7','M0 2Q8 2 12 6.5Q16 11 24 11','M0 2L14 2Q15 11 19 11L24 11'];
+ for(let k=0;k<8;k++){const cx=gx+k*(gw/8),cw=gw/8-6;
+  s+=R(cx,y+324,cw,34,'#141518',{r:7,s:k===2?'#f2f3f5':'#3c3d43'});
+  s+=(on[k]?`<g filter="url(#glow2)">`+R(cx+5,y+329,24,24,cols[k],{r:6})+`</g>`:R(cx+5,y+329,24,24,'#26272c',{r:6,s:'#45464d'}))+T(cx+17,y+346,String(k+1),{z:12,w:700,a:'middle',f:on[k]?INK:'#8b8e97'});
+  s+=`<g transform="translate(${cx+36} ${y+334})">`+P(shapes[k],{s:on[k]?'#eceef2':'#5d6068',sw:1.7})+`</g>`;}
+ const rx=x+w-128;
+ s+=cap(rx,y+60,'MODE')+pills(rx,y+68,112,24,['Stereo','L / R','M / S'],0,{z:9.5});
+ s+=cap(rx,y+114,'EDIT')+pills(rx+50,y+100,62,24,['A','B'],0);
+ s+=tog(rx,y+134,112,24,'Adaptive Q',true)+vbox(rx,y+166,112,24,'Scale','100 %');
+ s+=kb(rx+56,y+258,30,0.5,O,'GAIN','0.0 dB',{bi:1,vz:10});
+ s+=meter(rx+50,y+310,48,0.6,0.57);}
+// ---- Utility ----
+{const x=895,y=Y0,w=370;s+=card(x,y,w,H0,'Utility',{open:false});
+ s+=meter(x+18,y+62,140,0.6,0.6);
+ s+=kb(x+124,y+140,58,0.77,O,'GAIN','0.0 dB',{min:'-inf',max:'+35 dB'});
+ s+=kb(x+250,y+116,33,0.25,O,'WIDTH','100 %')+kb(x+326,y+122,24,0.5,O,'BALANCE','C',{bi:1});
+ s+=tog(x+214,y+170,72,22,'Mid / Side',false,{z:9.5});
+ s+=cap(x+16,y+228,'CHANNEL')+pills(x+16,y+236,338,26,['Left','Right','Swap','Stereo'],3);
+ s+=tog(x+16,y+274,60,26,'Ø L',false)+tog(x+82,y+274,60,26,'Ø R',false)+tog(x+148,y+274,70,26,'Mono',false)+tog(x+224,y+274,56,26,'DC',false)+tog(x+286,y+274,68,26,'Mute',false);
+ s+=tog(x+16,y+312,104,26,'Bass Mono',true)+vbox(x+128,y+312,146,26,'below','120 Hz')+tog(x+282,y+312,72,26,'Listen',false);}
+// ---- Overdrive ----
+{const x=1280,y=Y0,w=320;s+=card(x,y,w,H0,'Overdrive',{open:false});
+ s+=meter(x+18,y+62,140,0.66,0.62);
+ s+=kb(x+118,y+140,56,0.5,O,'DRIVE','50 %');
+ s+=kb(x+218,y+104,20,0.5,O,'TONE','50 %')+kb(x+282,y+104,20,0.5,O,'DYNAMICS','50 %',{lz:9})+kb(x+250,y+182,20,1.0,O,'DRY / WET','100 %',{lz:9});
+ const gx=x+16,gy=y+232,gw=288,gh=144;
+ s+=screen(gx,gy,gw,gh,()=>{let g=grid(gx,gy,gw,gh,{db:['0','-12','-24']})+spectrum(gx,gy+gh*0.25,gw,gh*0.75,13,'url(#fS)',0.4);
+  const f=0.56,d=plot(gx,gy,gw,gh,u=>0.12+0.6*Math.exp(-Math.pow((u-f)/0.16,2)));
+  g+=curve(d,O,'url(#fO)',gx,gy,gw,gh)+dot(gx+gw*f,gy+gh*(1-0.72),O)+T(gx+8,gy+16,'1.00 kHz  ·  1.2 oct',{z:10,f:'#c4c6cc'});return g});}
+// ---- Redux ----
+{const x=1615,y=Y0,w=285;s+=card(x,y,w,H0,'Redux',{open:false});
+ s+=meter(x+14,y+62,120,0.6,0.6);
+ s+=kb(x+104,y+130,42,0.7,O,'RATE','12.0 kHz',{vz:11})+kb(x+216,y+130,42,0.33,O,'BITS','8',{vz:17});
+ s+=kb(x+46,y+250,18,0.0,O,'JITTER','0 %')+kb(x+108,y+250,18,0.0,O,'SHAPE','0 %')+kb(x+170,y+250,18,0.5,O,'OCTAVE','0.0',{bi:1})+kb(x+236,y+250,20,1.0,O,'DRY / WET','100 %',{lz:9});
+ s+=cap(x+16,y+318,'FILTER')+tog(x+16,y+328,76,26,'Pre',true)+tog(x+98,y+328,76,26,'Post',false)+tog(x+180,y+328,89,26,'DC Shift',false);}
+// ---- Echo, opened in full ----
+{const x=20,y=Y1,w=1010;s+=card(x,y,w,H1,'Echo',{open:false,sub:'opened from its card'});
+ s+=meter(x+18,y+62,170,0.58,0.61);
+ s+=kb(x+124,y+150,52,0.4,O,'TIME L','1 / 8')+kb(x+290,y+150,52,0.4,O,'TIME R','1 / 8');
+ s+=tog(x+183,y+138,48,24,'Link',true);
+ s+=pills(x+50,y+226,152,24,['Notes','Trip.','Dot.','16th'],0,{z:9.5})+pills(x+214,y+226,152,24,['Notes','Trip.','Dot.','16th'],0,{z:9.5});
+ s+=tog(x+50,y+258,64,24,'Sync',true)+vbox(x+120,y+258,82,24,'Offs.','0 %')+tog(x+214,y+258,64,24,'Sync',true)+vbox(x+284,y+258,82,24,'Offs.','0 %');
+ s+=pills(x+50,y+296,316,26,['Stereo','Ping Pong','Mid / Side'],0);
+ const gx=x+392,gy=y+52,gw=360,gh=200;
+ s+=screen(gx,gy,gw,gh,()=>{let g=grid(gx,gy,gw,gh,{db:['+12','0','-12','-24']})+spectrum(gx,gy+gh*0.25,gw,gh*0.75,29,'url(#fS)',0.35);
+  const lo=0.16,hi=0.8,d=plot(gx,gy,gw,gh,u=>{let v=0.62;if(u<lo)v*=Math.exp(-Math.pow((lo-u)/0.07,2));else if(u>hi)v*=Math.exp(-Math.pow((u-hi)/0.07,2));return v+0.1*Math.exp(-Math.pow((u-lo)/0.03,2))+0.1*Math.exp(-Math.pow((u-hi)/0.03,2))},200);
+  g+=curve(d,B,'url(#fB)',gx,gy,gw,gh)+dot(gx+gw*lo,gy+gh*(1-0.72),B)+dot(gx+gw*hi,gy+gh*(1-0.72),B);return g});
+ s+=cap(gx,gy+gh+22,'FEEDBACK FILTER')+tog(gx+gw-54,gy+gh+8,54,22,'On',true,{c:B,z:10});
+ s+=kb(gx+44,y+314,20,0.2,B,'HP','50 Hz')+kb(gx+116,y+316,14,0.3,B,'RES','30 %',{lz:9})+kb(gx+250,y+314,20,0.8,B,'LP','5.00 kHz')+kb(gx+322,y+316,14,0.3,B,'RES','30 %',{lz:9});
+ s+=kb(x+818,y+124,40,0.52,O,'FEEDBACK','50 %')+kb(x+924,y+118,24,0.5,O,'INPUT','0.0 dB',{bi:1});
+ s+=tog(x+782,y+188,72,24,'Invert',false)+tog(x+888,y+188,72,24,'Distort',false);
+ s+=cap(x+776,y+238,'REVERB');
+ s+=kb(x+806,y+286,22,0.0,O,'AMOUNT','0 %')+kb(x+878,y+286,22,0.3,O,'DECAY','2.00 s')+kb(x+950,y+286,22,0.5,O,'WIDTH','100 %');
+ s+=pills(x+776,y+334,218,22,['Pre','Post','Feedback'],1,{z:9.5});
+ s+=L(x+16,y+368,x+w-16,y+368,'#34353b')+vline(x+440,y+380,y+550)+vline(x+806,y+380,y+550);
+ s+=cap(x+16,y+392,'MODULATION')+pills(x+112,y+378,316,24,['Sine','Tri','Saw Up','Saw Dn','Square','Noise'],0,{z:9.5,c:B});
+ s+=kb(x+58,y+462,22,0.3,B,'RATE','0.50 Hz')+kb(x+140,y+462,22,0.25,B,'PHASE','90°')+kb(x+222,y+462,22,0.0,B,'TO DELAY','0 %',{lz:9})+kb(x+304,y+462,22,0.0,B,'TO FILTER','0 %',{lz:9})+kb(x+386,y+462,22,0.0,B,'ENV MIX','0 %',{lz:9});
+ s+=tog(x+26,y+516,64,24,'Sync',false,{c:B})+tog(x+190,y+516,64,24,'x 4',false,{c:B});
+ s+=cap(x+456,y+392,'CHARACTER');
+ [['Gate',['THRESH','REL'],['-30 dB','100 ms'],0],['Ducking',['THRESH','REL'],['-20 dB','200 ms'],0],['Noise',['AMOUNT','MORPH'],['20 %','50 %'],1],['Wobble',['AMOUNT','MORPH'],['15 %','50 %'],0]].forEach((c,k)=>{const cx=x+456+k*86;
+  s+=tog(cx+2,y+402,76,22,c[0],c[3]===1,{z:10});
+  s+=kb(cx+20,y+468,13,0.4,O,c[1][0],c[2][0],{lz:8.5,vs:9.5,dis:c[3]!==1})+kb(cx+60,y+468,13,0.5,O,c[1][1],c[2][1],{lz:8.5,vs:9.5,dis:c[3]!==1});});
+ s+=tog(x+458,y+516,84,24,'Repitch',true);
+ s+=cap(x+822,y+392,'OUTPUT');
+ s+=kb(x+862,y+462,26,0.7,O,'OUTPUT','0.0 dB',{vz:9.5})+kb(x+948,y+462,32,0.5,O,'DRY / WET','50 %');
+ s+=tog(x+822,y+516,172,24,'Equal loudness',false);}
+// ---- Hybrid Reverb ----
+{const x=1045,y=Y1,w=520,h=392;s+=card(x,y,w,h,'Hybrid Reverb',{open:false});
+ const gx=x+16,gy=y+52,gw=w-32,gh=126;
+ s+=screen(gx,gy,gw,gh,()=>{let g='';[['0',0.0],['100 ms',0.3],['1 s',0.62],['10 s',1.0]].forEach(a=>{g+=L(gx+gw*a[1],gy,gx+gw*a[1],gy+gh,'#ffffff',1,{op:0.06})+T(gx+gw*a[1]+(a[1]>0.95?-4:4),gy+gh-5,a[0],{z:9,f:'#6b6e77',a:a[1]>0.95?'end':'start'})});
+  const r=rng(8);for(let k=0;k<46;k++){const u=0.01+k*0.0085,e=Math.exp(-u*7)*(0.45+0.55*r());g+=`<rect x="${(gx+gw*u).toFixed(1)}" y="${(gy+gh-14-e*(gh-30)).toFixed(1)}" width="2.4" height="${(e*(gh-30)).toFixed(1)}" rx="1.2" fill="${O}" opacity=".9"/>`}
+  let d='';for(let k=0;k<=160;k++){const u=0.18+0.82*k/160;const v=0.5*Math.exp(-(u-0.18)*3.2);d+=(k?'L':'M')+(gx+gw*u).toFixed(1)+' '+(gy+gh-14-v*(gh-30)).toFixed(1)}
+  g+=`<path d="${d}L${gx+gw} ${gy+gh-14}L${gx+gw*0.18} ${gy+gh-14}Z" fill="url(#fB)"/><path d="${d}" fill="none" stroke="${B}" stroke-width="2.4" filter="url(#glow2)"/>`;
+  g+=R(gx+gw-190,gy+10,9,9,O,{r:2})+T(gx+gw-176,gy+18.5,'Convolution',{z:10,f:'#b9bcc4'})+R(gx+gw-96,gy+10,9,9,B,{r:2})+T(gx+gw-82,gy+18.5,'Algorithm',{z:10,f:'#b9bcc4'});return g});
+ s+=pills(x+16,y+188,w-32,26,['Serial','Parallel','Algorithm','Convolution'],0);
+ s+=kb(x+56,y+272,22,0.1,O,'PREDELAY','10 ms')+kb(x+134,y+270,27,0.45,O,'SIZE','100 %',{vz:10});
+ s+=kb(x+260,y+282,42,0.42,O,'DECAY','2.00 s');
+ s+=kb(x+386,y+270,27,0.5,O,'BLEND','50 %',{vz:10})+kb(x+464,y+270,30,0.3,O,'DRY / WET','30 %');
+ s+=kb(x+52,y+352,13,0.7,O,'SEND','0.0 dB',{lz:8.5,vs:9.5})+kb(x+122,y+352,13,0.0,O,'FEEDBACK','0 %',{lz:8.5,vs:9.5})+kb(x+398,y+352,13,0.0,O,'ALGO DELAY','0 ms',{lz:8.5,vs:9.5})+kb(x+468,y+352,13,0.5,O,'STEREO','100 %',{lz:8.5,vs:9.5});
+ s+=tog(x+176,y+342,52,24,'Sync',false,{z:10})+tog(x+234,y+342,64,24,'Freeze',false,{z:10})+tog(x+304,y+342,76,24,'Freeze In',false,{z:10});}
+// ---- notes ----
+{const x=1045,y=Y1+406,w=520,h=160;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+18,y+28,'A card with no arrow shows everything',{z:13,w:700});
+ s+=para(x+18,y+50,['EQ, Utility, Overdrive, Redux and Hybrid Reverb fit whole on their cards,','so they have no arrow. Echo has fifty controls: its card shows the two times,','feedback, the filter picture and dry/wet, and its arrow opens what is drawn','at the left: the whole device in one view, with no pages to turn.'],{z:11.5,lh:16});}
+{const x=1580,y=Y1,w=320;s+=R(x,y,w,H1,'#18191c',{r:11,s:'#34353b'});
+ s+=T(x+18,y+32,'Sheet 4 of the devices',{z:14,w:700});
+ s+=para(x+18,y+56,['The look you agreed on the third','sheet, on six more devices.'],{z:12});
+ s+=T(x+18,y+112,'EQ',{z:12.5,w:700})+para(x+18,y+132,['Named EQ, by your word. Eight filters on one','curve, each dot dragged where it','stands. The chosen band\'s knobs at','the left take its colour; a cell under','the curve for each filter: its number','switches it on, the shape picks its kind.'],{z:11.5,lh:15.5});
+ s+=T(x+18,y+246,'Utility',{z:12.5,w:700})+para(x+18,y+266,['Gain is its main knob. The channel','choice is four joined buttons.'],{z:11.5,lh:15.5});
+ s+=T(x+18,y+316,'Overdrive, Redux',{z:12.5,w:700})+para(x+18,y+336,['Overdrive\'s band is dragged on its','picture. Redux has two main knobs,','since Rate and Bits weigh the same.'],{z:11.5,lh:15.5});
+ s+=T(x+18,y+402,'Hybrid Reverb',{z:12.5,w:700})+para(x+18,y+422,['Its picture shows the two halves in','their own colours; the four ways of','joining them are four joined buttons.'],{z:11.5,lh:15.5});
+ s+=L(x+18,y+482,x+w-18,y+482,'#34353b');
+ s+=para(x+18,y+506,['Next: Chorus-Ensemble, Phaser-Flanger,','Shifter, Resonators, Vocoder (sheet 5).'],{z:11.5,lh:15.5,f:'#9a9da6'});}
+sheet(W,H,s,'ADI  ·  the built-in devices, sheet 4','EQ, Utility, Overdrive and Redux as they stand in the Device View; Echo opened in full; Hybrid Reverb. Every control drawn is one the device has today.','DEVICES SHEET  ·  4');
+</script></body></html>
