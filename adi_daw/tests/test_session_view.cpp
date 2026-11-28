@@ -168,35 +168,35 @@ void slotStates() {
 
     auto queued = playing(B, 0, 0);
     queued.source = LaunchTrackSource::Arrangement;
-    queued.queued = {LaunchQueuedAction::Start, 101, 10, 3840};
+    queued.queued = {LaunchQueuedAction::Start, 101, 10, 3840, std::nullopt};
     std::array two{playing(A, 100, 10), queued};
     (void)m.applyStatus(two, header());
     check(m.slotState(cB, 0) == SlotState::QueuedStart && m.trackLive(cB).queued == LaunchQueuedAction::Start,
           "queued to start: the slot waits for its boundary");
 
     auto stopping = playing(A, 100, 10);
-    stopping.queued = {LaunchQueuedAction::Stop, 100, 10, 3840};
+    stopping.queued = {LaunchQueuedAction::Stop, 100, 10, 3840, std::nullopt};
     std::array stop{stopping};
     (void)m.applyStatus(stop, header());
     check(m.slotState(cA, 0) == SlotState::QueuedStop && m.trackLive(cA).stopQueued && m.trackLive(cG).stopQueued,
           "queued to stop: the clip and its track's Stop button wait");
 
     auto trackStop = playing(A, 100, 10);
-    trackStop.queued = {LaunchQueuedAction::Stop, 0, 20, 3840};
+    trackStop.queued = {LaunchQueuedAction::Stop, 0, 20, 3840, std::nullopt};
     std::array scene{trackStop};
     (void)m.applyStatus(scene, header());
     check(m.slotState(cA, 0) == SlotState::QueuedStop && m.slotState(cA, 1) == SlotState::Stopped,
           "a track's Stop from an empty slot in a launched scene stops the clip playing, not the slot");
 
     auto relaunch = playing(A, 100, 10);
-    relaunch.queued = {LaunchQueuedAction::Start, 102, 20, 3840};
+    relaunch.queued = {LaunchQueuedAction::Start, 102, 20, 3840, std::nullopt};
     std::array other{relaunch};
     (void)m.applyStatus(other, header());
     check(m.slotState(cA, 0) == SlotState::Playing && m.slotState(cA, 1) == SlotState::QueuedStart,
           "one track can play one slot while another waits to start");
 
     auto back = playing(A, 100, 10);
-    back.queued = {LaunchQueuedAction::BackToArrangement, 0, 0, 3840};
+    back.queued = {LaunchQueuedAction::BackToArrangement, 0, 0, 3840, std::nullopt};
     std::array backRows{back};
     (void)m.applyStatus(backRows, header(true));
     check(m.trackLive(cA).queued == LaunchQueuedAction::BackToArrangement && m.slotState(cA, 0) == SlotState::Playing &&
@@ -244,7 +244,7 @@ void allocationFree() {
     auto m = built();
     std::array<LaunchTrackStatus, 3> a{playing(A, 100, 10), playing(B, 101, 10), playing(C, 0, 0)};
     auto b = a;
-    b[0].queued = {LaunchQueuedAction::Stop, 100, 10, 960};
+    b[0].queued = {LaunchQueuedAction::Stop, 100, 10, 960, std::nullopt};
     b[1] = playing(B, 103, 30);
     std::array keys{SlotKey{C, 30}, SlotKey{D, 40}};
     (void)m.applyStatus(a, header());
@@ -648,9 +648,9 @@ struct Project {
     }
     bool undo() { return History(*store).undo().ok; }
     Model model() {
-        const auto rows = rows::readModel(*store);
+        const auto project = rows::readModel(*store);
         Model m;
-        m.rebuild(modelInput(rows, engine::launch::readLaunchData(*store, rows)));
+        m.rebuild(modelInput(project, engine::launch::readLaunchData(*store, project)));
         return m;
     }
     Payload dump() {
