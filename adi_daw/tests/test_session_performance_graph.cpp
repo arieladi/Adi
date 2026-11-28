@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace {
 std::size_t callbackAllocations = 0;
@@ -38,7 +39,6 @@ using namespace adi::engine;
 constexpr std::uint32_t sampleRate = 48000;
 constexpr std::int32_t blockFrames = 100;
 constexpr std::int64_t frames = 1000;
-using Samples = std::array<float, static_cast<std::size_t>(frames)>;
 
 void require(bool condition, const std::string& reason) {
     if (!condition)
@@ -80,10 +80,10 @@ struct Project {
         media(name, id, signal);
     }
 
-    void media(const char* name, std::int64_t id, const std::array<float, 2048>& signal) {
+    void media(const char* name, std::int64_t id, std::span<const float> signal, std::uint16_t channels = 1) {
         const auto path = folder.path() / name;
-        audio::WavWriter writer(path, sampleRate, 1, audio::WavFormat::Float32);
-        writer.write(signal.data(), static_cast<std::uint32_t>(signal.size()));
+        audio::WavWriter writer(path, sampleRate, channels, audio::WavFormat::Float32);
+        writer.write(signal.data(), static_cast<std::uint32_t>(signal.size() / channels));
         writer.close();
         const auto hash = adi::media::blake3File(path);
         require(static_cast<bool>(hash), "hash capture source audio");
@@ -128,18 +128,21 @@ struct LiveAudioEdit {
     float gain = 1.0f;
 };
 
-Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int64_t* endTick = nullptr,
-               bool firstSceneOnly = false, SceneReceipts* scenes = nullptr, std::int32_t width = blockFrames,
-               const LiveAudioEdit* liveEdit = nullptr) {
+template<class Sample = float>
+std::array<Sample, static_cast<std::size_t>(frames)> render(Store& project, LaunchCaptureBuffer* capture = nullptr,
+               std::int64_t* endTick = nullptr, bool firstSceneOnly = false, SceneReceipts* scenes = nullptr,
+               std::int32_t width = blockFrames, const LiveAudioEdit* liveEdit = nullptr) {
     Session session;
     session.graph().setFadeFrames(0);
     SessionSpec spec{1, sampleRate, width};
+    constexpr bool wide = std::is_same_v<Sample, double>;
+    spec.precision = wide ? Precision::Float64 : Precision::Float32;
     spec.performanceState = capture != nullptr;
     spec.offline = !spec.performanceState;
     spec.synchronousClipReads = true;
     if (!session.load(project, {}, spec)) throw std::runtime_error(session.error());
     session.transport().play();
-    Samples result{};
+    std::array<Sample, static_cast<std::size_t>(frames)> result{};
     for (std::int64_t sample = 0; sample < frames; sample += width) {
         if (capture && (!firstSceneOnly || sample == 100))
             performCommand(project, session, sample);
@@ -159,7 +162,8 @@ Samples render(Store& project, LaunchCaptureBuffer* capture = nullptr, std::int6
         require(session.clips()->prime(), "prime the render's Arrangement readers");
         auto* destination = result.data() + sample;
         AudioIo io;
-        io.out = &destination;
+        if constexpr (wide) io.out64 = &destination;
+        else io.out = &destination;
         io.numOut = 1;
         io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(width, frames - sample));
         io.streamTimeSamples = sample;
@@ -436,26 +440,29 @@ void liveRawRegion() {
     std::puts("PASS -- a live raw loop enabled at frame 200 replays 1000 frames bit-for-bit through Undo, Redo and reopen");
 }
 
+template<class Sample>
 void liveRawGain() {
+    constexpr bool wide = std::is_same_v<Sample, double>;
+    constexpr auto multiplier = wide ? 10.0f : 0.5f;
     Project project;
     std::array<float, 2048> signal{};
     for (std::size_t index = 0; index < signal.size(); ++index)
-        signal[index] = static_cast<float>(index) / 2048.0f;
+        signal[index] = static_cast<float>(index) / 32848.0f;
     project.media("edited-gain.wav", 4, signal);
     project.store->db().exec(
         "UPDATE audio_clips SET media_id=4,src_start_frames=37,src_len_frames=1024 WHERE clip_id=11;"
         "UPDATE clips SET length_ticks=240240 WHERE id=11;"
         "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
-    const auto arrangementBefore = render(*project.store);
+    const auto arrangementBefore = render<Sample>(*project.store);
     std::string error;
     const auto source = captureSessionPerformanceSource(*project.store, error);
     require(source.has_value(), error);
-    const LiveAudioEdit edit{.gain = 0.5f};
+    const LiveAudioEdit edit{.gain = multiplier};
 
     std::int64_t endTick = 0;
     std::array<LaunchTransition, 4> noTapeEdges{};
     LaunchCaptureBuffer noTape(noTapeEdges);
-    const auto withoutTape = render(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &edit);
+    const auto withoutTape = render<Sample>(*project.store, &noTape, &endTick, true, nullptr, blockFrames, &edit);
     require(planLaunchCapture(noTape, {0, 0}, {frames, endTick}, {}).error == LaunchCaptureError::SourceEdited,
             "a live gain change without a PCM tape cannot be replayed from authored gain");
 
@@ -463,12 +470,17 @@ void liveRawGain() {
     std::array<LaunchCapturedPcmRange, 4> pcm{};
     std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
     LaunchCaptureBuffer buffer(events, pcm, tracks);
-    const auto heard = render(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
+    const auto heard = render<Sample>(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
     require(heard == withoutTape, "tracing the gain does not change the Session mix");
     for (std::size_t frame = 0; frame < heard.size(); ++frame) {
-        const auto expected = frame < 100 ? 0.125f : signal[37 + frame - 100] * (frame < 200 ? 1.0f : 0.5f);
-        require(heard[frame] == expected, "the native raw gain halves its exact signal from frame 200 onward");
+        const auto expected = frame < 100 ? Sample{0.125} :
+            static_cast<Sample>(signal[37 + frame - 100]) * (frame < 200 ? Sample{1} : static_cast<Sample>(multiplier));
+        require(heard[frame] == expected, "the native raw gain scales its exact signal from frame 200 onward");
     }
+    if constexpr (wide)
+        require(std::any_of(heard.begin() + 200, heard.end(), [](double sample) {
+            return static_cast<double>(static_cast<float>(sample)) != sample;
+        }), "the Float64 waveform contains samples a Float32 output would round away");
     const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
     require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1 && plan.pcmRanges.size() == 2,
             "one continuous raw run supplies two exact gain ranges");
@@ -477,32 +489,62 @@ void liveRawGain() {
     require(before.beginSample == 100 && before.endSample == 200 && before.firstSourceFrame == 0 &&
             before.playbackGain == 1.0f && !before.liveRegionEdit &&
             after.beginSample == 200 && after.endSample == frames && after.firstSourceFrame == 100 &&
-            after.playbackGain == 0.5f && !after.liveRegionEdit && before.run == after.run,
+            after.playbackGain == multiplier && !after.liveRegionEdit && before.run == after.run,
             "a new PCM gain interval starts without resetting source phase or run identity");
-    constexpr SessionPerformanceAudio audioProof{Precision::Float32, false};
+    constexpr SessionPerformanceAudio audioProof{wide ? Precision::Float64 : Precision::Float32, false};
     auto invalidGain = plan;
     invalidGain.pcmRanges[1].playbackGain = std::numeric_limits<float>::infinity();
     require(!prepareSessionPerformance(*project.store, *source, invalidGain, sampleRate, std::nullopt, audioProof).ok,
             "the replay writer refuses a non-finite multiplier");
-    require(!prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt,
-                SessionPerformanceAudio{Precision::Float64, false}).ok,
-            "a gain trace needs the same Float32 graph precision");
     const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, audioProof);
     require(prepared.ok, prepared.error);
     const auto committed = clip_edit::commitPrepared(*project.store, prepared);
     require(committed.ok, committed.error);
-    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+    require(render<Sample>(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
             "the captured gain step replays bit-for-bit at a different Arrangement block size");
-    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
-            History(*project.store).redo().ok && render(*project.store) == heard,
+    require(History(*project.store).undo().ok && render<Sample>(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render<Sample>(*project.store) == heard,
             "one Undo and Redo restore the complete raw gain take");
     require(project.store->close(), "close the performed gain capture");
     project.store.reset();
     StoreError openError{};
     project.store = Store::open(project.file, openError, true);
-    require(project.store && render(*project.store) == heard, "reopen preserves the exact gain step");
+    require(project.store && render<Sample>(*project.store) == heard, "reopen preserves the exact gain step");
     require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the gain tape remains callback-safe");
-    std::puts("PASS -- live raw gain changes at frame 200 and replays bit-for-bit through Undo, Redo and reopen");
+    std::printf("PASS -- live raw gain changes at frame 200 and replays bit-for-bit in Float%s through Undo, Redo and reopen\n",
+                wide ? "64" : "32");
+}
+
+void float64FoldRefused() {
+    Project project;
+    std::array<float, 4096> folded{};
+    for (std::size_t index = 0; index < folded.size(); index += 2) {
+        folded[index] = 0.1f;
+        folded[index + 1] = 0.2f;
+    }
+    project.media("folded-gain.wav", 4, folded, 2);
+    project.store->db().exec("UPDATE audio_clips SET media_id=4,channel_mode=3 WHERE clip_id=11;"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    std::array<LaunchTransition, 4> events{};
+    std::array<LaunchCapturedPcmRange, 4> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer buffer(events, pcm, tracks);
+    const LiveAudioEdit edit{.gain = 10.0f};
+    std::int64_t endTick = 0;
+    const auto heard = render<double>(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
+    require(heard[200] == static_cast<double>(0.15f) * 10 && heard[200] !=
+            (static_cast<double>(0.1f) + static_cast<double>(0.2f)) / 2 * 10,
+            "the stored stereo fold rounds before the wide Session graph applies live gain");
+    const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
+    require(plan.error == LaunchCaptureError::None && plan.pcmRanges.size() == 2,
+            "a complete resident track tape alone cannot guarantee an exact wide fold");
+    const auto refused = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt,
+        SessionPerformanceAudio{Precision::Float64, false});
+    require(!refused.ok && refused.error.find("channel folding") != std::string::npos,
+            "capture refuses a Float64 replay with a mismatched rounding path");
 }
 } // namespace
 
@@ -513,7 +555,9 @@ int main() {
         followThroughGraph();
         fractionalRawLoop();
         liveRawRegion();
-        liveRawGain();
+        liveRawGain<float>();
+        liveRawGain<double>();
+        float64FoldRefused();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

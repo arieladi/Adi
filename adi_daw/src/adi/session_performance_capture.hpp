@@ -15,7 +15,8 @@ struct SessionPerformanceClock {
     std::span<const engine::LaunchSceneTransition> sceneEdges;
 };
 
-/// Proof from the recorded graph. Session PCM is baked at Float32. Set
+/// Proof from the recorded graph. Session PCM is baked at Float32; an exact
+/// Float64 replay needs the same promoted samples and linear gain. Set
 /// gainStayedAuthored only if no transient launch gain changed rendered audio.
 /// Otherwise every audible audio span needs exact performed PCM receipts.
 struct SessionPerformanceAudio {

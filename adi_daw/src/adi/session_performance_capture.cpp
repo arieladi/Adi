@@ -633,14 +633,17 @@ std::int64_t nanosSample(std::int64_t nanos, std::int64_t rate) {
         ((nanos % nanosPerSecond) * rate + nanosPerSecond / 2) / nanosPerSecond;
 }
 
-double capturedGainDb(double authored, float multiplier) {
+double capturedGainDb(double authored, float multiplier, engine::Precision precision) {
     if (multiplier == 1.0f) return authored;
     if (authored != 0)
         throw std::runtime_error("performed Session gain requires a unity authored clip gain");
     if (!std::isfinite(multiplier) || multiplier <= 0.0f)
         throw std::runtime_error("performed Session gain must be finite and positive");
     const auto db = std::clamp(20.0 * std::log10(static_cast<double>(multiplier)), -120.0, 120.0);
-    if (static_cast<float>(std::pow(10.0, db / 20)) != multiplier)
+    const auto linear = std::pow(10.0, db / 20);
+    const bool exact = precision == engine::Precision::Float64 ? linear == static_cast<double>(multiplier)
+                                                               : static_cast<float>(linear) == multiplier;
+    if (!exact)
         throw std::runtime_error("performed Session gain has no exact supported Arrangement dB value");
     return db;
 }
@@ -654,9 +657,12 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
     const auto* audioRow = firstChild(image, "audio_clips");
     if (!audioRow || audioRow->at("warp_enabled") != 0 || audioRow->at("reverse") != 0 ||
         audioRow->at("transpose_semis") != 0 || audioRow->at("formant_shift") != 0 ||
-        !audioCapture || audioCapture->precision != engine::Precision::Float32)
-        throw std::runtime_error("exact Session PCM capture requires raw forward Float32 audio");
+        !audioCapture || (audioCapture->precision != engine::Precision::Float32 &&
+                          audioCapture->precision != engine::Precision::Float64))
+        throw std::runtime_error("exact Session PCM capture requires raw forward audio and its graph precision");
     const audio::WavReader wav(path);
+    if (audioCapture->precision == engine::Precision::Float64 && audioRow->at("channel_mode") == 3 && wav.channels() > 1)
+        throw std::runtime_error("Session PCM channel folding loses precision before the Float64 launch mix");
     const auto fileStart = detail::signedInteger(audioRow->at("src_start_frames"));
     const auto fileLength = detail::signedInteger(audioRow->at("src_len_frames"));
     if (wav.sampleRate() != rate || fileStart < 0 || fileLength <= 0 ||
@@ -711,7 +717,7 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
         row["pos_ns"] = start;
         row["length_ns"] = finish - start;
         row["content_offset_ticks"] = fixed.storedNanosecondsToTicks(sourceBegin);
-        row["gain_db"] = capturedGainDb(authoredGain, range.playbackGain);
+        row["gain_db"] = capturedGainDb(authoredGain, range.playbackGain, audioCapture->precision);
         row["loop_enabled"] = 0;
         row["loop_start_ticks"] = 0;
         row["loop_len_ticks"] = nullptr;
