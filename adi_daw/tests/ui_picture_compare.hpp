@@ -37,7 +37,8 @@ ComparisonPicture pictureForComparison(juce::Image::PixelFormat format, int widt
     return picture;
 }
 
-inline bool samePicturePixels(const ComparisonPicture &a, const ComparisonPicture &b) {
+template <typename AcceptDifference>
+bool comparePicturePixels(const ComparisonPicture &a, const ComparisonPicture &b, AcceptDifference acceptDifference) {
     if (a.raster.getBounds() != b.raster.getBounds())
         return false;
     using Pixels = juce::Image::BitmapData;
@@ -51,10 +52,16 @@ inline bool samePicturePixels(const ComparisonPicture &a, const ComparisonPictur
             if (l == r)
                 continue;
             const bool masked = l != leftWordless.getPixelColour(x, y) || r != rightWordless.getPixelColour(x, y);
-            if ((masked ? juce::Colours::black : l) != (masked ? juce::Colours::black : r))
+            const auto leftPixel = masked ? juce::Colours::black : l;
+            const auto rightPixel = masked ? juce::Colours::black : r;
+            if (leftPixel != rightPixel && !acceptDifference(x, y))
                 return false;
         }
     return true;
+}
+
+inline bool samePicturePixels(const ComparisonPicture &a, const ComparisonPicture &b) {
+    return comparePicturePixels(a, b, [](int, int) { return false; });
 }
 
 } // namespace adi::uitest
