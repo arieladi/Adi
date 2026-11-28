@@ -163,6 +163,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-476 | `basics/test-chain-2` at `be0ee3193` | Clamp unlooped audio extension to the source endpoint in the gesture and journal. Clips, edit and engine seats. | The edit tests cover source mapping and history. The peerless resize checks the ghost and saved edge, and the corrected legacy fixture preserves the silent waveform tail. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-452 | `basics/test-chain-2` at `eda879365` | Show the Note Editor grid in its boxed header chooser. Clip and look seats. | The chooser geometry and actual Cmd/Ctrl+1 and +2 were checked independently of the Arrangement grid. The software reference changes only at the new readout. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-458 | `basics/test-chain-2` at `aa1575ca5` | Select the automation lane when a supported control is touched. Automation, device and mixer seats. | The peerless regression exercises explicit control interaction in and out of Automation Mode. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-347 | `basics/test-chain-2` at `aa1575ca5` | The automation curve gesture and rendering already landed in #830. Automation and Arrangement seats. | The current suite exercises the curve gesture and the stored curve rendering. Physical Option on macOS remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Already on main |
 
 ### Second test measurements and findings
 
@@ -297,3 +298,7 @@ The companion shell regression exercises a real mixer strip, two device controls
 The change is behavioral and adds no control or lane geometry. The existing overlay position for the selected track is reused.
 
 Candidate `bf9766610`. A focused JUCE probe with `DISPLAY` unset compiled the exact gesture handling, mode gate, and send commit bodies with production target and route helpers. Before, a gesture Begin left Volume selected and a first send edit left Pan selected. After, they select Resonance (`8`) and the send's `gain_db` respectively. Both send edits still submit one batch and land at −12 dB. The probe also sent an accepted manual Begin and End with the mode off, and Value and End with it on, holding the previous lane in those cases.
+
+#### SC-347 · Bend an automation segment
+
+Main already carries `835e403ae` from #830. The existing peerless Arrangement fixture drives Alt-drag on the Pan line with two breakpoints at bars 2 and 3. A 24 px vertical drag previews the curve, commits its tension without moving or adding breakpoints, and takes one Undo. A seeded Bezier then hits at the engine's curved midpoint and inserts the exact evaluated value there. The existing Option double-click reset is also exercised through the Alt modifier. The physical Option key still belongs to the Mac retest.
