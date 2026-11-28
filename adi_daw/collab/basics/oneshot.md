@@ -37,11 +37,13 @@ with the smallest test that would prove it). The how-to is `collab/prompts/2026-
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
-| SC-482 (1) envelopes | `basics/oneshot-chain` 2d2ed1d2 | Filter envelope (A, D, S, R, amount +-72 st) and pitch envelope (on, A, D, S, R, amount +-48 st) beside the amp envelope; ids 42..52. Old states (41 controls) load with defaults. | `adi_oneshot_tests`: `legacyState` (a 41-control state opens, takes defaults, renders bit-identical), `filterEnvelope` (cutoff follows a changed attack; negative amount; block-size invariance), `pitchEnvelope` (starts an octave up, falls through the decay to the held pitch). Check on slot 8: see below. | check running |
-| SC-482 (2) filter | `basics/oneshot-chain` 79da2ef6 | Live's two circuit choosers (Clean/OSR/MS2/SMP/PRD for LP/HP, Clean/OSR for BP/notch), Drive 0..24 dB, Filter < Vel, Filter < Key; ids 53..57. Clean is the old stage, bit for bit. | `filterCircuits`: the four types at both slopes against their analogue responses two octaves either side; each circuit clips a resonant loud tone and passes a quiet one as Clean; Drive raises MS2's third harmonic; Clean and notch ignore Drive; BP reads its own chooser; key and velocity move the cutoff. | check running |
-| SC-482 (3) LFO | `basics/oneshot-chain` 324fba66 | LFO Attack, Retrigger (on by default), Offset (degrees), LFO < Key; ids 58..61; a free-running LFO clock that runs through silence. | `lfoControls`: phase read off a full-depth square on the volume: attack depth at a known sample, offset moves the first switch, retrigger off joins the free clock, key 100 % doubles the rate an octave up. | check running |
-| SC-482 (4) glide | `basics/oneshot-chain` 87e12e70 | Glide (Off/Glide/Portamento) and Glide time; ids 62, 63. Glide is mono legato; Portamento slides each new voice from the newest sounding pitch. | `glideModes`: on a ramp the step is the sum of read increments: Glide starts at the held pitch, passes the half-way pitch, ends alone at its own; Portamento keeps both voices; Slice mode never glides. | check running |
-| SC-482 (5) pan | `basics/oneshot-chain` (after 87e12e70) | Pan (50 L .. 50 R) and Pan < Rnd (own generator); ids 64, 65. **Spread not built yet.** | `panControls`: hard left; centred with 0; random pan moves notes at constant power. | check running |
+| SC-482 (1) envelopes | `basics/oneshot-chain` 2d2ed1d2 | Filter envelope (A, D, S, R, amount +-72 st) and pitch envelope (on, A, D, S, R, amount +-48 st) beside the amp envelope; ids 42..52. Old states (41 controls) load with defaults. | `adi_oneshot_tests`: `legacyState` (a 41-control state opens, takes defaults, renders bit-identical), `filterEnvelope` (cutoff follows a changed attack; negative amount; block-size invariance), `pitchEnvelope` (starts an octave up, falls through the decay to the held pitch). Slot 8, core, filter `oneshot\|sampler\|builtin\|device_presets`, at 324fba66: 6 of 6 pass. | PR requested |
+| SC-482 (2) filter | `basics/oneshot-chain` 79da2ef6 | Live's two circuit choosers (Clean/OSR/MS2/SMP/PRD for LP/HP, Clean/OSR for BP/notch), Drive 0..24 dB, Filter < Vel, Filter < Key; ids 53..57. Clean is the old stage, bit for bit. | `filterCircuits`: the four types at both slopes against their analogue responses two octaves either side; each circuit clips a resonant loud tone and passes a quiet one as Clean; Drive raises MS2's third harmonic; Clean and notch ignore Drive; BP reads its own chooser; key and velocity move the cutoff. Slot 8 at 324fba66: 6 of 6. | PR requested |
+| SC-482 (3) LFO | `basics/oneshot-chain` 324fba66 | LFO Attack, Retrigger (on by default), Offset (degrees), LFO < Key; ids 58..61; a free-running LFO clock that runs through silence. | `lfoControls`: phase read off a full-depth square on the volume: attack depth at a known sample, offset moves the first switch, retrigger off joins the free clock, key 100 % doubles the rate an octave up. Slot 8 at 324fba66: 6 of 6. | PR requested |
+| SC-482 (4) glide | `basics/oneshot-chain` 87e12e70 | Glide (Off/Glide/Portamento) and Glide time; ids 62, 63. Glide is mono legato; Portamento slides each new voice from the newest sounding pitch. | `glideModes`: on a ramp the step is the sum of read increments: Glide starts at the held pitch, passes the half-way pitch, ends alone at its own; Portamento keeps both voices; Slice mode never glides. | check pending |
+| SC-482 (5) pan | `basics/oneshot-chain` 9fd485a5 | Pan (50 L .. 50 R) and Pan < Rnd (own generator); ids 64, 65. | `panControls`: hard left; centred with 0; random pan moves notes at constant power. | check pending |
+| SC-482 (6) spread | `basics/oneshot-chain` cd0482a0 | Spread (canvas id 66, `p 65`, enum `Spread`, 0..100 %, default 0): two voices a note at half level, the upper detuned up and panned left, the lower down and right, both by the amount; at 100 % 50 cents apart and hard left/right (`kSpreadCents`, ADI's span). Each voice has its own read position (`Voice::position2`, `increment2`), loops and fades out on its own; the note ends when both have. At 0 the old path runs untouched. | `spreadVoices`: on a ramp each channel's slope is its voice's increment (2^(+-0.25/12)); the upper voice stops first, the note when both have, `sounding()` false; Spread 50 on DC gives 0.5 (sqrt 1.5 + sqrt 0.5) per side; no allocation. `legacyState` still renders a 41-control state bit-identically. | check pending |
+| SC-482 (7) reverse, crop | `basics/oneshot-chain` 1e0d2111 | `prepareSampleReverse`, `prepareSampleCrop` in `src/adi/sample_slots.{hpp,cpp}`: a changed copy of the slot's sample written to `Samples/Processed/Reverse` or `.../Crop` in the project folder (original name + command, numbered when taken), assigned through the existing `media.import` + `device.loadState` path, one Undo step; Crop adds two `device.setParam` (Start 0 %, End 100 %). The original file and media row stay. No new op, no schema change. **Not wired to the tile:** its menu is the devices seat's (`ui_devices.cpp`), see "For the director" 3. | `reverseAndCrop` in `adi_sample_slots_tests`: a stereo ramp mirrored frame by frame per channel; a new file and a second media row; Crop at 25..75 % keeps frames 100..300 of 400 and resets the markers; Undo restores sample and region. | check pending |
 
 ## For the director
 
@@ -59,19 +61,28 @@ with the smallest test that would prove it). The how-to is `collab/prompts/2026-
    the LFO Attack range (ADI: 0..10 s); Glide time's range and default (ADI: 0..5 s at 50 ms) and
    whether legato Glide restarts the sample (ADI: no). **Recommendation:** add these to the one
    readings list for his session.
+3. **Reverse and Crop in the sample tile's menu** (something a user sees; Live has both in Simpler's
+   context menu). The commands exist and are tested (`prepareSampleReverse`, `prepareSampleCrop`,
+   then `commitSampleAssignment`); nothing calls them from the window, because the tile is the
+   devices seat's file (`src/juce/ui_devices.cpp`). **Recommendation:** the devices seat adds
+   "Reverse" and "Crop" to the tile's menu as Live names them, beside its Folder and Hot-Swap
+   actions, submitted like the sample drop.
+4. **Spread's law** is a reading: ADI plays two voices at half level, detuned +-25 cents and panned
+   hard apart at 100 % (`kSpreadCents` = 50), both scaling with the amount. **Recommendation:** add
+   it to the readings list.
 
 ## Next
 
-1. Spread (two detuned voices a note, panned apart): needs a second read position per voice that
-   follows the loop and fade logic; give it id 66 (`spread`, 0..100 %, default 0).
-2. Reverse and crop (a changed copy of the source, the original's hash kept): the copy is made off
-   the audio thread like `prepareSample`; the sample slot's media model is in
-   `src/adi/sample_slots.cpp` and `src/juce/builtin_samples.cpp` — check whether a derived sample
-   needs the project's schema to change (if so: "Reserve: schema minor for ..." and stop that part).
-3. Slice: Transient sensitivity (a new control; today the thresholds are fixed in `prepareSample`),
-   then by beat, equal regions and by hand; moving and deleting slices (the manual list lives in the
-   prepared sample, so this is again the sample slot's model); Mono, Poly and Thru tests the parity
-   list asks for.
-4. Then: Morph (needs a choice: extending Filter type's menu changes the normalized value of every
+The chain stands at 1e0d2111 (items 1..7). Next free: object **150**, canvas id **67**, `p` **66**,
+enum after `Spread`.
+
+1. Checks: slot 8 had a check of 00778800 (items 4, 5 + origin/main) waiting for a build place from
+   17:33; then run `slot.sh run 8 origin/basics/oneshot-chain core 'oneshot|sampl|builtin|device_presets'`
+   for the head and mark items 4..7.
+2. Slice: Transient sensitivity (a new control; today the thresholds are fixed in `prepareSample`:
+   level > max(0.05, 3 x envelope), 10 ms apart), then by beat, equal regions and by hand; moving and
+   deleting slices (the manual list lives in the prepared sample, so this is again the sample slot's
+   model); Mono, Poly and Thru tests the parity list asks for.
+3. Then: Morph (needs a choice: extending Filter type's menu changes the normalized value of every
    saved Filter type, so a separate control is the safe way); envelope loop modes; Warp last, only
    through the engine's stretcher if its interface is on the base, otherwise blocked on that seat.
