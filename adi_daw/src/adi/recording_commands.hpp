@@ -149,7 +149,8 @@ private:
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
 /// Subtract each track's captured signed latency offset from the timeline start,
-/// using the caller's offset for tracks without one. Clamp the start at song zero.
+/// using the caller's offset for tracks without one. A correction that reaches before song zero
+/// starts the clip at zero and hides the frames before it, so the rest stays in time.
 [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
     std::int64_t placementOffsetSamples=0);
 /// Publish a linear audio and MIDI take together in one placement and Undo.

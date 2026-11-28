@@ -1022,8 +1022,14 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
                 const auto offset = recorded.tracks[index].placementOffsetSamples.value_or(placementOffsetSamples);
                 const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, punch);
                 if (!range) {
-                    if (punch.active() && engine::recordingPlacementRange(recorded.startSample, recorded.frames, offset, {}))
+                    // A corrected start the song clock can hold, with no frame left to place: every
+                    // frame fell outside the punch, or before the song's start.
+                    const auto corrected = engine::recordingPlacementStart(recorded.startSample, offset);
+                    const bool fits = corrected && *corrected <= ceiling - static_cast<std::int64_t>(recorded.frames);
+                    if (punch.active() && fits)
                         continue;
+                    if (fits)
+                        throw std::runtime_error("the take ended before its latency-corrected start");
                     throw std::runtime_error("recording latency placement overflows the song clock");
                 }
                 // Several ticks can project to the same sample. Prefer the authored brace at a clipped edge.

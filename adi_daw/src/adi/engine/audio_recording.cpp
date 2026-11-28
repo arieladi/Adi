@@ -47,9 +47,10 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
     const auto placed = recordingPlacementStart(startSample,offsetSamples);
     if(!placed || frames > static_cast<std::uint64_t>(ceiling))
         return {};
-    // A punched take keeps the original sample mapping even when the correction
-    // crosses song zero. An unpunched take retains the song-zero placement rule.
-    const auto start = punch.active() && offsetSamples > startSample ? startSample-offsetSamples : *placed;
+    // A take keeps its sample mapping when the correction crosses song zero: the
+    // frames it puts before the song are hidden, and the rest stays in time. A
+    // whole file moved to zero would sound late by the part that did not fit.
+    const auto start = offsetSamples > startSample ? startSample-offsetSamples : *placed;
     const auto count = static_cast<std::int64_t>(frames);
     if(start > ceiling-count)
         return {};
@@ -65,9 +66,12 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
 AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames,
     std::optional<std::int64_t> trackOffsetSamples) const noexcept {
     const auto frames = std::max(peaks.frames, acceptedFrames);
-    if (!loop && trackOffsetSamples) {
-        const auto placed = recordingPlacementRange(rawStartSample, frames, *trackOffsetSamples, {});
-        return placed ? Range{placed->timelineStartSample, 0, placed->frames} : Range{startSample, 0, 0};
+    if (!loop) {
+        // The same range the landed clip will play, hidden frames before song zero included.
+        const auto offset = trackOffsetSamples.value_or(placementOffsetSamples);
+        const auto placed = recordingPlacementRange(rawStartSample, frames, offset, {});
+        return placed ? Range{placed->timelineStartSample, placed->sourceStartFrame, placed->frames}
+                      : Range{startSample, 0, 0};
     }
     if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
         startSample < 0 || startSample >= loop->endSample)
@@ -252,6 +256,7 @@ struct Job {
                 const auto start = firstSample.load(std::memory_order_relaxed);
                 const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
                 accumulatingPreview.rawStartSample = start;
+                accumulatingPreview.placementOffsetSamples = offset;
                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
                 if (punchWindow.active())
                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};

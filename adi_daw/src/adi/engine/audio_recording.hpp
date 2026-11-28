@@ -76,7 +76,8 @@ struct AudioRecordingPreview {
         std::optional<std::int64_t> placementOffsetSamples{}; // linear track override
     };
     std::int64_t startSample=0; // clip position on the timeline after the default placement correction
-    std::int64_t rawStartSample=0; // captured start used by a track's linear override
+    std::int64_t rawStartSample=0; // captured start, before any placement correction
+    std::int64_t placementOffsetSamples=0; // the linear take's default correction; a track may override it
     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
     std::vector<Track> tracks;
     struct PunchedPlacement {

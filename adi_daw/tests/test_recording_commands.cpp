@@ -138,6 +138,13 @@ void latencyCompensatedPlacement() {
           same(recordingPlacementRange(192,512,192,{}),0,512,0) && same(recordingPlacementRange(1000,512,192,{}),0,512,808) &&
           same(recordingPlacementRange(0,512,-48,{}),0,512,48) && !recordingPlacementRange(0,192,192,{}),
           "an unpunched take keeps its sample mapping when the correction crosses the song's start");
+    AudioRecordingPreview preview;
+    preview.placementOffsetSamples=192;
+    const auto drawn=preview.latestPass(512);
+    const auto kept=preview.latestPass(512,std::int64_t{0});
+    check(drawn.startSample==0 && drawn.sourceStartFrame==192 && drawn.frames==320 &&
+          kept.startSample==0 && kept.sourceStartFrame==0 && kept.frames==512,
+          "the live waveform skips the hidden samples, and a track that keeps its monitoring latency shows all");
 }
 void midiLinearTakes() {
     Fixture fixture;
