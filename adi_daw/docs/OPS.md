@@ -2167,6 +2167,26 @@ the current Focus Dial CC before constructing an op. Runtime dispatch checks
 the live reservation first; a project binding that collides is reported as
 shadowed and cannot fire. Hardware-scope map/unmap remain separate planned ops.
 
+`controller.bind` preserves the numeric encoder mode and the keyboard-source
+columns defined in SPEC §8.5. Code `1` still denotes legacy two's complement.
+A witnessed slow left turn can select the corresponding encoding during MIDI
+Learn. Relative sources bypass absolute takeover. The native decoder keeps
+wire ticks signed and validates seven- and fourteen-bit values at ingress.
+Pitch bend maps its center word, 8192, to exactly one half. A note-like CC
+asserts its slot for values 64 through 127. Reversed activation bounds invert
+inclusive range membership. These choices extend the existing fields and
+require neither a new opcode nor a schema migration.
+
+Relative surface input conserves signed ticks and resolves them against the
+parameter's sounding value when driven. The continuous native default advances
+one percent of the normalized range per tick, divided by ten in Fine. Only a
+unit-tick source gets host acceleration within the 30 ms window. Switches and
+menus move by one choice per tick. Outward clamped nudges produce no write.
+The ordinary parameter gesture capture settles a turn into one absolute edit.
+Absolute Pick-Up waits for a crossing and re-arms on an external write.
+Provisional Value Scaling anchors the current physical and target values and
+scales each remaining side toward the corresponding endpoint.
+
 N10 controller Learn can address a mixer control before it has an automation
 lane: learnControllerTarget(bindingId, kind, targetId, paramRef, sourceCC,
 observedValues, policy, error) returns one resolved controller.bind request.

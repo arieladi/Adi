@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/controller_maps.hpp"
+#include "adi/panel.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <limits>
+#include <utility>
 
 namespace adi {
 namespace {
@@ -36,6 +39,9 @@ Payload row(SQLite::Statement& st,int offset=0) {
 bool validSource(const ControllerCc& cc) {
     return !cc.port.empty() && cc.channel>=1 && cc.channel<=16 && cc.number>=0 && cc.number<=127;
 }
+bool normalized(double value) noexcept {
+    return value >= 0.0 && value <= 1.0;
+}
 bool matches(const Payload& b,const ControllerCc& cc) {
     return b.value("protocol",std::string{})=="midi" && b.value("msg_type",std::string{})=="cc" &&
         b.value("device_name",std::string{})==cc.port && b.at("channel")==cc.channel && b.at("msg_num")==cc.number;
@@ -49,20 +55,38 @@ bool validateBinding(OpContext& c,const Payload& b,std::string& error) {
     }
     const auto protocol=b.at("protocol").get<std::string>();
     const auto type=b.at("msg_type").get<std::string>();
-    if(protocol!="midi" && protocol!="osc" && protocol!="mackie" && protocol!="hui") {
+    const bool keyboard = protocol == "key";
+    if(protocol!="midi" && protocol!="osc" && protocol!="mackie" && protocol!="hui" && !keyboard) {
         error="unknown controller protocol"; return false;
     }
-    if(type!="cc" && type!="note" && type!="pb" && type!="nrpn" && type!="sysex" && type!="osc_path") {
+    if(type!="cc" && type!="note" && type!="pb" && type!="nrpn" && type!="sysex" && type!="osc_path" && type!="key") {
         error="unknown controller message type"; return false;
     }
     const auto within=[&](const char* key,std::int64_t lo,std::int64_t hi,bool required) {
         return b.at(key).is_null() ? !required : b.at(key).get<std::int64_t>()>=lo && b.at(key).get<std::int64_t>()<=hi;
     };
-    if(b.at("device_name").get<std::string>().empty() ||
-       !within("channel",1,16,type=="cc" || type=="note" || type=="pb" || type=="nrpn") ||
-       !within("msg_num",0,type=="nrpn"?16383:127,type=="cc" || type=="note" || type=="nrpn") ||
-       !within("mode",0,2,true) || !within("takeover",0,2,true) ||
-       b.at("range_min").get<double>()>b.at("range_max").get<double>()) {
+    if (keyboard != (type == "key")) {
+        error = "keyboard bindings require the key protocol and message type";
+        return false;
+    }
+    const bool deviceNamed = !b.at("device_name").get_ref<const std::string&>().empty();
+    if (keyboard) {
+        const auto mode = b.at("mode").get<std::int64_t>();
+        if (deviceNamed || !b.at("channel").is_null() || !b.at("osc_path").is_null() ||
+            !within("msg_num", 1, std::numeric_limits<std::int32_t>::max(), true) ||
+            (mode != static_cast<int>(ControllerMode::Absolute) && mode != static_cast<int>(ControllerMode::Toggle))) {
+            error = "invalid project keyboard source";
+            return false;
+        }
+    } else if (!deviceNamed ||
+               !within("channel",1,16,type=="cc" || type=="note" || type=="pb" || type=="nrpn") ||
+               !within("msg_num",0,type=="nrpn"?16383:127,type=="cc" || type=="note" || type=="nrpn")) {
+        error = "invalid controller source";
+        return false;
+    }
+    if(!within("mode",0,static_cast<int>(ControllerMode::LinearSignedBitInverted),true) ||
+       !within("takeover",0,2,true) || !std::isfinite(b.at("range_min").get<double>()) ||
+       !std::isfinite(b.at("range_max").get<double>())) {
         error="invalid controller source, mode, takeover or range"; return false;
     }
     if((protocol=="osc") != (type=="osc_path") ||
@@ -84,14 +108,165 @@ bool validateBinding(OpContext& c,const Payload& b,std::string& error) {
 }
 }
 
-ControllerMode detectControllerMode(std::span<const int> values) noexcept {
+std::optional<int> decodeRelativeControllerTicks(ControllerMode mode, int value) noexcept {
+    if (value < 0 || value > 127) return std::nullopt;
+    switch (mode) {
+        case ControllerMode::Relative:
+        case ControllerMode::LinearTwosComplement:
+            return value < 64 ? value : value - 128;
+        case ControllerMode::BinaryOffset:
+        case ControllerMode::LinearBinaryOffset:
+            return value - 64;
+        case ControllerMode::SignedBit:
+        case ControllerMode::LinearSignedBit:
+            return value < 64 ? value : -(value - 64);
+        case ControllerMode::SignedBitInverted:
+        case ControllerMode::LinearSignedBitInverted:
+            return value < 64 ? -value : value - 64;
+        case ControllerMode::Absolute:
+        case ControllerMode::Toggle:
+            break;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> decodeAbsoluteControllerValue(ControllerAbsoluteFormat format, int value) noexcept {
+    if (value < 0) return std::nullopt;
+    switch (format) {
+        case ControllerAbsoluteFormat::SevenBit:
+            if (value <= 127) return value / 127.0;
+            break;
+        case ControllerAbsoluteFormat::FourteenBit:
+            if (value <= 16383) return value / 16383.0;
+            break;
+        case ControllerAbsoluteFormat::PitchBend:
+            if (value <= 16383) {
+                return value < 8192 ? value / 16384.0 : 0.5 + (value - 8192) / 16382.0;
+            }
+            break;
+    }
+    return std::nullopt;
+}
+
+bool controllerCcIsDown(int value) noexcept {
+    return value >= 64 && value <= 127;
+}
+
+bool controllerRangeActive(double value, double begin, double end) noexcept {
+    if (!std::isfinite(value) || !std::isfinite(begin) || !std::isfinite(end)) return false;
+    if (begin <= end) return value >= begin && value <= end;
+    return value < end || value > begin;
+}
+
+std::optional<double> resolveNudge(const panel::Record& parameter, std::int64_t ticks,
+                                   bool fine, std::optional<double> interval,
+                                   bool accelerateUnitTicks) noexcept {
+    const double current = parameter.driven ? parameter.playing : parameter.stored;
+    if (parameter.missing || ticks == 0 || !normalized(current)) return std::nullopt;
+    const auto stepCount = parameter.shape == panel::Shape::Switch ? 2 : parameter.stepCount;
+    if (stepCount > 1) {
+        const double last = static_cast<double>(stepCount - 1);
+        const double step = std::round(current * last);
+        const double next = std::clamp(step + static_cast<double>(ticks), 0.0, last);
+        if (next == step) return std::nullopt;
+        return next / last;
+    }
+    if (parameter.shape == panel::Shape::Menu) return std::nullopt;
+
+    double step = fine ? 0.001 : 0.01;
+    if (accelerateUnitTicks && interval && *interval >= 0 && *interval < 30.0) {
+        step *= std::pow(4.0, (30.0 - *interval) / 30.0);
+    }
+    const double next = std::clamp(current + static_cast<double>(ticks) * step, 0.0, 1.0);
+    if (next == current) return std::nullopt;
+    return next;
+}
+
+bool ControllerTickCounter::add(std::int64_t ticks) noexcept {
+    constexpr auto min = std::numeric_limits<std::int64_t>::min();
+    constexpr auto max = std::numeric_limits<std::int64_t>::max();
+    auto pending = pending_.load(std::memory_order_relaxed);
+    do {
+        if ((ticks > 0 && pending > max - ticks) || (ticks < 0 && pending < min - ticks)) return false;
+    } while (!pending_.compare_exchange_weak(pending, pending + ticks, std::memory_order_relaxed));
+    return true;
+}
+
+bool ControllerTickCounter::toggle(bool down) noexcept {
+    if (down && !down_ && !add(1)) return false;
+    down_ = down;
+    return true;
+}
+
+std::int64_t ControllerTickCounter::take() noexcept {
+    return pending_.exchange(0, std::memory_order_relaxed);
+}
+
+void TakeoverGate::reset() noexcept {
+    previousInput_.reset();
+    previousTarget_.reset();
+    lastOffer_.reset();
+    anchor_.reset();
+    pickedUp_ = false;
+}
+
+std::optional<double> TakeoverGate::apply(double input, double target, bool externallyTouched) noexcept {
+    if (!normalized(input) || !normalized(target)) return std::nullopt;
+    if (externallyTouched || (previousTarget_ && target != *previousTarget_ && target != lastOffer_)) {
+        reset();
+    }
+    previousTarget_ = target;
+    const auto previous = std::exchange(previousInput_, input);
+    double value = input;
+    switch (mode_) {
+        case ControllerTakeover::Jump:
+            break;
+        case ControllerTakeover::Pickup:
+            pickedUp_ = pickedUp_ || input == target ||
+                (previous && target >= std::min(input, *previous) && target <= std::max(input, *previous));
+            if (!pickedUp_) return std::nullopt;
+            break;
+        case ControllerTakeover::Scale: {
+            if (!anchor_) anchor_ = ScaleAnchor{input, target};
+            const auto& anchor = *anchor_;
+            const double change = input - anchor.input;
+            value = anchor.target;
+            if (change > 0) value += change * (1.0 - anchor.target) / (1.0 - anchor.input);
+            if (change < 0) value += change * anchor.target / anchor.input;
+            value = std::clamp(value, 0.0, 1.0);
+            break;
+        }
+        default:
+            return std::nullopt;
+    }
+    if (value == target) return std::nullopt;
+    lastOffer_ = value;
+    return value;
+}
+
+ControllerMode detectControllerMode(std::span<const int> values, ControllerLearnMotion motion) noexcept {
     if(values.empty()) return ControllerMode::Absolute;
+    if (motion == ControllerLearnMotion::SlowLeftTurn) {
+        for (const auto mode : {ControllerMode::Relative, ControllerMode::BinaryOffset,
+                                ControllerMode::SignedBit, ControllerMode::SignedBitInverted}) {
+            bool moved = false;
+            const bool consistent = std::all_of(values.begin(), values.end(), [&](int value) {
+                const auto ticks = decodeRelativeControllerTicks(mode, value);
+                moved = moved || ticks == -1;
+                return ticks == -1 || ticks == 0;
+            });
+            if (consistent && moved) return mode;
+        }
+        return ControllerMode::Absolute;
+    }
     bool twos=true,offset=true,movedTwos=false,movedOffset=false;
     for(int v:values) {
         twos=twos && (v==0 || v==1 || v==127); movedTwos=movedTwos || v==1 || v==127;
         offset=offset && v>=63 && v<=65; movedOffset=movedOffset || v==63 || v==65;
     }
-    return (twos && movedTwos) || (offset && movedOffset) ? ControllerMode::Relative : ControllerMode::Absolute;
+    if (twos && movedTwos) return ControllerMode::Relative;
+    if (offset && movedOffset) return ControllerMode::BinaryOffset;
+    return ControllerMode::Absolute;
 }
 std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string& kind,
     std::int64_t targetId,const std::string& param,const ControllerCc& source,
@@ -109,7 +284,7 @@ std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string
     if(policy.takeover!=ControllerTakeover::Jump && policy.takeover!=ControllerTakeover::Pickup && policy.takeover!=ControllerTakeover::Scale) {
         error="invalid controller takeover policy";return std::nullopt;
     }
-    const auto mode=detectControllerMode(values);
+    const auto mode=detectControllerMode(values,policy.learnMotion);
     Payload binding={{"device_name",source.port},{"protocol","midi"},{"channel",source.channel},
         {"msg_type","cc"},{"msg_num",source.number},{"osc_path",nullptr},
         {"target_kind",kind},{"target_id",targetId},{"target_param",param},

@@ -1264,6 +1264,22 @@ orchestral mockups and one for a club track want different mappings, and because
 a project handed to a collaborator should arrive with its controller layout
 intact.
 
+Bindings store the encoder in `mode`. The original codes remain `0` absolute,
+`1` seven-bit two's complement and `2` toggle. `3` is binary offset with
+neutral at 64. `4` is signed magnitude with bit 6 marking a negative tick,
+and `5` reverses that polarity. Codes `6` through `9` are the linear variants
+of `1`, `3`, `4` and `5`, respectively. They preserve the same wire tick
+counts so a consumer can distinguish the kind of source when applying its
+acceleration policy. Linear and accelerated variants can share a slow-turn
+trace, so Learn does not infer the variant from that trace alone.
+
+A project keyboard binding uses `protocol='key'` and `msg_type='key'`. Its
+`msg_num` is a positive signed-32-bit key code, `device_name` is empty, and
+`channel` and `osc_path` are null. The mode is absolute or toggle. Application
+command shortcuts have their own settings. An activator's ordinary range
+includes both endpoints. Writing the endpoints in reverse order inverts
+that membership test.
+
 ### 8.6 History snapshots (schema 1.3)
 
 ```sql

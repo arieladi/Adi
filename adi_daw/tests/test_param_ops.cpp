@@ -16,11 +16,13 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/controller_maps.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
+#include "adi/panel.hpp"
 #include "adi/store.hpp"
 #include "juce/clap_host.hpp"
 
@@ -179,6 +181,38 @@ void testAGestureBecomesOneOp() {
     std::vector<OpRequest> third;
     eqi(static_cast<long long>(ops.drain(1300, third)), 2, "opener and edit for gain");
     check(third.size() == 2 && !third[1].payload.contains("real"), "gain has no range, so no real");
+}
+
+void testSurfaceNudgeSettles() {
+    section("SRF-04 -- a turn produces one absolute edit at settle");
+    Knobs knobs;
+    ParamOps ops;
+    if (!ops.attach(7, knobs)) {
+        check(false, "attach the nudge fixture");
+        return;
+    }
+
+    std::vector<OpRequest> out;
+    std::int64_t milliseconds = 1200;
+    bool accepted = true;
+    for (const int ticks : {1, 2, -1}) {
+        panel::Record parameter;
+        parameter.stored = knobs.getParam("cutoff").normalized;
+        const auto value = resolveNudge(parameter, ticks, false);
+        accepted = accepted && value &&
+            ops.uiEvent(7, "cutoff", ParamEventKind::Value, *value, milliseconds, out);
+        milliseconds += 15;
+    }
+    check(accepted && near(knobs.getParam("cutoff").normalized, 0.52) && out.empty(),
+          "every burst updates the real parameter while no edit is committed mid-turn");
+    (void)ops.drain(milliseconds + 200, out);
+    check(out.size() == 2 && out.front().opType == "device.setParam" && out.back().opType == "device.setParam" &&
+              near(out.front().payload.at("norm").get<double>(), 0.5) &&
+              near(out.back().payload.at("norm").get<double>(), 0.52),
+          "settling emits one absolute edit with the original value in its first-touch opener");
+    out.clear();
+    (void)ops.drain(milliseconds + 400, out);
+    check(out.empty(), "another drain emits no additional edit");
 }
 
 void testAppliedArmsTheEcho() {
@@ -1233,6 +1267,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_param_ops_tests -- broadcasts in, ops out (ADR-0124)\n\n");
     testAGestureBecomesOneOp();
+    testSurfaceNudgeSettles();
     testAppliedArmsTheEcho();
     testOwnOpsComeBackEqual();
     testUnknownsAreCounted();
