@@ -135,10 +135,16 @@ std::vector<std::int64_t> laneOrder(AdiRootComponent &root) {
 int laneTop(AdiRootComponent &root, std::int64_t id) {
     return root.arrangement.geometry.rowTop(root.reader(), id);
 }
+std::string systemPathText(std::filesystem::path path) {
+    const auto native = path.make_preferred().u8string();
+    return std::string(reinterpret_cast<const char *>(native.data()), native.size());
+}
 juce::Colour renderedPixel(juce::Component &component, juce::Point<int> at) {
     juce::Image image(juce::Image::RGB, component.getWidth(), component.getHeight(), true, juce::SoftwareImageType{});
-    juce::Graphics g(image);
-    component.paintEntireComponent(g, true);
+    {
+        juce::Graphics g(image);
+        component.paintEntireComponent(g, true);
+    }
     return image.getPixelAt(at.x, at.y);
 }
 void reference(AdiRootComponent &root, const char *name, bool write) {
@@ -300,7 +306,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         }
         return;
     }
-    auto expected = juce::ImageFileFormat::loadFrom(file);
+    const auto expected = juce::SoftwareImageType{}.convert(juce::ImageFileFormat::loadFrom(file));
     check(expected.isValid(), "reference exists");
     if (!expected.isValid())
         return;
@@ -415,8 +421,10 @@ void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path 
     {
         auto &canvas = arrangement.canvas;
         juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics g(image);
-        canvas.paint(g);
+        {
+            juce::Graphics g(image);
+            canvas.paint(g);
+        }
         std::printf("SC-70 explicit 48 px/q: bar #%06x, beat #%06x, lane #%06x, lower-right #%06x\n",
                     image.getPixelAt(192, 35).getARGB() & 0xffffffu, image.getPixelAt(48, 35).getARGB() & 0xffffffu,
                     image.getPixelAt(49, 35).getARGB() & 0xffffffu,
@@ -430,8 +438,10 @@ void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path 
     {
         auto &ruler = arrangement.ruler;
         juce::Image image(juce::Image::ARGB, ruler.getWidth(), ruler.getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics g(image);
-        ruler.paint(g);
+        {
+            juce::Graphics g(image);
+            ruler.paint(g);
+        }
         const int foot = ruler.getHeight();
         check(image.getPixelAt(0, foot - 2) != look::band && image.getPixelAt(1, foot - 2) == look::band &&
                   image.getPixelAt(2, foot - 11) == look::band,
@@ -2044,8 +2054,10 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         auto rulerPixel = [&] {
             juce::Image picture(juce::Image::RGB, ruler.getWidth(), ruler.getHeight(), true,
                                 juce::SoftwareImageType{});
-            juce::Graphics graphics(picture);
-            ruler.paintEntireComponent(graphics, true);
+            {
+                juce::Graphics graphics(picture);
+                ruler.paintEntireComponent(graphics, true);
+            }
             return picture.getPixelAt(x, 22);
         };
         const auto empty = rulerPixel();
@@ -4632,8 +4644,10 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                       "the placeholder shows its load reason and has no live processing or editor controls");
                 juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true,
                                   juce::SoftwareImageType{});
-                juce::Graphics graphics(image);
-                panel.paint(graphics);
+                {
+                    juce::Graphics graphics(image);
+                    panel.paint(graphics);
+                }
                 check(image.getPixelAt(0, panel.getHeight() / 2) == look::error,
                       "the placeholder has a visible error border");
             }
@@ -5762,7 +5776,7 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
         audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
         writer.write(silence.data(), 256);
     }
-    const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
+    const auto path = juce::String::fromUTF8(systemPathText(wav).c_str());
 #if ADI_WITH_PD
     check(panels[0]->sample->drop(path), "a file dropped on the tile");
     refresh();
@@ -5886,7 +5900,7 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
         audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
         writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
     }
-    const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
+    const auto path = juce::String::fromUTF8(systemPathText(wav).c_str());
     check(tile.isInterestedInFileDrag(juce::StringArray(path)), "the tile takes a file from the desktop");
     tile.filesDropped(juce::StringArray(path), 10, 10);
     refresh();
@@ -8513,11 +8527,7 @@ void browserPlaces(AppCommands &commands, const std::filesystem::path &dir) {
     check(menuRequests == 2 && remove, "SC-125: a configured extra Place offers Remove from Places");
     if (remove) remove();
     // The setting holds a folder as the system writes it (on Windows with backslashes).
-    const auto asSystemText = [](fs::path path) {
-        const auto native = path.make_preferred().u8string();
-        return std::string(reinterpret_cast<const char *>(native.data()), native.size());
-    };
-    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({asSystemText(chosen)}) &&
+    check(browser.listing().places.size() == 2 && prefs.get(kContentFolders) == settings::Value::array({systemPathText(chosen)}) &&
               fs::is_regular_file(dropped / "Rim.wav"),
           "SC-125: Remove uses the row’s identity even for equal names and leaves its media on disk");
 
@@ -9196,7 +9206,7 @@ void clipViewReference(ClipViewPanel &panel, const char *name, bool write) {
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
         return;
     }
-    const auto expected = juce::ImageFileFormat::loadFrom(file);
+    const auto expected = juce::SoftwareImageType{}.convert(juce::ImageFileFormat::loadFrom(file));
     check(expected.isValid(), "the Clip View's reference exists");
     if (!expected.isValid())
         return;
@@ -9508,8 +9518,10 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
               marks[1] == std::pair{beat / 4, std::optional{BarPosition{1, 1, 2}}},
           "the ruler marks a thirty-second and labels the sixteenth as 1.1.2");
     juce::Image image(juce::Image::ARGB, ruler.getWidth(), ruler.getHeight(), true, juce::SoftwareImageType{});
-    juce::Graphics graphics(image);
-    ruler.paint(graphics);
+    {
+        juce::Graphics graphics(image);
+        ruler.paint(graphics);
+    }
     const auto tickInk = look::rulerLabel.interpolatedWith(look::band, .5f);
     check(image.getPixelAt(32, ruler.getHeight() - 2) == tickInk &&
               image.getPixelAt(64, ruler.getHeight() - 4) == tickInk,
@@ -9562,8 +9574,10 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
     editor.time.zoom(2., 0.);
     const auto noteRuler = editor.rulerArea();
     juce::Image editorImage(juce::Image::ARGB, editor.getWidth(), editor.getHeight(), true, juce::SoftwareImageType{});
-    juce::Graphics editorGraphics(editorImage);
-    editor.paint(editorGraphics);
+    {
+        juce::Graphics editorGraphics(editorImage);
+        editor.paint(editorGraphics);
+    }
     check(editorImage.getPixelAt(noteRuler.getX() + 32, noteRuler.getBottom() - 4) == look::rulerLabel &&
               editorImage.getPixelAt(noteRuler.getX() + 64, noteRuler.getBottom() - 8) == look::rulerLabel,
           "the Note Editor paints the first thirty-second's short tick and the sixteenth's label tick");
@@ -10213,8 +10227,10 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
     const auto ruler = ed.rulerArea();
     const auto rulerX = [&](std::int64_t tick) { return ruler.getX() + static_cast<int>(ed.time.x(tick)); };
     juce::Image image(juce::Image::ARGB, ed.getWidth(), ed.getHeight(), true, juce::SoftwareImageType{});
-    juce::Graphics graphics(image);
-    ed.paint(graphics);
+    {
+        juce::Graphics graphics(image);
+        ed.paint(graphics);
+    }
     check(image.getPixelAt(rulerX(beat + 3 * beat / 8), ruler.getBottom() - 4) == look::rulerLabel &&
               image.getPixelAt(rulerX(beat + step), ruler.getBottom() - 8) == look::rulerLabel,
           "the ruler marks a thirty-second and gives a sixteenth room for a position label");
@@ -14604,8 +14620,10 @@ void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
     const auto sample = [](juce::Component &component, int x, int y) {
         juce::Image image(juce::Image::ARGB, component.getWidth(), component.getHeight(), true,
                           juce::SoftwareImageType{});
-        juce::Graphics graphics(image);
-        component.paint(graphics);
+        {
+            juce::Graphics graphics(image);
+            component.paint(graphics);
+        }
         return image.getPixelAt(x, y);
     };
     const auto frozenMarks = [&] {
@@ -17114,8 +17132,10 @@ void arrangementClipColour(AppCommands &commands, const std::filesystem::path &d
     const auto top = laneTop(root, 2);
     const auto hasColour = [&](juce::Colour expected) {
         juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics g(image);
-        canvas.paintEntireComponent(g, true);
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
         return image.getPixelAt(100, top + 9) == expected && image.getPixelAt(100, top + 35) == expected;
     };
     check(hasColour(look::paletteColour(2)), "SC-37: a clip with no colour inherits the track colour in its title and body");
@@ -20871,11 +20891,11 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             const double scale = root.arrangement.geometry.scale;
             root.arrangement.geometry.scale = scale * 120;
             auto &canvas = root.arrangement.canvas;
-            const auto drawn = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            const auto drawn = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f, juce::SoftwareImageType{});
             auto blank = std::make_shared<engine::AudioRecordingPreview>(*preview);
             blank->peaks.bins.clear();
             root.arrangement.setRecordingPreview(std::move(blank), capturedFrames, false);
-            const auto redOnly = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            const auto redOnly = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f, juce::SoftwareImageType{});
             int waveformPixels = 0;
             for (int y = 0; y < drawn.getHeight(); ++y)
                 for (int x = 0; x < drawn.getWidth(); ++x) {
@@ -21593,8 +21613,10 @@ void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
                 continue;
             juce::Image image(juce::Image::ARGB, strip->getWidth(), strip->getHeight(), true,
                               juce::SoftwareImageType{});
-            juce::Graphics g(image);
-            strip->paint(g);
+            {
+                juce::Graphics g(image);
+                strip->paint(g);
+            }
             const int x = panel.vertical() ? 58 : (strip->showsInOut() ? MixerPanel::kInOutWidth : 0) + 109;
             return image.getPixelAt(x, panel.vertical() ? 27 : 3);
         }
@@ -26872,8 +26894,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mix.analysis.detail.freezeButton.setToggleState(true, juce::dontSendNotification); mix.analysis.detail.freezeButton.onClick();
                 const auto spectralPicture = mix.analysis.detail.view.snapshot(); const auto spectralBefore = broker->stats();
                 const auto image = [&] {
-                    juce::Image rendered(juce::Image::RGB, mix.analysis.detail.view.getWidth(), mix.analysis.detail.view.getHeight(), true);
-                    juce::Graphics graphics(rendered); mix.analysis.detail.view.paint(graphics); return rendered;
+                    juce::Image rendered(juce::Image::RGB, mix.analysis.detail.view.getWidth(),
+                                         mix.analysis.detail.view.getHeight(), true, juce::SoftwareImageType{});
+                    {
+                        juce::Graphics graphics(rendered);
+                        mix.analysis.detail.view.paint(graphics);
+                    }
+                    return rendered;
                 };
                 const auto beforeImage = image();
                 check(spectralPicture && mix.analysis.detail.view.frozen(), "palette rollback fixture retains a frozen spectrogram");
@@ -26895,12 +26922,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
                 broker->pump(); mix.frame(actual.reader()); mix.analysis.detail.view.freeze(true);
                 const auto slopePicture = mix.analysis.detail.view.snapshot();
-                const auto slopeImage = mix.analysis.detail.view.createComponentSnapshot(mix.analysis.detail.view.getLocalBounds(), false);
+                const auto slopeImage = mix.analysis.detail.view.createComponentSnapshot(
+                    mix.analysis.detail.view.getLocalBounds(), false, 1.f, juce::SoftwareImageType{});
                 check(slopePicture && mix.analysis.detail.view.spectrumSlope() == SpectrumSlope::Tilt45,
                       "slope rollback fixture contains a retained real Frozen Spectrum");
                 const auto slopeBefore = broker->stats(); actual.state().zoom = 0;
                 mix.analysis.detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
-                const auto slopeAfter = mix.analysis.detail.view.createComponentSnapshot(mix.analysis.detail.view.getLocalBounds(), false);
+                const auto slopeAfter = mix.analysis.detail.view.createComponentSnapshot(
+                    mix.analysis.detail.view.getLocalBounds(), false, 1.f, juce::SoftwareImageType{});
                 bool slopePixelsEqual = slopeImage.getBounds() == slopeAfter.getBounds();
                 for (int y = 0; y < slopeImage.getHeight() && slopePixelsEqual; ++y)
                     for (int x = 0; x < slopeImage.getWidth(); ++x)
@@ -27427,13 +27456,13 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
     panel.showPage("File & Folder");
     check(available("files.renderFolder"), "the render folder used by Export is editable");
     const auto *recordFolder = settings::find("files.recordFolder");
-    const auto recordPath = media::pathUtf8(dir / "Recorded");
+    const auto recordPath = systemPathText(dir / "Recorded");
     check(recordFolder && available(recordFolder->key) && panel.change(*recordFolder, recordPath) &&
               settings.get(recordFolder->key) == recordPath,
           "the recording folder is editable on File & Folder");
     const auto *sampleEditor = settings::find("files.sampleEditor");
     const auto *sampleEditorOpens = settings::find("files.sampleEditorOpens");
-    const auto editorPath = media::pathUtf8(dir / "Sample Editor");
+    const auto editorPath = systemPathText(dir / "Sample Editor");
     check(sampleEditor && available(sampleEditor->key) && panel.change(*sampleEditor, editorPath) &&
               settings.get(sampleEditor->key) == editorPath,
           "SC-213: the sample editor path is editable on File & Folder");
@@ -28909,8 +28938,10 @@ int main(int argc, char **argv) {
         const auto stripBounds = a.strip.getLocalBounds();
         juce::Image side(juce::Image::ARGB, stripBounds.getWidth(), stripBounds.getHeight(), true,
                         juce::SoftwareImageType{});
-        juce::Graphics g(side);
-        a.strip.paintEntireComponent(g, false);
+        {
+            juce::Graphics g(side);
+            a.strip.paintEntireComponent(g, false);
+        }
         const auto oldSwitches = juce::Rectangle<int>(4, a.strip.tracks.getY() - 44, 19, 41);
         bool clear = stripBounds.contains(oldSwitches);
         if (clear)
@@ -29153,8 +29184,10 @@ int main(int argc, char **argv) {
         auto &infoView = a.infoSpectrum;
         juce::Image empty(juce::Image::RGB, infoView.getWidth(), infoView.getHeight(), true,
                           juce::SoftwareImageType{});
-        juce::Graphics graphics(empty);
-        infoView.paintEntireComponent(graphics, true);
+        {
+            juce::Graphics graphics(empty);
+            infoView.paintEntireComponent(graphics, true);
+        }
         bool blankPlot = true;
         for (int y = 22; y < empty.getHeight(); ++y)
             for (int x = 0; x < empty.getWidth(); ++x)
@@ -31338,8 +31371,10 @@ int main(int argc, char **argv) {
                 stereoRow.bind(2);
                 juce::Image meters(juce::Image::ARGB, stereoRow.getWidth(), stereoRow.getHeight(), true,
                                    juce::SoftwareImageType{});
-                juce::Graphics g(meters);
-                stereoRow.paint(g);
+                {
+                    juce::Graphics g(meters);
+                    stereoRow.paint(g);
+                }
                 const int x = (stereoRow.showsInOut() ? MixerPanel::kInOutWidth : 0) + 105;
                 check(meters.getPixelAt(x + 1, 30) == look::meterLevel &&
                           meters.getPixelAt(x + 6, 30) == look::display,

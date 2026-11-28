@@ -207,7 +207,7 @@ void phaseGoniometer() {
         phase.frame();
     };
     const auto image = [&] {
-        juce::Image pixels(juce::Image::RGB, phase.getWidth(), phase.getHeight(), true);
+        juce::Image pixels(juce::Image::RGB, phase.getWidth(), phase.getHeight(), true, juce::SoftwareImageType{});
         juce::Graphics graphics(pixels);
         phase.paint(graphics);
         return pixels;
@@ -341,7 +341,7 @@ void modesSourcesAndFreeze() {
                             SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase,
                             SharedSpectrumView::Mode::Spectrogram}) {
         pane.setMode(mode); f.write(4096); f.broker->pump(); pane.frame(f.broker, 1, 3);
-        juce::Image image(juce::Image::RGB, 600, 375, true);
+        juce::Image image(juce::Image::RGB, 600, 375, true, juce::SoftwareImageType{});
         juce::Graphics graphics(image); pane.view.paint(graphics); // software-only component render, never desktop capture
         check(pane.view.snapshot() && pane.view.mode() == mode, "each implemented mode consumes a real publication and paints offscreen");
     }
@@ -404,7 +404,7 @@ void cappedFrozenHistoryAndIdleReset() {
     check(live.snapshot() && !live.snapshot()->historyLimited && live.snapshot()->columns.size() == 1 &&
           live.snapshot()->columns.back().serial == 3 && broker->stats().transforms == before.transforms,
           "hiding the frozen picture frees capacity and resumes a pending hop without source audio or FFT");
-    juce::Image image(juce::Image::RGB, 156, 311, true);
+    juce::Image image(juce::Image::RGB, 156, 311, true, juce::SoftwareImageType{});
     { juce::Graphics graphics(image); live.paint(graphics); }
     bool missingBlank = true, currentVisible = false;
     const auto background = image.getPixelAt(0, 0);
@@ -473,7 +473,7 @@ void mainMetersSharedPresentation() {
     f.write(); f.broker->pump(); full.frame(); info.frame(); window.frame();
     check(reads == 0 && !full.mainMeterSnapshot(), "default Spectrum performs no Main readout callbacks");
     const auto paint = [](SharedSpectrumView &view) {
-        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true);
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
         juce::Graphics graphics(image); view.paint(graphics); return image;
     };
     const auto spectrumWithBinding = paint(full);
@@ -713,8 +713,10 @@ void referenceMainMeterScale() {
           "changing the K reference level keeps the same fixed-time interval");
     const auto paintTop = [&] {
         juce::Image raster(juce::Image::RGB, 152, 520, true, juce::SoftwareImageType{});
-        juce::Graphics g(raster);
-        meter.paintEntireComponent(g, true);
+        {
+            juce::Graphics g(raster);
+            meter.paintEntireComponent(g, true);
+        }
         return raster.getPixelAt(35, 123);
     };
     check(paintTop() != juce::Colour(look::record), "K bias does not light the raw clip indicator");
@@ -903,7 +905,7 @@ void compactAnalyzerDock() {
 }
 
 juce::Image softwarePicture(SharedSpectrumView &view) {
-    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true);
+    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
     juce::Graphics graphics(image); view.paint(graphics); return image;
 }
 bool samePixels(const juce::Image &a, const juce::Image &b) {
@@ -936,16 +938,19 @@ void paletteMenuTheme() {
     const auto oldTheme = look::themeId();
     const auto density = look::densityId();
     const auto initialDefault = swatch(palettes::defaultIndex);
+    const juce::SoftwareImageType software;
+    const auto initialPixels = software.convert(initialDefault);
     const auto rocket = palettes::find("rocket");
     const auto initialStock = swatch(rocket);
-    check(initialDefault.isValid() && initialDefault.getPixelAt(0, 0) == look::display && initialStock.isValid(),
+    check(initialPixels.isValid() && initialPixels.getPixelAt(0, 0) == look::display && initialStock.isValid(),
           "an open analyser pane uses the current theme's default and a fixed stock swatch");
 
     look::apply(oldTheme == ThemeId::Light ? ThemeId::Dark : ThemeId::Light, density);
     pane.frame({}, 0, 0);
     const auto currentDefault = swatch(palettes::defaultIndex);
-    check(currentDefault.isValid() && currentDefault.getPixelAt(0, 0) == look::display &&
-              !samePixels(initialDefault, currentDefault) && swatch(rocket) == initialStock &&
+    const auto currentPixels = software.convert(currentDefault);
+    check(currentPixels.isValid() && currentPixels.getPixelAt(0, 0) == look::display &&
+              !samePixels(initialPixels, currentPixels) && swatch(rocket) == initialStock &&
               pane.requestedPalette() == "rocket" && pane.reverseButton.getToggleState(),
           "changing theme refreshes only the default thumbnail and preserves the palette selection");
     const auto repaints = root.fake->repaints;
