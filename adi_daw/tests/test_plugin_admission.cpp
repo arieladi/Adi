@@ -99,13 +99,14 @@ void run() {
 
     std::atomic<bool> valid{false};
     std::atomic<int> preparations{0}, packets{0}, parameterWrites{0};
-    int factories = 0, authorizations = 0;
+    int resolutions = 0, authorizations = 0, factories = 0;
     bool matchId = false;
     const net::PluginServerAddress expected{"127.0.0.1", 55056};
     const auto loader = net::makePluginServerLoader(
         "adi-daw",
         [&](const net::PluginServerLocation& location, const device::DeviceIdentity& identity)
             -> std::optional<net::PluginServerBinding> {
+            ++resolutions;
             matchId = location.address == expected && location.protocol == "audiogridder" &&
                       identity.format == "vst3" && identity.uid == ref.uid;
             if (!matchId) return {};
@@ -195,7 +196,7 @@ void run() {
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,remote_host_id) VALUES(1,1,0,1,7);"
         "INSERT INTO plugin_params(device_id,param_id,name,normalized_value) VALUES(1,'17','Gain',0.625);");
     const auto copyPath = dir.path() / "copy.adi";
-    const auto copied = original->saveCopy(copyPath);
+    const auto copied = original->saveCopy(copyPath, StoreFileCollision::Fail, StoreCopyPolicy::preserve);
     check(copied.ok, "copy the granted project to another native file");
     if (copied.ok) {
         StoreError copyError{};
@@ -221,6 +222,38 @@ void run() {
     check(loaded && saved && session.stats().paramsApplied == 1 &&
           parameterWrites.load() == previousWrites + 1 && saved->getParam("17").normalized == .625,
           "project open restores the saved normalized value to the admitted remote device");
+
+    const auto sharePath = dir.path() / "shared.adi";
+    const auto shared = original->saveCopy(sharePath);
+    check(shared.ok, "share the project with the default copy policy");
+    if (shared.ok) {
+        StoreError shareError{};
+        const auto share = Store::open(sharePath, shareError, /*readOnly=*/true);
+        check(share != nullptr, "reopen the shared project");
+        if (share) {
+            const auto uuid = share->db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString();
+            check(!uuid.empty() && uuid != "project-one" &&
+                  share->db().execAndGet("SELECT enabled FROM remote_hosts WHERE id=7").getInt() == 0,
+                  "a shared copy has a new UUID and retains the server with hosting disabled");
+            const auto resolutionsBeforeShare = resolutions;
+            const auto attemptsBeforeShare = authorizations;
+            const auto factoriesBeforeShare = factories;
+            request.project = share.get();
+            refused = loader(request, error);
+            request.project = original.get();
+            check(!refused && resolutions == resolutionsBeforeShare && authorizations == attemptsBeforeShare &&
+                  factories == factoriesBeforeShare && error.find("disabled") != std::string::npos,
+                  "a shared copy cannot resolve or authorize its disabled server");
+        }
+    }
+    original->db().exec("UPDATE remote_hosts SET enabled=0 WHERE id=7;");
+    const auto resolutionsBeforeDisable = resolutions;
+    const auto attemptsBeforeDisable = authorizations;
+    const auto factoriesBeforeDisable = factories;
+    refused = loader(request, error);
+    check(!refused && resolutions == resolutionsBeforeDisable && authorizations == attemptsBeforeDisable &&
+          factories == factoriesBeforeDisable && error.find("disabled") != std::string::npos,
+          "a disabled server is rejected before resolving the host or consulting a valid grant");
 }
 
 void cataloguedBindings() {

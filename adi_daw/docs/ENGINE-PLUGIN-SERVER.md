@@ -161,7 +161,9 @@ paired destination and the AGT-03 plug-in-hosting lease. The ledger scope
 includes the application, project UUID, connection and server fingerprint.
 At issuance the authorizer borrows the open project Store to derive its
 machine-local file binding. A copy with the same project UUID needs its own
-grant. The lease retains app-owned state after issuance.
+grant. The default sharing copy gets a new UUID and disables its server
+rows. A disabled row is refused before the endpoint is resolved or a grant
+is requested. The lease retains app-owned state after issuance.
 The worker checks the lease before setup, processing and state exchange.
 Raw stock lookup tokens cannot serve as project plug-in identities.
 An unavailable server falls back to the installed plug-in for live

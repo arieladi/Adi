@@ -33,17 +33,22 @@ std::string projectUuid(const Store& store) {
     return uuid;
 }
 
-std::optional<PluginServerLocation> requestedServer(const Store& store, std::int64_t id) {
-    SQLite::Statement server(store.db(), "SELECT name,host,port,protocol FROM remote_hosts WHERE id=?");
+std::optional<PluginServerLocation> requestedServer(const Store& store, std::int64_t id, std::string& error) {
+    SQLite::Statement server(store.db(), "SELECT name,host,port,protocol,enabled FROM remote_hosts WHERE id=?");
     server.bind(1, id);
     if (!server.executeStep()) return {};
+    auto name = server.getColumn(0).getString();
+    if (server.getColumn(4).getInt() != 1) {
+        error = (name.empty() ? std::to_string(id) : name) + ": plug-in hosting is disabled in this project";
+        return {};
+    }
     const auto port = server.getColumn(2).getInt64();
     auto host = server.getColumn(1).getString();
     auto protocol = server.getColumn(3).getString();
     if (port < 1 || port > 65535 || host.empty() || host.size() > 253 ||
         protocol.empty() || protocol.size() > 32) return {};
-    return PluginServerLocation{id, server.getColumn(0).getString(),
-                                {std::move(host), static_cast<std::uint16_t>(port)}, std::move(protocol)};
+    return PluginServerLocation{id, std::move(name), {std::move(host), static_cast<std::uint16_t>(port)},
+                                std::move(protocol)};
 }
 
 class GrantedProcessor final : public device::RemoteProcessor {
@@ -102,9 +107,9 @@ engine::DeviceLoader makePluginServerLoader(std::string app, PluginServerResolve
         }
         std::string serverName = std::to_string(*request.device->remoteHostId);
         try {
-            const auto server = requestedServer(*request.project, *request.device->remoteHostId);
+            const auto server = requestedServer(*request.project, *request.device->remoteHostId, error);
             if (!server) {
-                error = "the requested server address is unavailable";
+                if (error.empty()) error = "the requested server address is unavailable";
                 return {};
             }
             if (!server->name.empty()) serverName = server->name;

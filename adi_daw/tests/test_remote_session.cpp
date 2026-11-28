@@ -103,7 +103,7 @@ struct Project {
             "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','input.wav','wav');"
             "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000);"
             "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,2048);"
-            "INSERT INTO remote_hosts(id,name,host,port) VALUES(7,'Fixture','127.0.0.1',55056);"
+            "INSERT INTO remote_hosts(id,name,host,port,enabled) VALUES(7,'Fixture','127.0.0.1',55056,1);"
             "INSERT INTO plugin_refs(id,format,uid,name,subtype)"
             " VALUES(1,'clap','org.adi.catalogue.runtime','Catalogue runtime','effect');"
             "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
