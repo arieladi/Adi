@@ -3304,7 +3304,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             // SC-232: Options > Chase MIDI Notes, on by default: the setting, then the session, no undo step.
             std::vector<bool> told;
             root.applyChaseMidiNotes = [&](bool on) { told.push_back(on); };
-            const auto stepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+            const auto chaseStepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
             const auto ticked = [&commands] {
                 juce::ApplicationCommandInfo info(AppCommands::ChaseMidiNotes);
                 commands.getCommandInfo(AppCommands::ChaseMidiNotes, info);
@@ -3314,7 +3314,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "SC-232: Chase MIDI Notes is on by default and ticked");
             check(root.command(AppCommands::ChaseMidiNotes) && !commands.chaseMidiNotes() && !ticked() &&
                       commands.settings().get("midi.chaseNotes") == settings::Value(false) && told == std::vector<bool>{false} &&
-                      (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == stepBefore,
+                      (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == chaseStepBefore,
                   "SC-232: chosen, it is off, saved, the session told, and no undo step");
             check(root.command(AppCommands::ChaseMidiNotes) && commands.chaseMidiNotes() && ticked() &&
                       told == std::vector<bool>{false, true},

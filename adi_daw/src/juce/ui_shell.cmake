@@ -1,6 +1,10 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
 target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/theme.cpp src/adi/ui/density.cpp src/adi/ui/project_document.cpp src/adi/ui/plugin_hold_off.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp src/adi/ui/shared_analysis.cpp)
 target_sources(adi_core PRIVATE src/adi/ui/analysis_comparison.cpp)
+if(MSVC)
+    # The document's templates and lambdas pass the COFF limit of 65,279 sections (C1128).
+    set_source_files_properties(src/adi/ui/project_document.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
 add_executable(adi_ui_analysis_comparison_tests tests/test_analysis_comparison.cpp)
 target_link_libraries(adi_ui_analysis_comparison_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_analysis_comparison_tests COMMAND adi_ui_analysis_comparison_tests)
