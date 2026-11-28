@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 18:09 IST — basics/browser-chain `f3b8691a03a369a7a336a8681ec7559c8647f366`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug built and linked libc++ and libc++abi. The UI document and window-state suites passed. The shell suite repeated the three 90-pixel Devices, Mixer and Mixer View snapshot failures. The fixture still calls `browserPanel.search.clear()` at `adi_daw/tests/test_ui_shell.cpp:32372`. The existing Browser Escape path clears the query and refreshes the results before the snapshots.
+
+The exact `ui_browser.cpp`, `ui_main.cpp` and full `test_ui_shell.cpp` passed strict Clang 20 Apple Silicon syntax checks against macOS 26.1 SDK headers with macOS 14 as the deployment target. The main and shell sources compile the changed `library_folder_settings.hpp`.
+
 ### 28 November 2026, 17:58 IST — seats/stretcher-chain `1f193ff30a4a6e154a8b5eafb68d88be773fca66`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
