@@ -97,8 +97,10 @@ void latencyCompensatedPlacement() {
     constexpr std::uint32_t frames=128;
     const auto offset=driver.input+driver.output+std::llround(driver.errorCompensationMs*rate/1000.0);
     check(offset==688,"simulated input, output and 1 ms driver error total 688 samples");
-    struct Case {std::int64_t offset,position;};
-    for(const auto test:{Case{offset,112},Case{0,capturedAt},Case{-24,824},Case{offset+capturedAt,0}}) {
+    // A correction that reaches before the song's start cannot move the clip there. The clip starts
+    // at the song's start and hides the samples before it, so what was played stays in time.
+    struct Case {std::int64_t offset,position,hidden;};
+    for(const auto test:{Case{offset,112,0},Case{0,capturedAt,0},Case{-24,824,0},Case{capturedAt+40,0,40}}) {
         Fixture f;
         auto recorded=f.capture(false,Precision::Float32,false,frames,{},capturedAt);
         const std::array<recording::ClipIds,1> ids={{{7,8,"Latency placement"}}};
@@ -112,12 +114,30 @@ void latencyCompensatedPlacement() {
         const auto heard=f.play(Precision::Float32);
         bool exact=recorded.startSample==capturedAt && recorded.frames==frames;
         for(std::size_t frame=0;frame<heard.size();++frame) {
-            const auto local=static_cast<std::int64_t>(frame)-test.position;
-            const auto expected=local>=0 && local<frames ? Fixture::sample(static_cast<std::size_t>(local)) : 0.0f;
+            const auto local=static_cast<std::int64_t>(frame)-test.position+test.hidden;
+            const auto expected=local>=test.hidden && local<frames ? Fixture::sample(static_cast<std::size_t>(local)) : 0.0f;
             exact=exact && heard[frame]==expected;
         }
-        check(exact,"corrected song position shifts the whole take without changing its recorded samples");
+        check(exact,"corrected song position shifts the take without changing its recorded samples");
     }
+    {
+        Fixture f;
+        auto recorded=f.capture(false,Precision::Float32,false,frames,{},capturedAt);
+        const std::array<recording::ClipIds,1> ids={{{7,8,"Latency placement"}}};
+        const auto early=recording::prepareCommit(*f.store,recorded,ids,capturedAt+frames);
+        check(!early.ok && early.error.find("latency")!=std::string::npos &&
+              std::filesystem::is_regular_file(recorded.tracks[0].file),
+              "a take that ended before its corrected start is refused by name and its recording kept");
+    }
+    using Range=std::optional<RecordedPass>;
+    const auto same=[](const Range& range,std::uint64_t source,std::uint64_t count,std::int64_t first) {
+        return range && range->sourceStartFrame==source && range->frames==count &&
+               range->timelineStartSample==first && range->timelineEndSample==first+static_cast<std::int64_t>(count);
+    };
+    check(same(recordingPlacementRange(0,512,192,{}),192,320,0) && same(recordingPlacementRange(100,512,192,{}),92,420,0) &&
+          same(recordingPlacementRange(192,512,192,{}),0,512,0) && same(recordingPlacementRange(1000,512,192,{}),0,512,808) &&
+          same(recordingPlacementRange(0,512,-48,{}),0,512,48) && !recordingPlacementRange(0,192,192,{}),
+          "an unpunched take keeps its sample mapping when the correction crosses the song's start");
 }
 void midiLinearTakes() {
     Fixture fixture;

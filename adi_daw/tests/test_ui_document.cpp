@@ -3192,7 +3192,9 @@ void refusedRecordingKeepsAudio(const std::filesystem::path &dir, bool loop = fa
         check(exact, "the saved but unplaced WAV still holds all captured PCM");
     }
 }
-void recordWithDeviceLatency(const std::filesystem::path &dir) {
+// `startSample` 0 is the take most songs begin with: Record from 1.1.1. The correction then reaches
+// before the song's start, and the clip must hide those first samples instead of landing late.
+void recordWithDeviceLatency(const std::filesystem::path &dir, int startSample = 48000) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "overdub.adi", true, {}, error);
     check(doc != nullptr, "SC-22: a project to record an overdub");
@@ -3208,7 +3210,7 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
           "SC-22: arm the audio track with Monitor Off for loopback compensation");
 
     constexpr int rate = 48000, frames = 64;
-    constexpr int startSample = rate, referenceClick = 256;
+    constexpr int referenceClick = 256;
     constexpr int inputLatency = 64, outputLatency = 128;
     constexpr int delayedClick = referenceClick + inputLatency + outputLatency;
     constexpr int captureFrames = 512;
@@ -3250,7 +3252,8 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
     if (!landed || !landed->ok || landed->clips.size() != 1)
         return;
     SQLite::Statement take(doc->store().db(),
-                           "SELECT c.pos_ticks, m.rel_path FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                           "SELECT c.pos_ticks, m.rel_path, a.src_start_frames, a.src_len_frames FROM clips c "
+                           "JOIN audio_clips a ON a.clip_id=c.id "
                            "JOIN media_files m ON m.id=a.media_id WHERE c.id=?");
     take.bind(1, landed->clips.front());
     check(take.executeStep(), "SC-22: the overdub has a timeline position and a media file");
@@ -3261,11 +3264,217 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
     audio::WavReader saved(mediaPath);
     std::array<float, captureFrames> audio{};
     const auto clipStart = std::llround(tempo->ticksToSeconds(take.getColumn(0).getInt64()) * rate);
+    // The clip plays the file from `sourceStart`: file frame f sounds at clipStart - sourceStart + f.
+    const auto sourceStart = take.getColumn(2).getInt64(), sourceLength = take.getColumn(3).getInt64();
+    const auto hidden = std::max(0, inputLatency + outputLatency - startSample);
     check(preview && preview->startSample == clipStart,
           "SC-20, SC-22: live peaks and the placed clip share the compensated start");
     check(saved.frames() == audio.size() && saved.read(audio.data(), captureFrames) == audio.size() &&
-              audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
+              audio[delayedClick] == 0.75f &&
+              clipStart - sourceStart + delayedClick == startSample + referenceClick,
           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
+    check(sourceStart == hidden && sourceLength == captureFrames - hidden,
+          "SC-22: a take from the song's start hides the samples its correction puts before the start");
+    if (preview) {
+        const auto drawn = preview->latestPass(captureFrames);
+        check(drawn.startSample == clipStart && static_cast<std::int64_t>(drawn.sourceStartFrame) == sourceStart &&
+                  static_cast<std::int64_t>(drawn.frames) == sourceLength,
+              "SC-20, SC-22: the waveform drawn while recording is the part of the take the clip will play");
+    }
+}
+// SC-447: a take is whole while the window works. As in the program, the device's callback runs on a
+// thread of its own while the owner's timer ticks, reads the live waveform and edits other tracks:
+// volume, mute, a rename, a new track, a new clip, Undo. The take must hold every sample the device
+// delivered, and Undo and Redo of the landed take must leave the same audio.
+void takeIsWholeWhileTheOwnerWorks(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    constexpr int rate = 48'000, block = 256;
+    constexpr std::int64_t frames = 20 * rate;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "whole-take.adi", true, {}, error);
+    check(doc != nullptr, "SC-447: a project to record into");
+    if (!doc)
+        return;
+    std::string refused;
+    const auto edit = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        const auto result = doc->ops().submit(request);
+        if (!result.ok && refused.empty())
+            refused = std::string(type) + ": " + result.error;
+        return result.ok;
+    };
+    const bool armed = edit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                       edit("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) && doc->synchronise();
+    check(armed, "SC-447: arm the audio track");
+    if (!armed)
+        return;
+    doc->prepare(rate, block);
+    const bool started = doc->startRecording(0, 2, false);
+    check(started, "SC-447: start the take");
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto folder = media::projectFolder(doc->store());
+    std::filesystem::path written;
+    for (const auto &entry : std::filesystem::directory_iterator(folder))
+        if (media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            written = entry.path() / "take-0.wav";
+    check(!written.empty(), "SC-447: the recorder made its private take folder");
+    if (written.empty()) {
+        doc->release();
+        return;
+    }
+    // Exactly representable, never periodic in a block, different on each input.
+    const auto sample = [](std::int64_t frame, std::size_t channel) {
+        const auto mixed = (static_cast<std::uint64_t>(frame) + 1U) * (channel == 0 ? 2654435761ULL : 40503ULL);
+        return static_cast<float>((mixed >> 7U) & 0xffffU) / 65536.f - 0.5f;
+    };
+    std::atomic<std::int64_t> delivered{0};
+    std::atomic<bool> deviceDone{false};
+    std::thread device([&] {
+        std::array<float, block> left{}, right{}, outLeft{}, outRight{};
+        const float *inputs[]{left.data(), right.data()};
+        float *outputs[]{outLeft.data(), outRight.data()};
+        engine::AudioIo io;
+        io.in = inputs;
+        io.numIn = 2;
+        io.out = outputs;
+        io.numOut = 2;
+        const auto began = Clock::now();
+        std::int64_t stream = 0;
+        for (int turn = 0; stream < frames; ++turn) {
+            // Faster than a device, but never past the writer: the ring holds two seconds.
+            std::error_code sizeError;
+            const auto size = std::filesystem::file_size(written, sizeError);
+            const auto onDisk = sizeError ? 0 : static_cast<std::int64_t>(size / (2 * sizeof(float)));
+            if (stream - onDisk > rate / 2) {
+                if (Clock::now() - began > 3min)
+                    break;
+                std::this_thread::sleep_for(1ms);
+                continue;
+            }
+            // A driver may deliver less than it granted.
+            const auto wanted = turn % 37 == 0 ? std::int64_t{96} : std::int64_t{block};
+            io.frames = static_cast<std::int32_t>(std::min(wanted, frames - stream));
+            io.streamTimeSamples = stream;
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                left[static_cast<std::size_t>(i)] = sample(stream + i, 0);
+                right[static_cast<std::size_t>(i)] = sample(stream + i, 1);
+            }
+            doc->process(io);
+            stream += io.frames;
+            delivered.store(stream, std::memory_order_release);
+            if (turn % 8 == 0)
+                std::this_thread::sleep_for(1ms);
+        }
+        deviceDone.store(true, std::memory_order_release);
+    });
+    int edits = 0, turns = 0;
+    bool editsOk = true, stillRecording = true;
+    std::uint64_t previewFrames = 0;
+    const auto ownerBegan = Clock::now();
+    while (!deviceDone.load(std::memory_order_acquire)) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - ownerBegan).count();
+        doc->tick(now);
+        stillRecording = stillRecording && doc->recording();
+        if (const auto preview = doc->session().recording().preview())
+            previewFrames = std::max(previewFrames, preview->peaks.frames);
+        (void)doc->session().recording().acceptedFrames();
+        switch (turns % 8) {
+        case 0: editsOk = edit("mixer.setVolume", {{"id", 5}, {"db", -1.0 - turns % 12}}) && editsOk; break;
+        case 1: editsOk = edit("track.setMute", {{"id", 5}, {"muted", turns % 16 == 1}}) && editsOk; break;
+        case 2: editsOk = edit("track.rename", {{"id", 5}, {"name", "Turn " + std::to_string(turns)}}) && editsOk; break;
+        case 3: editsOk = edit("track.create", {{"id", 1000 + turns}, {"kind", "audio"}, {"name", "Added"}}) && editsOk; break;
+        case 4: editsOk = edit("clip.create", {{"id", 5000 + turns}, {"track", 2}, {"kind", "midi"},
+                                               {"pos", (turns / 8) * textproj::kWhole}, {"length", textproj::kWhole}}) && editsOk; break;
+        case 5: editsOk = doc->ops().undo().ok && editsOk; break;
+        case 6: editsOk = edit("mixer.setPan", {{"id", 5}, {"pan", turns % 16 == 6 ? .25 : -.25}}) && editsOk; break;
+        default: break;
+        }
+        edits += turns % 8 != 7 ? 1 : 0;
+        editsOk = doc->synchronise() && editsOk;
+        ++turns;
+        std::this_thread::sleep_for(1ms);
+    }
+    device.join();
+    const auto captured = delivered.load(std::memory_order_acquire);
+    std::printf("whole take: %d owner turns and %d edits beside %lld frames\n", turns, edits,
+                static_cast<long long>(captured));
+    if (!refused.empty())
+        std::printf("whole take: an edit was refused: %s\n", refused.c_str());
+    check(editsOk && edits > 0, "SC-447: the owner's edits land while the take records");
+    check(captured == frames && stillRecording && doc->recording() &&
+              doc->session().recording().acceptedFrames() == static_cast<std::uint64_t>(frames),
+          "SC-447: the recorder accepts every delivered frame and goes on recording under the owner's work");
+    check(previewFrames > 0, "SC-447: the live waveform arrives while the owner works");
+
+    doc->stopRecording();
+    std::array<float, block> idleIn{}, idleLeft{}, idleRight{};
+    const float *idleInputs[]{idleIn.data(), idleIn.data()};
+    float *idleOutputs[]{idleLeft.data(), idleRight.data()};
+    engine::AudioIo idle;
+    idle.in = idleInputs;
+    idle.numIn = 2;
+    idle.out = idleOutputs;
+    idle.numOut = 2;
+    idle.frames = block;
+    idle.streamTimeSamples = captured;
+    doc->process(idle);
+    std::optional<ui::ProjectDocument::TakeLanded> landed;
+    const auto stoppedAt = Clock::now();
+    while (!landed && Clock::now() - stoppedAt < 1min) {
+        doc->tick(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - ownerBegan).count());
+        landed = doc->takeLanded();
+        if (!landed)
+            std::this_thread::sleep_for(1ms);
+    }
+    if (landed)
+        std::printf("whole take: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == 1 && landed->message == "Recorded one take.",
+          "SC-447: the take lands whole, with no interruption said");
+    if (!landed || !landed->ok || landed->clips.size() != 1) {
+        doc->release();
+        return;
+    }
+    auto &db = doc->store().db();
+    const auto wholeOnDisk = [&] {
+        SQLite::Statement clip(db, "SELECT a.src_start_frames, a.src_len_frames, m.rel_path FROM clips c "
+                                   "JOIN audio_clips a ON a.clip_id=c.id JOIN media_files m ON m.id=a.media_id "
+                                   "WHERE c.track_id=4");
+        if (!clip.executeStep() || clip.getColumn(0).getInt64() != 0 || clip.getColumn(1).getInt64() != frames)
+            return false;
+        audio::WavReader wave(folder / media::pathFromUtf8(clip.getColumn(2).getString()));
+        const auto channels = static_cast<std::size_t>(wave.channels());
+        if (wave.frames() != static_cast<std::uint64_t>(frames) || channels == 0 || channels > 2 || clip.executeStep())
+            return false;
+        std::vector<float> interleaved(static_cast<std::size_t>(block) * channels);
+        for (std::int64_t at = 0; at < frames;) {
+            const auto count = static_cast<std::uint32_t>(std::min<std::int64_t>(block, frames - at));
+            if (wave.read(interleaved.data(), count) != count)
+                return false;
+            for (std::uint32_t i = 0; i < count; ++i)
+                for (std::size_t channel = 0; channel < channels; ++channel)
+                    if (interleaved[static_cast<std::size_t>(i) * channels + channel] != sample(at + i, channel)) {
+                        std::printf("whole take: frame %lld differs on channel %zu\n",
+                                    static_cast<long long>(at + i), channel);
+                        return false;
+                    }
+            at += count;
+        }
+        return true;
+    };
+    check(wholeOnDisk(), "SC-447: the landed take is the input, sample for sample");
+    const auto undo = doc->ops().nextUndo();
+    check(undo && undo->label == "Record Audio" && doc->ops().undo().ok && doc->synchronise() &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=4").getInt() == 0,
+          "SC-447: one Undo takes the take away");
+    check(doc->ops().redo().ok && doc->synchronise() && wholeOnDisk(),
+          "SC-447: Redo brings the same take back, its audio still whole on disk");
+    doc->release();
 }
 void mixedRecordingLatency(const std::filesystem::path &dir) {
     constexpr int rate = 48000, frames = 64, reportedSamples = 32;
@@ -5877,6 +6086,10 @@ int main(int argc, char **argv) {
         mixedPunchKeepsMidi(partialPunchDir.path(), true);
         test::TempDirectory latencyDir("ui_document", "latency");
         recordWithDeviceLatency(latencyDir.path());
+        test::TempDirectory songStartLatencyDir("ui_document", "latency-at-song-start");
+        recordWithDeviceLatency(songStartLatencyDir.path(), 0);
+        test::TempDirectory wholeTakeDir("ui_document", "whole-take");
+        takeIsWholeWhileTheOwnerWorks(wholeTakeDir.path());
         test::TempDirectory mixedLatencyDir("ui_document", "mixed-latency");
         mixedRecordingLatency(mixedLatencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
