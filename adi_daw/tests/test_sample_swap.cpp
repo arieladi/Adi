@@ -28,6 +28,12 @@ void check(bool pass, const char *description) {
     }
 }
 
+// Flushed stage lines: a ctest timeout keeps them, so a hang names its step.
+void stage(const char *name) {
+    std::printf("stage: %s\n", name);
+    std::fflush(stdout);
+}
+
 #if ADI_WITH_PD
 constexpr int kRate = 48000;
 void wave(const fs::path &path, double amplitude) {
@@ -64,9 +70,12 @@ void swapInPlayingProject() {
         analysis[i].descriptors.spectralEnergy[1] = 1.f - energy[i];
     }
     const auto rescanAndRank = [&] {
+        stage("library scan");
         if (!index->scan(volume).ok)
             throw std::runtime_error("sample index scan failed");
+        stage("library hashing");
         index->waitIdle();
+        stage("library ranked");
         std::vector<SimilarSampleCandidate> candidates;
         std::vector<const SampleAnalysis *> measurements;
         for (const auto &entry : index->entries()) {
@@ -90,6 +99,7 @@ void swapInPlayingProject() {
     if (initialRank.size() != 2 || initialRank.front().file.filename() != names[1])
         throw std::runtime_error("fixture did not rank the two similar files");
 
+    stage("open the playing project");
     auto document = ui::ProjectDocument::open(temp.path() / "swap.adi", true, device::withBuiltinDevices(), error);
     if (!document)
         throw std::runtime_error(error);
@@ -146,6 +156,7 @@ void swapInPlayingProject() {
         }
         return peak;
     };
+    stage("play and swap");
     document->mailbox().post(ui::TransportMailbox::Command::Play);
     const auto originalPeak = render();
     check(document->mailbox().playing() && originalPeak > 0.01f, "reference sample plays through the live device");
@@ -191,6 +202,7 @@ void swapInPlayingProject() {
     }
     std::printf("Playing OneShot peak %.6f -> %.6f, Undo %.6f\n", static_cast<double>(originalPeak),
                 static_cast<double>(swappedPeak), static_cast<double>(restoredPeak));
+    stage("release");
     document->release();
 }
 #endif
@@ -211,6 +223,7 @@ void callbackRefusal() {
 
 int main() {
     try {
+        stage("callback refusal");
         callbackRefusal();
 #if ADI_WITH_PD
         swapInPlayingProject();

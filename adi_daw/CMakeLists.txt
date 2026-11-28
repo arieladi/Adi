@@ -2348,6 +2348,10 @@ endforeach()
 add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
 target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings)
 add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
+# RUN_SERIAL for the reason adi_library_tests has it: the fixture scans and
+# hashes through the same background-priority index worker, which a parallel
+# Windows ctest starved past the 600 s timeout (alone it takes seconds).
+set_tests_properties(adi_sample_swap_tests PROPERTIES RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.
