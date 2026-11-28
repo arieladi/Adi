@@ -129,8 +129,10 @@ void projection() {
     const auto reverse = projectPitchMidi(*f.store, f.analysis, {});
     check(reverse && reverse.data->notes.size() == 3 && reverse.data->notes[0].key == 72 &&
           reverse.data->notes[1].key == 69 && reverse.data->notes[2].key == 57 &&
-          reverse.data->notes[2].start_ticks == 2 * quarter,
-          "reverse mirrors source intervals before Warp");
+          reverse.data->notes[0].dur_ticks == 7 * quarter / 12 &&
+          reverse.data->notes[1].start_ticks == quarter &&
+          reverse.data->notes[2].start_ticks == 5 * quarter / 2,
+          "reverse reflects both Warp marker clocks as the pager does");
     f.store->db().exec("UPDATE audio_clips SET reverse=0 WHERE clip_id=11;"
         "UPDATE clips SET length_ticks=23063040,loop_enabled=1,"
         "loop_start_ticks=5765760,loop_len_ticks=5765760 WHERE id=11");
@@ -140,6 +142,44 @@ void projection() {
           repeated.data->notes[1].start_ticks == quarter && repeated.data->notes[2].start_ticks == 2 * quarter &&
           repeated.data->notes[3].start_ticks == 3 * quarter && repeated.data->notes[3].key == 69,
           "loop projection keeps the lead-in and repeats only the loop range");
+}
+
+void clipPlaybackClock() {
+    Fixture f;
+    f.store->db().exec("UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=11");
+    PitchMidiOptions options;
+    options.keepTuning = true;
+    options.volumeMode = PitchMidiVolumeMode::NoteGain;
+    const std::vector<float> pcm(48000, 0.25f);
+    options.velocitySource = pcm;
+    const auto octave = projectPitchMidi(*f.store, f.analysis, {}, options);
+    check(octave && octave.data->notes.size() == 3 && octave.data->notes.front().key == 69 &&
+          octave.data->notes.front().tuning_cents == 27.5f && octave.data->notes.front().dur_ticks == quarter / 5 &&
+          octave.data->notes[1].start_ticks == 2 * quarter / 5,
+          "unwarped octave transpose doubles playback rate and halves projected note time");
+    check(octave && !octave.data->gainCurves.empty() && octave.data->gainCurves.front().points.size() == 42,
+          "unwarped transpose leaves amplitude windows indexed in the 48 kHz source");
+
+    f.store->db().exec("UPDATE audio_clips SET transpose_semis=7 WHERE clip_id=11");
+    const auto rounded = projectPitchMidi(*f.store, f.analysis, {}, options);
+    const auto effectiveCents = 1200 * std::log2(std::round(48000 * std::exp2(7.0 / 12)) / 48000);
+    check(rounded && !rounded.data->notes.empty() && rounded.data->notes.front().key == 64 &&
+          std::abs(rounded.data->notes.front().tuning_cents - (27.5 + effectiveCents - 700)) < 1e-4,
+          "fractional tuning uses the rounded physical playback rate");
+
+    // The source is 0.8 seconds and this map consumes 0.8 seconds at 120 BPM.
+    constexpr std::array identity{WarpMarker{0, 0}, WarpMarker{38400, 8 * quarter / 5}};
+    const auto map = audio::writeWarpMap(identity, 38400);
+    if (!map) throw std::runtime_error("fixture identity Warp map");
+    SQLite::Statement set(f.store->db(), "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch',"
+                                       "warp_markers=?,transpose_semis=12 WHERE clip_id=11");
+    set.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    set.exec();
+    const auto repitched = projectPitchMidi(*f.store, f.analysis, {}, options);
+    check(repitched && repitched.data->notes.size() == 3 && repitched.data->notes.front().key == 57 &&
+          repitched.data->notes.front().tuning_cents == 27.5f &&
+          repitched.data->notes.front().dur_ticks == 2 * quarter / 5,
+          "identity Re-Pitch Warp ignores the retained clip transpose");
 }
 
 void journal() {
@@ -766,7 +806,7 @@ void callback() {
 
 int main() {
     try {
-        projection(); journal(); expressionAndDestinations(); analyzedMelody(); extractionLineage();
+        projection(); clipPlaybackClock(); journal(); expressionAndDestinations(); analyzedMelody(); extractionLineage();
         markFirstSelectedExtraction(); unfinishedExtractionSchema(); durableEdits(); durableGeometry();
         amplitudeExtraction(); channelBendExtraction(); callback();
     }

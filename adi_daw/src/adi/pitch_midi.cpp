@@ -2,6 +2,7 @@
 #include "adi/pitch_midi.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
@@ -59,6 +60,7 @@ struct Source {
     engine::ClipDetails clip;
     std::optional<std::int64_t> offsetNs, loopBeginNs, loopEndNs, endNs;
     std::vector<WarpMarker> warp;
+    double playbackRate = 0;
     double transposeCents = 0;
 };
 
@@ -79,7 +81,7 @@ Source readSource(const Store& store, const media::ClipPitchAnalysis& analysis) 
         "SELECT m.hash_blake3,m.sample_rate,m.channels,m.frames,a.src_start_frames,a.src_len_frames,"
         "a.reverse,a.transpose_semis,a.warp_enabled,"
         "CASE WHEN typeof(a.warp_markers)='blob' AND length(a.warp_markers)<=67108864 THEN a.warp_markers END,"
-        "d.content_offset_ns,d.loop_begin_ns,d.loop_end_ns,d.source_end_ns "
+        "d.content_offset_ns,d.loop_begin_ns,d.loop_end_ns,d.source_end_ns,a.warp_mode "
         "FROM audio_clips a JOIN media_files m ON m.id=a.media_id "
         "LEFT JOIN clip_playback_details d ON d.clip_id=a.clip_id WHERE a.clip_id=?");
     row.bind(1, analysis.clipId);
@@ -99,10 +101,15 @@ Source readSource(const Store& store, const media::ClipPitchAnalysis& analysis) 
 
     Source result;
     result.clip = std::move(*clip.clip);
-    result.transposeCents = row.getColumn(7).getDouble() * 100;
-    if (!std::isfinite(result.transposeCents) || std::abs(result.transposeCents) > 9600)
-        throw CaptureError{PitchMidiProblem::Source, "invalid clip transpose"};
+    const auto transpose = row.getColumn(7).getDouble();
+    result.playbackRate = identity.sampleRate;
     if (row.getColumn(8).getInt() != 0) {
+        const auto mode = audio::parseWarpMode(row.getColumn(14).getString());
+        if (!mode) throw CaptureError{PitchMidiProblem::Source, "Warp mode is not available"};
+        if (*mode != audio::WarpMode::RePitch) {
+            if (!(std::abs(transpose) <= 96)) throw CaptureError{PitchMidiProblem::Source, "invalid clip transpose"};
+            result.transposeCents = transpose * 100;
+        }
         const auto column = row.getColumn(9);
         if (column.isNull()) throw CaptureError{PitchMidiProblem::Source, "Warp needs a readable marker map"};
         const auto* bytes = static_cast<const std::byte*>(column.getBlob());
@@ -110,7 +117,17 @@ Source readSource(const Store& store, const media::ClipPitchAnalysis& analysis) 
                                       static_cast<std::uint64_t>(frames));
         if (!map || map.markers.back().tick > maxTick)
             throw CaptureError{PitchMidiProblem::Source, "invalid source Warp map"};
+        if (analysis.reversed) {
+            // Playback reflects both Warp clocks before positioning the reversed source.
+            const auto end = map.markers.back();
+            std::reverse(map.markers.begin(), map.markers.end());
+            for (auto& marker : map.markers) marker = {end.sourceFrame - marker.sourceFrame, end.tick - marker.tick};
+        }
         result.warp = std::move(map.markers);
+    } else {
+        result.playbackRate = audio::pitchedSampleRate(identity.sampleRate, transpose);
+        if (!(result.playbackRate > 0)) throw CaptureError{PitchMidiProblem::Source, "invalid unwarped clip transpose"};
+        result.transposeCents = 1200 * std::log2(result.playbackRate / identity.sampleRate);
     }
     result.offsetNs = integer(row, 10);
     result.loopBeginNs = integer(row, 11);
@@ -122,12 +139,12 @@ Source readSource(const Store& store, const media::ClipPitchAnalysis& analysis) 
 struct Clock {
     const Source& source;
     const edit::TimeMap& time;
-    std::uint32_t rate;
+    std::uint32_t analysisRate;
     std::int64_t positionTicks = 0, lengthTicks = 0, positionNs = 0;
     std::int64_t offset = 0, sourceEnd = 0, span = 0, loopBegin = 0, loopEnd = 0;
 
     Clock(const Source& captured, const edit::TimeMap& tempo, std::uint32_t sampleRate, std::uint64_t frames)
-        : source(captured), time(tempo), rate(sampleRate) {
+        : source(captured), time(tempo), analysisRate(sampleRate) {
         const auto& clip = source.clip;
         if (clip.timeBase == 0 && clip.posTicks && clip.lengthTicks) {
             positionTicks = *clip.posTicks;
@@ -186,7 +203,7 @@ struct Clock {
     }
 
     [[nodiscard]] std::int64_t atFrame(std::uint64_t frame) const {
-        if (!warped()) return edit::nanosFromSeconds(static_cast<double>(frame) / rate);
+        if (!warped()) return edit::nanosFromSeconds(static_cast<double>(frame) / source.playbackRate);
         const auto next = std::lower_bound(source.warp.begin(), source.warp.end(), frame,
             [](const WarpMarker& value, auto position) { return static_cast<std::uint64_t>(value.sourceFrame) < position; });
         if (next == source.warp.end()) throw CaptureError{PitchMidiProblem::Source, "note outside Warp coverage"};
@@ -324,7 +341,7 @@ void buildVolume(Event& event, const audio::PitchNote& note, const audio::PitchN
     constexpr double minimumGain = 1e-6; // -120 dB, finite silence
     constexpr double maximumGain = 4.0; // native per-note gain's host range
     const auto frames = sourceSamples(note, options);
-    const auto window = std::max(std::size_t{1}, clock.rate / meterWindowsPerSecond);
+    const auto window = std::max(std::size_t{1}, clock.analysisRate / meterWindowsPerSecond);
     const auto count = (frames.size() - 1) / window + 1;
     if (count > remaining)
         throw CaptureError{PitchMidiProblem::Edits, "source volume meter point budget exceeded"};
