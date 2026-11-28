@@ -161,6 +161,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-457, SC-462 | `basics/test-chain-2` at `c7e5385cc` | Show Info for occupied surfaces and expand the analyser through its caption row. Arrangement, Browser, window and Analysers seats. | Peerless hover replays exercise clips, blanks and controls. A software-painted spectrogram matches the full raster across all 128 by 256 pixels. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-469, SC-470 | `basics/test-chain-2` at `1ec5604c0` | Default to No Dither and offer Show File in the completion message. Export and window seats. | The peerless export fixture checks the actual rendered file, reveal action, cancellation and a vanished file. The preferences probe and 341 settings checks passed. Playback still uses its existing path. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-476 | `basics/test-chain-2` at `be0ee3193` | Clamp unlooped audio extension to the source endpoint in the gesture and journal. Clips, edit and engine seats. | The edit tests cover source mapping and history. The peerless resize checks the ghost and saved edge, and the corrected legacy fixture preserves the silent waveform tail. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-452 | `basics/test-chain-2` at `eda879365` | Show the Note Editor grid in its boxed header chooser. Clip and look seats. | The chooser geometry and actual Cmd/Ctrl+1 and +2 were checked independently of the Arrangement grid. The software reference changes only at the new readout. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -263,3 +264,23 @@ In the 80 px per quarter clip fixture, a drag from x560 to x720 used to leave th
 The placement fixture failed its six new source-bound assertions against old engine objects. It passed all 459 checks with the fix, and Clip Playback passed all 667 existing checks. The integrated gate also runs the peerless Arrangement mouse fixture with its ghost, endpoint, selection and history checks.
 
 The older waveform fixture now seeds an eight-beat saved clip over four beats of audio. Its previous setup used the resize command, which now clips the requested extension. In the corrected 40 px per quarter fixture the source ends at x160 and the saved clip at x320. All 33 focused checks passed with 2,000 waveform pixels inside the source and zero in the silent tail.
+
+#### SC-452 Note Editor grid chooser
+
+ADR-0240 d1 approves `collab/window/pictures/2026-10-28-clip-view.png`. Its MIDI example shows the boxed grid chooser at the upper-right of the editor's header. The picture's visible chooser occupies approximately x=1400–1442 and y=635–647, inset about four pixels from the editor edge. The Live Clip View audit C9 independently records the header position, citing manual §§6.10 and 41.13 and reading N8 M2-16.
+
+The last code drew the value as bare text in a wider header slot, though Cmd/Ctrl+1 and +2 already updated the Note Editor grid. The chooser now has the shared frame and disclosure arrow, with time values fitted inside it. Its drawn bounds and existing mouse target coincide.
+
+| Clip View panel-local measurement | Before | After |
+| --- | ---: | ---: |
+| Control rectangle, with header right edge at x=1000 px | (922, 0), 70 × 17 px | (952, 2), 44 × 13 px |
+| Right inset | 8 px | 4 px |
+| Grid at 64 px/quarter, Medium, then Cmd/Ctrl+1 and +2 | 1/16 → 1/32 → 1/16, bare text | 1/16 → 1/32 → 1/16, boxed chooser |
+
+The peerless shell regression uses the real keyboard path and a one-bar MIDI clip. It verifies grid-step ticks, the live readout, the painted border and field, and the separate Arrangement grid. Its paint checks sample outside text, use a software image, and close Graphics before reading the pixels.
+
+Candidate `6ca28fdcf`. A focused JUCE probe compiled the exact baseline and current paint, layout and grid-key bodies and passed with `DISPLAY` unset. At all three grid values the sampled border and field moved from the old header pixels `#383838/#383838` to chooser pixels `#4A4A4A/#3D3D3D` in the Dark theme.
+
+Ninja-derived Debug syntax checks with warnings as errors passed for the implementation and shell regression. The complete suite remains the integration-chain gate.
+
+The 1060 × 278 px Clip View software reference changes only around the new grid chooser. Exactly 683 changed pixels are within x980–1055 and y0–14. The fitted words and their 2 px overhang stay blacked out in the 30 × 17 px comparison mask. The chooser frame, arrow and tested bounds account for the visual change.
