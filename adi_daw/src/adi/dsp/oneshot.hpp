@@ -88,6 +88,16 @@ class OneShot final : public DeviceInstance {
     /// of such a pair and does not retrigger the first.
     void queueNoteGain(double gain, bool reverse = false, double cents = 0, double pan = 0,
                        bool partner = false) noexcept;
+    /// SC-483, Live's Sampler envelopes (pitch, filter): from `initial` to
+    /// `peak` over the attack, to `sustain` over the decay, held, and from
+    /// wherever it is at note-off to `end` over the release. Levels 0..1,
+    /// straight segments, times in ms. It moves its destination by `amount`
+    /// semitones at level 1; off, or at amount 0, it moves nothing.
+    struct Envelope {
+        bool on = false;
+        double amount = 0, attack = 0, decay = 600, sustain = 0, release = 50, initial = 0, peak = 1, end = 0;
+        [[nodiscard]] bool heard() const noexcept { return on && amount != 0; }
+    };
     /// SC-483, for the Sampler's layers: how a voice travels its sample beyond
     /// OneShot's own controls. Positions are fractions of the whole sample. A
     /// fresh Travel is OneShot's own behaviour, bit for bit.
@@ -108,6 +118,9 @@ class OneShot final : public DeviceInstance {
         /// How a transposed sample is read between its frames: 0 the nearest
         /// frame below, 1 a straight line (OneShot's own), 2 a four-point cubic.
         int interpolation = 1;
+        /// The pitch envelope moves the voice's pitch, the filter envelope
+        /// its cutoff, each by its amount in semitones.
+        Envelope pitch{}, filter{};
     };
     /// Audio thread, before process() (as setRootKey).
     void setTravel(const Travel &travel) noexcept { travel_ = travel; }
@@ -176,6 +189,15 @@ class OneShot final : public DeviceInstance {
         double a = 0, b = 0;
         double run(double x, double g, double r, double d, int type) noexcept;
     };
+    /// SC-483: where a voice's Envelope is: its stage (0 attack, 1 decay,
+    /// 2 sustain, 3 release, 4 at its end), how far through it, and the level
+    /// the stage started from.
+    struct EnvelopeState {
+        int stage = 0;
+        double phase = 0, from = 0, level = 0;
+        /// This sample's level, then a step on; `released` starts the release.
+        double advance(const Envelope &, bool released, double rate) noexcept;
+    };
     struct Voice {
         bool active = false, held = false, sustained = false;
         std::uint64_t id = 0, age = 0;
@@ -194,6 +216,7 @@ class OneShot final : public DeviceInstance {
         double loopEnd = 0, releaseLoop = 0, mirror = 0;
         bool backward = false, tail = false, reversed = false;
         double spreadCents = 0, pan = 0;  // SC-483: a Spread voice's own, from its ticket
+        EnvelopeState pitchEnvelope{}, filterEnvelope{};  // SC-483
         Filter filters[2][2];
     };
     /// What the next note-ons take, in order (a zone weight from the Sampler).

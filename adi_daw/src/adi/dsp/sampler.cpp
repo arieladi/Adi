@@ -140,7 +140,7 @@ void Sampler::initialise() {
     // Live's Snap: the start, end and loop points move to the next zero crossing.
     toggle("snap", "Snap", 0);
     const auto dial = [this](const char *id, const char *name, const char *unit, double lo, double hi,
-                             int steps) {
+                             int steps, double def = 0) {
         ParamDescriptor p;
         p.id = id;
         p.name = name;
@@ -151,7 +151,7 @@ void Sampler::initialise() {
         p.domain = steps ? ParamDomain::Enum : ParamDomain::Real;
         p.shape = steps ? ParamShape::Menu : ParamShape::Continuous;
         p.stepCount = steps;
-        p.defaultValue = ParamValue::withReal(lo < 0 ? -lo / (hi - lo) : 0., 0);  // at 0
+        p.defaultValue = ParamValue::withReal((def - lo) / (hi - lo), def);
         params_.push_back(p);
         destinations_.push_back(OneShot::Count);
     };
@@ -161,6 +161,24 @@ void Sampler::initialise() {
     dial("detune", "Detune", "cents", -50, 50, 0);
     dial("spread", "Spread", "%", 0, 100, 0);
     dial("zone_shift", "Zone shift", "st", -48, 48, 97);
+    // SC-483: Live's pitch envelope (Pitch/Osc tab) and filter envelope
+    // (Filter/Global tab), nine parameters each in the order of
+    // kEnvelopeParams. Off by default, and at amount 0 they move nothing.
+    const auto envelope = [&](const std::string &id, const std::string &name, double range) {
+        const auto named = [&](const char *part) { return id + "_" + part; };
+        const auto label = [&](const char *part) { return name + " " + part; };
+        toggle(id.c_str(), name.c_str(), 0);
+        dial(named("amount").c_str(), label("amount").c_str(), "st", -range, range, 0, 0);
+        dial(named("attack").c_str(), label("attack").c_str(), "ms", 0, 20000, 0, 0);
+        dial(named("decay").c_str(), label("decay").c_str(), "ms", 1, 60000, 0, 600);
+        dial(named("sustain").c_str(), label("sustain").c_str(), "%", 0, 100, 0, 0);
+        dial(named("release").c_str(), label("release").c_str(), "ms", 1, 60000, 0, 50);
+        dial(named("initial").c_str(), label("initial").c_str(), "%", 0, 100, 0, 0);
+        dial(named("peak").c_str(), label("peak").c_str(), "%", 0, 100, 0, 100);
+        dial(named("end").c_str(), label("end").c_str(), "%", 0, 100, 0, 0);
+    };
+    envelope("pitch_env", "Pitch env", 48);
+    envelope("filter_env", "Filter env", 72);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
 }
@@ -401,7 +419,7 @@ void Sampler::prepare(double rate, std::int32_t frames) {
     }
 }
 void Sampler::chooseLayers(const engine::NodeIo &io,
-                           const std::array<double, OneShot::Count> &initial,
+                           const Values &initial,
                            std::span<const Zone *const, kSlots> zones) noexcept {
     roundRobin_ = initial[kRoundRobin] + modulation_[kRoundRobin] >= .5;
     if (!roundRobin_) {
@@ -476,8 +494,25 @@ void Sampler::chooseLayers(const engine::NodeIo &io,
         chosen_[note++] = pick;
     }
 }
+OneShot::Envelope Sampler::envelopeAt(const Values &initial, std::size_t first) const noexcept {
+    const auto at = [&](std::size_t k) {
+        const std::size_t i = first + k;
+        return real(params_[i], initial[i] + modulation_[i]);
+    };
+    OneShot::Envelope e;
+    e.on = at(0) >= .5;
+    e.amount = at(1);
+    e.attack = at(2);
+    e.decay = at(3);
+    e.sustain = at(4) / 100;
+    e.release = at(5);
+    e.initial = at(6) / 100;
+    e.peak = at(7) / 100;
+    e.end = at(8) / 100;
+    return e;
+}
 void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z,
-                        const std::array<double, OneShot::Count> &initial,
+                        const Values &initial,
                         const OneShot::PreparedSample *sample, std::uint64_t generation,
                         bool slot, std::size_t layer) noexcept {
     engine.setMidiChannels(midiChannels_);
@@ -510,6 +545,8 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
     travel.interpolation = std::clamp(
         static_cast<int>(real(params_[kInterpolation], initial[kInterpolation] + modulation_[kInterpolation])), 0, 2);
     travel.cents = real(params_[kDetune], initial[kDetune] + modulation_[kDetune]);
+    travel.pitch = envelopeAt(initial, kPitchEnvelope);
+    travel.filter = envelopeAt(initial, kFilterEnvelope);
     const double spread = real(params_[kSpread], initial[kSpread] + modulation_[kSpread]);
     const double shift = real(params_[kZoneShift], initial[kZoneShift] + modulation_[kZoneShift]);
     engine.setTravel(travel);
@@ -618,7 +655,7 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
             if (io.out[c])
                 std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.f);
     engine::SnapshotPublisher<Bank>::AudioRead bank(publisher_);
-    std::array<double, OneShot::Count> initial{};
+    Values initial{};
     for (std::size_t i = 0; i < params_.size(); ++i)
         initial[i] = values_[i].load(std::memory_order_relaxed);
     if (bank.valid()) {
@@ -656,7 +693,7 @@ void Sampler::processSlots(const engine::NodeIo &io,
         }
         slotZonesSeen_ = table->seq;
     }
-    std::array<double, OneShot::Count> initial{};
+    Values initial{};
     for (std::size_t i = 0; i < params_.size(); ++i) {
         initial[i] = values_[i].load(std::memory_order_relaxed);
     }

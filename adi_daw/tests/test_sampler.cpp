@@ -703,6 +703,112 @@ void slotPitch() {
         check(renderSlots(*d, 2048, high, both)[1000] == .1f, "Zone shift -12: F3 plays the zone below C3");
     }
 }
+// SC-483: Live's pitch envelope and filter envelope, per voice.
+void slotEnvelopes() {
+    using S = device::Sampler;
+    const auto off = [](int frame) { return engine::Event{frame, engine::EventType::NoteOff, 0, 60, 1, 0, 0}; };
+    {
+        // A long ramp: the step from one frame to the next is the read speed.
+        std::vector<float> ramp(32768);
+        for (std::size_t i = 0; i < ramp.size(); ++i) {
+            ramp[i] = static_cast<float>(i) / 32768.f;
+        }
+        const auto sample = device::OneShot::prepareSample(ramp, 1, 48000);
+        const auto fill = [&](int, SlotArray &slots) { slots[2] = {sample.get(), 1}; };
+        const auto held = std::array{on(0, 60)};
+        const auto pitched = [&](const std::function<void(S &)> &setUp, std::span<const engine::Event> events, int count) {
+            const auto d = plainSlots();
+            set(*d, "release", 60000);  // the level hardly moves while the speed is read
+            setUp(*d);
+            return renderSlots(*d, count, events, fill);
+        };
+        const auto speed = [](const std::vector<float> &out, std::size_t k) {
+            return (static_cast<double>(out[k + 1]) - static_cast<double>(out[k])) * 32768;
+        };
+        const auto flat = pitched([](S &) {}, held, 2048);
+        check(pitched([](S &d) { set(d, "pitch_env", 1); }, held, 2048) == flat,
+              "the pitch envelope on at amount 0 changes nothing");
+        const auto octave = pitched(
+            [](S &d) {
+                set(d, "pitch_env", 1);
+                set(d, "pitch_env_amount", 12);
+                set(d, "pitch_env_initial", 100);
+                set(d, "pitch_env_sustain", 100);
+            },
+            held, 2048);
+        check(octave[1000] == 2000.f / 32768, "a pitch envelope held at full level, amount +12: the sample plays an octave up from the first frame");
+        const std::array<engine::Event, 2> letGo{on(0, 60), off(2000)};
+        const auto rise = pitched(
+            [](S &d) {
+                set(d, "pitch_env", 1);
+                set(d, "pitch_env_amount", 12);
+                set(d, "pitch_env_attack", 10);   // 480 frames from Initial 0 % to Peak 100 %
+                set(d, "pitch_env_decay", 1);
+                set(d, "pitch_env_sustain", 100);
+                set(d, "pitch_env_release", 10);  // and back to End 0 % after note-off
+            },
+            letGo, 3200);
+        check(std::abs(speed(rise, 10) - std::exp2(10. / 480)) < 1e-3 && std::abs(speed(rise, 240) - std::sqrt(2.)) < 1e-2 &&
+                  std::abs(speed(rise, 1000) - 2) < 1e-2,
+              "the attack takes the pitch from the note up an octave, a half-octave halfway");
+        check(std::abs(speed(rise, 2240) - std::sqrt(2.)) < 2e-2 && std::abs(speed(rise, 3000) - 1) < 2e-2,
+              "after note-off the release takes it back down to the note");
+        const auto down = pitched(
+            [](S &d) {
+                set(d, "pitch_env", 1);
+                set(d, "pitch_env_amount", -12);
+                set(d, "pitch_env_initial", 100);
+                set(d, "pitch_env_sustain", 100);
+            },
+            held, 2048);
+        check(std::abs(speed(down, 1000) - .5) < 1e-3, "a negative amount moves the pitch down");
+    }
+    {
+        // A 4 kHz sine through a 24 dB low-pass at 500 Hz.
+        std::vector<float> sine(9600);
+        for (std::size_t i = 0; i < sine.size(); ++i) {
+            sine[i] = static_cast<float>(.5 * std::sin(2 * 3.141592653589793 * static_cast<double>(i) / 12));
+        }
+        const auto sample = device::OneShot::prepareSample(sine, 1, 48000);
+        const auto fill = [&](int, SlotArray &slots) { slots[2] = {sample.get(), 1}; };
+        const auto held = std::array{on(0, 60)};
+        const auto filtered = [&](const std::function<void(S &)> &setUp) {
+            const auto d = plainSlots();
+            set(*d, "filter_on", 1);
+            set(*d, "filter_type", 0);
+            set(*d, "slope", 1);
+            set(*d, "cutoff", 500);
+            set(*d, "resonance", 0);
+            setUp(*d);
+            return renderSlots(*d, 4096, held, fill);
+        };
+        const auto peak = [](const std::vector<float> &out, std::size_t from, std::size_t to) {
+            double most = 0;
+            for (std::size_t k = from; k < to; ++k) {
+                most = std::max(most, std::abs(static_cast<double>(out[k])));
+            }
+            return most;
+        };
+        const auto closed = filtered([](S &) {});
+        check(peak(closed, 2048, 4096) < .01, "the filter alone keeps the 4 kHz tone out");
+        check(filtered([](S &d) { set(d, "filter_env", 1); }) == closed, "the filter envelope on at amount 0 changes nothing");
+        const auto open = filtered([](S &d) {
+            set(d, "filter_env", 1);
+            set(d, "filter_env_amount", 72);
+            set(d, "filter_env_initial", 100);
+            set(d, "filter_env_sustain", 100);
+        });
+        check(peak(open, 2048, 4096) > .4, "a filter envelope held at full level, amount +72: six octaves up, the tone passes");
+        const auto closing = filtered([](S &d) {
+            set(d, "filter_env", 1);
+            set(d, "filter_env_amount", 72);
+            set(d, "filter_env_initial", 100);
+            set(d, "filter_env_decay", 20);
+        });
+        check(peak(closing, 64, 256) > .3 && peak(closing, 3000, 4096) < .01,
+              "a filter envelope that decays to Sustain 0 %: bright at the attack, closed once it has decayed");
+    }
+}
 // SC-483, Round Robin: with it on, one of the layers a note matches plays it.
 // Three slots hold three steady levels, so a frame names the layer that played.
 void slotRoundRobin() {
@@ -780,26 +886,31 @@ void slotRoundRobin() {
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
     device::Sampler d(device::Sampler::slotBacked);
-    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 33 &&
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 51 &&
               static_cast<int>(parsed.params.size()) == d.paramCount(),
-          "the Sampler's declarations parse: 33 parameters");
+          "the Sampler's declarations parse: 51 parameters");
     // SC-483: ids are fixed. The 24 of 28 November keep their places; what was
     // added since follows them.
-    check(parsed.params.size() == 33 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
+    check(parsed.params.size() == 51 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
               parsed.params[24].name == "Reverse" && parsed.params[24].def == 0 && parsed.params[25].def == 1,
           "Volume is still 1 and Sample select 24; Reverse is 25, off; the loop fades' law 26, constant power");
-    check(parsed.params.size() == 33 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
+    check(parsed.params.size() == 51 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
               parsed.params[27].items == std::vector<std::string>{"Forward", "Backward", "Random", "Other"} &&
               parsed.params[27].def == 0,
           "Round Robin is 27, off; its mode 28: Forward, Backward, Random, Other");
-    check(parsed.params.size() == 33 && parsed.params[28].name == "Interpolation" &&
+    check(parsed.params.size() == 51 && parsed.params[28].name == "Interpolation" &&
               parsed.params[28].items == std::vector<std::string>{"None", "Normal", "Good"} && parsed.params[28].def == 1 &&
               parsed.params[29].name == "Snap" && parsed.params[29].def == 0,
           "Interpolation is 29, Normal; Snap 30, off");
-    check(parsed.params.size() == 33 && parsed.params[30].name == "Detune" && parsed.params[31].name == "Spread" &&
+    check(parsed.params.size() == 51 && parsed.params[30].name == "Detune" && parsed.params[31].name == "Spread" &&
               parsed.params[32].name == "Zone shift" && parsed.params[30].def == 0 && parsed.params[31].def == 0 &&
               parsed.params[32].def == 0,
           "Detune is 31, Spread 32, Zone shift 33, each at 0");
+    check(parsed.params.size() == 51 && parsed.params[33].name == "Pitch env" && parsed.params[33].def == 0 &&
+              parsed.params[34].name == "Pitch env amount" && parsed.params[41].name == "Pitch env end" &&
+              parsed.params[42].name == "Filter env" && parsed.params[42].def == 0 &&
+              parsed.params[43].max == 72 && parsed.params[50].name == "Filter env end",
+          "the pitch envelope is 34 to 42, the filter envelope 43 to 51, both off");
     bool same = true;
     for (std::size_t i = 0; i < parsed.params.size(); ++i) {
         const auto &decl = parsed.params[i];
@@ -836,6 +947,7 @@ int main(int argc, char **argv) {
     slotLoops();
     slotQuality();
     slotPitch();
+    slotEnvelopes();
     slotRoundRobin();
     midiControllers();
     declarations();

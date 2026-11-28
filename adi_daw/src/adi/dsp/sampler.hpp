@@ -105,19 +105,27 @@ class Sampler final : public DeviceInstance {
     static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25, kRoundRobin = 26,
                                  kRoundRobinMode = 27, kInterpolation = 28, kSnap = 29, kDetune = 30,
                                  kSpread = 31, kZoneShift = 32;
+    /// SC-483: the first of each envelope's nine parameters (on, amount,
+    /// attack, decay, sustain, release, initial, peak, end).
+    static constexpr std::size_t kPitchEnvelope = 33, kFilterEnvelope = 42, kEnvelopeParams = 9;
+    /// Room for every parameter the Sampler has (51) and will have; a block's
+    /// values are an array of this size, on the stack.
+    static constexpr std::size_t kParamCapacity = 128;
+    using Values = std::array<double, kParamCapacity>;
+    OneShot::Envelope envelopeAt(const Values &initial, std::size_t first) const noexcept;
     /// SC-483, Spread: at 100 % the two voices of a note play this many cents
     /// below and above it. ADI's law; Live's is a reading still owed.
     static constexpr double kSpreadCents = 25;
     /// The parameters a state of the first version held (SC-483 added to them).
     static constexpr std::size_t kFirstParams = 24;
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,
-                   const std::array<double, OneShot::Count> &initial,
+                   const Values &initial,
                    const OneShot::PreparedSample *, std::uint64_t generation, bool slot,
                    std::size_t layer) noexcept;
     /// SC-483, Round Robin: with it on, the one layer that plays each note-on
     /// of this call, among the layers the note matches (a null zone is a layer
     /// that cannot play). Audio thread.
-    void chooseLayers(const engine::NodeIo &, const std::array<double, OneShot::Count> &initial,
+    void chooseLayers(const engine::NodeIo &, const Values &initial,
                       std::span<const Zone *const, kSlots>) noexcept;
     static constexpr std::int8_t kNoLayer = -1;
     std::vector<std::int8_t> chosen_;   // per note-on of the call, in order
@@ -134,8 +142,8 @@ class Sampler final : public DeviceInstance {
     void publish(std::unique_ptr<Bank>);
     std::vector<ParamDescriptor> params_;
     std::vector<std::uint32_t> destinations_;
-    std::array<std::atomic<double>, OneShot::Count> values_{};
-    std::array<double, OneShot::Count> modulation_{};
+    std::array<std::atomic<double>, kParamCapacity> values_{};
+    Values modulation_{};
     OneShot::MidiChannels midiChannels_{};
     engine::SnapshotPublisher<Bank> publisher_;
     Bank *messageBank_ = nullptr; // publisher owns it; message thread only

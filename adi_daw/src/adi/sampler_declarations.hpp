@@ -10,7 +10,7 @@ namespace adi::device {
 // is the matching line of pd/devices/OneShot.pd (test_sampler checks they
 // agree). Ids are fixed: a new parameter takes the next id, and its default is
 // the sound the Sampler had without it, because a project saved before it
-// existed opens with that default (SC-483: 25 to 33).
+// existed opens with that default (SC-483: 25 to 51).
 // Slot N is a zone over every key and velocity until its zone table says otherwise.
 inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0 600 900 12;
 #X obj 20 20 adi.param \$0 1 -36 36 -12 dB lin Volume;
@@ -46,6 +46,24 @@ inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0
 #X obj 20 620 adi.param \$0 31 -50 50 0 cents lin Detune;
 #X obj 20 640 adi.param \$0 32 0 100 0 % lin Spread;
 #X obj 20 660 adi.param \$0 33 -48 48 0 st int Zone_shift;
+#X obj 20 680 adi.param \$0 34 0 1 0 - int Pitch_env;
+#X obj 20 700 adi.param \$0 35 -48 48 0 st lin Pitch_env_amount;
+#X obj 20 720 adi.param \$0 36 0 20000 0 ms lin Pitch_env_attack;
+#X obj 20 740 adi.param \$0 37 1 60000 600 ms lin Pitch_env_decay;
+#X obj 20 760 adi.param \$0 38 0 100 0 % lin Pitch_env_sustain;
+#X obj 20 780 adi.param \$0 39 1 60000 50 ms lin Pitch_env_release;
+#X obj 20 800 adi.param \$0 40 0 100 0 % lin Pitch_env_initial;
+#X obj 20 820 adi.param \$0 41 0 100 100 % lin Pitch_env_peak;
+#X obj 20 840 adi.param \$0 42 0 100 0 % lin Pitch_env_end;
+#X obj 20 860 adi.param \$0 43 0 1 0 - int Filter_env;
+#X obj 20 880 adi.param \$0 44 -72 72 0 st lin Filter_env_amount;
+#X obj 20 900 adi.param \$0 45 0 20000 0 ms lin Filter_env_attack;
+#X obj 20 920 adi.param \$0 46 1 60000 600 ms lin Filter_env_decay;
+#X obj 20 940 adi.param \$0 47 0 100 0 % lin Filter_env_sustain;
+#X obj 20 960 adi.param \$0 48 1 60000 50 ms lin Filter_env_release;
+#X obj 20 980 adi.param \$0 49 0 100 0 % lin Filter_env_initial;
+#X obj 20 1000 adi.param \$0 50 0 100 100 % lin Filter_env_peak;
+#X obj 20 1020 adi.param \$0 51 0 100 0 % lin Filter_env_end;
 #X obj 300 20 adi.sample \$0 1 Sample_1;
 #X obj 300 40 adi.sample \$0 2 Sample_2;
 #X obj 300 60 adi.sample \$0 3 Sample_3;

@@ -316,6 +316,29 @@ double OneShot::Filter::run(double x, double g, double r, double d, int type) no
     const double high = x - r * v1 - v2;
     return type == 0 ? v2 : type == 1 ? high : type == 2 ? v1 : high + v2;
 }
+double OneShot::EnvelopeState::advance(const Envelope &e, bool released, double rate) noexcept {
+    if (released && stage < 3) {
+        stage = 3;
+        from = level;
+        phase = 0;
+    }
+    if (stage == 2) {
+        return level = e.sustain;
+    }
+    if (stage == 4) {
+        return level = e.end;
+    }
+    const double target = stage == 0 ? e.peak : stage == 1 ? e.sustain : e.end;
+    const double ms = stage == 0 ? e.attack : stage == 1 ? e.decay : e.release;
+    level = from + (target - from) * phase;
+    phase += 1 / std::max(1., rate * ms * .001);
+    if (phase >= 1) {
+        from = target;
+        phase = 0;
+        stage = stage == 0 ? 1 : stage == 1 ? 2 : 4;
+    }
+    return level;
+}
 double OneShot::cubic(const Sample &s, std::size_t a, std::size_t ch, double t) noexcept {
     // Catmull-Rom through the frames a - 1 .. a + 2, the edges repeated: it
     // passes through every frame and draws any quadratic exactly.
@@ -496,6 +519,9 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
         v.loopEnd = high;
     }
     v.position = v.begin;
+    // SC-483: the envelopes start from their initial levels.
+    v.pitchEnvelope.level = v.pitchEnvelope.from = travel_.pitch.initial;
+    v.filterEnvelope.level = v.filterEnvelope.from = travel_.filter.initial;
 }
 void OneShot::rememberMidiControl(MidiChannels &channels, const engine::Event &e) noexcept {
     if (e.channel >= channels.size() || !std::isfinite(e.value))
@@ -611,8 +637,11 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0, rFixed = 0, dFixed = 0;
     double lfoStep = 0;  // the LFO's phase a sample: block-constant
     bool classic = true, lfoHeard = true, filterFixed = false;
-    const auto coefficients = [&](double lfo, double depth, double &g, double &q) {
-        const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter] * depth), 5., rate_ * .45);
+    const Travel travel = travel_;  // SC-483: this call's, for every voice
+    // `octaves`: the filter envelope's (SC-483), 0 without one.
+    const auto coefficients = [&](double lfo, double depth, double octaves, double &g, double &q) {
+        const double hz =
+            std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter] * depth + octaves), 5., rate_ * .45);
         g = std::tan(pi * hz / rate_);
         // Res 0..125 % (Live's 0..1.25) onto the state-variable filter's Q
         // from 1/sqrt(2) to 10: ADI's law, unmeasured.
@@ -625,12 +654,12 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         level = std::pow(10., (p[Gain] + p[Volume]) / 20.);
         classic = p[Mode] == 0;
         lfoHeard = p[LfoPitch] != 0 || p[LfoVolume] != 0 || p[LfoPan] != 0 || p[LfoFilter] != 0;
-        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0;
+        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0 && !travel.filter.heard();
         const double hz =
             p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
         lfoStep = hz / rate_;
         if (filterFixed) {
-            coefficients(0, 1, gFixed, qFixed);
+            coefficients(0, 1, 0, gFixed, qFixed);
             rFixed = 1 / qFixed;
             dFixed = 1 + gFixed * (gFixed + rFixed);
         }
@@ -643,7 +672,6 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     // bit for bit.
     constexpr int kStretch = 64;
     double acc[2][kStretch];
-    const Travel travel = travel_;  // SC-483: this call's, for every voice
     for (int i = 0; i < io.frames;) {
         const int frame = io.blockOffset + i;
         bool moved = false;
@@ -749,9 +777,19 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     const double loopCents = (sustainLoop || tailLoop) && v.position >= from
                                                  ? (sustainLoop ? travel.loopCents : travel.releaseCents)
                                                  : 0.;
+                    // SC-483: the pitch and filter envelopes, in semitones (0 unheard).
+                    const bool released = v.stage == 3;
+                    const double pitchEnvelope =
+                        travel.pitch.heard()
+                            ? travel.pitch.amount * v.pitchEnvelope.advance(travel.pitch, released, rate_)
+                            : 0.;
+                    const double filterEnvelope =
+                        travel.filter.heard()
+                            ? travel.filter.amount * v.filterEnvelope.advance(travel.filter, released, rate_)
+                            : 0.;
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation +
-                                         (loopCents + travel.cents + v.spreadCents) / 100.;
+                                         (loopCents + travel.cents + v.spreadCents) / 100. + pitchEnvelope;
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {
@@ -770,7 +808,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     // this sample when the LFO moves the cutoff.
                     double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
                     if (p[FilterOn] > 0 && !filterFixed) {
-                        coefficients(lfo, midi.modulation, g, q);
+                        coefficients(lfo, midi.modulation, filterEnvelope / 12, g, q);
                         r = 1 / q;
                         d = 1 + g * (g + r);
                     }
