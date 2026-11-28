@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -131,12 +132,16 @@ scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginL
     std::vector<std::string> roots;
     for (int i = 0; i < paths.getNumPaths(); ++i)
         roots.push_back(paths[i].getFullPathName().toStdString());
-    const auto candidates = scan::findCandidates(roots, ".vst3");
+    std::vector<scan::Failure> unreadable;
+    const auto candidates = scan::findCandidates(roots, ".vst3", &unreadable);
     std::vector<juce::String> files;
     files.reserve(candidates.size());
     for (const auto& candidate : candidates)
         files.push_back(juce::String::fromUTF8(candidate.c_str()));
-    return scanVst3Files(files,into,config);
+    auto report = scanVst3Files(files,into,config);
+    report.failures.insert(report.failures.end(), std::make_move_iterator(unreadable.begin()),
+                          std::make_move_iterator(unreadable.end()));
+    return report;
 }
 scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
                                 const scan::Config& config) {

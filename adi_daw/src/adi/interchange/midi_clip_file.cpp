@@ -69,15 +69,19 @@ MidiFileTrack importTrack(const smf::Track& track, std::uint16_t ppq) {
             pending->second.pop_front();
             note.dur_ticks = std::max<std::int64_t>(1, tick - note.start_ticks);
             note.vel_off = kind == 0x8 ? event.data[1] : 0;
-        } else if (kind == 0xb) {
-            auto& lane = result.controllers[{channel, event.data[0]}];
+        } else if (kind == 0xb || kind == 0xe) {
+            const bool pitch = kind == 0xe;
+            const int controller = pitch ? controllers::kPitchBend : event.data[0];
+            const auto word = static_cast<std::uint16_t>((static_cast<unsigned>(event.data[1]) << 7) | event.data[0]);
+            const auto value = pitch ? controllers::pitchBendFromWord(word) : static_cast<double>(event.data[1]) / 127.0;
+            auto& lane = result.controllers[{channel, controller}];
             if (!lane.empty() && lane.back().time == tick) {
-                lane.back().value = static_cast<double>(event.data[1]) / 127.0;
+                lane.back().value = value;
             } else {
                 AutomationPoint point{};
                 point.time = tick;
                 point.point_id = lane.size() + 1;
-                point.value = static_cast<double>(event.data[1]) / 127.0;
+                point.value = value;
                 point.curve = static_cast<std::uint8_t>(Curve::Hold);
                 lane.push_back(point);
             }
@@ -101,7 +105,8 @@ Payload streamBytes(std::span<const std::byte> bytes) {
 }
 
 int order(const smf::Event& event) {
-    if (event.status >= 0xb0 && event.status <= 0xbf)
+    const auto type = event.status >> 4;
+    if (type == 0xb || type == 0xe)
         return 0;
     return event.status < 0x90 ? 1 : 2;
 }
@@ -200,11 +205,17 @@ smf::Bytes encodeMidiClipFile(const Store& store, std::int64_t clip, std::string
             if (!lane.error.empty())
                 throw std::runtime_error(lane.error);
             if (!lane.channel || *lane.channel < 0 || *lane.channel > 15 ||
-                !lane.controller || *lane.controller < 0 || *lane.controller > 127)
+                !lane.controller || !controllers::validController(*lane.controller))
                 continue;
             for (const auto& point : lane.points) {
                 if (point.timeTicks < start || point.timeTicks >= end)
                     continue;
+                if (*lane.controller == controllers::kPitchBend) {
+                    const auto word = static_cast<unsigned>(std::lround(controllers::pitchBendWordExact(point.value)));
+                    track.events.push_back({fileTicks(point.timeTicks - start), static_cast<std::uint8_t>(0xe0 | *lane.channel), 0,
+                                            {static_cast<std::uint8_t>(word & 0x7f), static_cast<std::uint8_t>(word >> 7)}});
+                    continue;
+                }
                 const auto value = static_cast<std::uint8_t>(std::lround(std::clamp(point.value, 0.0, 1.0) * 127.0));
                 track.events.push_back({fileTicks(point.timeTicks - start), static_cast<std::uint8_t>(0xb0 | *lane.channel), 0,
                                         {static_cast<std::uint8_t>(*lane.controller), value}});

@@ -103,7 +103,7 @@ bool DeviceCore::setProcessor(engine::BlockProcessor& next) {
 
 void DeviceCore::process(float* const* out, std::int32_t numOut,
                          const float* const* in, std::int32_t numIn,
-                         std::int32_t frames) noexcept {
+                         std::int32_t frames, engine::OutputChannelMap outputs) noexcept {
     // Silence first, unconditionally, before any early return below. A callback
     // that returns without writing hands the driver whatever was in that memory
     // -- which on a first callback is uninitialised and on a later one is the
@@ -136,6 +136,7 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
     io.numIn = numIn;
     io.frames = frames;
     io.streamTimeSamples = streamTime_;
+    io.outputChannels = outputs;
 
     const audio::ScopedFlushDenormals flush;
     proc_->process(io);

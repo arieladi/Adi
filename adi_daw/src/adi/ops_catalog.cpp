@@ -137,6 +137,8 @@ constexpr ScalarSpec kScalars[] = {
      FieldType::Bool, EngineImpact::Snapshot, false},
     {"clip.setGain", "Set a clip's gain", "clips", "id", "gain_db", "gain",
      FieldType::Real, EngineImpact::Snapshot, true},
+    {"audioClip.setTranspose", "Set an audio clip's pitch", "audio_clips", "clip_id", "transpose_semis", "semitones",
+     FieldType::Real, EngineImpact::Snapshot, true},
     {"clip.setColor", "Recolour a clip", "clips", "id", "color", "color",
      FieldType::Int, EngineImpact::None, false},
 
@@ -212,6 +214,10 @@ bool scalarApply(OpContext& c, const Payload& p, std::string& err) {
                 if (track.executeStep() && otherMainOutput(c.db, track.getColumn(0).getInt64(), id))
                     throw std::runtime_error("track already has an enabled main output");
             }
+        }
+        if constexpr (std::string_view(S.op) == "audioClip.setTranspose") {
+            if (!c.replay && !(std::abs(p.at("semitones").get<double>()) <= 48.))
+                throw std::runtime_error("clip pitch must be between -48 and 48 semitones");
         }
         SQLite::Statement st(c.db, std::string("UPDATE ") + S.table + " SET " + S.col +
                                        " = ? WHERE " + S.idCol + " = ?");
@@ -425,9 +431,7 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
 }
 
 std::int64_t newTrackMonitorMode(const Payload& p) {
-    const auto& kind=p.at("kind").get_ref<const std::string&>();
-    if (kind == "audio") return kNewAudioTrackMonitorMode;
-    return kind == "midi" || kind == "instrument" ? 2 : 0;
+    return initialTrackMonitorMode(p.at("kind").get_ref<const std::string&>());
 }
 std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
     if (!context.replay) return newTrackMonitorMode(p);
@@ -914,6 +918,19 @@ std::optional<Payload> recordedRoutingInverse(const OpContext& c, std::string_vi
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const bool midiOutput = p.contains("midiPort") || p.contains("midiChannel");
+        if (midiOutput) {
+            if (p.at("kind") != "main" || p.at("srcKind") != "track" || p.at("dstKind") != "hw_out" ||
+                p.at("dst") != 0 || p.contains("row"))
+                throw std::runtime_error("a MIDI hardware output needs a track-to-hardware route");
+            const auto port = p.at("midiPort").get<std::string>();
+            const auto channel = detail::signedInteger(p.at("midiChannel"));
+            if (!port.starts_with("out:") || port.size() <= 4 || port.size() > 4096 || channel < 1 || channel > 16)
+                throw std::runtime_error("a MIDI output needs a port and a channel from 1 to 16");
+            SQLite::Statement track(c.db, "SELECT 1 FROM tracks WHERE id=? AND kind IN ('midi','instrument')");
+            track.bind(1, p.at("src").get<std::int64_t>());
+            if (!track.executeStep()) throw std::runtime_error("track cannot route MIDI to hardware");
+        }
         const bool newTrackMain = !c.replay && p.at("kind") == "main" &&
                                   p.at("srcKind") == "track" && p.at("dstKind") == "track";
         if (!c.replay && p.at("kind") == "send" && p.at("srcKind") == "track")
@@ -972,8 +989,8 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
             if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;
 
         SQLite::Statement st(c.db,
-            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader) "
-            "VALUES (?,?,?,?,?,?,?)");
+            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader, channel_map) "
+            "VALUES (?,?,?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("srcKind").get<std::string>());
         st.bind(3, p.at("src").get<std::int64_t>());
@@ -981,6 +998,12 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
         st.bind(5, p.at("dst").get<std::int64_t>());
         st.bind(6, p.at("kind").get<std::string>());
         st.bind(7,pre?1:0);
+        if (midiOutput) {
+            const auto mapping = encodePayload({{"midiPort", p.at("midiPort")}, {"midiChannel", p.at("midiChannel")}});
+            st.bind(8, mapping.data(), static_cast<int>(mapping.size()));
+        } else {
+            st.bind(8);
+        }
         st.exec();
         if(p.at("kind")=="sidechain" && p.at("dstKind")=="device")
             writeRoutingKeyTap(c.db,p.at("id").get<std::int64_t>(),p.value("keyTap",Payload{}));
@@ -1329,7 +1352,9 @@ constexpr Field kFRouting[] = {
      "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
     {"row", FieldType::Object, false, "a captured row, as undo restores it"},
     {"sendTapRow", FieldType::Object, false, "a captured individual send tap restored by undo"},
-    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"}};
+    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"},
+    {"midiPort", FieldType::Text, false, "MIDI output identifier from Settings"},
+    {"midiChannel", FieldType::Int, false, "MIDI hardware output channel, 1 through 16"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -2510,6 +2535,8 @@ const OpDescriptor kHandWritten[] = {
      kFCueTrack,false,true,cueTrackApply,nullptr,""},
     {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
      kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setMainOutput", "Select the stereo Main Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,mainOutputApply,nullptr,""},
     {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
      kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
 

@@ -171,6 +171,7 @@ public:
 
     [[nodiscard]] std::size_t deviceCount() const noexcept { return devices_.size(); }
     [[nodiscard]] DeviceInstance& deviceAt(std::size_t i) { return *devices_[i].device; }
+    [[nodiscard]] const DeviceInstance& deviceAt(std::size_t i) const noexcept { return *devices_[i].device; }
     [[nodiscard]] DeviceNode& nodeAt(std::size_t i) { return *devices_[i].node; }
     [[nodiscard]] std::int64_t trackAt(std::size_t i) const { return devices_[i].trackId; }
 

@@ -1055,6 +1055,67 @@ void placementAdapters() {
         check(History(store).undo().ok && typedRows(store)==before.rows,"paste from a removed owner undoes without resurrecting the source track");
     }
 }
+void sparseClipClipboard() {
+    Project project;auto& store=*project.store;
+    store.db().exec("INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,22,'take');"
+                    "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(91,'track',21,'pan'),(92,'track',22,'pan')");
+    addClip(store,7,21,0,q,2*q);
+    addClip(store,8,21,0,5*q,2*q);
+    addClip(store,9,21,0,3*q,2*q);
+    addClip(store,10,22,0,11*q,2*q);
+    addClip(store,11,21,0,0,16*q);
+    addClip(store,12,22,0,0,16*q);
+    store.db().exec("UPDATE clips SET lane_id=301 WHERE id=11;UPDATE clips SET lane_id=302 WHERE id=12");
+    const auto writeKnots=[&](std::int64_t lane,std::initializer_list<std::pair<std::int64_t,double>> knots) {
+        std::vector<AutomationPoint> points;
+        for(const auto& [position,value]:knots) {
+            AutomationPoint point{};point.time=position;point.value=value;point.point_id=points.size()+1;
+            points.push_back(point);
+        }
+        if(!store.putAutomationData(lane,{},writeStream<AutomationPoint>(FourCC::Automation,points)))
+            throw std::runtime_error("write sparse clipboard automation fixture");
+    };
+    writeKnots(91,{{2*q,0.75},{4*q,0.5},{6*q,-0.75},{12*q,0.875}});
+    writeKnots(92,{{10*q,0.125},{12*q,-0.25},{14*q,-0.125}});
+    const ReadGuard before(store);
+    const auto takes=tableRows(store,"clips","WHERE lane_id IS NOT NULL");
+    const auto takesUnchanged=[&] {return tableRows(store,"clips","WHERE lane_id IS NOT NULL")==takes;};
+    const auto undo=[&] {return History(store).undo().ok && typedRows(store)==before.rows;};
+    const std::array<std::int64_t,2> selected{7,8};
+    const std::array<std::int64_t,2> includesTake{7,11};
+    const clip_edit::RangeSelection range{{21},{0,q},{0,7*q}};
+    const auto copy=clip_edit::copySelectedClips(store,range,selected,Options{});
+    check(copy.ok && !copy.clearsRange && copy.images.size()==2 &&
+          !clip_edit::copySelectedClips(store,range,includesTake,Options{}).ok && before.unchanged(store),
+          "sparse copy captures only the picked main-lane clips in one read snapshot");
+    check(!clip_edit::preparePasteRange(store,copy,{22},{0,9*q},48000,true).ok && before.unchanged(store),
+          "the engine refuses Paste Time for an explicit clip selection");
+    check(commit(store,clip_edit::preparePasteRange(store,copy,{22},{0,9*q},Options{})) &&
+          envelopeKnot(store,92,10*q,0.75) && envelopeKnot(store,92,14*q,-0.75) &&
+          envelopeKnot(store,92,12*q,-0.25) && envelopeKnot(store,91,4*q,0.5) &&
+          spanIs(store,10,22,0,11*q,2*q) && takesUnchanged() && undo(),
+          "sparse Paste follows each picked clip's automation, preserves the gap and takes, and undoes together");
+    const auto cut=clip_edit::prepareCutClips(store,range,selected,Options{});
+    check(cut.copy.ok && commit(store,cut.edit) && !spanIs(store,7,21,0,q,2*q) && !spanIs(store,8,21,0,5*q,2*q) &&
+          !envelopeKnot(store,91,2*q,0.75) && !envelopeKnot(store,91,6*q,-0.75) &&
+          envelopeKnot(store,91,4*q,0.5) && spanIs(store,9,21,0,3*q,2*q) && takesUnchanged(),
+          "sparse Cut clears automation only in the picked main-lane clips");
+    check(commit(store,clip_edit::preparePasteRange(store,cut.copy,{22},{0,9*q},Options{})) &&
+          envelopeKnot(store,92,10*q,0.75) && envelopeKnot(store,92,14*q,-0.75) &&
+          envelopeKnot(store,92,12*q,-0.25) && History(store).undo().ok && undo(),
+          "Cut owns both envelopes for later Paste, with one Undo per edit");
+    const auto lockedCopy=clip_edit::copySelectedClips(store,range,selected,locked());
+    for(const auto& paste:{clip_edit::preparePasteRange(store,lockedCopy,{22},{0,9*q},Options{}),
+                          clip_edit::preparePasteRange(store,copy,{22},{0,9*q},locked())}) {
+        check(commit(store,paste) && tableRows(store,"automation_data")==before.rows.at("automation_data") && undo(),
+              "automation Lock leaves the destination unchanged whether set at sparse Copy or Paste");
+    }
+    const std::array places{clip_edit::ClipPlacement{7,70,21,{0,9*q}},clip_edit::ClipPlacement{8,71,21,{0,13*q}}};
+    check(commit(store,clip_edit::prepareDuplicates(store,places,Options{})) &&
+          envelopeKnot(store,91,10*q,0.75) && envelopeKnot(store,91,14*q,-0.75) &&
+          envelopeKnot(store,91,12*q,0.875) && takesUnchanged() && undo(),
+          "the existing batch Duplicate carries both envelopes and leaves the gap and takes intact in one Undo");
+}
 // Independent physical-interval oracle on the fixed 120 BPM fixture. It neither
 // calls TimeMap nor uses the planner's interval resolver. All generated musical
 // endpoints are exact quarter-note fractions, representable in nanoseconds.
@@ -1189,7 +1250,7 @@ int main() {
     try {
         clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
-        explicitEnvelopeRanges();irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
+        explicitEnvelopeRanges();irrelevantRowsAndAliasDeletion();placementAdapters();sparseClipClipboard();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

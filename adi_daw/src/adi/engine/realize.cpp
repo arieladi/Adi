@@ -266,7 +266,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             }
             auto gain=std::make_unique<KeyGain>(e.keyGainDb,e.keyPan);
             const auto gainId=add(*gain,0);r->owned_.push_back(std::move(gain));
-            if(!r->graph_.connect(source,gainId) || !r->graph_.connect(gainId,targetId,Bus::Sidechain)) {
+            if(!r->graph_.connect(source,gainId) || !r->graph_.connectTrackRoute(gainId,targetId,Bus::Sidechain,srcId)) {
                 r->problems_.push_back(ref+": graph refused device key");continue;
             }
             // Distinct logical identities survive unrelated rebuilds, while a
@@ -355,8 +355,9 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             const NodeId sid = add(*send);
             const NodeId hid = half != nullptr ? add(*half) : kInvalidNode;
             const bool joined = r->graph_.connect(at, sid) &&
-                                (half == nullptr ? r->graph_.connect(sid, to)
-                                                 : r->graph_.connect(sid, hid) && r->graph_.connect(hid, to));
+                                (half == nullptr ? r->graph_.connectTrackRoute(sid, to, Bus::Main, srcId)
+                                                 : r->graph_.connect(sid, hid) &&
+                                                   r->graph_.connectTrackRoute(hid, to, Bus::Main, srcId));
             if (!joined) {
                 r->problems_.push_back(ref + ": the graph refused the send");
                 continue;
@@ -377,7 +378,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             }
             continue;
         }
-        if (!r->graph_.connect(from, to, e.bus)) {
+        if (!r->graph_.connectTrackRoute(from, to, e.bus, srcId)) {
             r->problems_.push_back(trackRef(srcId) + " -> " + trackRef(dstId) +
                                    ": the graph refused the connection");
             continue;

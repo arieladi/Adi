@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -43,7 +44,8 @@ int usage() {
         "                           each op's closed JSON Schema, as the control\n"
         "                           boundary enforces it (CTL-02)\n"
         "  adi_tool check <file>    verify structure and external media hashes\n"
-        "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
+        "  adi_tool collect-export <in.adi> <out.zip> [--keep-undo-history]\n"
+        "                           portable ZIP64 copy\n"
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
         "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
         "                           --strict fails on a non-canonical order\n"
@@ -368,10 +370,13 @@ int main(int argc, char** argv) {
     const std::string cmd = argv[1];
 
     if (cmd == "collect-export" || cmd == "extract-media") {
-        if (argc != (cmd == "collect-export" ? 4 : 3)) return usage();
         adi::media::FileResult result;
-        if (cmd == "collect-export") result = adi::media::collectExport(argv[2], argv[3]);
-        else {
+        if (cmd == "collect-export") {
+            const bool keepUndoHistory = argc == 5 && std::string_view(argv[4]) == "--keep-undo-history";
+            if (argc != 4 && !keepUndoHistory) return usage();
+            result = adi::media::collectExport(argv[2], argv[3], {}, keepUndoHistory);
+        } else {
+            if (argc != 3) return usage();
             adi::StoreError error;
             auto store = adi::Store::open(std::filesystem::absolute(argv[2]), error);
             if (!store) result = {false, adi::toString(error)};

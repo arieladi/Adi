@@ -130,12 +130,20 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
         }
 
         case EventType::Controller: {
-            if (in.channel > 15 || in.paramId > 127 || !std::isfinite(in.value) || in.value < 0 ||
+            if (in.channel > 15 || !controllers::validController(in.paramId) || !std::isfinite(in.value) || in.value < 0 ||
                 in.value > 1)
                 return false;
             out.kind = MpeOut::Kind::Control;
             out.channel = in.channel;
             out.ctrl = static_cast<std::uint16_t>(in.paramId);
+            if (in.paramId == kCtrlPitchBend) {
+                const auto exact = controllers::pitchBendWordExact(in.value);
+                out.noteId = 0;
+                out.word = static_cast<std::uint16_t>(std::lround(exact));
+                out.value = exact / 16383.0;
+                out.paramId = caps.bendParam[in.channel];
+                return true;
+            }
             out.value = in.value;
             out.word = static_cast<std::uint16_t>(std::lround(in.value * 127.0));
             out.paramId = caps.controllerParam[in.channel][in.paramId];
@@ -330,12 +338,17 @@ void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentS
             case EventType::NoteOn:         noteOn(events, n, i, out); break;
             case EventType::NoteOff:        noteOff(events[i], out); break;
             case EventType::NoteExpression: expression(events[i], out); break;
-            case EventType::Controller:
-                if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
+            case EventType::Controller: {
+                if (events[i].paramId == kCtrlPitchBend) {
+                    MpeOut wheel;
+                    if (noteExpressionOut(events[i], caps_, wheel))
+                        out.push(wheel);
+                } else if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
                     events[i].value >= 0 && events[i].value <= 1)
                     control(events[i].channel, static_cast<std::uint16_t>(events[i].paramId), events[i].value,
                             events[i].frame, events[i].noteId, out, true);
                 break;
+            }
             case EventType::ParamValue:
             case EventType::ParamMod:       break;   // addressed, not a note stream (ADR-0091)
         }
@@ -458,9 +471,8 @@ void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     if (e.noteId == 0) {
         switch (d) {
             case ExpressionDim::Pitch: {
-                if (!std::isfinite(e.value)) { drop(); return; }
-                const bool preserveChannel = e.channel < caps_.bendParam.size() &&
-                    (caps_.preservePitchWheelChannel || caps_.bendParam[e.channel] != kNoParam);
+                if (e.channel >= caps_.bendParam.size() || !std::isfinite(e.value)) { drop(); return; }
+                const bool preserveChannel = caps_.preservePitchWheelChannel || caps_.bendParam[e.channel] != kNoParam;
                 const auto channel = preserveChannel ? e.channel : std::uint8_t{0};
                 control(channel, kCtrlPitchBend, e.value, e.frame, 0, out, true, kChannelBendSemitones);
                 return;

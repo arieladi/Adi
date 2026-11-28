@@ -84,9 +84,14 @@ void modesAndLoops() {
     for(const auto width:{Precision::Float32,Precision::Float64})for(const auto* mode:{"beats","tones","texture","re-pitch","complex","complexPro"}) {
         Fixture f;
         {SQLite::Statement row(f.store->db(),"UPDATE audio_clips SET warp_mode=?");row.bind(1,mode);row.exec();}
+        if(std::string_view(mode)=="re-pitch")
+            f.store->db().exec("UPDATE audio_clips SET transpose_semis=7 WHERE clip_id=7");
         f.load(width);const auto output=f.render(26000,width);
         if(!f.session.problems().empty())std::printf("mode %s: %s\n",mode,f.session.problems().front().c_str());
         check(f.session.problems().empty(),"actual Session loads every stored warp mode at either native precision");
+        if(std::string_view(mode)=="re-pitch")
+            check(f.store->db().execAndGet("SELECT transpose_semis FROM audio_clips WHERE clip_id=7").getDouble()==7,
+                  "Re-Pitch plays without discarding transposition stored for the other modes");
         double power=0;bool finite=true;
         for(std::size_t frame=18000;frame<22000;++frame){power+=output[frame*2]*output[frame*2];finite=finite && std::isfinite(output[frame*2]);}
         check(finite && power>1,"heard warped PCM continues beyond the old unwarped source-end pin");
@@ -225,6 +230,89 @@ void rampProjection() {
               "real warped audio plays to the integrated end of the ramp and stops on that sample");
     }
 }
+void unwarpedPitch() {
+    for(const double semitones:{12.0,-0.5}) {
+        Fixture fixture;
+        auto& db=fixture.store->db();
+        db.exec("UPDATE audio_clips SET warp_enabled=0");
+        if(semitones<0)
+            db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=340000000 WHERE id=7");
+        OpRequest request;
+        request.opType="audioClip.setTranspose";
+        request.payload={{"id",7},{"semitones",semitones}};
+        const auto before=digestProject(*fixture.store).text;
+        const auto edit=OpJournal(*fixture.store).commit(request);
+        check(edit.ok,"an audio clip can store a pitch edit independently of Warp");
+        if(edit.ok) {
+            const auto after=digestProject(*fixture.store).text;
+            History history(*fixture.store);
+            check(history.undo().ok && digestProject(*fixture.store).text==before &&
+                  history.redo().ok && digestProject(*fixture.store).text==after,
+                  "pitch edit undo and redo preserve other clip rows exactly");
+        } else {
+            SQLite::Statement row(db,"UPDATE audio_clips SET transpose_semis=? WHERE clip_id=7");
+            row.bind(1,semitones);row.exec();
+        }
+        fixture.load(Precision::Float32);
+        const auto output=fixture.render(16000,Precision::Float32);
+        const auto speed=std::exp2(semitones/12);
+        double error=0;
+        for(std::size_t frame=1024;frame<5120;++frame) {
+            const auto expected=0.25*std::sin(2*std::numbers::pi*440*static_cast<double>(frame)*speed/48000);
+            const auto difference=output[frame*2]-expected;
+            error+=difference*difference;
+        }
+        check(fixture.session.problems().empty() && error/4096<0.00005,
+              "an unwarped sample plays audibly at the requested octave or fractional pitch");
+        const auto tail=static_cast<std::size_t>(std::ceil(12000/speed))+2;
+        check(std::all_of(output.begin()+static_cast<std::ptrdiff_t>(tail*2),output.end(),[](double value){return value==0;}) &&
+                  fixture.session.clips()->underrunSamples()==0,
+              "unwarped pitch plays to the resampled source end without callback underruns");
+    }
+}
+void compressedPitchAndRecordingWarp() {
+    Fixture fixture;
+    auto& db=fixture.store->db();
+    const auto assets=std::filesystem::path(__FILE__).parent_path()/"fixtures"/"decode";
+    std::filesystem::copy_file(assets/"tone16.flac",fixture.temporary.path()/"source.flac");
+    db.exec("UPDATE media_files SET rel_path='source.flac',format='flac' WHERE id=1;"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=300000000 WHERE id=7;"
+            "UPDATE audio_clips SET warp_enabled=0,src_len_frames=9600,transpose_semis=12 WHERE clip_id=7");
+    fixture.load(Precision::Float32);
+    const auto compressed=fixture.render(8000,Precision::Float32);
+    audio::WavReader reference(assets/"src16.wav");
+    std::vector<float> source(19200);
+    check(reference.read(source.data(),9600)==9600,"load the lossless FLAC fixture's original PCM");
+    double error=0.;
+    for(std::size_t i=1000;i<4000;++i) {
+        const auto difference=compressed[i*2]-source[i*4];
+        error+=difference*difference;
+    }
+    check(fixture.session.problems().empty() && error/3000<0.00005 &&
+          std::all_of(compressed.begin()+9600,compressed.end(),[](double value){return value==0;}),
+          "octave transpose works with a progressive FLAC on an absolute clip clock");
+
+    Fixture take;
+    auto& takeDb=take.store->db();
+    takeDb.exec("UPDATE audio_clips SET warp_mode='beats'");
+    const auto identity=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{12000,q/2}},12000);
+    SQLite::Statement row(takeDb,"UPDATE audio_clips SET warp_markers=? WHERE clip_id=7");
+    row.bind(1,identity.bytes.data(),static_cast<int>(identity.bytes.size()));row.exec();
+    take.load(Precision::Float32);
+    const auto original=take.render(14000,Precision::Float32);
+    takeDb.exec("UPDATE audio_clips SET transpose_semis=12 WHERE clip_id=7");
+    check(take.session.refresh(*take.store),"refresh a take whose direct Warp path now needs pitching");
+    take.session.transport().locate(0);
+    const auto pitched=take.render(14000,Precision::Float32);
+    const auto crossings=[](const auto& signal) {
+        int count=0;
+        for(std::size_t i=1024;i<5120;++i)if(signal[(i-1)*2]<=0. && signal[i*2]>0.)++count;
+        return count;
+    };
+    check(take.session.problems().empty() && crossings(pitched)>crossings(original)*3/2 &&
+          std::all_of(pitched.begin()+24000,pitched.end(),[](double value){return value==0;}),
+          "pitch takes Beats Warp out of its identity path while preserving the take's duration");
+}
 void modelAndRefusals() {
     Fixture f;const auto model=rows::readModel(*f.store);
     check(model.audioClips.size()==1 && model.audioClips[0].warpMarkers &&
@@ -237,12 +325,18 @@ void modelAndRefusals() {
 }
 void workerFailure() {
     Fixture f;
-    f.store->db().exec("UPDATE audio_clips SET warp_mode='re-pitch',transpose_semis=1");
+    f.store->db().exec("UPDATE audio_clips SET warp_mode='complexPro',formant_shift=48");
     f.load(Precision::Float32);
     check(!f.session.clips()->waitForWarp(),"offline Warp wait refuses a failed render");
-    const auto problems=f.session.clips()->decodeProblems();
-    check(problems.size()==1 && problems.front().find("clips#7: Re-Pitch derives pitch")!=std::string::npos,
+    constexpr std::string_view diagnostic = "clips#7: invalid warp source, rate, pitch or anchor count";
+    const auto problems = f.session.clips()->decodeProblems();
+    check(problems.size() == 1 && problems.front().find(diagnostic) != std::string::npos,
           "the Warp worker keeps the failed clip's diagnostic");
+    f.session.tick(0);
+    check(f.session.clipPlaybackUnavailable(7) && !f.session.clips()->mediaUnavailable(7) &&
+              std::ranges::any_of(f.session.problems(), [diagnostic](const auto& problem) {
+                  return problem.find(diagnostic) != std::string::npos;
+              }), "SC-151: the owner reports a terminal Warp failure on the clip and in the problem list");
 }
 void replacementSourceInvalidatesWarp() {
     Fixture f;
@@ -410,6 +504,7 @@ int main(int argc,char** argv) {
         else {
             modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();rampProjection();modelAndRefusals();workerFailure();
             replacementSourceInvalidatesWarp();
+            unwarpedPitch();compressedPitchAndRecordingWarp();
             trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();
             warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();
         }

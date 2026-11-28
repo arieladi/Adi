@@ -11,14 +11,12 @@
 
 namespace adi::appdata {
 
-namespace {
-
 namespace fs = std::filesystem;
 
 // One environment read, silenced for MSVC at ONE site (as clap_host.cpp's
 // envOr). On Windows the WIDE call: the narrow one returns the ANSI code page,
 // and a profile folder with a Hebrew name would come back as question marks.
-fs::path env(const char* name) {
+fs::path environmentPath(const char* name) {
 #if defined(_WIN32)
     std::wstring wide;
     for (const char* c = name; *c != '\0'; ++c) wide.push_back(static_cast<wchar_t>(*c));   // names are ASCII
@@ -39,8 +37,6 @@ fs::path env(const char* name) {
 #endif
 }
 
-}  // namespace
-
 const char* displayName(App app) noexcept {
     switch (app) {
         case App::Daw: return "ADI";
@@ -52,16 +48,16 @@ const char* displayName(App app) noexcept {
 Paths pathsFor(App app) {
     Paths p;
     // A portable install, or a test: everything under one folder.
-    if (const fs::path home = env("ADI_HOME"); !home.empty()) {
+    if (const fs::path home = environmentPath("ADI_HOME"); !home.empty()) {
         p.config = home / "config" / displayName(app);
         p.data = home / "data" / "Shared";
         p.cache = home / "cache";
         return p;
     }
 #if defined(_WIN32)
-    fs::path roaming = env("APPDATA");
-    fs::path local = env("LOCALAPPDATA");
-    if (const fs::path profile = env("USERPROFILE"); !profile.empty()) {
+    fs::path roaming = environmentPath("APPDATA");
+    fs::path local = environmentPath("LOCALAPPDATA");
+    if (const fs::path profile = environmentPath("USERPROFILE"); !profile.empty()) {
         if (roaming.empty()) roaming = profile / "AppData" / "Roaming";
         if (local.empty()) local = profile / "AppData" / "Local";
     }
@@ -70,7 +66,7 @@ Paths pathsFor(App app) {
     p.data = local / "ADI" / "Shared";
     p.cache = local / "ADI" / "Cache";
 #elif defined(__APPLE__)
-    const fs::path home = env("HOME");
+    const fs::path home = environmentPath("HOME");
     if (home.empty()) return {};
     const fs::path support = home / "Library" / "Application Support" / "ADI";
     p.config = support / displayName(app);
@@ -79,9 +75,9 @@ Paths pathsFor(App app) {
 #else
     // XDG Base Directory: the variable when it is set and absolute, else the
     // default under $HOME. A relative XDG value is invalid by the spec.
-    const fs::path home = env("HOME");
+    const fs::path home = environmentPath("HOME");
     auto xdg = [&](const char* var, const char* fallback) -> fs::path {
-        fs::path v = env(var);
+        fs::path v = environmentPath(var);
         if (!v.empty() && v.is_absolute()) return v;
         return home.empty() ? fs::path() : home / fallback;
     };
