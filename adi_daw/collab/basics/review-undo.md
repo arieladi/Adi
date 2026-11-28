@@ -16,8 +16,12 @@ Base of the chain: `origin/land/basics-1128c` until it is in main, then `origin/
 
 ## Slot checks
 
-(filled in as they finish)
-
+- **F1 fails without the fix.** Slot 11, core, filter `adi_clip_edit_tests`, at `d04dc807f` (the test
+  alone): the test fails with "Undo of the time edit goes through after the Loop switch: undoing
+  arranger.splice: loop changed after edit preparation", then "Redo ...: nothing to redo", and the same
+  two after the brace was dragged. Eight FAIL lines, all from `loopSetAfterTimeEdit`.
+- **With the fix:** slot 11, core, the whole suite, at `a3a026130` (the chain with origin/main merged):
+  started 28 November; result in the line below when it finishes.
 - The warm-up of slot 11 on another branch, before my first check: 1 of 291 failed,
   `adi_link_playback_tests` (eight FAIL lines about the Link tempo clock, 60 s). Not from this chain:
   the chain had not been built yet. A timing test under a loaded build PC is my guess; I did not look.
@@ -77,11 +81,11 @@ what the forward changes, Redo uses recorded values and not the surroundings, a 
    somewhere else in between, it stays where you put it. The alternative is to make the brace and the
    switch Undo steps of their own. Recommendation: keep what I built; it never throws away something you
    set after the edit. Reply "F1 keep" or "F1 loop is an Undo step".
-2. **Arm and Solo are Undo steps in ADI.** `track.setArm` and `track.setSolo` are ordinary edits. So
-   after an Undo, arming a track to record ends the Redo line (it is kept as a branch in the history
-   list, but Ctrl+Y no longer reaches it). As far as I know Live does not put Arm or Solo in its Undo
-   history, but I could not measure Live from here. Recommendation: a reading in Live 12 (press Solo,
-   press Arm, press Mute, then Ctrl+Z each time), then make ADI match. Not changed by me.
+2. **Arm and Solo are Undo steps in ADI: this is SC-280, already a row, still "To run".** One more
+   consequence for that row, which it does not say: after an Undo, arming a track to record ends the
+   Redo line (it is kept as a branch in the history list, but Ctrl+Y no longer reaches it). If Live
+   keeps Arm and Solo out of its history, this is where a user will feel it first. Not changed by me;
+   the reading of Live 12 that SC-280 asks for decides it.
 
 ## Reserve
 
@@ -90,7 +94,13 @@ what the forward changes, Redo uses recorded values and not the surroundings, a 
 
 ## For the next session
 
-Done in round 1: F1 (test + fix), the SC-11 proof. Both are on the chain.
+Done in round 1: F1 (test + fix), the SC-11 proof. Both are on the chain. The chain's base is now
+origin/main (`land/basics-1128c` is in it); merge origin/main before each push.
+
+For whoever merges the chain: `src/adi/clip_edit_ops.cpp` is also changed on the stretcher seat's
+branches (`seats/stretcher-session-integration`, "exact clip history"). My change is inside
+`arrangerApply` and one new function above it, `replayedLoop`. I touched the engine seat's file
+(`clip_edit_ops.cpp`) and two test files (`tests/test_clip_edit.cpp`, `tests/test_recording_commands.cpp`).
 
 Not done, in the order I would take them:
 
