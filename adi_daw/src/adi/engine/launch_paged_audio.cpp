@@ -28,6 +28,7 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
             throw std::invalid_argument("invalid unwarped Session page window");
         const auto nodes = pages_.sourcesFor(source.sourceTrack);
         if (nodes.size() == 1) {
+            if (source.keepPhysicalStartWarm) ClipPlayback::keepSourceStartWarm(*nodes.front(), source.firstFrame);
             const auto latency = pages_.warpLatencyFor(source.sourceTrack);
             const bool primesAll = latency > 0 && source.endFrame > 0 &&
                 source.endFrame <= ClipPlayback::readAheadFrames(sampleRate);

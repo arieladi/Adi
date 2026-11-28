@@ -1493,6 +1493,62 @@ void physicalLegatoRebasesItsCueOnLaterBank() {
             "the subsequent Warp Legato inherits the physical phase on the new geometry");
 }
 
+void longPagedRepeatKeepsStart() {
+    test::TempDirectory folder{"session_repeat", "long-paged"};
+    auto store = sceneProject(folder.path());
+    {
+        auto& db = store->db();
+        db.exec("INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+        SQLite::Statement tempo(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
+        tempo.bind(1, lastBeat * quarter);
+        tempo.exec();
+    }
+    constexpr auto span = 4 * rate;
+    static_assert(span > 3 * ClipPlayback::readAheadFrames(rate));
+    // Start at the last sample of a page so the restarted block spans two.
+    constexpr auto start = 8191;
+    constexpr auto startNs = (1'000'000'000LL * start + rate / 2) / rate;
+    addClip(*store, folder.path(), 101, 10, 17, false, start, 1, 12000);
+    pinUnwarpedOneShot(*store, startNs, 4000000000);
+    store->db().exec("UPDATE clip_launch SET launch_mode=3,ram_mode=0 WHERE clip_id=101");
+    store.reset();
+    StoreError openError{};
+    store = Store::open(folder.path() / "song.adi", openError);
+    require(static_cast<bool>(store), "reopen the long paged Repeat slot");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+    const auto press = [&](bool release) {
+        OpRequest gesture;
+        gesture.opType = "session.launchClip";
+        gesture.payload = {{"track", 1}, {"scene", 10}, {"clip", 101},
+                           {"incarnation", session.launchIncarnation()}, {"release", release}};
+        require(OpJournal(*store).commit(gesture).ok, "post a persisted Repeat gesture");
+    };
+    constexpr auto after = blockFrames - 1;
+    std::vector<float> pcm(2 * span + blockFrames);
+    Playback playback{session, pcm};
+    playback.paged = true;
+    press(false);
+    // One frame of the old run precedes the wide restart section.
+    playback.through(span - 1);
+    playback.through(span + after);
+    require(playback.count == 2 && playback.edges[0].sample == 0 &&
+            playback.edges[1].sample == span && playback.edges[1].newClip == 101,
+            "the held Repeat retriggers inside the callback after four physical seconds");
+    require(pcm[0] == .55f && pcm[span - 12000] == .55f, "the first run renders its start and distant source PCM");
+    std::printf("Long paged Repeat: first sample %.6f, restart sample %.6f at %d\n",
+                static_cast<double>(pcm[0]), static_cast<double>(pcm[span]), span);
+    require(std::equal(pcm.begin(), pcm.begin() + after, pcm.begin() + span),
+            "the long paged Repeat keeps its audible Start through the restart callback");
+    press(true);
+    playback.through(2 * span + blockFrames);
+    require(playback.count == 3 && playback.edges[2].sample == 2 * span && playback.edges[2].newClip == 0 &&
+            session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the released long run completes with no callback allocation or file I/O");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -1582,6 +1638,7 @@ int main() {
         physicalLegatoOneShotFollowsExternalTempo();
         physicalLegatoRebasesItsCueOnLaterBank();
         pinnedRepeatUsesItsLaunchClock();
+        longPagedRepeatKeepsStart();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

@@ -60,6 +60,9 @@ public:
     /// Driver-only lookahead for an idle source. Each candidate is a physical
     /// source window. Queue pages with the same worker used by playback.
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
+    /// Owner only, before publication. Keep a private physical slot's
+    /// Start in the same bounded request as the running reader.
+    static void keepSourceStartWarm(Node&, std::int64_t firstFrame) noexcept;
     /// Owner-side R3 delay for a private source bank whose PCM is aligned.
     [[nodiscard]] std::int32_t warpLatencyFor(std::int64_t trackId) const noexcept;
     using SampleRange = std::pair<std::int64_t, std::int64_t>;

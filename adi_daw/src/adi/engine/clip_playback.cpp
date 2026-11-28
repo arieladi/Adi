@@ -231,6 +231,8 @@ struct Clip {
     std::uint64_t sourceStart = 0, sourceLength = 0;
     std::uint32_t sourceRate = 0, rate = 0;
     std::int64_t pageFrames = 8192;
+    std::int64_t warmStartFrame = 0;
+    std::int32_t warmStartFrames = 0;
     std::uint16_t channels = 0;
     int mode = 0;
     float gain = 1;
@@ -355,10 +357,14 @@ struct Clip {
                 timelineRange(playbackSample(t,wrap,playbackDelay),
                               contiguousPlayback(t,wrap,framesAhead-wrap,playbackDelay));
         };
-        // Mandatory current-block pages first, then two scaled pages: at least
-        // 16384/48000 seconds of lead at every session rate.
+        // The current block always has priority. A private physical slot
+        // can restart at Start inside a callback, including after a long
+        // run whose ordinary read-ahead no longer covers those pages.
         horizon(frames);
-        if(lookAhead)horizon(ClipPlayback::readAheadFrames(rate));
+        if (lookAhead) {
+            timelineRange(warmStartFrame, warmStartFrames);
+            horizon(ClipPlayback::readAheadFrames(rate));
+        }
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -1680,7 +1686,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         paged.push_back({clip.id,clip.id,pinned ? slot.physicalStartFrame : fixedFrame(slot.startTick),
             pinned ? slot.physicalLoopBeginFrame : fixedFrame(slot.loopStartTick),
             pinned ? slot.physicalLoopEndFrame : fixedFrame(slot.loopEndTick),extent,
-            pinned && !slot.physicalLoopEndFrame && slot.physicalFrames <= 3 * ClipPlayback::readAheadFrames(rate)});
+            pinned && !slot.physicalLoopEndFrame && slot.physicalFrames <= 3 * ClipPlayback::readAheadFrames(rate),
+            pinned});
         pagedExtents.push_back(static_cast<std::uint64_t>(extent));
     };
     const auto add = [](std::int64_t a, std::int64_t b) {
@@ -1898,6 +1905,14 @@ void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candida
         }
         clip.trimAdmission(requested);
         clip.request(requested);
+    }
+}
+void ClipPlayback::keepSourceStartWarm(Node& node, std::int64_t firstFrame) noexcept {
+    auto* source = dynamic_cast<TrackSource*>(&node);
+    if (!source) return;
+    for (auto* clip : source->clips) {
+        clip->warmStartFrame = firstFrame;
+        clip->warmStartFrames = source->maxFrames;
     }
 }
 std::int32_t ClipPlayback::warpLatencyFor(std::int64_t id) const noexcept {
