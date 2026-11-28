@@ -375,7 +375,8 @@ clip_edit::PreparedEdit prepareResizeEnd(Store& store,const EditScope& scope,Res
         Read read(store.db());validateScope(store,scope,options);edit::TimeMap time(store.db());
         OpContext context{store,store.db()};auto image=clip_edit::captureImage(context,resize.id);
         if(resize.end.base!=clockBase(scope.clock))throw std::runtime_error("resize end must use the declared operation clock");
-        const auto end=convert(resize.end.value,resize.end.base,nativeBase(image),time);
+        auto end=convert(resize.end.value,resize.end.base,nativeBase(image),time);
+        if(const auto limit=clip_edit::audioResizeLimit(store,resize.id,time))end=std::min(end,limit->value);
         if(end!=nativeSpan(image).end) {
             detail::freezeImage(store,image,time,options.referenceRate);
             detail::resizeFrozenEnd(image,end,time,options.referenceRate);

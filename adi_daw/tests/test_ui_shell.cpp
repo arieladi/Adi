@@ -5707,6 +5707,29 @@ void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
     dragEdge(start, start + beat);
     checkSpan(start + beat, "dragging the start cuts audio from the beginning and keeps the end fixed");
     check(root.undoTitle(false) == "Undo Resize Clip", "a left-edge drag makes one Resize Clip edit");
+    const auto dragRight = [&](std::int64_t from, std::int64_t to, std::int64_t expected) {
+        const juce::Point<float> down{x(from) - 1.f, y}, up{x(to), y};
+        const auto mods = juce::ModifierKeys::leftButtonModifier;
+        canvas.mouseDown(pressAt(canvas, down, mods));
+        canvas.mouseDrag(dragAt(canvas, down, up, mods));
+        check(canvas.resizingClip() && canvas.resizedLength() == expected - start - beat,
+              "SC-476: the right-edge preview follows available source after a left trim");
+        canvas.mouseUp(dragAt(canvas, down, up));
+        root.frame();
+        check(audioClip() && audioClip()->posTicks == start + beat &&
+                  audioClip()->posTicks + audioClip()->lengthTicks == expected &&
+                  geo.selection.end == expected,
+              "SC-476: the saved right edge and selection match the preview");
+    };
+    dragRight(end, end - beat, end - beat);
+    dragRight(end - beat, end + beat, end);
+    check(root.command(AppCommands::Undo), "SC-476: Undo the bounded right drag");
+    root.frame();
+    check(audioClip() && audioClip()->posTicks + audioClip()->lengthTicks == end - beat,
+          "SC-476: Undo restores the shorter right edge");
+    check(root.command(AppCommands::Redo), "SC-476: Redo the bounded right drag");
+    root.frame();
+    checkSpan(start + beat, "SC-476: Redo restores the bounded end and source offset");
     dragEdge(start + beat, start - beat);
     checkSpan(start, "extending the start stops at the beginning of the sample");
     check(geo.selection.start == start, "the selection uses the clamped start");
@@ -17899,9 +17922,19 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     }
     AudioImport import;
     check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+    constexpr auto sourceTicks = 4 * textproj::kPPQ; // Two seconds at 120 BPM.
     auto edit = dropAudio(*document->view().current(), 4, 0, "Break", import);
-    check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
-          "dropped on 3 Audio at bar 1: four beats at 120 BPM");
+    const auto placement = std::find_if(edit.ops.begin(), edit.ops.end(),
+                                        [](const OpRequest &op) { return op.opType == "clip.create"; });
+    check(edit.refusal.empty() && placement != edit.ops.end(), "prepare the waveform fixture's audio clip");
+    if (!edit.refusal.empty() || placement == edit.ops.end())
+        return;
+    // Seed an old saved placement twice as long as its unlooped audio source.
+    placement->payload["length"] = 2 * sourceTicks;
+    const bool saved = document->ops().submit(std::move(edit.ops)).ok && document->synchronise();
+    check(saved, "save eight beats of clip placement over four beats of audio");
+    if (!saved)
+        return;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "waves");
     root.afterEdit = [&] { document->synchronise(); };
@@ -17932,23 +17965,16 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     check(waves.builds() == 1 && waves.problem().empty() && root.arrangement.waveformsSeen != seenBefore,
           "the worker built the file's peaks, and the next frame saw them land");
     const auto *clip = root.reader().findTrack(4)->clips.empty() ? nullptr : root.reader().findTrack(4)->clips[0].get();
-    check(clip != nullptr && clip->audio && clip->audio->sourceLengthFrames == 96000, "the clip and its source window");
-    if (clip == nullptr)
+    const bool overextended = clip && clip->audio && clip->audio->sourceLengthFrames == 96000 &&
+                              clip->posTicks == 0 && clip->lengthTicks == 2 * sourceTicks && !clip->loopEnabled;
+    check(overextended, "the project preserves the legacy unlooped placement and its source window");
+    if (!overextended)
         return;
-    // The clip twice as long as its file: its body past the source window holds no waveform.
-    check(document->ops().submit([&] {
-        OpRequest r;
-        r.opType = "clip.resize";
-        r.payload = {{"id", clip->id}, {"pos", 0}, {"length", 2 * clip->lengthTicks}};
-        r.label = "Resize Clip";
-        return r;
-    }()).ok && document->synchronise(), "the clip lengthened past its file's end");
-    root.frame();
-    clip = root.reader().findTrack(4)->clips[0].get();
     const auto image = paintCanvas();
     const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight + 2,
               bottom = laneTop(root, 4) + lanes.heightFor(4) - 5;
-    const int sourceEnd = static_cast<int>(lanes.x(clip->lengthTicks / 2)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
+    const int sourceEnd = static_cast<int>(lanes.x(sourceTicks)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
+    check(sourceEnd + 20 < clipEnd && clipEnd <= image.getWidth(), "both the source and the empty tail are visible");
     // A waveform pixel is much darker than the clip's body around it.
     const auto body = image.getPixelAt(sourceEnd + 20, top + 1).getBrightness();
     auto darkIn = [&](const juce::Image &drawn, int x0, int x1) {

@@ -11,6 +11,7 @@
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/take_lane_ops.hpp"
 #include "adi/ui/meter_edits.hpp"
@@ -3403,7 +3404,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const bool along = !home && moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
             const auto contentPos = home ? c->posTicks : c->id == moving_ ? movingTo_
                                                                         : along ? c->posTicks + movingDelta() : c->posTicks;
-            const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
+            const auto length = c->id == resizing_ ? resizedLength() : c->lengthTicks;
             const auto pos = c->id == resizing_ && resizeEdge_ == ResizeEdge::Left
                                  ? resizeStart_ + resizeFrom_ - length
                                  : contentPos;
@@ -6612,6 +6613,21 @@ void ArrangementCanvas::beginResize(const engine::ClipNode &clip, std::int64_t t
     resizeStart_ = clip.posTicks;
     resizeFrom_ = resizeLength_ = clip.lengthTicks;
     resizeEdge_ = edge;
+    resizeLimit_.reset();
+    if (edge == ResizeEdge::Right && !stretching_ && clip.audio && !clip.loopEnabled) {
+        try {
+            auto &store = view.root.editStore();
+            const edit::TimeMap time(store.db());
+            if (const auto limit = clip_edit::audioResizeLimit(store, clip.id, time))
+                resizeLimit_ = (limit->base == 0 ? limit->value : time.ticks(limit->value)) - resizeStart_;
+        } catch (const std::exception&) {
+            // The durable edit will validate the source and clock if the user commits.
+        }
+    }
+}
+
+std::int64_t ArrangementCanvas::resizedLength() const noexcept {
+    return resizeLimit_ ? std::min(resizeLength_, *resizeLimit_) : resizeLength_;
 }
 
 void ArrangementCanvas::resizeTo(std::int64_t tick, std::int64_t minLength) {
@@ -6625,7 +6641,7 @@ void ArrangementCanvas::resizeTo(std::int64_t tick, std::int64_t minLength) {
 
 std::optional<std::int64_t> ArrangementCanvas::commitResize() {
     const auto id = std::exchange(resizing_, 0);
-    if (resizeLength_ == resizeFrom_)
+    if (resizedLength() == resizeFrom_)
         return std::nullopt;
     if (stretching_) {
         const bool left = resizeEdge_ == ResizeEdge::Left;
@@ -6637,7 +6653,7 @@ std::optional<std::int64_t> ArrangementCanvas::commitResize() {
     }
     if (resizeEdge_ == ResizeEdge::Right) {
         if (view.root.submitEdit("clip.resize", {{"id", id}, {"pos", resizeStart_}, {"length", resizeLength_}}, "Resize Clip"))
-            return resizeStart_ + resizeLength_;
+            return resizeStart_ + resizedLength();
         return std::nullopt;
     }
     const auto end = resizeStart_ + resizeFrom_;
@@ -7290,10 +7306,10 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
             const auto step = std::max<std::int64_t>(
                 1, static_cast<std::int64_t>(view.geometry.gridQuarters() * textproj::kPPQ));
             const auto edge = resizeEdge_ == ResizeEdge::Left ? resizeStart_ + resizeFrom_ - resizeLength_
-                                                               : resizeStart_ + resizeLength_;
+                                                               : resizeStart_ + resizedLength();
             resizeTo(view.geometry.nextGridLine(edge, code == juce::KeyPress::rightKey), step);
             repaint();
-            announce("Length " + juce::String(static_cast<double>(resizeLength_) / textproj::kPPQ, 2) + " beats");
+            announce("Length " + juce::String(static_cast<double>(resizedLength()) / textproj::kPPQ, 2) + " beats");
             return true;
         }
         keyResize_ = false;

@@ -471,6 +471,56 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
 }
 void expectedHead(Store& store,PreparedEdit& result) {result.options.expectHead.emplace(OpJournal(store).headSeq());}
 }
+std::optional<TimePoint> audioResizeLimit(Store& store,std::int64_t clipId,const edit::TimeMap& time) {
+    SQLite::Statement query(store.db(),
+        "SELECT c.time_base,c.pos_ticks,c.pos_ns,c.length_ticks,c.length_ns,c.content_offset_ticks,"
+        "d.content_offset_ns,d.source_end_ns,p.end_marker_ticks,a.src_len_frames,"
+        "a.warp_enabled,a.warp_markers,a.transpose_semis,a.media_id "
+        "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+        "LEFT JOIN clip_playback_details d ON d.clip_id=c.id "
+        "LEFT JOIN clip_properties p ON p.clip_id=c.id "
+        "WHERE c.id=? AND c.kind='audio' AND c.loop_enabled=0");
+    query.bind(1,clipId);
+    if(!query.executeStep())return std::nullopt;
+    const auto row=detail::captureQueryRow(query);
+    const auto frames=detail::signedInteger(row.at("src_len_frames"));
+    if(frames<=0)return std::nullopt;
+    const bool linear=row.at("time_base")==1;
+    const auto first=detail::signedInteger(row.at(linear?"pos_ns":"pos_ticks"));
+    const auto length=detail::signedInteger(row.at(linear?"length_ns":"length_ticks"));
+    const auto origin=originTicks(row,time);
+    const auto offsetTicks=detail::signedInteger(row.at("content_offset_ticks"));
+    const auto& endMarker=row.at("end_marker_ticks");
+    auto end=first;
+    if(row.at("warp_enabled")!=0) {
+        const auto& map=row.at("warp_markers");
+        if(!map.is_binary())return std::nullopt;
+        const auto markers=audio::readWarpMap(std::as_bytes(std::span(map.get_binary())),static_cast<std::uint64_t>(frames));
+        if(!markers)return std::nullopt;
+        auto terminal=markers.markers.back().tick;
+        if(!endMarker.is_null())terminal=std::min(terminal,detail::signedInteger(endMarker));
+        const auto tick=edit::addTime(origin,std::max<std::int64_t>(0,terminal-offsetTicks));
+        end=linear?time.nanos(tick):tick;
+    } else {
+        double rate;
+        try {
+            rate=audio::pitchedSampleRate(static_cast<double>(sourceSampleRate(store,detail::signedInteger(row.at("media_id")))),
+                                         row.at("transpose_semis").get<double>());
+        } catch(const std::exception&) {
+            return std::nullopt; // An offline legacy source may have no stored sample rate.
+        }
+        if(rate<=0)return std::nullopt;
+        auto terminal=edit::nanosFromSeconds(static_cast<double>(frames)/rate);
+        const auto& pinnedEnd=row.at("source_end_ns");
+        if(!pinnedEnd.is_null())terminal=std::min(terminal,detail::signedInteger(pinnedEnd));
+        else if(!endMarker.is_null())terminal=std::min(terminal,time.duration(origin,detail::signedInteger(endMarker)));
+        const auto& pinnedOffset=row.at("content_offset_ns");
+        const auto offset=pinnedOffset.is_null()?time.duration(origin,offsetTicks):detail::signedInteger(pinnedOffset);
+        const auto endNs=edit::addTime(linear?first:time.nanos(first),std::max<std::int64_t>(0,terminal-offset));
+        end=linear?endNs:time.ticks(endNs);
+    }
+    return TimePoint{linear?1:0,std::max(edit::addTime(first,length),end)};
+}
 PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t mediaId,
                               std::int64_t frames,std::int64_t sampleRate,OpRequest capturedMedia) {
     PreparedEdit result;

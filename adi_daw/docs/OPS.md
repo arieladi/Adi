@@ -555,10 +555,12 @@ the full typed details row, including future fields or row absence; undo and
 redo restore it. This optional SQL seam adds no dependency on N17's schema.
 
 `clip.move {id,to,track}` and `clip.resize {id,pos,length}` take arrangement
-ticks. Linear clips store the converted position in nanoseconds. A linear
-resize converts both endpoints through the tempo map. A same-track move keeps
-its lane. Undo restores the exact native placement. Historical scalar inverses
-retain their recorded effects.
+ticks. Linear clips store their placement in nanoseconds. An anchored resize
+of unlooped audio with known source bounds preserves the native start and
+cannot extend over the playable end. Other linear resizes convert both
+endpoints through the tempo map. A same-track move keeps its lane. Undo
+restores the exact native placement. Redo preserves the end recorded when
+the resize was committed, including the effects of historical entries.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
