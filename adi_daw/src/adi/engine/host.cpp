@@ -140,6 +140,11 @@ const GraphTransportState* GraphHost::currentTransportState() const noexcept {
     return published ? published->transportState() : nullptr;
 }
 
+const GraphTransportState* GraphHost::adoptedTransportState() const noexcept {
+    const auto* adopted = lastSnap_.load(std::memory_order_acquire);
+    return adopted ? adopted->transportState() : nullptr;
+}
+
 void GraphHost::fadeIn(const AudioIo& io) noexcept {
     if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || (io.out == nullptr && io.out64 == nullptr)) return;
 
@@ -233,17 +238,18 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
 
     const bool adopting = snap->seq != lastSeq_;
     if (adopting) {
-        if (lastSnap_ != nullptr) {
+        const auto* previous = lastSnap_.load(std::memory_order_relaxed);
+        if (previous != nullptr) {
             const auto* state = snap->transportState();
-            if (state && !state->readyToAdopt(lastSnap_->transportState())) return lastSnap_;
+            if (state && !state->readyToAdopt(previous->transportState())) return previous;
         }
         // Accepted MIDI ownership is independent of the optional audio ring
         // history policy. Transfer pending deliveries before the old graph can
         // retire even when ring-history carry has deliberately been disabled.
-        if (lastSnap_ != nullptr)
-            (void)snap->graph().graph().adoptEventHistory(lastSnap_->graph().graph());
-        if (lastSnap_ != nullptr && keepHistory())
-            stats_.historyCarried.fetch_add(handover(*lastSnap_, *snap), std::memory_order_relaxed);
+        if (previous != nullptr)
+            (void)snap->graph().graph().adoptEventHistory(previous->graph().graph());
+        if (previous != nullptr && keepHistory())
+            stats_.historyCarried.fetch_add(handover(*previous, *snap), std::memory_order_relaxed);
 
         // ADR-0203 d3: a feedback loop in play again after time out of it
         // starts empty. Decided here, against the graph that really played
@@ -251,7 +257,7 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
         // thread never stopped playing keeps its echoes, and one it did stop
         // never plays what it held when it left.
         const std::vector<Node*>& now = snap->graph().loopReaders();
-        const std::vector<Node*>* before = lastSnap_ != nullptr ? &lastSnap_->graph().loopReaders() : nullptr;
+        const std::vector<Node*>* before = previous != nullptr ? &previous->graph().loopReaders() : nullptr;
         std::size_t j = 0;
         for (Node* reader : now) {
             while (before != nullptr && j < before->size() && std::less<Node*>()((*before)[j], reader)) ++j;
@@ -268,12 +274,14 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
         }
         lastSeq_ = snap->seq;
         stats_.swaps.fetch_add(1, std::memory_order_relaxed);
+        // Publish the borrowed pointer before allowing collection of the
+        // previous graph. The owner cannot collect while borrowing it.
+        lastSnap_.store(snap,std::memory_order_release);
     }
 
     // NOW, and only now. From this store on the previous graph may be freed,
     // and nothing below touches it.
     pub_.announce(snap);
-    lastSnap_ = snap;
 
     if (adopting) {
         if (const auto* state = snap->transportState()) state->adopted();
@@ -330,17 +338,20 @@ void GraphHost::process(const AudioIo& io) noexcept {
 }
 
 const GraphTransportState* GraphHost::renderedTransportState()const noexcept {
-    return lastSnap_?lastSnap_->transportState():nullptr;
+    const auto* adopted = lastSnap_.load(std::memory_order_relaxed);
+    return adopted ? adopted->transportState() : nullptr;
 }
 
 bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noexcept {
-    if(!lastSnap_)return false;
-    const auto& graph=lastSnap_->graph().graph();
+    const auto* adopted = lastSnap_.load(std::memory_order_relaxed);
+    if (!adopted) return false;
+    const auto& graph = adopted->graph().graph();
     return graph.copyNodeOutput(graph.find(node),io);
 }
 
 std::int32_t GraphHost::renderedLatency() const noexcept {
-    return lastSnap_ ? lastSnap_->graph().graph().latencySamples() : 0;
+    const auto* adopted = lastSnap_.load(std::memory_order_relaxed);
+    return adopted ? adopted->graph().graph().latencySamples() : 0;
 }
 
 }  // namespace adi::engine

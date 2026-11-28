@@ -725,6 +725,9 @@ private:
         bool authoredPerformanceTempo=false;
         bool protectExternalSessionAudio=false;
         bool protectCompatiblePinnedPages = false;
+        bool preparedPinnedRestart = false;
+        mutable std::optional<std::uint64_t> comparedPausedTempo;
+        mutable bool matchesComparedPausedTempo = false;
         std::shared_ptr<InputMonitors> inputMonitors;
         std::shared_ptr<LaunchAudioRuntime> launchAudio;
         std::shared_ptr<const ClipProject> launchSource;
@@ -738,6 +741,7 @@ private:
         void applyLoop() const noexcept;
         [[nodiscard]] bool projectLoop(Transport&) const noexcept;
         [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;
+        [[nodiscard]] bool samePausedTempo(const TimingView&) const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;

@@ -163,6 +163,9 @@ public:
     [[nodiscard]] Graph* currentGraph() const noexcept;
     /// Owner-only borrowed clock from the latest publication, with currentGraph's lifetime.
     [[nodiscard]] const GraphTransportState* currentTransportState() const noexcept;
+    /// Owner-only borrowed clock from the last driver adoption. Valid until
+    /// the owner collects retired graphs or destroys this host.
+    [[nodiscard]] const GraphTransportState* adoptedTransportState() const noexcept;
     /// Audio thread, after process: latency of the graph that actually ran.
     [[nodiscard]] std::int32_t renderedLatency() const noexcept;
     /// Single audio reader, after process and before the next process. Protected
@@ -328,10 +331,9 @@ private:
     std::uint64_t lastSeq_ = 0;
     std::uint64_t renderSerial_ = 0;
     bool renderActive_ = false;
-    /// The snapshot rendered LAST block -- the one history is carried FROM.
-    /// Not whatever the message thread last published: two rebuilds between
-    /// blocks skip a graph that never ran, and its rings hold nothing.
-    const PublishedGraph* lastSnap_ = nullptr;
+    /// The last driver adoption, also observed by the sole owner/reclaimer.
+    static_assert(std::atomic<const PublishedGraph*>::is_always_lock_free);
+    std::atomic<const PublishedGraph*> lastSnap_{nullptr};
     std::int32_t fadeRemaining_ = 0;
     std::int32_t fadeLength_ = 0;
 

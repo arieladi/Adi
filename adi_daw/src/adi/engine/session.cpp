@@ -1007,24 +1007,37 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             warmWarpClips = sceneTempoBanks_->warmWarpClips;
             budget -= beforeClock->residentBytes();
         }
-        timing.protectCompatiblePinnedPages = prior && prior->launchAudio && prior->launchSource &&
-            prior->launchAudio->incarnation() == storedLaunchIncarnation_ &&
-            prior->sampleRate == timing.sampleRate && prior->spec.channels == timing.spec.channels &&
-            prior->spec.maxFrames == timing.spec.maxFrames;
-        sameBankSources = timing.protectCompatiblePinnedPages &&
+        const auto hasCompatibleFormat = [&](const TimingView* clock) {
+            return clock && clock->session == this && clock->launchAudio && clock->launchSource &&
+                clock->launchAudio->incarnation() == storedLaunchIncarnation_ &&
+                clock->sampleRate == timing.sampleRate && clock->spec.channels == timing.spec.channels &&
+                clock->spec.maxFrames == timing.spec.maxFrames;
+        };
+        const auto* adopted = dynamic_cast<const TimingView*>(graph_.adoptedTransportState());
+        const bool priorCompatible = hasCompatibleFormat(prior);
+        const bool adoptedCompatible = hasCompatibleFormat(adopted);
+        timing.protectCompatiblePinnedPages = priorCompatible || adoptedCompatible;
+        sameBankSources = priorCompatible &&
             sameStoredLaunchSources(*prior->launchSource,*clipProject_);
         if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
             storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events ||
             storedLaunchPreparedBpm_ != preparedBpm || !std::ranges::equal(storedLaunchWarmWarpClips_,warmWarpClips)) {
             auto diagnostics = model.slotProblems;
-            const auto priorPinnedPages = timing.protectCompatiblePinnedPages
-                ? StoredLaunchPageReuse{prior->launchSource.get(),
-                    prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
-                : StoredLaunchPageReuse{};
             const bool hasPriorBank = (storedLaunchProject_ && storedLaunchProject_->incarnation() == storedLaunchIncarnation_) ||
                 (prior && prior->launchAudio && prior->launchAudio->incarnation() == storedLaunchIncarnation_);
+            // A superseded publication can have a different clock from the
+            // one still rendering. Prepare an ordinary replacement against
+            // the driver's exact clock, including a restoration of that clock.
+            const bool sameAdoptedTempo = adoptedCompatible && adopted->tempo.events == timing.tempo.events;
+            timing.preparedPinnedRestart = sameAdoptedTempo && !primeExternalAt_;
+            const auto* reuse = sameAdoptedTempo ? adopted : (priorCompatible ? prior : nullptr);
+            const auto priorPinnedPages = reuse
+                ? StoredLaunchPageReuse{reuse->launchSource.get(),
+                    reuse->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
+                : StoredLaunchPageReuse{};
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
-                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages, !hasPriorBank);
+                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages,
+                !hasPriorBank || timing.preparedPinnedRestart);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {
@@ -1043,6 +1056,9 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             storedLaunchBlockFrames_ = timing.spec.maxFrames;
             storedLaunchProject_ = std::move(prepared);
             launchProblems_ = std::move(diagnostics);
+        } else if (priorCompatible && prior->preparedPinnedRestart &&
+                   prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()) == storedLaunchProject_) {
+            timing.preparedPinnedRestart = true;
         }
         project = storedLaunchProject_;
         timing.launchSource = clipProject_;
@@ -3478,20 +3494,35 @@ void Session::prepareSourceReadiness(TimingView& timing, const ClipPlayback& cli
         timing.delayedSourceReadiness = clips.readiness(ClipPlayback::ReadinessScope::Delayed);
 }
 
+bool Session::TimingView::samePausedTempo(const TimingView& previous) const noexcept {
+    if (previous.tempoRevision == tempoRevision) return true;
+    if (comparedPausedTempo != previous.tempoRevision) {
+        const auto& left = previous.tempo.events;
+        const auto& right = tempo.events;
+        matchesComparedPausedTempo = left.size() == right.size() &&
+            (left.empty() || std::equal(left.data(),left.data() + left.size(),right.data()));
+        comparedPausedTempo = previous.tempoRevision;
+    }
+    return matchesComparedPausedTempo;
+}
+
 bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const noexcept {
-    if (!session->transport_.playing()) return true;
     const auto* previous = dynamic_cast<const TimingView*>(before);
     if (!previous || previous->session != session) return true;
+    const auto playing = session->transport_.playing();
+    const auto protectExternal = playing && protectExternalSessionAudio;
     // Compare with the graph that actually played. The owner's prior publication
     // can have been superseded before its page reader ever reached the driver.
-    const bool protectPinned = (protectExternalSessionAudio || protectCompatiblePinnedPages) &&
+    // A global pause preserves the old slot run on the same clock.
+    const bool protectPinned = (protectExternal || protectCompatiblePinnedPages) &&
         previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
         previous->spec.maxFrames == spec.maxFrames;
-    if ((protectExternalSessionAudio || protectPinned) && previous->launchAudio && session->launchAudioDriver_ &&
+    if ((protectExternal || protectPinned) && previous->launchAudio && session->launchAudioDriver_ &&
         session->launchAudioDriver_->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
-            session->transport_.position(),protectExternalSessionAudio,protectPinned))
+            session->transport_.position(),protectExternal,protectPinned) &&
+        (playing || preparedPinnedRestart || samePausedTempo(*previous)))
         return false;
-    if (!delayedSourceReadiness || !previous->authoredPerformanceTempo ||
+    if (!playing || !delayedSourceReadiness || !previous->authoredPerformanceTempo ||
         previous->tempoRevision == tempoRevision || previous->spec.sampleRate != spec.sampleRate ||
         previous->spec.channels != spec.channels || previous->spec.maxFrames != spec.maxFrames ||
         previous->spec.precision != spec.precision || previous->spec.delayCompensation != spec.delayCompensation)

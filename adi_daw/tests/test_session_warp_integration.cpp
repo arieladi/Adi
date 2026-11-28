@@ -680,6 +680,148 @@ void retainPagedOneShotOnSlotRefresh() {
     std::printf("Paged source reused after a different slot edit: %d identical frames\n",span);
 }
 
+void relaunchEditedPinnedOneShot() {
+    test::TempDirectory folder{"session_unwarped_one_shot", "pause-relaunch"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+    addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+    pinUnwarpedOneShot(*store,50031250,4000000000);
+    db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto park = 120000;
+    constexpr auto nextPulse = 123000;
+    std::vector<float> pcm(nextPulse + 3000 + 16);
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(6000);
+    require(session.setExternalTempoAt(*store,140,quarter/2),"perform a tempo change before the same-clock edit");
+    playback.through(park);
+    const auto old = trackState(session);
+    const auto swaps = session.graph().stats().swaps;
+    require(old.run != 0 && old.clip == 101,"start the original long pinned run");
+
+    const auto editGain = [&](double gain) {
+        OpRequest edit;
+        edit.opType = "clip.setGain";
+        edit.payload = {{"id", 101}, {"gain", gain}};
+        require(OpJournal(*store).commit(edit).ok && session.refresh(*store),
+                "prepare the overwritten slot at the already adopted clock");
+    };
+    editGain(-3.0);
+    editGain(-6.020599913279624);
+    require(session.problems().empty(),"the replacement has its ordinary source start prepared");
+    playback.through(park + 1);
+    session.transport().play(false);
+    playback.through(park + 2);
+    require(session.graph().stats().swaps == swaps && trackState(session).run == old.run,
+            "global pause cannot replace the warm reader of a retained run");
+    session.transport().play();
+    playback.through(nextPulse + 2);
+    require(trackState(session).run == old.run && std::abs(pcm[nextPulse + 1] - .55f) < 1e-6f,
+            "global resume still hears the original late source phase");
+
+    session.transport().play(false);
+    OpRequest stop;
+    stop.opType = "session.stopTrack";
+    stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(stop).ok,"queue explicit Slot Stop on the old graph");
+    playback.through(nextPulse + 3);
+    require(trackState(session).clip == 0,"explicit Slot Stop clears the retained run");
+    playback.through(nextPulse + 4);
+    require(session.graph().stats().swaps > swaps,"the stopped slot admits its prepared replacement");
+    const auto launchStream = playback.first;
+    OpRequest launch;
+    launch.opType = "session.launchClip";
+    launch.payload = {{"track",1},{"scene",10},{"clip",101},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(launch).ok,"relaunch the edited slot");
+    playback.through(launchStream + 3001);
+    const auto next = trackState(session);
+    require(next.clip == 101 && next.run != 0 && next.run != old.run &&
+            std::abs(pcm[static_cast<std::size_t>(launchStream + 3000)] - .275f) < 1e-6f &&
+            callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "relaunch hears the latest saved gain from the prepared start without callback allocation or I/O");
+    std::printf("Paused pinned run resumed at .55 FS and restarted at .275 FS on the same clock\n");
+}
+
+void pausedSupersessionReturnsToSameClock(bool nonconstant) {
+    test::TempDirectory folder{"session_unwarped_one_shot","pause-clock-alias"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0');");
+    constexpr auto boundary = quarter;
+    if (nonconstant) {
+        SQLite::Statement step(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,140)");
+        step.bind(1,boundary);
+        step.exec();
+    }
+    addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+    pinUnwarpedOneShot(*store,50031250,4000000000);
+    db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    std::vector<float> pcm(130000);
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(122999);
+    const auto before = trackState(session);
+    const auto swaps = session.graph().stats().swaps;
+    const auto bpmA = nonconstant ? 140.0 : 120.0;
+    require(before.clip == 101 && before.run > 0 && session.beginRender().bpmAtTick(boundary) == bpmA,
+            "driver adopts the original clock A with a warm late physical run");
+
+    db.exec("UPDATE clips SET gain_db=-6.020599913279624 WHERE id=101");
+    SQLite::Statement edit(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,150) ON CONFLICT(pos_ticks) DO UPDATE SET bpm=excluded.bpm");
+    edit.bind(1,boundary);
+    edit.exec();
+    require(session.refresh(*store),"publish a different authored clock B and a changed source");
+    playback.through(123000);
+    require(trackState(session).run == before.run && session.graph().stats().swaps == swaps &&
+            session.beginRender().bpmAtTick(boundary) == bpmA,"driver holds the original A while B is pending");
+
+    const char* restore = nonconstant ? "UPDATE tempo_map SET bpm=140 WHERE pos_ticks=?" : "DELETE FROM tempo_map WHERE pos_ticks=?";
+    SQLite::Statement restoreClock(db,restore);
+    restoreClock.bind(1,boundary);
+    restoreClock.exec();
+    require(session.refresh(*store),"publish C with the exact original A clock but changed source");
+    require(session.problems().empty(),"restoring the adopted clock primes the edited slot");
+    session.transport().play(false);
+    playback.through(123001);
+    const auto swapsPaused = session.graph().stats().swaps;
+    require(trackState(session).run == before.run,"global pause keeps the old physical run identity");
+    session.transport().play();
+    playback.through(123002);
+    const auto resumed = pcm[123001];
+
+    session.transport().play(false);
+    OpRequest stop;
+    stop.opType = "session.stopTrack";
+    stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(stop).ok,"queue explicit Slot Stop");
+    playback.through(123004);
+    require(trackState(session).clip == 0,"stop the retained run");
+    const auto relaunch = playback.first;
+    OpRequest launch;
+    launch.opType = "session.launchClip";
+    launch.payload = {{"track",1},{"scene",10},{"clip",101},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(launch).ok,"relaunch after explicit Stop");
+    playback.through(relaunch + 3001);
+    const auto restarted = pcm[static_cast<std::size_t>(relaunch+3000)];
+    std::printf("%s A -> B pending -> A: swaps %lld -> %lld on pause, late resume %.6f, edited restart %.6f, clip %lld\n",
+                nonconstant ? "two-segment" : "steady",static_cast<long long>(swaps),static_cast<long long>(swapsPaused),
+                static_cast<double>(resumed),static_cast<double>(restarted),static_cast<long long>(trackState(session).clip));
+    require(swapsPaused == swaps && std::abs(resumed - .55f) < 1e-6f && std::abs(restarted - .275f) < 1e-6f &&
+            callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "equal clock across superseded B preserves old PCM and prepares a correct new start");
+}
+
 void coldPagedOneShotOnAuthoredRamp() {
     test::TempDirectory folder{"session_unwarped_one_shot", "cold-ramp"};
     auto store = sceneProject(folder.path());
@@ -1295,6 +1437,9 @@ int main() {
         absoluteWarpFallback();
         physicalOneShotsFollowExternalTempo();
         retainPagedOneShotOnSlotRefresh();
+        relaunchEditedPinnedOneShot();
+        pausedSupersessionReturnsToSameClock(false);
+        pausedSupersessionReturnsToSameClock(true);
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
