@@ -297,9 +297,12 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
             if (followClips) {
                 const auto sample = transport.sampleAt(frame);
                 auto remaining = transport.contiguousFrames(frame, io.frames - frame);
-                const auto range = std::upper_bound(route.blockedRanges.begin(), route.blockedRanges.end(), sample,
+                // The nonempty range uses raw pointers to keep Debug vector locks off the callback.
+                const auto* firstRange = route.blockedRanges.data();
+                const auto* lastRange = firstRange + route.blockedRanges.size();
+                const auto* range = std::upper_bound(firstRange, lastRange, sample,
                     [](std::int64_t at, const MidiMonitorRange& span) { return at < span.end; });
-                if (range != route.blockedRanges.end()) {
+                if (range != lastRange) {
                     blocked = sample >= range->start;
                     remaining = std::min(remaining, (blocked ? range->end : range->start) - sample);
                 }

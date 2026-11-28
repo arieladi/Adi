@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <utility>
 #include <map>
 #include <set>
 #include <span>

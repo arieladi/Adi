@@ -62,11 +62,12 @@ struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
+    EventFlow flow = EventFlow::Consume;
     bool audible=false;int voices=0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     bool processesDouble()const noexcept override{return true;}
-    EventFlow eventFlow()const noexcept override{return EventFlow::Consume;}
+    EventFlow eventFlow()const noexcept override{return flow;}
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
@@ -104,6 +105,7 @@ struct Fixture {
     test::TempDirectory dir{"midi_clips","session"};
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;Instrument* otherInstrument=nullptr;
     double rate;int block;Precision width;std::int64_t clock=0;
+    EventFlow firstDeviceFlow = EventFlow::Consume;
     explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
@@ -115,7 +117,18 @@ struct Fixture {
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
-    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();(request.device->id==3?otherInstrument:instrument)=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
+    void load() {
+        session.graph().setFadeFrames(0);
+        const auto loader = [this](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.device->id == 2) return std::make_unique<LatencyEffect>();
+            auto instance = std::make_unique<Instrument>();
+            if (request.device->id == 1) instance->flow = firstDeviceFlow;
+            (request.device->id == 3 ? otherInstrument : instrument) = instance.get();
+            return instance;
+        };
+        if (!session.load(*store, loader, {2, rate, block, width})) throw std::runtime_error(session.error());
+        session.transport().play();
+    }
     void render(int n=0, std::span<double> capture={}, const MidiHardwareSink* hardware=nullptr,
                 bool exporting=false){
         if(!n)n=block;
@@ -150,41 +163,57 @@ void unavailableClip() {
           "a fresh playback generation clears the recovered MIDI clip's diagnostic");
 }
 
-void hardwareMidiOutput() {
+void connectMidiHardware(Store& store) {
+    OpRequest route;
+    route.opType = "routing.connect";
+    route.payload = {{"id", 1}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "hw_out"},
+                     {"dst", 0}, {"kind", "main"}, {"midiPort", "out:hardware"}, {"midiChannel", 7}};
+    if (!OpJournal(store).commit(route).ok) throw std::runtime_error("hardware MIDI route fixture");
+}
+
+struct HardwareTrace {
+    struct Word { std::int64_t sample = 0; std::uint32_t value = 0; };
+    std::array<Word, 64> words{};
+    std::size_t size = 0;
+    int resets = 0;
+    MidiHardwareSink sink{this,
+        [](void* context, std::uint64_t port, std::int64_t track, std::int64_t sample, std::uint32_t word) noexcept {
+            auto& out = *static_cast<HardwareTrace*>(context);
+            if (port == midiPortKey("out:hardware") && track == 1 && out.size < out.words.size())
+                out.words[out.size++] = {sample, word};
+        },
+        [](void* context) noexcept { ++static_cast<HardwareTrace*>(context)->resets; }};
+
+    bool has(std::int64_t sample, std::uint32_t word) const {
+        const auto written = std::span(words).first(size);
+        return std::any_of(written.begin(), written.end(), [&](const Word& item) {
+            return item.sample == sample && item.value == word;
+        });
+    }
+};
+
+void hardwareMidiOutput(EventFlow localFlow) {
     Fixture f(48000, 64);
+    f.firstDeviceFlow = localFlow;
+    if (localFlow == EventFlow::Stop)
+        f.store->db().exec("UPDATE plugin_refs SET subtype='effect' WHERE id=1");
     f.clip(1, 0, 24024);
     const std::array<controllers::Point, 1> values{{{0, 0, 0.5, 0, 0, 0}}};
     const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
     if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
         throw std::runtime_error("hardware MIDI controller fixture");
-    OpRequest route;
-    route.opType = "routing.connect";
-    route.payload = {{"id", 1}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "hw_out"},
-                     {"dst", 0}, {"kind", "main"}, {"midiPort", "out:hardware"}, {"midiChannel", 7}};
-    if (!OpJournal(*f.store).commit(route).ok) throw std::runtime_error("hardware MIDI route fixture");
+    connectMidiHardware(*f.store);
     f.load();
-    struct Received {
-        struct Word { std::int64_t sample = 0; std::uint32_t value = 0; };
-        std::array<Word, 64> words{};
-        std::size_t size = 0;
-        int resets = 0;
-    } received;
-    MidiHardwareSink sink{&received,
-        [](void* context, std::uint64_t port, std::int64_t track, std::int64_t sample, std::uint32_t word) noexcept {
-            auto& out = *static_cast<Received*>(context);
-            if (port == midiPortKey("out:hardware") && track == 1 && out.size < out.words.size())
-                out.words[out.size++] = {sample, word};
-        },
-        [](void* context) noexcept { ++static_cast<Received*>(context)->resets; }};
+    HardwareTrace received;
+    const auto& sink = received.sink;
     f.render(64, {}, &sink);
     f.render(64, {}, &sink);
-    const auto has = [&](std::int64_t sample, std::uint32_t word) {
-        return std::any_of(received.words.begin(), received.words.begin() + static_cast<std::ptrdiff_t>(received.size),
-                           [&](const Received::Word& item) { return item.sample == sample && item.value == word; });
-    };
+    const auto has = [&](std::int64_t sample, std::uint32_t word) { return received.has(sample, word); };
     check(has(0, 0x20963c5du) && has(0, 0x20b60140u) && has(100, 0x20863c25u),
-          "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
-    check(f.instrument->count == 0, "hardware routing takes MIDI before the local instrument");
+          localFlow == EventFlow::Stop
+              ? "MIDI To sends arranged notes and controllers before a local effect that stops MIDI"
+              : "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
+    check(f.instrument->count == 0, "hardware routing takes MIDI before the first local device that stops it");
     const auto before = received.size;
     f.session.transport().locate(0);
     f.render(64, {}, &sink, true);
@@ -237,6 +266,53 @@ void hardwareMidiOutput() {
               has(quantizeStart + 3013, 0x20864300u) &&
               !has(quantizeStart + 140, 0x2096447fu) && !has(quantizeStart + 3000, 0x2096447fu),
           "Play-Q delays hardware notes and their release while keeping the input channel filter");
+}
+
+void hardwareMidiMuteAutomation() {
+    Fixture f(48000, 64);
+    f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1;"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) "
+        "VALUES(1,'track',1,'mute',1,'real')");
+    std::array<AutomationPoint, 5> points{};
+    const std::array<std::int64_t, 5> frames{0, 16, 32, 80, 112};
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        points[i].time = frames[i] * 1'000'000'000 / 48000;
+        points[i].value = i % 2 == 0 ? 0.0 : 1.0;
+        points[i].point_id = i + 1;
+    }
+    const auto bytes = writeStream<AutomationPoint>(FourCC::Automation, points, 1,
+        StreamFlags::SortedByTime | StreamFlags::TimeIsNanos);
+    if (!f.store->putAutomationData(1, std::nullopt, bytes)) throw std::runtime_error("MIDI mute automation fixture");
+    connectMidiHardware(*f.store);
+    f.load();
+    HardwareTrace received;
+    const auto note = [&](std::int64_t at, EventType type, std::uint16_t key, std::uint64_t identity) {
+        return f.session.enqueueMidiInput(at, {0, type, 0, key, identity, 0, type == EventType::NoteOn ? 1.0 : 0.0});
+    };
+    check(note(5, EventType::NoteOn, 60, 1) && note(16, EventType::NoteOn, 61, 2) &&
+              note(20, EventType::NoteOff, 60, 1) && note(24, EventType::NoteOff, 61, 2) &&
+              note(32, EventType::NoteOn, 62, 3) && note(40, EventType::NoteOff, 62, 3) &&
+              f.session.enqueueMidiInput(50, {0, EventType::Controller, 0, 0, 0, 64, 1.0}),
+          "queue hardware notes around exact mute boundaries and sustain before an idle block");
+    f.render(64, {}, &received.sink);
+    check(received.has(5, 0x20963c7fu) && received.has(16, kMidiHardwareRelease) &&
+              !received.has(16, 0x20963d7fu) && !received.has(20, 0x20863c00u) &&
+              received.has(32, 0x20963e7fu) && received.has(40, 0x20863e00u) && received.has(50, 0x20b6407fu),
+          "hardware MIDI releases on mute and resumes on unmute within the same block");
+    f.render(64, {}, &received.sink);
+    check(received.has(80, kMidiHardwareRelease),
+          "a mute and unmute inside an event-free block releases the previous hardware sustain exactly");
+
+    f.session.transport().loop(16, 64);
+    f.session.transport().locate(60);
+    const auto wrapStart = f.clock;
+    check(note(wrapStart + 1, EventType::NoteOn, 63, 4) && note(wrapStart + 4, EventType::NoteOn, 64, 5) &&
+              note(wrapStart + 20, EventType::NoteOn, 65, 6),
+          "queue hardware notes before and at a wrap onto a muted loop start");
+    f.render(64, {}, &received.sink);
+    check(received.has(wrapStart + 1, 0x20963f7fu) && received.has(wrapStart + 4, kMidiHardwareRelease) &&
+              !received.has(wrapStart + 4, 0x2096407fu) && received.has(wrapStart + 20, 0x2096417fu),
+          "hardware mute follows the loop wrap and releases before the muted events");
 }
 
 void liveInput() {
@@ -2351,7 +2427,14 @@ int main(int argc,char** argv){
     catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
-    try { if (only == "all" || only == "hardware") hardwareMidiOutput(); }
+    try {
+        if (only == "all" || only == "hardware") {
+            hardwareMidiOutput(EventFlow::Consume);
+            hardwareMidiOutput(EventFlow::Stop);
+        }
+    }
+    catch (const std::exception& error) { check(false, error.what()); }
+    try { if (only == "all" || only == "hardware-mute") hardwareMidiMuteAutomation(); }
     catch (const std::exception& error) { check(false, error.what()); }
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }

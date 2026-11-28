@@ -30,6 +30,16 @@
 #elif defined(__linux__)
 #include <linux/magic.h>
 #include <sys/vfs.h>
+// Older Linux headers lack some filesystem IDs. Keep recognizing the same mounts.
+#ifndef CEPH_SUPER_MAGIC
+#define CEPH_SUPER_MAGIC 0x00c36400
+#endif
+#ifndef CIFS_SUPER_MAGIC
+#define CIFS_SUPER_MAGIC 0xFF534D42
+#endif
+#ifndef SMB2_SUPER_MAGIC
+#define SMB2_SUPER_MAGIC 0xFE534D42
+#endif
 #endif
 
 namespace adi {
@@ -119,6 +129,32 @@ void prepareSynchronizedJournal(SQLite::Database& db) {
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
     return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+std::string newClientId();
+
+std::string readProjectUuid(SQLite::Database& db) {
+    SQLite::Statement row(db, "SELECT value FROM adi_meta WHERE key='project_uuid'");
+    return row.executeStep() && !row.getColumn(0).isNull() ? row.getColumn(0).getString() : std::string{};
+}
+
+void writeProjectUuid(SQLite::Database& db, bool replace = false) {
+    if (!replace && !readProjectUuid(db).empty()) return;
+    auto hex = newClientId();
+    hex[12] = '4';
+    const char nibble = hex[16];
+    const int bits = nibble <= '9' ? nibble - '0' : nibble - 'a' + 10;
+    hex[16] = "89ab"[bits & 3];
+    const auto uuid = hex.substr(0, 8) + '-' + hex.substr(8, 4) + '-' + hex.substr(12, 4) +
+                      '-' + hex.substr(16, 4) + '-' + hex.substr(20);
+    SQLite::Statement row(db, replace
+        ? "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+          "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        : "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+          "ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+          "WHERE adi_meta.value IS NULL OR adi_meta.value=''");
+    row.bind(1, uuid);
+    row.exec();
 }
 
 std::vector<std::byte> toBytes(const void* p, std::size_t n) {
@@ -294,6 +330,7 @@ bool migrateSchema(SQLite::Database& db, int fromMinor, std::string& error,
             "UPDATE adi_meta SET value = ? WHERE key = 'schema_minor'");
         meta.bind(1, std::to_string(kSchemaMinor));
         meta.exec();
+        writeProjectUuid(db);
         db.exec("PRAGMA user_version = " + std::to_string(kUserVersion));
         txn.commit();
         return true;
@@ -315,6 +352,7 @@ const char* toString(StoreError e) {
         case StoreError::AlreadyExists: return "a file already exists at that path";
         case StoreError::CannotCreate:  return "could not create the database";
         case StoreError::CannotOpen:    return "could not open the database";
+        case StoreError::ExclusiveAccessRequired: return "the project requires exclusive access for headless Apply";
         case StoreError::NotAnAdiFile:  return "not a .adi file (application_id mismatch)";
         case StoreError::SchemaTooNew:  return "schema is newer than this build; opened read-only";
         case StoreError::SchemaCorrupt: return "schema present but unreadable";
@@ -364,6 +402,19 @@ bool Store::setClientId(std::string id) {
     if (!isClientId(id)) return false;
     clientId_ = std::move(id);
     return true;
+}
+
+std::string Store::projectUuid() const {
+    try {
+        if (db_) return readProjectUuid(*db_);
+    } catch (const SQLite::Exception&) {
+        // A read-only open of an unsupported major may have different metadata.
+    }
+    return {};
+}
+
+void Store::renewProjectUuid(SQLite::Database& db) {
+    writeProjectUuid(db, true);
 }
 
 Store::~Store() {
@@ -523,6 +574,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             meta.bind(2, k);
             meta.exec();
         }
+        writeProjectUuid(*db);
         if (failNextCreate.exchange(false, std::memory_order_relaxed))
             throw SQLite::Exception("injected create fault (test seam)", 1 /* SQLITE_ERROR */);
         create.commit();
@@ -540,7 +592,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
         }
         err = StoreError::Ok;
         return store;
-    } catch (const SQLite::Exception&) {
+    } catch (const std::exception&) {
         // Do not leave a half-built file behind for someone to open later.
         if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
@@ -550,12 +602,26 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
                                    bool readOnly) {
+    return openWithLease(path, err, readOnly, false);
+}
+
+std::unique_ptr<Store> Store::openForHeadlessApply(const std::filesystem::path& path, StoreError& err) {
+    return openWithLease(path, err, false, true);
+}
+
+std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, StoreError& err,
+                                           bool readOnly, bool exclusive) {
     if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
     std::shared_ptr<media::ProjectFileLease> lease;
     std::error_code leaseError;
     if(!path.empty() && path!=std::filesystem::path(":memory:")){
-        lease=media::ProjectFileLease::openShared(path,leaseError);
-        if(!lease){err=StoreError::CannotOpen;return nullptr;}
+        lease = exclusive ? media::ProjectFileLease::openExclusive(path, leaseError)
+                          : media::ProjectFileLease::openShared(path, leaseError);
+        if (!lease) {
+            err = exclusive && leaseError != std::errc::no_such_file_or_directory
+                ? StoreError::ExclusiveAccessRequired : StoreError::CannotOpen;
+            return nullptr;
+        }
     }
     std::unique_ptr<SQLite::Database> db;
     try {
@@ -666,6 +732,14 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     if (!store->applySessionPragmas()) {
         err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
         return nullptr;
+    }
+    if (!effectiveReadOnly && major == kSchemaMajor && minor == kSchemaMinor) {
+        try {
+            writeProjectUuid(store->db());
+        } catch (const std::exception&) {
+            err = StoreError::SqlError;
+            return nullptr;
+        }
     }
     store->lastError_ = store->essentialExtensionProblem();
     err = result;

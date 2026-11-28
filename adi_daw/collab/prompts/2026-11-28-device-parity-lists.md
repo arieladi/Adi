@@ -43,7 +43,21 @@ Group the rows as the model's manual groups them. At the head of each table: how
 
 ## What the director's panel named (check each; they are claims, not findings)
 
-- ADI-Shaper: the number of modules in the model (the panel read eleven in its manual's list and nine in
+- ADI-Shaper, first of the three, by the director's word: "need to make sure it dident miss any quality or
+  ability", and "it needs a browser, presets, and lots of templates". What win read on 28 November in the
+  model's own support pages and a published review, each to be checked against its manual: eleven shapers
+  today (pitch, reverb, time, drive, noise, filter, a flanger and phaser, crush, volume, pan, width; an
+  earlier version had nine), a compressor of up to three bands and an oscilloscope beside them; the
+  shapers' order changed by dragging; a free curve with drawing tools for curves, steps and ramps, a grid
+  and a smoothing; ready-made shapes for each shaper and the user's own, copied between shapers; several
+  shapes held ready and switched by MIDI notes; the shape restarted by any MIDI note, once or looping, or
+  by a transient in the track or in a side-chain, with a sensitivity, a threshold and a filter on what is
+  listened to; an envelope follower that can be laid over the shape; more filter kinds than ADI's five;
+  the user's own noise samples and reverb responses; a browser of several hundred presets with styles,
+  tags and favourites. For every shaper ADI has, add how its sound was compared with the model's (the
+  session that built it measured: find its measurements) and what the difference was. Presets, shapes
+  and templates for ADI are made for ADI; none of the model's own are taken. Also from the panel: the
+  number of modules in the model (the panel read eleven in its manual's list and nine in
   its introduction); what ADI's Sweep corresponds to; whether the shapers' order can change; free points
   and the drawing tools (lines, arcs, S-curves, smoothing, snapping to a grid, randomising); triggers
   (a MIDI note restarting the shape, MIDI switching between stored shapes, a transient in the track or a
