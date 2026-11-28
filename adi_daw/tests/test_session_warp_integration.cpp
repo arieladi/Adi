@@ -2422,10 +2422,111 @@ void scheduledPhysicalPagedLegato(bool ramp, bool queueStop) {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,"physical launch probe allocates no callback memory or file I/O");
 }
 
-enum class StalledLegato { User, Linked, TiedUser };
+void longPagedRepeatLegato(bool loop) {
+    constexpr auto due = 144000, next = due + rate / 2, last = next + rate / 2;
+    constexpr auto start = 7 * 8192 - 1, stride = rate, head = start - stride;
+    constexpr auto cue = start + due, wrapTail = 37, loopEnd = cue + wrapTail, end = 236000;
+    constexpr auto cueFrames = blockFrames - 17;
+    static_assert(end - start > 3 * ClipPlayback::readAheadFrames(rate));
+    const auto ns = [](std::int64_t frame) { return (frame * 1'000'000'000 + rate / 2) / rate; };
+    test::TempDirectory folder{"long_paged_repeat_legato", loop ? "loop" : "one-shot"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    addClip(*store, folder.path(), 101, 10, 1, false, 2400, 1, 260000);
+    pinUnwarpedOneShot(*store, 50000000, 5000000000);
+    // The saved Start, wrapped head and far inherited cue all have
+    // distinct audible markers. Start also straddles a page boundary.
+    addClip(*store, folder.path(), 102, 20, 5, true, head, 1, stride);
+    db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+            "UPDATE clip_launch SET launch_mode=3,launch_quant=8,ram_mode=0 WHERE clip_id=102");
+    {
+        SQLite::Statement clip(db, "UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,"
+                                   "length_ns=?,loop_enabled=?,loop_start_ticks=?,loop_len_ticks=? WHERE id=102");
+        clip.bind(1, ns(end - start));
+        clip.bind(2, static_cast<int>(loop));
+        clip.bind(3, loop ? head * quarter / (rate / 2) : 0);
+        if (loop) clip.bind(4, (loopEnd - head) * quarter / (rate / 2));
+        else clip.bind(4);
+        clip.exec();
+        SQLite::Statement pins(db, "INSERT INTO clip_playback_details"
+                                   "(clip_id,content_offset_ns,source_end_ns,loop_begin_ns,loop_end_ns) VALUES(102,?,?,?,?)");
+        pins.bind(1, ns(start));
+        pins.bind(2, ns(end));
+        if (loop) {
+            pins.bind(3, ns(head));
+            pins.bind(4, ns(loopEnd));
+        } else {
+            pins.bind(3);
+            pins.bind(4);
+        }
+        pins.exec();
+    }
+    store.reset();
+    StoreError openError{};
+    store = Store::open(folder.path() / "song.adi", openError);
+    require(static_cast<bool>(store), "reopen the saved long paged Repeat");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+    const auto finish = last + (loop ? loopEnd : end) - start;
+    std::vector<float> pcm(static_cast<std::size_t>(finish + blockFrames));
+    Playback playback{session, pcm};
+    scene(*store, session, 10);
+    playback.through(due - rate / 4);
+    const auto press = [&](bool release) {
+        OpRequest gesture;
+        gesture.opType = "session.launchClip";
+        gesture.payload = {{"clip", 102}, {"track", 1}, {"scene", 20}, {"release", release},
+                           {"incarnation", session.launchIncarnation()}};
+        require(OpJournal(*store).commit(gesture).ok, "post the persisted Repeat gesture");
+    };
+    press(false);
+    playback.paged = true;
+    playback.through(playback.first + blockFrames);
+    const auto forecast = trackState(session).queued;
+    require(forecast.legatoSourceFrame == cue, "forecast the exact far cue for the held Repeat press");
+    playback.through(due - 17);
+    playback.through(due + cueFrames);
+    require(playback.count == 2 && playback.edges[1].sample == due && playback.edges[1].newClip == 102 &&
+            pcm[due] == -.9f && (!loop || pcm[due + wrapTail] == -.5f),
+            "reserve and play the complete first held cue including its immediate physical wrap");
+    playback.through(last + cueFrames);
+    press(true);
+    playback.through(finish + blockFrames);
+
+    audio::WavReader file(folder.path() / "102.wav");
+    std::vector<float> raw(end);
+    require(file.read(raw.data(), end) == raw.size(), "read the immutable saved source for comparison");
+    for (int i = 0; i < cueFrames; ++i) {
+        const auto source = loop && i >= wrapTail ? head + i - wrapTail : cue + i;
+        require(pcm[static_cast<std::size_t>(due + i)] == raw[static_cast<std::size_t>(source)] &&
+                pcm[static_cast<std::size_t>(next + i)] == raw[static_cast<std::size_t>(start + i)] &&
+                pcm[static_cast<std::size_t>(last + i)] == raw[static_cast<std::size_t>(start + i)],
+                "the exact inherited block and both page-crossing saved Starts match the source");
+    }
+    require(playback.edges[2].sample == next && playback.edges[3].sample == last && pcm[next] == -.6f && pcm[last] == -.6f,
+            "the held retriggers land on the next grids at the audible saved physical Start");
+    if (loop) {
+        require(playback.count == 4 && trackState(session).completedLoops == 1 &&
+                pcm[static_cast<std::size_t>(finish)] == -.5f,
+                "release cancels later retriggers and allows the ordinary physical loop wrap");
+    } else {
+        require(playback.count == 5 && playback.edges[4].newClip == 0 && playback.edges[4].sample == finish &&
+                std::all_of(pcm.begin() + finish, pcm.end(), [](float frame) { return frame == 0; }),
+                "release cancels later retriggers and leaves the last physical one-shot to finish");
+    }
+    require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "long paged Repeat Legato performs no callback allocation or file I/O");
+    std::printf("Long paged Repeat Legato %s: cue %d at %d, Starts at %d/%d, end/wrap %d\n",
+                loop ? "loop" : "one-shot", cue, due, next, last, finish);
+}
+
+enum class StalledLegato { User, Linked, TiedUser, Repeat };
 
 void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato::User, bool noGrid = false) {
-    const auto linked = mode != StalledLegato::User;
+    const auto linked = mode == StalledLegato::Linked || mode == StalledLegato::TiedUser;
     const auto coldUser = mode == StalledLegato::TiedUser;
     test::TempDirectory directory{"long_paged_legato", queueStop ? "cold-stop" : "missing-page"};
     auto store = sceneProject(directory.path());
@@ -2453,6 +2554,7 @@ void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato:
             "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
     db.exec(linked ? "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,521979167,5021979167)"
                    : "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,71979167,4571979167)");
+    if (mode == StalledLegato::Repeat) db.exec("UPDATE clip_launch SET launch_mode=3 WHERE clip_id=102");
     if (noGrid) db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
     if (coldUser) {
         db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
@@ -3009,6 +3111,9 @@ int main() {
         pinnedRepeatUsesItsLaunchClock();
         longPagedRepeatKeepsStart();
         physicalLegatoRepeat();
+        longPagedRepeatLegato(false);
+        longPagedRepeatLegato(true);
+        coldPhysicalPagedLegato(false, StalledLegato::Repeat);
         for (const auto stop : {false,true}) {
             scheduledPhysicalPagedLegato(false,stop);
             scheduledPhysicalPagedLegato(true,stop);

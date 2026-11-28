@@ -815,7 +815,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
             const auto scheduledHandoff = (next == &track.user && pending.grid != LaunchQuantization::None &&
-                !pending.sceneGesture && !pending.repeat) || (next == &track.follow && pending.linkedPhysical);
+                !pending.sceneGesture) || (next == &track.follow && pending.linkedPhysical);
             if (transition(track,block,view,sink,pending,cursor,edgeTick,scheduledHandoff)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();

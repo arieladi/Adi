@@ -1743,9 +1743,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             const bool boundedPhysicalWindow = physicalSource && samplesAtNs(*clip->sourceEndNs,rate) -
                 samplesAtNs(physicalLoop ? std::min(*clip->contentOffsetNs,*clip->loopBeginNs) : *clip->contentOffsetNs,rate)
                     <= 3 * ClipPlayback::readAheadFrames(rate);
-            const bool supportedPhysicalLaunch = !slot.legato || setting.ramMode || boundedPhysicalWindow ||
-                slot.mode != LaunchMode::Repeat;
-            const bool physicalPins = physicalSource && supportedPhysicalLaunch && (!clip->loopEnabled || physicalLoop);
+            const bool physicalPins = physicalSource && (!clip->loopEnabled || physicalLoop);
             const bool warmPhysicalWindow = boundedPhysicalWindow && (!physicalLoop || slot.legato);
             // A paired tempo scene still observes the outgoing pin's logical
             // region when a different slot takes its relative Legato phase.
