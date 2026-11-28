@@ -27,7 +27,8 @@ Mission (round 1, 28 November): the Session View's window side as far as it goes
 
 | Step | Head | What changed | How it was proved | State |
 |---|---|---|---|---|
-| 1-3 | `held/session-window-chain` (first commit after the merges) | The model, the commands and keys, the suite. | check on slot 18: pending | pushed |
+| merge | `5151798de` | BASE `origin/land/basics-1128c` + `origin/seats/session-chain` + `origin/wincheck/seats/session-chain`. | the full check below | pushed |
+| 1-3 | `ec19b7e56`, `bbb025515` | The model, the commands and keys, the suite (`bbb025515`: two portability spellings in the suite). | Build PC slot 18, MSVC Debug, warnings as errors, at `bbb025515` ("all"): core built, 312 of 314 suites passed, `adi_session_view_tests` among them; ui built, the four window suites passed; five validators passed. The two failures, `adi_agent_log_tests` (three child processes appending) and `adi_link_playback_tests` (4 of 139), touch nothing of this chain and both passed when rerun alone on the same head: load on the shared PC. Linux and macOS not yet run (CI, later). | pushed |
 
 ## What was built
 
@@ -122,6 +123,12 @@ the scenes, slots, launch settings, clips and tracks back exactly.
 - Enter's release edge for a Gate or Repeat clip launched from the computer keyboard.
 - What Right from a scene reaches (Live: the Scene Tempo and Signature fields, 7.2.1) once they are shown.
 
+## Reserve
+
+Nothing: no op name, schema minor, ADR number or register id was needed. The chain uses only the session
+seat's ops (`scene.*`, `session.*`, the six launch ops) and existing ones (`clip.setName`, `clip.setMute`,
+`track.rename`).
+
 ## For the director
 
 A. **F3 beside Tab for the Session View.** Live switches with Tab only; the plan row names F3 too, mirroring F4
@@ -192,7 +199,8 @@ deactivated grey.
 
 ## Next
 
-1. Run the full core and ui checks on the chain head; fix what MSVC finds.
+1. Merge BASE and both session branches again; rerun "all" on slot 18. (Round 1 ended with the chain at
+   `bbb025515`, checked as above.)
 2. Wire the shell once the picture is agreed: a `SessionViewPanel` that owns a `Model`, rebuilds on the
    `ProjectView` generation and polls `Session::readLaunchStatus` on its timer; the keys through
    `commandForKey`; `Outcome.edits` through the window's `OpSubmitter`, `launches` through
