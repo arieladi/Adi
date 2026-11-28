@@ -3115,6 +3115,116 @@ void loopRecord(const std::filesystem::path &dir, bool retimeBeforeLanding = fal
               partial.startSample == 100 && partial.sourceStartFrame == 88 && partial.frames == 24,
           "SC-27: the live waveform uses wrapped pass bounds and cumulative file offsets");
 }
+// A loop recording is corrected for the device's round trip, as a linear take is (SC-22). What the
+// player heard at a moment of a pass reaches the input the round trip later, so each pass's take
+// reads the shared file that much further on, into the next pass; the last pass ends that much
+// earlier. Before, every pass was placed as captured and sounded late by the whole round trip.
+void loopRecordWithDeviceLatency(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "loop-latency.adi", true, {}, error);
+    check(doc != nullptr, "SC-27, SC-22: a project to record its loop with device latency");
+    if (!doc)
+        return;
+    constexpr int blockFrames = 64, loopFrames = 16000, partialFrames = 640, latency = 192;
+    constexpr auto loopEnd = textproj::kPPQ / 2;
+    std::vector<OpRequest> setup(5);
+    setup[0].opType = "project.removeTempoEvent";
+    setup[0].payload = {{"pos", 0}};
+    setup[1].opType = "project.insertTempoEvent";
+    setup[1].payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 90.0}};
+    setup[2].opType = "track.setArm";
+    setup[2].payload = {{"id", 4}, {"armed", true}};
+    setup[3].opType = "track.setMonitorMode";
+    setup[3].payload = {{"id", 4}, {"mode", 0}};
+    setup[4].opType = "transport.setLoop";
+    setup[4].payload = {{"on", true}, {"start", 0}, {"end", loopEnd}};
+    if (!doc->ops().submit(setup).ok || !doc->synchronise())
+        throw std::runtime_error("could not prepare loop recording with latency");
+    doc->prepare(48000, blockFrames);
+    const bool started = doc->startRecording(0, 1, false, latency);
+    check(started && doc->recording(), "SC-27, SC-22: Record starts a loop take with the device's round trip");
+    if (!started) {
+        doc->release();
+        return;
+    }
+    // The input carries what was played: the value of the pass the player heard, the round trip late.
+    // Before the first heard sample the input holds what came before the take.
+    const auto played = [](int frame) {
+        return frame < latency ? 0.875f : static_cast<float>(1 + (frame - latency) / loopFrames) / 8.0f;
+    };
+    std::array<float, blockFrames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = blockFrames;
+    constexpr int captured = 2 * loopFrames + partialFrames;
+    for (int frame = 0; frame < captured; frame += blockFrames) {
+        for (int i = 0; i < blockFrames; ++i)
+            input[static_cast<std::size_t>(i)] = played(frame + i);
+        io.streamTimeSamples = frame;
+        doc->process(io);
+    }
+    std::shared_ptr<const engine::AudioRecordingPreview> preview;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        preview = doc->session().recording().preview();
+        if (!preview || preview->peaks.frames < static_cast<std::uint64_t>(captured)) {
+            preview.reset();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    } while (!preview && std::chrono::steady_clock::now() < deadline);
+    doc->release();
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    if (landed && !landed->ok)
+        std::printf("loop latency take: %s\n", landed->message.c_str());
+    check(settled && landed && landed->ok && landed->message.find("3 passes") != std::string::npos &&
+              landed->clips.size() == 1,
+          "SC-27, SC-22: the loop take with device latency lands its three passes");
+    if (!landed || !landed->ok)
+        return;
+    auto &db = doc->store().db();
+    SQLite::Statement takes(db, "SELECT c.pos_ticks, a.src_start_frames, a.src_len_frames, m.rel_path "
+                                "FROM clips c JOIN audio_clips a ON a.clip_id=c.id JOIN media_files m ON m.id=a.media_id "
+                                "WHERE c.track_id=4 AND c.lane_id IS NOT NULL ORDER BY a.src_start_frames");
+    bool shifted = true, heard = true;
+    for (int pass = 0; pass < 3; ++pass) {
+        if (!takes.executeStep()) {
+            shifted = false;
+            break;
+        }
+        const auto source = takes.getColumn(1).getInt64(), length = takes.getColumn(2).getInt64();
+        shifted = shifted && takes.getColumn(0).getInt64() == 0 && source == pass * loopFrames + latency &&
+                  length == (pass < 2 ? loopFrames : partialFrames - latency);
+        // The first and the last sample each take plays is the pass the player heard there.
+        audio::WavReader wav(media::projectFolder(doc->store()) / media::pathFromUtf8(takes.getColumn(3).getString()));
+        std::array<float, 1> sample{};
+        for (const auto at : {source, source + length - 1}) {
+            wav.seek(static_cast<std::uint64_t>(at));
+            heard = heard && wav.read(sample.data(), 1) == 1 && sample.front() == static_cast<float>(pass + 1) / 8.0f;
+        }
+    }
+    check(shifted && !takes.executeStep(),
+          "SC-22: each pass's take reads the file the round trip later, and the last pass ends that much earlier");
+    check(heard, "SC-22: every pass plays at the time it was heard, with nothing of the pass before or after");
+    SQLite::Statement main(db, "SELECT a.src_start_frames, a.src_len_frames FROM clips c "
+                               "JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=? AND c.lane_id IS NULL");
+    main.bind(1, landed->clips.front());
+    check(main.executeStep() && main.getColumn(0).getInt64() == 2 * loopFrames + latency &&
+              main.getColumn(1).getInt64() == partialFrames - latency,
+          "SC-22: the main lane's copy is the corrected last pass");
+    check(preview != nullptr, "SC-20: the live waveform of the loop take was published");
+    if (preview) {
+        const auto drawn = preview->latestPass(captured);
+        check(drawn.startSample == 0 && drawn.sourceStartFrame == std::uint64_t{2 * loopFrames + latency} &&
+                  drawn.frames == std::uint64_t{partialFrames - latency},
+              "SC-20, SC-22: the waveform drawn while recording is the corrected part of the last pass");
+    }
+}
 void refusedRecordingKeepsAudio(const std::filesystem::path &dir, bool loop = false) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -6172,6 +6282,8 @@ int main(int argc, char **argv) {
         loopClockAdmission(loopClockDir.path());
         test::TempDirectory loopDir("ui_document", "loop");
         loopRecord(loopDir.path());
+        test::TempDirectory loopLatencyDir("ui_document", "loop-latency");
+        loopRecordWithDeviceLatency(loopLatencyDir.path());
         test::TempDirectory changedLoopClockDir("ui_document", "changed-loop-clock");
         loopRecord(changedLoopClockDir.path(), true);
         test::TempDirectory refusedLoopDir("ui_document", "loop-publication-refused");
