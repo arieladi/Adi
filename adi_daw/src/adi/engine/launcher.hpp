@@ -191,8 +191,10 @@ struct LaunchSink {
     std::int64_t (*legacyRawAnchor)(void*, std::int64_t clip, std::int64_t tick) noexcept = nullptr;
 };
 
+enum class TimedSceneActionKind { Start, Stop, Continue };
 struct TimedSceneAction {
-    std::int64_t track, clip, outgoingClip; // zero destination clip is a saved Stop
+    TimedSceneActionKind kind;
+    std::int64_t track, clip, outgoingClip;
     std::uint64_t outgoingRun;
     LaunchSourceCue cue;
 };

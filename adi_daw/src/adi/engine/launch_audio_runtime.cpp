@@ -668,27 +668,45 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     const auto count = driver.launcher_.planTimedSceneActions(candidate,after,*candidate.preparedScene,plan);
     if (!count || *count != tracks_.size()) return false;
     const auto actions = std::span(plan).first(*count);
-    const auto stops = std::ranges::count(actions,0,&TimedSceneAction::clip);
+    const auto startCount = std::ranges::count(actions,TimedSceneActionKind::Start,&TimedSceneAction::kind);
     const auto inherited = std::ranges::count_if(actions,[](const auto& action) {
-        return action.clip != 0 && action.outgoingRun != 0;
+        return action.kind == TimedSceneActionKind::Start && action.outgoingRun != 0;
     });
-    if (inherited == 0 || (stops != 0 && (stops != 1 || actions.size() != 3 || inherited != 2)))
+    if (inherited == 0 || (static_cast<std::size_t>(startCount) != actions.size() &&
+                          (actions.size() != 3 || startCount != 2 || inherited != 2)))
         return false;
 
     for (const auto& action : actions) {
-        if (action.clip == 0) continue;
+        if (action.kind == TimedSceneActionKind::Stop) continue;
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto* ranges = trackRanges(action.track);
-        if (!reader || !ranges || ranges->cuePages || (action.outgoingRun == 0) != (action.outgoingClip == 0) ||
-            action.outgoingClip == action.clip || action.cue.physicalFrame < 0 ||
+        if (action.kind == TimedSceneActionKind::Continue) {
+            const auto* before = outgoing.pinnedCandidate(clockSample_-1,action.track,action.clip);
+            const auto* after = pinnedCandidate(clockSample_,action.track,action.clip);
+            const auto* oldPcm = beforeClock_->clip(action.clip);
+            const auto* retained = driver.retainedFor(action.track,action.clip,action.outgoingRun);
+            if (!reader || !before || !after || !oldPcm || oldPcm->pageReader() != reader ||
+                !samePinnedShape(before->slot,after->slot) || outgoing.gainRevision() != gainRevision() ||
+                (retained && (!samePinnedShape(retained->slot,before->slot) ||
+                              retained->source->pcm.pageReader() != reader)) ||
+                action.cue.physicalFrame < before->slot.physicalStartFrame ||
+                action.cue.physicalFrame - before->slot.physicalStartFrame > before->slot.physicalFrames - candidate.frames) {
+                finish();
+                return false;
+            }
+        } else if ((action.outgoingRun == 0) != (action.outgoingClip == 0) || action.outgoingClip == action.clip) {
+            finish();
+            return false;
+        }
+        if (!reader || !ranges || ranges->cuePages || action.cue.physicalFrame < 0 ||
             !reader->reserveCue(action.clip,action.cue.physicalFrame,candidate.frames,false,false)) {
             finish();
             return false;
         }
         ranges->cuePages = reader;
         ranges->cueClip = action.clip;
-        ranges->timedCueFrame = action.cue.physicalFrame;
+        if (action.kind == TimedSceneActionKind::Start) ranges->timedCueFrame = action.cue.physicalFrame;
     }
     return true;
 }

@@ -1143,22 +1143,30 @@ std::optional<std::size_t> Launcher::planTimedSceneActions(const LaunchBlock& bl
             track.user || track.back || track.gateStop || track.follow || track.repeat ||
             track.dueScene || track.sceneFollow) return {};
         const auto action = preparedFollower(track,candidate,pending,block.sample,scene.tick);
-        if (!action) continue;
-
         const auto* cell = findSlot(candidate,track.id,scene.scene);
+        const bool continues = cell && cell->clip == 0 && !cell->hasStop;
+        if (!action && !continues) continue;
+
         const auto& run = track.run;
         const auto* previous = run.clip ? findClip(candidate,track.id,run.clip) : nullptr;
         if (run.clip && !occupied(previous)) return {};
-        if (action->action == Action::Stop) {
-            if (!cell || !cell->hasStop || !previous || !run.serial || previous->physicalStartFrame < 0 ||
+        const auto lap = cuedPhysicalLap(previous,run.completedLoops,run.physicalCueFrame);
+        if (continues || action->action == Action::Stop) {
+            if (!cell || cell->clip != 0 || !previous || !run.serial || previous->physicalStartFrame < 0 ||
                 previous->physicalFrames <= 0 || previous->physicalLoopEndFrame || previous->fade ||
                 previous->mode != LaunchMode::Trigger) return {};
-            result[count++] = {track.id,0,run.clip,run.serial,{}};
+            if (continues) {
+                const auto elapsed = run.frames - run.pcmAnchorFrame;
+                if (elapsed < 0 || elapsed >= lap.length()) return {};
+                result[count++] = {TimedSceneActionKind::Continue,track.id,run.clip,run.clip,run.serial,
+                    {run.sourceTick,lap.originFrame()+elapsed}};
+            } else {
+                result[count++] = {TimedSceneActionKind::Stop,track.id,0,run.clip,run.serial,{}};
+            }
             continue;
         }
         if (action->action != Action::Start || !occupied(cell)) return {};
         const auto& target = *cell;
-        const auto lap = cuedPhysicalLap(previous,run.completedLoops,run.physicalCueFrame);
         auto sourceTick = run.sourceTick;
         if (previous && lap.startFrame < 0) {
             const auto endTick = add(run.anchorTick,std::max<std::int64_t>(0,sourceEnd(*previous) - run.anchorSourceTick));
@@ -1170,7 +1178,7 @@ std::optional<std::size_t> Launcher::planTimedSceneActions(const LaunchBlock& bl
         // that exact aperture in the plan even when no phase was inherited.
         if (run.clip == 0 && run.serial == 0 && target.physicalFrames > 0)
             cue.physicalFrame = target.physicalStartFrame;
-        result[count++] = {track.id,target.clip,run.clip,run.serial,cue};
+        result[count++] = {TimedSceneActionKind::Start,track.id,target.clip,run.clip,run.serial,cue};
     }
     return count;
 }
