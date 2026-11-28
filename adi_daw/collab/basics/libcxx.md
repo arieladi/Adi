@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 12:32 IST — main `6aeeed1b19b6f45cb15ec1bb65ce1084058bb127`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 02:58 IST — main `bdcccb3e077af8bcf3b32e7210537721a9294cb2`, test and tool Apple-width check
 
 All 296 C++ translation units under `adi_daw/tests` and `adi_daw/tools` covered by `-Werror` in this JUCE and Pd build passed the strict Clang 20/libc++ syntax check with `-mlong-double-64`. Together with the production check below, this covers 629 translation units on this revision. The registered suites ran in the native Linux ABI as recorded below.
