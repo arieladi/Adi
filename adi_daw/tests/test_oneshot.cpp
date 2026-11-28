@@ -428,6 +428,53 @@ std::vector<float> playNotes(OneShot &d, int count, std::initializer_list<std::p
     }
     return out;
 }
+// SC-482: the LFO's Attack, Retrigger, Offset and key amount. A 10 Hz square
+// on the volume at full depth: a 0.5 sample plays 0.5 while the LFO is up and
+// 0 while it is down, so the output shows the LFO's phase directly.
+void lfoControls() {
+    OneShot d;
+    configure(d);
+    check(d.publishSample(std::vector<float>(32768, .5f), 1, 48000), "LFO sample publishes");
+    set(d, OneShot::LfoOn, 1);
+    set(d, OneShot::LfoShape, 1);
+    set(d, OneShot::LfoRate, 10);  // 4,800 samples a cycle; down from 2,400
+    set(d, OneShot::LfoVolume, 100);
+    const auto about = [](float x, double want) { return std::abs(x - want) < 1e-6; };
+    const auto plain = playNotes(d, 8192, {{0, 60}});
+    check(about(plain[100], .5) && about(plain[2500], 0) && about(plain[4900], .5),
+          "the square LFO's first cycle starts up, as before");
+    // Attack: 100 ms, so 52 % depth at 2,500 and full depth from 4,800 on.
+    set(d, OneShot::LfoAttack, 100);
+    const auto faded = playNotes(d, 8192, {{0, 60}});
+    const double depth = 2501. / 4800.;
+    check(std::abs(faded[2500] - .25 * (1 - depth)) < 1e-6 && about(faded[7300], 0),
+          "LFO Attack fades the depth in over its time");
+    set(d, OneShot::LfoAttack, 0);
+    // Offset: a quarter cycle in, the square goes down 1,200 samples sooner.
+    set(d, OneShot::LfoOffset, 90);
+    const auto offset = playNotes(d, 4096, {{0, 60}});
+    check(about(offset[1100], .5) && about(offset[1300], 0), "LFO Offset sets the starting phase");
+    set(d, OneShot::LfoOffset, 180);
+    check(about(playNotes(d, 512, {{0, 60}})[100], 0), "half a cycle in, the note starts down");
+    // Retrigger off: a note at 1,200 joins the free-running LFO a quarter
+    // cycle in (the LFO ran through the silence before it), so it goes down at
+    // 2,400, not at 3,600; Offset no longer applies.
+    set(d, OneShot::LfoRetrigger, 0);
+    const auto freeRunning = playNotes(d, 4096, {{1200, 60}});
+    set(d, OneShot::LfoRetrigger, 1);
+    set(d, OneShot::LfoOffset, 0);
+    const auto retriggered = playNotes(d, 4096, {{1200, 60}});
+    check(about(freeRunning[2300], .5) && about(freeRunning[3000], 0) && about(retriggered[3000], .5),
+          "with Retrigger off a note joins the free-running LFO");
+    // Key: at 100 %, an octave up runs the LFO twice as fast (down at 1,200).
+    set(d, OneShot::LfoKey, 100);
+    const auto up = playNotes(d, 4096, {{0, 72}});
+    const auto root = playNotes(d, 4096, {{0, 60}});
+    set(d, OneShot::LfoKey, 0);
+    const auto upFixed = playNotes(d, 4096, {{0, 72}});
+    check(about(up[1800], 0) && about(root[1800], .5) && about(upFixed[1800], .5),
+          "LFO < Key runs a higher note's LFO faster, and C3's as it was");
+}
 // DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
 // a Transient or Manual slice is refused past End and cut at End.
 void sliceKeys() {
@@ -774,6 +821,7 @@ int main() {
     filterEnvelope();
     pitchEnvelope();
     filterCircuits();
+    lfoControls();
     parameterModulation();
     midiControllers();
     preparedSamples();

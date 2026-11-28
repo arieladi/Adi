@@ -131,6 +131,14 @@
 #X msg 2210 508 p 55 \$1;
 #X obj 2210 560 adi.param \$0 57 0 100 0 % lin Filter_<_Key;
 #X msg 2210 598 p 56 \$1;
+#X obj 2210 650 adi.param \$0 58 0 10000 0 ms lin LFO_attack;
+#X msg 2210 688 p 57 \$1;
+#X obj 2210 740 adi.param \$0 59 0 1 1 - int LFO_retrigger;
+#X msg 2210 778 p 58 \$1;
+#X obj 2520 20 adi.param \$0 60 0 360 0 deg lin LFO_offset;
+#X msg 2520 58 p 59 \$1;
+#X obj 2520 110 adi.param \$0 61 0 100 0 % lin LFO_<_Key;
+#X msg 2520 148 p 60 \$1;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 2 0 3 0;
@@ -262,3 +270,11 @@
 #X connect 129 0 0 0;
 #X connect 130 0 131 0;
 #X connect 131 0 0 0;
+#X connect 132 0 133 0;
+#X connect 133 0 0 0;
+#X connect 134 0 135 0;
+#X connect 135 0 0 0;
+#X connect 136 0 137 0;
+#X connect 137 0 0 0;
+#X connect 138 0 139 0;
+#X connect 139 0 0 0;

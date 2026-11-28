@@ -85,7 +85,16 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"filter_circuit_bp", "Filter circuit (BP/Notch)", "", 0, 1, 0, 2},
                        {"drive", "Filter drive", "dB", 0, 24, 0, 0},
                        {"filter_vel", "Filter < Vel", "%", 0, 100, 0, 0},
-                       {"filter_key", "Filter < Key", "%", 0, 100, 0, 0}};
+                       {"filter_key", "Filter < Key", "%", 0, 100, 0, 0},
+                       // SC-482: the LFO's Attack (its depth fades in), its
+                       // Retrigger (on: each note starts it at Offset, as
+                       // every note did before; off: it joins the free-running
+                       // LFO), Offset in degrees, and its rate's key amount.
+                       // The Attack range is a reading still to take.
+                       {"lfo_attack", "LFO attack", "ms", 0, 10000, 0, 0},
+                       {"lfo_retrigger", "LFO retrigger", "", 0, 1, 1, 2},
+                       {"lfo_offset", "LFO offset", "deg", 0, 360, 0, 0},
+                       {"lfo_key", "LFO < Key", "%", 0, 100, 0, 0}};
 // SC-482: Filter < Vel at 100 % opens the cutoff this far at full velocity
 // (ADI's span: Live's is a reading still to take); a softer note, less.
 constexpr double kFilterVelocityOctaves = 4;
@@ -192,6 +201,7 @@ void OneShot::prepare(double rate, std::int32_t frames) {
     voices_ = {};
     midiChannels_ = {};
     age_ = 0;
+    lfoClock_ = 0;
     sampleSeq_ = 0;
     borrowed_ = false;
     modulation_.fill(0);
@@ -499,6 +509,10 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
         --noteGainCount_;
     }
     v.rng = static_cast<std::uint32_t>(v.age) | 1u;
+    // SC-482: Retrigger on starts the LFO at Offset (0 is where every note's
+    // started before); off, at the free-running LFO's phase.
+    v.phase = p[LfoRetrigger] > 0 ? p[LfoOffset] / 360. : lfoClock_;
+    v.phase -= std::floor(v.phase);
     v.begin = begin;
     v.end = end;
     v.loop = v.end - (v.end - v.begin) * p[LoopLength] / 100.;
@@ -632,12 +646,19 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     if (s)
         for (int k = 0; k < io.events.count; ++k)
             noteComing = noteComing || io.events.first[k].type == engine::EventType::NoteOn;
+    const auto lfoHz = [&] {
+        return p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat]
+                              : p[LfoRate];
+    };
     if (!sounding && !noteComing) {
         const int last = io.blockOffset + io.frames - 1;
         while (next < io.events.count && io.events.first[next].frame <= last) {
             event(io.events.first[next], s, p);
             ++next;
         }
+        // The free-running LFO runs on through silence (SC-482).
+        lfoClock_ += io.frames * lfoHz() / rate_;
+        lfoClock_ -= std::floor(lfoClock_);
         if (io.out)
             for (int c = 0; c < io.channels; ++c)
                 if (io.out[c])
@@ -663,6 +684,8 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     // cutoff's key (octaves an octave of pitch) and velocity (octaves at 1).
     int filterType = 0, circuit = Clean;
     double driveGain = 1, filterKeyAmount = 0, filterVelAmount = 0;
+    // SC-482: the LFO's attack in samples (0: none) and its rate's key amount.
+    double lfoAttack = 0, lfoKeyAmount = 0;
     // The cutoff moved by `octaves`: 0 is the knob's own cutoff (exp2(0) is 1).
     const auto coefficients = [&](double octaves, double &g, double &q) {
         const double hz = std::clamp(p[Cutoff] * std::exp2(octaves), 5., rate_ * .45);
@@ -688,9 +711,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         filterVelAmount = p[FilterVel] / 100. * kFilterVelocityOctaves;
         filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0 && !filterEnvHeard &&
                       filterKeyAmount == 0 && filterVelAmount == 0;
-        const double hz =
-            p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
-        lfoStep = hz / rate_;
+        lfoStep = lfoHz() / rate_;
+        lfoAttack = rate_ * p[LfoAttack] * .001;
+        lfoKeyAmount = p[LfoKey] / 100.;
         feAttack = rate_ * p[FilterEnvAttack] * .001;
         feDecay = rate_ * p[FilterEnvDecay] * .001;
         feSustain = p[FilterEnvSustain] / 100.;
@@ -730,7 +753,12 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         for (int c = 0; c < 2; ++c)
             std::fill_n(acc[c], n, 0.);
         if (s)
-            for (auto &v : voices_)
+            for (auto &v : voices_) {
+                // SC-482: LFO < Key scales this voice's LFO rate by its pitch
+                // from C3 (100 %: an octave up, twice the rate).
+                const double voiceLfoStep =
+                    lfoKeyAmount == 0 ? lfoStep
+                                      : lfoStep * std::exp2((v.key - 60) / 12. * lfoKeyAmount);
                 for (int k = 0; k < n && v.active; ++k) {
                     // DF-E37 (d): a Classic voice with Loop on keeps looping
                     // through its release (Live's manual for Sampler; reading 3
@@ -784,7 +812,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                   : shape == 3 ? 1 - 2 * v.phase
                                   : shape == 4 ? 2 * v.phase - 1
                                                : v.random;
-                        v.phase += lfoStep;
+                        // SC-482: LFO Attack fades its depth in from note-on.
+                        if (lfoAttack > 0)
+                            lfo *= std::min(1., static_cast<double>(v.played + 1) / lfoAttack);
+                        v.phase += voiceLfoStep;
                         if (v.phase >= 1) {
                             v.phase -= std::floor(v.phase);
                             v.rng = 1664525u * v.rng + 1013904223u;
@@ -858,6 +889,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     v.position += increment;
                     ++v.played;
                 }
+            }
+        lfoClock_ += n * lfoStep;
+        lfoClock_ -= std::floor(lfoClock_);
         if (io.out)
             for (int c = 0; c < io.channels; ++c)
                 if (io.out[c])

@@ -88,6 +88,10 @@ class OneShot final : public DeviceInstance {
         Drive,
         FilterVel,
         FilterKey,
+        LfoAttack,
+        LfoRetrigger,
+        LfoOffset,
+        LfoKey,
         Count
     };
     /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
@@ -223,6 +227,9 @@ class OneShot final : public DeviceInstance {
     engine::SnapshotPublisher<Publication> publisher_;
     std::shared_ptr<const Sample> sample_; // message thread only, including saveState
     std::uint64_t sampleSeq_ = 0, age_ = 0;
+    /// SC-482: the LFO's free-running phase, 0..1: where a voice's LFO starts
+    /// when LFO Retrigger is off. It runs while nothing sounds, too.
+    double lfoClock_ = 0;
     int rootKey_ = 60;
     bool borrowed_ = false;
     double rate_ = 48000;

@@ -20,7 +20,11 @@ every circuit but Clean, for low-, high- and band-pass; and the cutoff's
 velocity amount (100 % opens it four octaves at full velocity, ADI's span) and
 key amount (100 % moves it an octave with each octave of pitch from C3). The
 circuits are ADI's saturations around Clean's state-variable stage, linear for a
-quiet signal; Live's own circuits are readings still to take.
+quiet signal; Live's own circuits are readings still to take. The LFO's Attack
+(its depth fades in linearly from note-on), Retrigger (on, the default: each
+note starts its LFO at Offset, 0..360 degrees; off: at the phase of a
+free-running LFO that runs through silence too) and LFO < Key (100 %: an octave
+above C3 runs the LFO twice as fast).
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset
