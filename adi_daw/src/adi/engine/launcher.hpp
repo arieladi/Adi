@@ -96,6 +96,7 @@ struct LaunchTransition {
     bool oldFade = false;
     std::int64_t oldClockAnchorTick = 0, oldClockAnchorSourceTick = 0;
     std::int64_t oldPhysicalSourceAnchorFrame = -1;
+    std::int64_t oldFramesUntilMusicalEnd = -1;
 };
 
 struct LaunchFollowRequest {
@@ -281,7 +282,8 @@ private:
     void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t,
                 std::int32_t begin, std::int32_t end) noexcept;
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
-                    std::int32_t, std::int64_t, LaunchCueAdmission = LaunchCueAdmission::None) noexcept;
+                    std::int32_t, std::int64_t, LaunchCueAdmission = LaunchCueAdmission::None,
+                    std::int64_t projectedEnd = -1) noexcept;
     [[nodiscard]] std::optional<LaunchSourceCue> queuedLegatoSourceCue(const Track&, const Pending&,
         const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample,
         std::int64_t* due = nullptr) const noexcept;

@@ -266,21 +266,23 @@ std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
 
 void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip* clip, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames, LaunchWarpPosition warp) noexcept {
+                       std::int64_t fadeElapsedFrames, LaunchWarpPosition warp, std::int64_t sourceEndFrame) noexcept {
     if (offset < 0 || offset >= io.frames || frames <= 0)
         return;
     const auto count = std::min(frames, io.frames - offset);
     if (clip && clip->renderWarp(io,offset,count,warp,velocity,fadeElapsedFrames)) return;
     const auto fadeLength = clip && fadeElapsedFrames >= 0 ? launchFadeFrames(clip->rate()) : 0;
+    const auto playable = sourceEndFrame < 0 || firstFrame < 0 ? count : static_cast<std::int32_t>(
+        std::clamp<std::int64_t>(sourceEndFrame - firstFrame, 0, count));
     auto* pages = clip ? clip->pageReader() : nullptr;
-    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count);
+    const auto pageReady = pages && playable > 0 && pages->read(clip->clip(), firstFrame, playable);
     for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
         auto* narrow = io.out ? io.out[channel] : nullptr;
         auto* wide = io.out64 ? io.out64[channel] : nullptr;
         if (!narrow && !wide)
             continue;
         const auto paged = pageReady ? pages->channel(channel) : std::span<const float>{};
-        for (std::int32_t frame = 0; frame < count; ++frame) {
+        for (std::int32_t frame = 0; frame < playable; ++frame) {
             const auto value = pages ? (paged.empty() ? 0.0f : paged.data()[frame])
                 : clip && firstFrame <= std::numeric_limits<std::int64_t>::max() - frame
                 ? clip->sample(firstFrame + frame, channel) : 0.0f;
@@ -292,19 +294,22 @@ void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t fram
             if (wide)
                 wide[offset + frame] = static_cast<double>(value) * gain;
         }
+        if (narrow) std::fill_n(narrow + offset + playable,count-playable,0.0f);
+        if (wide) std::fill_n(wide + offset + playable,count-playable,0.0);
     }
 }
 
 void mixLaunchAudioTail(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                         const LaunchAudioClip& clip, std::int64_t firstFrame, float velocity,
                         std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop,
-                        LaunchWarpPosition warp) noexcept {
+                        LaunchWarpPosition warp, std::int64_t sourceEndFrame) noexcept {
     const auto fadeLength = launchFadeFrames(clip.rate());
-    if (offset < 0 || offset >= io.frames || frames <= 0 || clip.frames() == 0 ||
+    const auto end = sourceEndFrame >= 0 ? sourceEndFrame : static_cast<std::int64_t>(clip.frames());
+    if (offset < 0 || offset >= io.frames || frames <= 0 || end <= 0 ||
         fadeElapsedFrames < 0 || fadeElapsedFrames >= fadeLength)
         return;
     const auto count = std::min<std::int64_t>({frames, io.frames - offset, fadeLength - fadeElapsedFrames});
-    const auto lastSource = static_cast<std::int64_t>(clip.frames() - 1);
+    const auto lastSource = end - 1;
     const auto start = std::min(firstFrame, lastSource);
     auto stopGain = static_cast<double>(velocity);
     if (fadeInFramesAtStop >= 0 && fadeInFramesAtStop < fadeLength)

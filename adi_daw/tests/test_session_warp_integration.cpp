@@ -795,8 +795,187 @@ void musicalPlacementPhysicalPins(bool ram) {
                 ram ? "RAM" : "paged",span,start,end);
 }
 
+void steadyLegacyOneShotAperture() {
+    const auto render = [](bool halfQuarter, bool ram, bool fade, bool earlyStop) {
+        test::TempDirectory folder{"legacy_fade_aperture",halfQuarter ? "half-quarter" : "quarter"};
+        auto store = sceneProject(folder.path());
+        auto& db = store->db();
+        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,140);"
+                "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+        const std::int64_t launch = halfQuarter ? 10286 : 20571;
+        const std::int64_t natural = halfQuarter ? 20571 : 41143;
+        const auto played = natural - launch;
+        const auto aperture = halfQuarter ? 10286 : 20571;
+        const auto stop = earlyStop ? natural - 32 : natural;
+        constexpr auto sourceFrames = 2 * rate;
+        addClip(*store,folder.path(),101,10,1,false,static_cast<int>(played-1),1,sourceFrames);
+        db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=101");
+        SQLite::Statement clip(db,"UPDATE clips SET length_ticks=?,loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
+        clip.bind(1,halfQuarter ? quarter / 2 : quarter);
+        clip.exec();
+        SQLite::Statement launchSettings(db,"UPDATE clip_launch SET launch_quant=?,ram_mode=?,clip_fade=? WHERE clip_id=101");
+        launchSettings.bind(1,1 + static_cast<int>(halfQuarter ? LaunchQuantization::Eighth : LaunchQuantization::Quarter));
+        launchSettings.bind(2,ram ? 1 : 0);
+        launchSettings.bind(3,fade ? 1 : 0);
+        launchSettings.exec();
+        require(db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() == 0,
+                "the legacy slot retains tick markers without physical pins");
+
+        audio::WavReader reader(folder.path()/"101.wav");
+        std::vector<float> source(sourceFrames);
+        require(reader.read(source.data(),sourceFrames) == source.size(),"read the original unwarped PCM");
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        std::vector<float> pcm(static_cast<std::size_t>(natural+blockFrames));
+        Playback playback{session,pcm};
+        playback.paged = !ram;
+        session.transport().play();
+        playback.through(4096);
+        OpRequest press;
+        press.opType = "session.launchClip";
+        press.payload = {{"track",1},{"scene",10},{"clip",101},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(press).ok,"queue the persisted clip on its explicit grid");
+        if (earlyStop) {
+            playback.through(stop);
+            OpRequest halt;
+            halt.opType = "session.stopTrack";
+            halt.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+            require(OpJournal(*store).commit(halt).ok,"stop the outgoing clip before the projected aperture");
+        }
+        playback.through(static_cast<std::int64_t>(pcm.size()));
+        const auto fadeFrames = launchFadeFrames(rate);
+        auto exact = true;
+        for (std::int64_t frame = 0; frame < static_cast<std::int64_t>(pcm.size()); ++frame) {
+            auto expected = 0.f;
+            if (frame >= launch && frame < stop) {
+                const auto phase = frame-launch;
+                if (phase < aperture) expected = source[static_cast<std::size_t>(phase)];
+                if (fade && phase < fadeFrames)
+                    expected *= static_cast<float>(clipFadeShape(static_cast<double>(phase)/static_cast<double>(fadeFrames),4));
+            } else if (fade && frame >= stop && frame-stop < fadeFrames) {
+                const auto phase = std::min<std::int64_t>(frame-launch,aperture-1);
+                const auto shape = clipFadeShape(static_cast<double>(frame-stop)/static_cast<double>(fadeFrames),4);
+                expected = static_cast<float>(source[static_cast<std::size_t>(phase)] * (1.0-shape));
+            }
+            exact &= pcm[static_cast<std::size_t>(frame)] == expected;
+        }
+        const auto observed = playback.count == 2 ? playback.edges[1].sample : -1;
+        std::printf("Steady 140 legacy aperture %s %s Fade %d early Stop %d: %lld frames, Stop %lld/%lld, exact PCM %d\n",
+            halfQuarter ? "eighth" : "quarter",ram ? "RAM" : "paged",fade,earlyStop,static_cast<long long>(played),
+            static_cast<long long>(observed),static_cast<long long>(stop),exact);
+        require(playback.count == 2 && playback.edges[0].newClip == 101 && playback.edges[0].sample == launch &&
+                playback.edges[1].newClip == 0 && observed == stop && exact && session.problems().empty(),
+                "the projected sample aperture determines raw playback and the outgoing Fade's final sample");
+    };
+    for (const auto halfQuarter : {false,true}) {
+        render(halfQuarter,false,false,false);
+        for (const auto ram : {false,true}) {
+            render(halfQuarter,ram,true,false);
+            render(halfQuarter,ram,true,true);
+        }
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "steady musical apertures and their fades perform no callback allocation or file I/O");
+}
+
+void fadedLegacyRawSceneAtFirstAdoption() {
+    test::TempDirectory folder{"legacy_fade_aperture","first-adoption"};
+    auto store = sceneProject(folder.path());
+    enableTempoScene(*store);
+    constexpr auto cut = tempoSceneFrame;
+    constexpr auto outgoingEnd = cut + 32;
+    constexpr auto incomingStop = cut + 20571;
+    constexpr auto sourceFrames = 3 * rate;
+    addClip(*store,folder.path(),101,10,1,false,outgoingEnd-1,1,sourceFrames);
+    addClip(*store,folder.path(),102,20,1,false,3000,1,sourceFrames);
+    auto& db = store->db();
+    db.exec("UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL;"
+            "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL;"
+            "UPDATE clip_launch SET clip_fade=1,ram_mode=0 WHERE clip_id=101;");
+    SQLite::Statement length(db,"UPDATE clips SET length_ticks=? WHERE id=?");
+    length.bind(1,4 * quarter + 32 * quarter / (rate / 2));
+    length.bind(2,101);
+    length.exec();
+    length.reset();
+    length.bind(1,quarter);
+    length.bind(2,102);
+    length.exec();
+    require(db.execAndGet("SELECT count(*) FROM clip_playback_details").getInt() == 0,
+            "both raw clips use legacy musical markers");
+    std::vector<float> outgoing(sourceFrames), incoming(sourceFrames);
+    audio::WavReader outgoingFile(folder.path()/"101.wav"), incomingFile(folder.path()/"102.wav");
+    require(outgoingFile.read(outgoing.data(),sourceFrames) == outgoing.size() &&
+            incomingFile.read(incoming.data(),sourceFrames) == incoming.size(),"read both original raw sources");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error("load paired scene fixture: " + session.error());
+    require(session.problems().empty(),"prepare the original steady paged raw scene");
+    std::vector<float> pcm(static_cast<std::size_t>(incomingStop+blockFrames));
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(cut-blockFrames);
+    const auto swaps = session.graph().stats().swaps;
+    // Give the owner one driver's buffer of lead, while the driver already
+    // holds the old graph. The first new acquisition is at the scene edge.
+    std::array<float,blockFrames> left{},right{};
+    std::atomic<bool> captured{false}, published{false};
+    bool oldClock = false, rendered = false;
+    std::jthread driver([&](std::stop_token stop) {
+        auto before = session.beginRender();
+        oldClock = before.bpmAtTick(4*quarter) == 120;
+        captured.store(true,std::memory_order_release);
+        while (!published.load(std::memory_order_acquire) && !stop.stop_requested()) std::this_thread::yield();
+        if (stop.stop_requested()) return;
+        float* channels[]{left.data(),right.data()};
+        AudioIo io{channels,nullptr,2,0,blockFrames,cut-blockFrames};
+        rendered = before.process(io);
+    });
+    while (!captured.load(std::memory_order_acquire)) std::this_thread::yield();
+    const auto accepted = session.prepareSceneLaunch(*store,20,4*quarter);
+    published.store(true,std::memory_order_release);
+    driver.join();
+    if (!accepted) throw std::runtime_error("prepare paired scene with a full buffer of lead: " + session.error());
+    require(oldClock && rendered,"complete the previous callback using its captured steady clock");
+    std::copy(left.begin(),left.end(),pcm.begin() + cut-blockFrames);
+    playback.first = cut;
+    require(session.graph().stats().swaps == swaps && trackState(session).clip == 101,
+            "the old run is active at the exact sample where the new graph can first adopt");
+    playback.through(cut+blockFrames);
+    const auto adopted = session.graph().stats().swaps;
+    playback.through(static_cast<std::int64_t>(pcm.size()));
+    const auto duration = launchFadeFrames(rate);
+    auto exact = true;
+    for (std::int64_t at = 0; at < static_cast<std::int64_t>(pcm.size()); ++at) {
+        auto expected = 0.f;
+        if (at < cut) {
+            expected = outgoing[static_cast<std::size_t>(at)];
+            if (at < duration) expected *= static_cast<float>(clipFadeShape(static_cast<double>(at)/static_cast<double>(duration),4));
+        } else {
+            if (at < incomingStop) expected = incoming[static_cast<std::size_t>(at-cut)];
+            if (at-cut < duration) {
+                const auto frame = std::min(at,outgoingEnd-1);
+                const auto shape = clipFadeShape(static_cast<double>(at-cut)/static_cast<double>(duration),4);
+                expected += static_cast<float>(outgoing[static_cast<std::size_t>(frame)]*(1.0-shape));
+            }
+        }
+        exact &= pcm[static_cast<std::size_t>(at)] == expected;
+    }
+    std::printf("Paired legacy Fade first adoption: swaps %llu -> %llu, old aperture %lld, tail %.6f/%.6f, target %.6f, exact %d\n",
+        static_cast<unsigned long long>(swaps),static_cast<unsigned long long>(adopted),static_cast<long long>(outgoingEnd),
+        static_cast<double>(pcm[cut]),static_cast<double>(pcm[cut+32]),static_cast<double>(pcm[cut+3000]),exact);
+    checkTempoScene(*store,session,playback);
+    require(adopted > swaps && playback.count == 3 && playback.edges[0].newClip == 101 &&
+            playback.edges[1].newClip == 102 && playback.edges[1].sample == cut && playback.edges[2].newClip == 0 &&
+            playback.edges[2].sample == incomingStop && exact,
+            "the late-adopted tempo scene preserves the before-bank Fade aperture and starts the new raw slot on time");
+}
+
 void legacyMusicalOneShotPlaysRawPcm() {
-    enum class Clock { Steady, AuthoredRamp, External, ChangedBacking, DriverRace, LegacyTrim, FlatRamRegion, SteadyFade };
+    enum class Clock { Steady, AuthoredRamp, External, ChangedBacking, DriverRace, LegacyTrim, FlatRamRegion,
+                       SteadyFade, AuthoredRampFade, ExternalFade, EarlyExternalFade };
     constexpr auto mediaFrames = 2 * rate;
     constexpr auto straightStop = rate;
     constexpr auto tempoCut = 36000;
@@ -811,15 +990,20 @@ void legacyMusicalOneShotPlaysRawPcm() {
 
     for (const bool ram : {true,false}) {
         for (const auto clock : {Clock::Steady,Clock::AuthoredRamp,Clock::External,Clock::ChangedBacking,
-                                 Clock::DriverRace,Clock::LegacyTrim,Clock::FlatRamRegion,Clock::SteadyFade}) {
+                                 Clock::DriverRace,Clock::LegacyTrim,Clock::FlatRamRegion,Clock::SteadyFade,
+                                 Clock::AuthoredRampFade,Clock::ExternalFade,Clock::EarlyExternalFade}) {
             if (ram && (clock == Clock::ChangedBacking || clock == Clock::DriverRace || clock == Clock::LegacyTrim))
                 continue;
-            const bool authoredRamp = clock == Clock::AuthoredRamp || clock == Clock::LegacyTrim;
+            const bool authoredRamp = clock == Clock::AuthoredRamp || clock == Clock::LegacyTrim ||
+                clock == Clock::AuthoredRampFade;
+            const bool earlyEof = clock == Clock::EarlyExternalFade;
+            const bool external = clock == Clock::External || clock == Clock::ExternalFade || earlyEof;
             const bool changed = clock == Clock::ChangedBacking || clock == Clock::DriverRace;
             const bool race = clock == Clock::DriverRace;
             const bool trim = clock == Clock::LegacyTrim;
             const bool flatRegion = clock == Clock::FlatRamRegion;
-            const bool fade = clock == Clock::SteadyFade;
+            const bool fade = clock == Clock::SteadyFade || clock == Clock::AuthoredRampFade ||
+                clock == Clock::ExternalFade || earlyEof;
             if (flatRegion && !ram) continue;
             test::TempDirectory folder{"tick_only_raw_slot",ram ? "ram" : "paged"};
             auto store = sceneProject(folder.path());
@@ -876,8 +1060,9 @@ void legacyMusicalOneShotPlaysRawPcm() {
             session.graph().setFadeFrames(0);
             if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
             const auto launch = race ? tempoCut - 100 : 0;
-            const auto expectedStop = clock == Clock::External ? externalStop
+            const auto projectedEnd = external ? externalStop
                 : authoredRamp ? rampStop : flatRegion ? 42000 : static_cast<std::int64_t>(launch+straightStop);
+            const auto expectedStop = earlyEof ? mediaFrames - 32 : projectedEnd;
             std::vector<float> pcm(static_cast<std::size_t>(expectedStop+blockFrames));
             Playback playback{session,pcm};
             playback.paged = !ram;
@@ -901,7 +1086,7 @@ void legacyMusicalOneShotPlaysRawPcm() {
                             "start the old source after owner preparation but before adoption");
                     return true;
                 });
-            } else if (clock == Clock::External || changed) {
+            } else if (external || changed) {
                 accepted = session.setExternalTempoAt(*store,20,cutTick);
                 if (changed && !accepted)
                     require(session.error().find("needs the active unwarped page bank") != std::string::npos,
@@ -909,6 +1094,13 @@ void legacyMusicalOneShotPlaysRawPcm() {
             }
             playback.through(tempoCut+1);
             const auto observed = session.beginRender().bpmAtTick(2*quarter);
+            if (earlyEof) {
+                playback.through(expectedStop);
+                OpRequest halt;
+                halt.opType = "session.stopTrack";
+                halt.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+                require(OpJournal(*store).commit(halt).ok,"stop the slowed raw slot 32 frames before native EOF");
+            }
             playback.through(expectedStop+blockFrames);
 
             const auto stop = playback.count == 2 && playback.edges[1].newClip == 0 ? playback.edges[1].sample : -1;
@@ -920,13 +1112,17 @@ void legacyMusicalOneShotPlaysRawPcm() {
             bool exact = exactSource &&
                 std::all_of(pcm.begin()+launch+playable,pcm.end(),[](float sample) { return sample == 0; });
             if (fade) {
-                constexpr std::size_t fadeFrames = 192;
-                exact = std::equal(source.begin()+fadeFrames,source.begin()+straightStop,pcm.begin()+fadeFrames) &&
-                    std::all_of(pcm.begin()+straightStop+fadeFrames,pcm.end(),[](float sample) { return sample == 0; });
-                for (std::size_t frame = 0; frame < fadeFrames; ++frame) {
-                    const auto shape = clipFadeShape(static_cast<double>(frame)/fadeFrames,4);
-                    exact &= pcm[frame] == source[frame]*static_cast<float>(shape) &&
-                        pcm[straightStop+frame] == static_cast<float>(source[straightStop-1]*(1.0-shape));
+                const auto fadeFrames = launchFadeFrames(rate);
+                exact = std::equal(source.begin()+fadeFrames,source.begin()+playable,pcm.begin()+fadeFrames) &&
+                    std::all_of(pcm.begin()+playable,pcm.begin()+expectedStop,[](float sample) { return sample == 0; }) &&
+                    std::all_of(pcm.begin()+expectedStop+fadeFrames,pcm.end(),[](float sample) { return sample == 0; });
+                for (std::int64_t frame = 0; frame < fadeFrames; ++frame) {
+                    const auto shape = clipFadeShape(static_cast<double>(frame)/static_cast<double>(fadeFrames),4);
+                    const auto index = static_cast<std::size_t>(frame);
+                    const auto tailFrame = std::min(expectedStop+frame,projectedEnd-1);
+                    const auto tail = tailFrame < mediaFrames ? source[static_cast<std::size_t>(tailFrame)] : 0.f;
+                    exact &= pcm[index] == source[index]*static_cast<float>(shape) &&
+                        pcm[static_cast<std::size_t>(expectedStop+frame)] == static_cast<float>(tail*(1.0-shape));
                 }
             }
             std::printf("Tick-only raw %s case %d: BPM %.0f, Stop %lld/%lld, exact PCM %d, owner accepted %d\n",
@@ -940,8 +1136,8 @@ void legacyMusicalOneShotPlaysRawPcm() {
                 continue;
             }
             matched &= exact && stop == expectedStop && playback.edges[0].sample == launch &&
-                observed == (clock == Clock::External ? 20 : authoredRamp ? 60 : 120) &&
-                accepted == (clock == Clock::External || race) && session.problems().empty() && !hasPins();
+                observed == (external ? 20 : authoredRamp ? 60 : 120) &&
+                accepted == (external || race) && session.problems().empty() && !hasPins();
             if (race) matched &= session.beginRender().bpmAtTick(2*quarter) == 20;
         }
     }
@@ -3598,7 +3794,9 @@ int main() {
         musicalPlacementPhysicalPins(true);
         musicalPlacementPhysicalPins(false);
         unpinnedAbsoluteOneShotFollowsItsSource();
+        steadyLegacyOneShotAperture();
         legacyMusicalOneShotPlaysRawPcm();
+        fadedLegacyRawSceneAtFirstAdoption();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();
         pausedSupersessionReturnsToSameClock(false);

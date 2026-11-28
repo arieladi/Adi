@@ -802,7 +802,7 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
     auto warp = tail.warp;
     warp.frame += std::min(tail.elapsed, std::numeric_limits<std::int64_t>::max()-warp.frame);
     ranges.tails.data()[ranges.tailCount++] = {
-        {offset, length, pcm, source, tail.velocity, tail.elapsed, warp}, tail.fadeInAtExit};
+        {offset, length, pcm, source, tail.velocity, tail.elapsed, warp, tail.sourceEndFrame}, tail.fadeInAtExit};
     tail.elapsed += length;
     return tail.elapsed < duration;
 }
@@ -811,18 +811,29 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
                                  std::int32_t offset, std::int32_t frames) noexcept {
     if (!edge.oldFade || offset < 0 || offset >= frames) return;
     const auto* retained = driver.retainedFor(edge.track,edge.oldClip,edge.oldRun);
-    const auto bankSample = beforeClock_.get() == &media && edge.sample == clockSample_ ? edge.sample - 1 : edge.sample;
+    const bool sceneCut = beforeClock_.get() == &media && edge.sample == clockSample_;
+    const auto bankSample = sceneCut ? edge.sample - 1 : edge.sample;
     const auto* declared = retained ? pinnedCandidate(bankSample,edge.track,edge.oldClip) : nullptr;
     auto* pinned = declared && samePinnedShape(retained->slot,declared->slot) ? retained->source : nullptr;
-    const auto* pcm = pinned ? &pinned->pcm : media.clip(edge.oldClip);
+    const auto* bankClip = media.clip(edge.oldClip);
+    const auto* pcm = pinned ? &pinned->pcm : bankClip;
     if (!pcm) return;
     const auto anchor = edge.oldPhysicalSourceAnchorFrame >= 0 ? edge.oldPhysicalSourceAnchorFrame
         : pcm->frameForTick(edge.oldSourceAnchorTick, media.bpm());
     const auto source = anchor + std::min(edge.oldFramesSinceSourceAnchor,
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, anchor));
+    std::int64_t sourceEnd = -1;
+    if (const auto aperture = bankClip ? bankClip->legacyAperture() : std::nullopt) {
+        // A paired Scene still fades the outgoing prepared bank. Its next
+        // block may already be on the incoming clock.
+        sourceEnd = aperture->preparedEndFrame;
+        if (aperture->followProjectEnd && !sceneCut && edge.oldFramesUntilMusicalEnd >= 0)
+            sourceEnd = source + std::min(edge.oldFramesUntilMusicalEnd,
+                std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
+    }
     LaunchAudioDriver::Tail tail{edge.track, edge.oldClip, source, 0,
         edge.oldFramesSinceStart, edge.oldVelocity * driver.gains_.currentMultiplier(edge.track, edge.oldRun),
-        media.pcmRevision(), {edge.sample,edge.oldClockAnchorTick,edge.oldClockAnchorSourceTick}, pinned};
+        media.pcmRevision(), {edge.sample,edge.oldClockAnchorTick,edge.oldClockAnchorSourceTick}, pinned, sourceEnd};
     if (addTail(tail, offset, frames - offset) && driver.tailCount_ < driver.tails_.size()) {
         if (pinned) pinned->leases.fetch_add(1,std::memory_order_relaxed);
         driver.tails_.data()[driver.tailCount_++] = tail;
@@ -845,12 +856,15 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
     const auto* retained = driver.retainedFor(section.track,section.clip,section.run);
     const auto* declared = retained ? pinnedCandidate(block.sample,section.track,section.clip) : nullptr;
     const auto* pinned = declared && samePinnedShape(retained->slot,declared->slot) ? retained->source : nullptr;
-    const auto* pcm = pinned ? &pinned->pcm : media.clip(section.clip);
+    const auto* bankClip = media.clip(section.clip);
+    const auto* pcm = pinned ? &pinned->pcm : bankClip;
     const auto anchor = section.physicalSourceAnchorFrame >= 0 ? section.physicalSourceAnchorFrame
         : (pcm ? pcm->frameForTick(section.sourceAnchorTick, media.bpm()) : 0);
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
+    const auto aperture = bankClip ? bankClip->legacyAperture() : std::nullopt;
+    const auto sourceEnd = aperture && !aperture->followProjectEnd ? aperture->preparedEndFrame : -1;
     const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm &&
         !pcm->usesPages() && !pcm->followsTempo() && fade < 0 && section.velocity == 1.0f && source >= 0 &&
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
@@ -864,7 +878,7 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
         const auto first = block.sample + section.offset + skip;
         const LaunchWarpPosition warp{first,section.clockAnchorTick,section.clockAnchorSourceTick};
         ranges.items.data()[ranges.size++] = {base + section.offset + skip, frames, pcm, firstSource,
-            section.velocity * multiplier, fadeElapsed, warp};
+            section.velocity * multiplier, fadeElapsed, warp, sourceEnd};
         if (tapePcm) {
             (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + frames, firstSource,
                 section.regionIsLiveEdit, multiplier});
@@ -943,7 +957,8 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node, std::sp
         auto warp = range->warp;
         warp.frame += std::min<std::int64_t>(advance,std::numeric_limits<std::int64_t>::max()-warp.frame);
         renderLaunchAudio(io, start, finish - start, available ? range->pcm : nullptr,
-                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed, warp);
+                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed, warp,
+                          range->sourceEndFrame);
     }
     for (std::size_t index = 0; index < ranges.tailCount; ++index) {
         const auto& tail = ranges.tails.data()[index];
@@ -956,7 +971,8 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node, std::sp
         auto warp = tail.range.warp;
         warp.frame += std::min<std::int64_t>(advance,std::numeric_limits<std::int64_t>::max()-warp.frame);
         mixLaunchAudioTail(io, start, finish - start, *tail.range.pcm, source,
-                           tail.range.velocity, tail.range.fadeElapsed + advance, tail.fadeInAtExit, warp);
+                           tail.range.velocity, tail.range.fadeElapsed + advance, tail.fadeInAtExit, warp,
+                           tail.range.sourceEndFrame);
     }
 }
 

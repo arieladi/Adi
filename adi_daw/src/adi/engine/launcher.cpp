@@ -34,11 +34,13 @@ std::int64_t atSample(const LaunchBlock& block, std::int64_t sample) noexcept {
     return std::max<std::int64_t>(0, block.tickAtSample(block.clock, sample));
 }
 
-std::int32_t offsetAt(const LaunchBlock& block, std::int64_t tick) noexcept {
-    if (tick == lastTick) return block.frames;
-    const auto sample = block.sampleAtTick(block.clock, tick);
+std::int32_t offsetForSample(const LaunchBlock& block, std::int64_t sample) noexcept {
     if (sample <= block.sample) return 0;
     return static_cast<std::int32_t>(std::min<std::int64_t>(block.frames, sample - block.sample));
+}
+
+std::int32_t offsetAt(const LaunchBlock& block, std::int64_t tick) noexcept {
+    return tick == lastTick ? block.frames : offsetForSample(block,block.sampleAtTick(block.clock,tick));
 }
 
 std::int64_t gridAtOrAfterSample(const LaunchBlock& block, LaunchQuantization grid,
@@ -598,7 +600,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
 
 bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
-                          std::int64_t tick, LaunchCueAdmission cueAdmission) noexcept {
+                          std::int64_t tick, LaunchCueAdmission cueAdmission, std::int64_t projectedEnd) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
     if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
@@ -655,11 +657,14 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     }
     if (previous.arrangement == track.run.arrangement && previous.serial == track.run.serial) return true;
     const auto followOrdinal = track.run.clip != 0 ? ++track.followOrdinal : 0;
+    const auto sample = block.sample + offset;
+    const auto oldFramesUntilEnd = previous.fade && projectedEnd >= 0 && projectedEnd != lastTick
+        ? std::max(projectedEnd,sample) - sample : -1;
     const LaunchTransition edge{track.id,previous.clip,track.run.clip,track.run.sourceTick,
-        block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
+        sample,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
         track.run.velocity,track.run.fade,oldLap.startFrame >= 0 ? oldLap.tickAt(0) : previous.pcmAnchorTick,elapsed,
         previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick,
-        oldLap.originFrame()};
+        oldLap.originFrame(),oldFramesUntilEnd};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -698,6 +703,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
+        auto projectedEnd = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
             sourceOffset = cursor;
             sourceTick = tick;
@@ -710,8 +716,10 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         } else if (slot) {
             const auto untilEnd = std::max<std::int64_t>(0,sourceEnd(*slot) - track.run.anchorSourceTick);
             sourceTick = add(track.run.anchorTick,untilEnd);
-            sourceOffset = std::max(cursor,offsetAt(block,sourceTick));
+            const auto endSample = sourceTick == lastTick ? lastTick : block.sampleAtTick(block.clock,sourceTick);
+            sourceOffset = std::max(cursor,sourceTick == lastTick ? block.frames : offsetForSample(block,endSample));
             if (sourceOffset == cursor && untilEnd > 0 && phaseChangedAtCursor) ++sourceOffset;
+            if (!loops(*slot)) projectedEnd = endSample;
         }
         std::optional<Pending>* next = nullptr;
         auto boundary = end;
@@ -824,7 +832,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             } else if (next == &track.follow && pending.linkedPhysical) {
                 cueAdmission = LaunchCueAdmission::Linked;
             }
-            if (transition(track,block,view,sink,pending,cursor,edgeTick,cueAdmission)) {
+            if (transition(track,block,view,sink,pending,cursor,edgeTick,cueAdmission,projectedEnd)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();
                 if (pending.prepared) {
@@ -887,7 +895,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             // A follow action can be due after a one-shot has stopped sounding.
             const auto follow = track.follow;
             const auto repeat = track.repeat;
-            transition(track,block,view,sink,Pending{Action::Stop,nextTick},cursor,nextTick);
+            transition(track,block,view,sink,Pending{Action::Stop,nextTick},cursor,nextTick,
+                       LaunchCueAdmission::None,projectedEnd);
             track.follow = follow;
             track.repeat = repeat;
         }

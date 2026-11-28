@@ -68,6 +68,13 @@ public:
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
+    struct LegacyAperture {
+        std::int64_t preparedEndFrame;
+        bool followProjectEnd;
+    };
+    // Bank geometry is independent of the shared raw reader and its extent.
+    void setLegacyAperture(LegacyAperture aperture) noexcept { legacyAperture_ = aperture; }
+    [[nodiscard]] std::optional<LegacyAperture> legacyAperture() const noexcept { return legacyAperture_; }
     [[nodiscard]] std::optional<LaunchAudioClip> shareRawPages() const {
         if (!pages_ || followsTempo() || latencySamples() != 0) return std::nullopt;
         return fromPages(clip_,rate_,channels_,renderedFrames_,pages_,legacyRaw_);
@@ -101,6 +108,7 @@ private:
     std::shared_ptr<LaunchWarpSource> pagedWarp_;
     std::uint64_t renderedFrames_ = 0;
     bool legacyRaw_ = false;
+    std::optional<LegacyAperture> legacyAperture_;
 };
 
 /// Replace a half-open region of a track's source buffer with an active slot
@@ -109,17 +117,18 @@ private:
 /// Supply the elapsed run frames to apply the clip's launch-in Fade.
 void renderLaunchAudio(const AudioIo&, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip*, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames = -1, LaunchWarpPosition = {}) noexcept;
+                       std::int64_t fadeElapsedFrames = -1, LaunchWarpPosition = {},
+                       std::int64_t sourceEndFrame = -1) noexcept;
 
 /// Duration of the provisionally measured Session launch-edge fade.
 [[nodiscard]] std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept;
 
 /// Add the outgoing clip's continuation, with the complementary fade law.
-/// Reinforce the endpoint with its last source sample if the media runs out
-/// during the ramp. The incoming clip or Arrangement already owns the buffer.
+/// Hold the final frame of the outgoing audible window once it ends. The
+/// incoming clip or Arrangement already owns the buffer.
 void mixLaunchAudioTail(const AudioIo&, std::int32_t offset, std::int32_t frames,
                         const LaunchAudioClip&, std::int64_t firstFrame, float velocity,
                         std::int64_t fadeElapsedFrames, std::int64_t fadeInFramesAtStop = -1,
-                        LaunchWarpPosition = {}) noexcept;
+                        LaunchWarpPosition = {}, std::int64_t sourceEndFrame = -1) noexcept;
 
 } // namespace adi::engine

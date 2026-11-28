@@ -110,6 +110,7 @@ private:
         std::uint64_t media;
         LaunchWarpPosition warp;
         LaunchPinnedSource* pinned = nullptr;
+        std::int64_t sourceEndFrame = -1;
     };
     struct Retained {
         std::int64_t track = 0, clip = 0;
@@ -204,6 +205,7 @@ private:
         float velocity;
         std::int64_t fadeElapsed;
         LaunchWarpPosition warp;
+        std::int64_t sourceEndFrame = -1;
     };
     struct TrackRanges {
         std::vector<Range> items;
