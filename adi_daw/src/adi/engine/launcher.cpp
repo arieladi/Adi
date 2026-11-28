@@ -171,6 +171,20 @@ bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit) noexcept {
     return true;
 }
 
+bool Launcher::regionEditsSettled(const LaunchStatusHeader& status,
+                                  std::span<const std::int64_t> tracks) const noexcept {
+    const auto written = regionWritten_.load(std::memory_order_relaxed);
+    const auto unread = written - status.regionEditsRead;
+    if (unread > regionMailbox_.size()) return false;
+    // Only the owner writes the mailbox. The driver reads it and publishes
+    // its completed position alongside the status used by this check.
+    for (auto index = status.regionEditsRead; index != written; ++index) {
+        const auto& edit = regionMailbox_[static_cast<std::size_t>(index % regionMailbox_.size())];
+        if (std::ranges::find(tracks,edit.track) != tracks.end()) return false;
+    }
+    return true;
+}
+
 void Launcher::drainRegionEdits(const LaunchBlock& block, const LaunchView& view) noexcept {
     auto read = regionRead_.load(std::memory_order_relaxed);
     const auto write = regionWritten_.load(std::memory_order_acquire);
@@ -996,6 +1010,7 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
     status.sourceTick = run.sourceTick;
     status.run = run.serial;
     status.completedLoops = run.completedLoops;
+    status.hasLiveRegion = run.region.has_value() || track.regionEdit.has_value();
     const LaunchSlot* slot = nullptr;
     LaunchSlot regionGeometry;
     if (run.clip) {
@@ -1068,7 +1083,8 @@ void Launcher::publishStatus(const LaunchBlock& block, const LaunchView& view, L
         if (sink.trackStatus) sink.trackStatus(sink.context,status);
     }
     if (frame) {
-        frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back};
+        frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back,
+            regionRead_.load(std::memory_order_relaxed)};
         finishStatusBuffer(index);
     }
 }

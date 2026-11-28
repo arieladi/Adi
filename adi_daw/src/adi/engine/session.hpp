@@ -99,6 +99,7 @@ struct LaunchRequest;
 struct LaunchSceneTransition;
 struct LaunchStatusHeader;
 struct LaunchTrackStatus;
+struct LaunchTempoBank;
 struct LaunchTransition;
 class LaunchCaptureBuffer;
 struct PreparedSceneLaunch;
@@ -643,6 +644,8 @@ private:
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
+    [[nodiscard]] bool sceneTempoBanksFit(const TempoMap&) const noexcept;
+    std::vector<LaunchTempoBank> prepareSceneTempoBanks(const TimingView&, const rows::Model&);
     void prepareLaunchAudio(TimingView&, const rows::Model&, ClipPlayback&);
     [[nodiscard]] bool sceneClockPending() const noexcept;
     bool applyPerformedTempoAt(const Store&, std::optional<double>, std::int64_t,
@@ -728,6 +731,7 @@ private:
         ClipPlayback::Readiness sourceReadiness;
         std::shared_ptr<InputMonitors> inputMonitors;
         std::shared_ptr<LaunchAudioRuntime> launchAudio;
+        std::shared_ptr<const ClipProject> launchSource;
         std::shared_ptr<const PreparedSceneLaunch> preparedScene;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
@@ -765,9 +769,7 @@ private:
     std::shared_ptr<const PreparedSceneLaunch> preparedScene_;
     std::uint64_t preparedSceneToken_ = 0;
     struct SceneTempoBanks {
-        std::shared_ptr<const LaunchAudioProject> before;
-        std::int64_t tick;
-        double bpm;
+        std::vector<TempoEvent> periods;
     };
     std::optional<SceneTempoBanks> sceneTempoBanks_;
     struct SceneClockRollback {

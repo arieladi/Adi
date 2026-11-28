@@ -15,6 +15,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -46,7 +47,62 @@ struct ClipProject {
     std::unordered_map<std::int64_t, fs::path> hints;
     NoteExpressionsRead noteExpressions;
     std::optional<launch::LaunchData> session;
+    std::optional<std::map<std::int64_t,std::optional<media::FileRevision>>> launchFiles;
 };
+
+namespace {
+struct RelocatedSource { fs::path path; std::string error; };
+
+fs::path clipMediaPath(const ClipProject& project, const rows::Media& source,
+                       std::unordered_map<std::int64_t,RelocatedSource>& relocated) {
+    const auto hint = project.hints.find(source.id);
+    if (source.relPath) {
+        const auto relative = utf8Path(*source.relPath);
+        const auto path = project.folder / relative;
+        if (hint != project.hints.end() && !relative.empty() && *relative.begin() == ".." &&
+            path.lexically_normal() != hint->second.lexically_normal()) {
+            auto [found, inserted] = relocated.try_emplace(source.id);
+            auto& resolved = found->second;
+            if (inserted) resolved.path = media::resolveMedia(project.folder,relative,hint->second,
+                source.origName,source.hashBlake3,resolved.error);
+            if (resolved.path.empty()) {
+                if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
+                throw std::runtime_error(resolved.error);
+            }
+            return resolved.path;
+        }
+        return path;
+    }
+    if (hint != project.hints.end()) return hint->second;
+    throw MissingClipMedia("no media path");
+}
+
+decltype(ClipProject::launchFiles) readLaunchFiles(const ClipProject& project) {
+    std::map<std::int64_t,std::optional<media::FileRevision>> files;
+    std::unordered_map<std::int64_t,RelocatedSource> relocated;
+    for (const auto& clip : project.rows.slotClips) {
+        if (clip.kind != "audio" || clip.muted) continue;
+        const auto audio = std::ranges::find(project.rows.audioClips,clip.id,&rows::AudioClip::clipId);
+        if (audio == project.rows.audioClips.end()) continue;
+        const auto source = std::ranges::find(project.rows.media,audio->mediaId,&rows::Media::id);
+        if (source == project.rows.media.end() || source->embedded) continue;
+        auto [entry, inserted] = files.try_emplace(source->id);
+        if (!inserted) continue;
+        try {
+            std::error_code error;
+            // Playback follows symlinks. Read the resolved regular file's stamp.
+            const auto path = fs::canonical(clipMediaPath(project,*source,relocated),error);
+            if (!error) entry->second = media::readFileRevision(path,error);
+            if (error && error != std::errc::no_such_file_or_directory && error != std::errc::not_a_directory)
+                return std::nullopt;
+        } catch (const MissingClipMedia&) {
+            // Playback also treats this source as unavailable.
+        } catch (const std::runtime_error&) { return std::nullopt; }
+    }
+    return files;
+}
+} // namespace
+
 std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows, bool readSession) {
     auto p = std::make_shared<ClipProject>(); p->rows = rows;
     // SQLite resolves its filename when opening. Store::path() can remain
@@ -57,11 +113,35 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
     p->noteExpressions=readNoteExpressions(store);
-    if (readSession) p->session = launch::readLaunchData(store, rows);
+    if (readSession) {
+        p->session = launch::readLaunchData(store, rows);
+        if (p->session) p->launchFiles = readLaunchFiles(*p);
+    }
     return p;
 }
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
     return project.noteExpressions;
+}
+
+bool sameLaunchSource(const ClipProject& a, const ClipProject& b) noexcept {
+    if (!a.launchFiles || !b.launchFiles || a.launchFiles != b.launchFiles) return false;
+    if (&a == &b) return true;
+    if (!a.session || !b.session || a.folder != b.folder || a.hints != b.hints ||
+        a.rows.slotClips != b.rows.slotClips || a.rows.audioClips != b.rows.audioClips || a.rows.media != b.rows.media)
+        return false;
+    if (!std::ranges::equal(a.rows.tracks,b.rows.tracks,[](const auto& left, const auto& right) {
+            return left.id == right.id && left.kind == right.kind;
+        }) || !std::ranges::equal(a.rows.clips,b.rows.clips,[](const auto& left, const auto& right) {
+            return left.trackId == right.trackId && left.kind == right.kind;
+        })) return false;
+    return std::ranges::equal(a.session->tracks(),b.session->tracks()) &&
+        std::ranges::equal(a.session->scenes(),b.session->scenes()) &&
+        std::ranges::equal(a.session->slots(),b.session->slots()) &&
+        std::ranges::equal(a.session->settingsRows(),b.session->settingsRows());
+}
+
+bool launchFilesCurrent(const ClipProject& project) {
+    return project.launchFiles && project.launchFiles == readLaunchFiles(project);
 }
 namespace {
 constexpr std::size_t slots = 8;
@@ -698,36 +778,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     std::unordered_map<fs::path, SourceReaders> readers;
     std::unordered_map<const audio::WarpTask*, std::weak_ptr<WarpSource>> warpedReaders;
-    struct RelocatedSource { fs::path path; std::string error; };
     std::unordered_map<std::int64_t, RelocatedSource> relocatedSources;
     const auto mediaRow = [&](std::int64_t id) -> const rows::Media* {
         const auto found = std::find_if(project->rows.media.begin(), project->rows.media.end(),
                                        [id](const auto& media) { return media.id == id; });
         return found == project->rows.media.end() ? nullptr : &*found;
     };
-    const auto mediaPath = [&](const rows::Media& source) -> fs::path {
-        const auto hint = project->hints.find(source.id);
-        if (source.relPath) {
-            const auto relative = utf8Path(*source.relPath);
-            const auto path = project->folder / relative;
-            // In the ordinary case both stored locations name the same file.
-            // Verify differing candidates once per media asset, not per clip.
-            if (hint != project->hints.end() && !relative.empty() && *relative.begin() == ".." &&
-                path.lexically_normal() != hint->second.lexically_normal()) {
-                auto [found, inserted] = relocatedSources.try_emplace(source.id);
-                auto& resolved = found->second;
-                if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
-                    source.origName, source.hashBlake3, resolved.error);
-                if (resolved.path.empty()) {
-                    if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
-                    throw std::runtime_error(resolved.error);
-                }
-                return resolved.path;
-            }
-            return path;
-        }
-        if (hint != project->hints.end()) return hint->second;
-        throw MissingClipMedia("no media path");
+    const auto mediaPath = [&](const rows::Media& source) {
+        return clipMediaPath(*project,source,relocatedSources);
     };
     std::unordered_map<std::int64_t, bool> skippedMediaAvailable;
     const auto checkSkippedMedia = [&](std::int64_t clipId, std::int64_t mediaId) {
@@ -1103,7 +1161,10 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
     }
     if (playback.readErrors() || playback.underrunSamples())
         throw std::runtime_error("Session clip playback preparation could not read all pages");
-    return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm));
+    const auto& audio = project->rows.audioClips.front();
+    const bool directPcm = !audio.warpEnabled && !audio.reverse && audio.transposeSemis == 0 && audio.formantShift == 0 &&
+        playback.readsNativePcm(authored.id);
+    return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm), directPcm);
 }
 
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
@@ -1315,6 +1376,13 @@ void ClipPlayback::appendExportBlockingProblems(std::vector<std::string>& out) c
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
     if(audio::onAudioThread)return {};
     return impl_->externalSources;
+}
+bool ClipPlayback::readsNativePcm(std::int64_t clipId) const noexcept {
+    if (audio::onAudioThread) return false;
+    const auto found = std::ranges::find_if(impl_->clips, [&](const auto& clip) { return clip->clipId == clipId; });
+    if (found == impl_->clips.end()) return false;
+    const auto& clip = **found;
+    return !clip.warp && !clip.progressive && clip.sourceRate == clip.rate && clip.reader && !clip.reader->file.pinned;
 }
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {

@@ -26,13 +26,23 @@ bool positiveAscending(const std::vector<std::int64_t>& ids) {
         std::adjacent_find(ids.begin(), ids.end()) == ids.end();
 }
 
+const LaunchTempoBank* tempoBankAt(const std::vector<LaunchTempoBank>& banks, std::int64_t sample) noexcept {
+    if (banks.empty()) return nullptr;
+    // Keep driver searches on raw pointers with MSVC iterator debugging enabled.
+    const auto* first = banks.data();
+    const auto* next = std::ranges::upper_bound(first,first+banks.size(),sample,{},&LaunchTempoBank::startSample);
+    return next == first ? first : next - 1;
+}
+
 } // namespace
 
 LaunchAudioClip LaunchAudioClip::fromSamples(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
-                                             std::vector<float> pcm) {
+                                             std::vector<float> pcm, bool directPcm) {
     if (clip <= 0 || rate == 0 || channels == 0 || pcm.empty() || pcm.size() % channels != 0)
         throw std::invalid_argument("invalid prepared Session clip audio");
-    return {clip, 0, rate, channels, std::move(pcm)};
+    LaunchAudioClip result{clip, 0, rate, channels, std::move(pcm)};
+    result.directPcm_ = directPcm;
+    return result;
 }
 
 LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, std::vector<std::int64_t> tracks,
@@ -120,6 +130,10 @@ std::uint64_t LaunchAudioProject::residentBytes() const noexcept {
     std::uint64_t bytes = 0;
     for (const auto& clip : clips_) bytes += clip.bytes();
     return bytes;
+}
+
+bool LaunchAudioProject::hasPagedAudio() const noexcept {
+    return std::ranges::any_of(clips_, [](const auto& clip) { return clip.pageReader() != nullptr; });
 }
 
 const LaunchAudioClip* LaunchAudioProject::clip(std::int64_t id) const noexcept {
@@ -246,7 +260,7 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
 
 bool LaunchAudioRuntime::postSourceEdit(LaunchAudioDriver& driver, const LaunchClipSourceEdit& edit,
                                         std::unique_ptr<LaunchAudioClip>& replacement) const noexcept {
-    if (audio::onAudioThread || !replacement || beforeClock_ || edit.incarnation != project_->incarnation() ||
+    if (audio::onAudioThread || !replacement || !tempoBanks_.empty() || edit.incarnation != project_->incarnation() ||
         edit.run == 0 || edit.rate > ClipUpdateRate::Bar || !hasTrack(edit.track) || project_->isMidiTrack(edit.track))
         return false;
     const auto* original = project_->clip(edit.clip);
@@ -265,12 +279,29 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
                                        std::vector<std::int64_t> tracks, std::int32_t maxFrames,
                                        std::shared_ptr<const LaunchAudioProject> beforeClock,
                                        std::int64_t clockSample)
-    : project_(std::move(project)), beforeClock_(std::move(beforeClock)), clockSample_(clockSample),
+    : LaunchAudioRuntime(project, std::move(tracks), maxFrames,
+        beforeClock ? std::vector<LaunchTempoBank>{{0, std::move(beforeClock)}, {clockSample, project}}
+                    : std::vector<LaunchTempoBank>{}) {}
+
+LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject> project,
+                                       std::vector<std::int64_t> tracks, std::int32_t maxFrames,
+                                       std::vector<LaunchTempoBank> banks)
+    : project_(std::move(project)), tempoBanks_(std::move(banks)),
       tracks_(std::move(tracks)), ranges_(tracks_.size()), maxFrames_(maxFrames) {
     if (!project_ || maxFrames <= 0)
         throw std::invalid_argument("invalid Session launch audio runtime format");
-    if (beforeClock_ && (beforeClock_->incarnation() != project_->incarnation() || clockSample_ <= 0))
+    if (!tempoBanks_.empty() && (tempoBanks_.size() < 2 || tempoBanks_.front().startSample != 0 ||
+        tempoBanks_.back().media != project_))
         throw std::invalid_argument("invalid Session clock media handover");
+    std::int64_t previous = -1;
+    for (const auto& bank : tempoBanks_) {
+        if (bank.startSample <= previous || !bank.media || bank.media->incarnation() != project_->incarnation())
+            throw std::invalid_argument("invalid Session clock media handover");
+        bankRevisions_.push_back(bank.media.get());
+        previous = bank.startSample;
+    }
+    std::ranges::sort(bankRevisions_, {}, &LaunchAudioProject::pcmRevision);
+    bankRevisions_.erase(std::unique(bankRevisions_.begin(),bankRevisions_.end()),bankRevisions_.end());
     const auto known = project_->view().tracks;
     if (!positiveAscending(tracks_) || !std::includes(known.begin(), known.end(), tracks_.begin(), tracks_.end()))
         throw std::invalid_argument("Session audio runtime needs known tracks in ascending order");
@@ -285,13 +316,29 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
 }
 
 const std::shared_ptr<const LaunchAudioProject>& LaunchAudioRuntime::mediaAt(std::int64_t sample) const noexcept {
-    return beforeClock_ && sample < clockSample_ ? beforeClock_ : project_;
+    const auto* bank = tempoBankAt(tempoBanks_,sample);
+    return bank ? bank->media : project_;
+}
+
+std::shared_ptr<const LaunchAudioProject> LaunchAudioRuntime::bankAtTempo(double bpm) const noexcept {
+    if (project_->bpm() == bpm) return project_;
+    const auto bank = std::ranges::find_if(tempoBanks_, [&](const auto& entry) { return entry.media->bpm() == bpm; });
+    return bank != tempoBanks_.end() ? bank->media : nullptr;
+}
+
+const LaunchAudioProject* LaunchAudioRuntime::mediaByRevision(std::uint64_t revision) const noexcept {
+    if (project_->pcmRevision() == revision) return project_.get();
+    if (bankRevisions_.empty()) return nullptr;
+    const auto* first = bankRevisions_.data();
+    const auto* end = first + bankRevisions_.size();
+    const auto* bank = std::ranges::lower_bound(first,end,revision,{},&LaunchAudioProject::pcmRevision);
+    return bank != end && (*bank)->pcmRevision() == revision ? *bank : nullptr;
 }
 
 std::uint64_t LaunchAudioRuntime::gainRevision() const noexcept {
-    // Both projections render the same owner content. Keep an active clip's
+    // All projections render the same owner content. Keep an active clip's
     // gain edit in effect until the scene replaces it, including its tail.
-    return beforeClock_ ? beforeClock_->pcmRevision() : project_->pcmRevision();
+    return tempoBanks_.empty() ? project_->pcmRevision() : tempoBanks_.front().media->pcmRevision();
 }
 
 void LaunchAudioRuntime::startIfQueued(LaunchAudioDriver& driver, LaunchBlock block, Transport& transport) const noexcept {
@@ -331,6 +378,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         driver.tailCount_ = 0;
         driver.tailIncarnation_ = block.incarnation;
         driver.lastMediaBpm_ = 0.0;
+        driver.lastMediaRevision_ = 0;
     }
     std::size_t remainingTails = 0;
     for (std::size_t index = 0; index < driver.tailCount_; ++index) {
@@ -431,8 +479,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);
         block.frames = static_cast<std::int32_t>(transport.contiguousFrames(context.offset, frames - context.offset));
-        if (beforeClock_ && block.sample < clockSample_)
-            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(block.frames, clockSample_ - block.sample));
+        const auto* bank = tempoBankAt(tempoBanks_,block.sample);
+        if (bank && bank + 1 != tempoBanks_.data() + tempoBanks_.size())
+            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(block.frames, (bank+1)->startSample - block.sample));
         block.arrangementWrap = transport.looping() && block.sample == transport.loopBegin() &&
             (context.offset > 0 || (driver.transportRevision_ == transport.revision() &&
                 driver.nextTimelineSample_ == transport.loopEnd() && driver.loopBegin_ == transport.loopBegin() &&
@@ -444,12 +493,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 capture->notePcmTimeline(block.sample, block.sample + block.frames);
             else capture->markPcmDiscontinuity();
         }
-        context.media = mediaAt(block.sample).get();
-        const auto* otherBank = context.media == beforeClock_.get() ? project_.get() : beforeClock_.get();
+        context.media = bank ? bank->media.get() : project_.get();
         // Keeping the previous bank's metadata in the pinned graph also lets
         // a stop or replacement fade out the old source after a seek.
-        context.previousMedia = context.media->bpm() != driver.lastMediaBpm_ &&
-            otherBank && otherBank->bpm() == driver.lastMediaBpm_ ? otherBank : nullptr;
+        context.previousMedia = context.media->bpm() != driver.lastMediaBpm_
+            ? mediaByRevision(driver.lastMediaRevision_) : nullptr;
         block.reanchorAudioSources = context.previousMedia != nullptr;
         context.view = context.media->view();
         context.view.tracks = tracks_;
@@ -458,6 +506,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!driver.launcher_.process(block, context.view, sink))
             break;
         driver.lastMediaBpm_ = context.media->bpm();
+        driver.lastMediaRevision_ = context.media->pcmRevision();
         context.offset += block.frames;
         driver.nextTimelineSample_ = block.sample + block.frames;
         driver.loopBegin_ = transport.loopBegin();
@@ -474,8 +523,8 @@ bool LaunchAudioRuntime::hasScene(std::int64_t scene) const noexcept {
 bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t offset,
                                 std::int32_t frames, LaunchCaptureBuffer* capture) noexcept {
     if (frames <= 0 || tracks_.empty()) return false;
-    const auto* media = beforeClock_ && beforeClock_->pcmRevision() == tail.media ? beforeClock_.get() : project_.get();
-    if (media->pcmRevision() != tail.media) return false;
+    const auto* media = mediaByRevision(tail.media);
+    if (!media) return false;
     const auto* pcm = media->clip(tail.clip);
     if (!pcm) return false;
     const auto duration = launchFadeFrames(pcm->rate());
@@ -531,7 +580,7 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
-    const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm && !pcm->pageReader() && fade < 0 &&
+    const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm && pcm->hasDirectPcm() && fade < 0 &&
         section.velocity == 1.0f && source >= 0 &&
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
         static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);

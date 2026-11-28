@@ -27,6 +27,8 @@ struct ClipMediaSource {
 };
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
+[[nodiscard]] bool sameLaunchSource(const ClipProject&, const ClipProject&) noexcept;
+[[nodiscard]] bool launchFilesCurrent(const ClipProject&);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
 /// Owner-only. Empty when this project has no Session scene list.
@@ -74,6 +76,8 @@ public:
     // a promise about plugin-owned samples. Muted/unopened clips are absent.
     // Immutable for this generation's lifetime; callback use returns empty.
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
+    /// Owner-only check of the original native-rate WAV reader.
+    [[nodiscard]] bool readsNativePcm(std::int64_t clipId) const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});

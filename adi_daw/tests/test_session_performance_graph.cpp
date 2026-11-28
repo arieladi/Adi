@@ -4,6 +4,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_capture.hpp"
@@ -80,9 +81,10 @@ struct Project {
         media(name, id, signal);
     }
 
-    void media(const char* name, std::int64_t id, std::span<const float> signal, std::uint16_t channels = 1) {
+    void media(const char* name, std::int64_t id, std::span<const float> signal, std::uint16_t channels = 1,
+               audio::WavFormat format = audio::WavFormat::Float32) {
         const auto path = folder.path() / name;
-        audio::WavWriter writer(path, sampleRate, channels, audio::WavFormat::Float32);
+        audio::WavWriter writer(path, sampleRate, channels, format);
         writer.write(signal.data(), static_cast<std::uint32_t>(signal.size() / channels));
         writer.close();
         const auto hash = adi::media::blake3File(path);
@@ -363,6 +365,67 @@ void fractionalRawLoop() {
     std::puts("PASS -- raw Session loop wraps at frames 126, 150 and 175 replay bit-for-bit");
 }
 
+void authoredWarpLoopWithPcmTape() {
+    Project project;
+    std::array<float, 2048> waveform{};
+    for (std::size_t index = 0; index < waveform.size(); ++index)
+        waveform[index] = static_cast<float>(index % 61) / 128.0f - 0.25f;
+    project.media("warp-loop.wav", 4, waveform);
+    const auto warp = audio::writeWarpMap(std::array<WarpMarker, 2>{{{0, 0}, {2048, 600600}}}, 2048);
+    require(static_cast<bool>(warp), "encode a nonidentity Warp map for the fixed-clock loop");
+    {
+        auto& db = project.store->db();
+        db.exec("UPDATE clips SET length_ticks=240240,loop_enabled=1,loop_start_ticks=0,loop_len_ticks=60060 WHERE id=11;"
+                "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+        SQLite::Statement audioRow(db, "UPDATE audio_clips SET media_id=4,warp_enabled=1,"
+                                       "warp_mode='re-pitch',warp_markers=? WHERE clip_id=11");
+        audioRow.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+        audioRow.exec();
+    }
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    std::array<LaunchTransition, 4> events{};
+    LaunchCaptureBuffer edgesOnly(events);
+    std::int64_t endTick = 0;
+    const auto expected = render(*project.store, &edgesOnly, &endTick, true);
+    constexpr auto start = 100, loop = 250;
+    require(std::equal(expected.begin() + start, expected.begin() + start + loop, expected.begin() + start + loop) &&
+            *std::min_element(expected.begin() + start, expected.begin() + start + loop) < -0.1f &&
+            *std::max_element(expected.begin() + start, expected.begin() + start + loop) > 0.1f,
+            "the resident Warp clip plays a nonconstant loop at its exact integral wrap");
+    const auto authoredPlan = planLaunchCapture(edgesOnly, {0, 0}, {frames, endTick}, {});
+    constexpr SessionPerformanceAudio proof{Precision::Float32, true};
+    const auto authored = prepareSessionPerformance(*project.store, *source, authoredPlan, sampleRate, std::nullopt, proof);
+    require(authored.ok, "the performed loop is already representable by its authored Warp map " + authored.error);
+
+    std::array<LaunchCapturedPcmRange, 8> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer tape(events, pcm, tracks);
+    require(render(*project.store, &tape, &endTick, true) == expected,
+            "enabling raw trace storage does not change the performed Warp waveform");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {frames, endTick}, {});
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, proof);
+    require(prepared.ok, "an optional raw tape must not refuse an exactly reconstructible Warp loop " + prepared.error);
+    require(plan.pcmRanges.empty(), "prepared Warp samples never enter the raw file-offset tape");
+    const auto arrangementBefore = render(*project.store);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == expected,
+            "the captured Warp loop replays all 1000 samples at another callback width");
+    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render(*project.store) == expected,
+            "one Undo and Redo restore the captured Warp loop");
+    require(project.store->close(), "close the captured Warp loop project");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render(*project.store, nullptr, nullptr, false, nullptr, 127) == expected,
+            "reopening the project preserves the exact Warp loop");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the Warp loop capture stays callback-safe");
+    std::puts("PASS -- optional PCM tape keeps an authored Warp loop replayable at exact integral wraps");
+}
+
 void liveRawRegion() {
     Project project;
     std::array<float, 2048> signal{};
@@ -516,15 +579,24 @@ void liveRawGain() {
                 wide ? "64" : "32");
 }
 
-void float64FoldRefused() {
+void float64Fold(audio::WavFormat format) {
     Project project;
-    std::array<float, 4096> folded{};
-    for (std::size_t index = 0; index < folded.size(); index += 2) {
-        folded[index] = 0.1f;
-        folded[index + 1] = 0.2f;
+    const bool floatSource = format == audio::WavFormat::Float32;
+    const auto fullScale = format == audio::WavFormat::Pcm16 ? 32768 : 8388608;
+    const std::array<std::array<int, 2>, 6> stereo{{
+        {-fullScale, -fullScale}, {fullScale - 1, fullScale - 2},
+        {-fullScale, -fullScale + 1}, {fullScale - 1, -fullScale},
+        {0, 1}, {27, -3},
+    }};
+    std::array<float, 4096> signal{};
+    for (std::size_t index = 0; index < signal.size(); index += 2) {
+        const auto& pair = stereo[(index / 2) % stereo.size()];
+        signal[index] = floatSource ? 0.1f : static_cast<float>(pair[0]) / static_cast<float>(fullScale);
+        signal[index + 1] = floatSource ? 0.2f : static_cast<float>(pair[1]) / static_cast<float>(fullScale);
     }
-    project.media("folded-gain.wav", 4, folded, 2);
-    project.store->db().exec("UPDATE audio_clips SET media_id=4,channel_mode=3 WHERE clip_id=11;"
+    project.media("folded-gain.wav", 4, signal, 2, format);
+    project.store->db().exec("UPDATE audio_clips SET media_id=4,channel_mode=3,src_start_frames=37,"
+        "src_len_frames=1024 WHERE clip_id=11;"
         "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
     std::string error;
     const auto source = captureSessionPerformanceSource(*project.store, error);
@@ -536,16 +608,63 @@ void float64FoldRefused() {
     const LiveAudioEdit edit{.gain = 10.0f};
     std::int64_t endTick = 0;
     const auto heard = render<double>(*project.store, &buffer, &endTick, true, nullptr, blockFrames, &edit);
-    require(heard[200] == static_cast<double>(0.15f) * 10 && heard[200] !=
-            (static_cast<double>(0.1f) + static_cast<double>(0.2f)) / 2 * 10,
-            "the stored stereo fold rounds before the wide Session graph applies live gain");
     const auto plan = planLaunchCapture(buffer, {0, 0}, {frames, endTick}, {});
     require(plan.error == LaunchCaptureError::None && plan.pcmRanges.size() == 2,
-            "a complete resident track tape alone cannot guarantee an exact wide fold");
-    const auto refused = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt,
+            "capture both stereo Fold gain ranges from the resident run");
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt,
         SessionPerformanceAudio{Precision::Float64, false});
-    require(!refused.ok && refused.error.find("channel folding") != std::string::npos,
-            "capture refuses a Float64 replay with a mismatched rounding path");
+    if (floatSource) {
+        require(heard[200] == static_cast<double>(0.15f) * 10 && heard[200] !=
+                (static_cast<double>(0.1f) + static_cast<double>(0.2f)) / 2 * 10,
+                "the stored Float32 stereo fold can round before the wide graph applies live gain");
+        require(!prepared.ok && prepared.error.find("channel folding") != std::string::npos,
+                "capture refuses the inexact Float32 Fold path");
+
+        std::array<LaunchTransition, 4> authoredEdges{};
+        LaunchCaptureBuffer authoredBuffer(authoredEdges);
+        const auto authored = render<double>(*project.store, &authoredBuffer, &endTick, true);
+        constexpr auto arrangementFold = (static_cast<double>(0.1f) + static_cast<double>(0.2f)) / 2;
+        require(authored[100] == static_cast<double>(0.15f) && authored[100] != arrangementFold,
+                "an unedited resident Float32 stereo Fold also rounds before the wide graph");
+        const auto authoredPlan = planLaunchCapture(authoredBuffer, {0, 0}, {frames, endTick}, {});
+        require(authoredPlan.error == LaunchCaptureError::None && authoredPlan.pcmRanges.empty(),
+                "the authored Fold has no PCM edit ranges");
+        const auto authoredWide = prepareSessionPerformance(*project.store, *source, authoredPlan, sampleRate,
+            std::nullopt, SessionPerformanceAudio{Precision::Float64, true});
+        const auto defaultProof = prepareSessionPerformance(*project.store, *source, authoredPlan, sampleRate);
+        require(defaultProof.ok && clip_edit::commitPrepared(*project.store, defaultProof).ok,
+                "the existing default-precision authored Fold capture is still allowed");
+        const auto wideReplay = render<double>(*project.store, nullptr, nullptr, false, nullptr, 127);
+        require(wideReplay[100] == arrangementFold && wideReplay[100] != authored[100] &&
+                render(*project.store)[100] == 0.15f,
+                "the real unedited Arrangement Fold agrees at Float32 and differs at Float64");
+        require(!authoredWide.ok && authoredWide.error.find("channel folding") != std::string::npos,
+                "explicit Float64 replay also refuses an inexact Fold without a PCM edit tape");
+        return;
+    }
+    for (std::size_t frame = 0; frame < heard.size(); ++frame) {
+        auto expected = 0.125;
+        if (frame >= 100) {
+            const auto& pair = stereo[(37 + frame - 100) % stereo.size()];
+            const auto mean = static_cast<double>(pair[0] + pair[1]) / (2 * fullScale);
+            expected = mean * (frame < 200 ? 1 : 10);
+        }
+        require(heard[frame] == expected, "the live wide fold retains every integer PCM fraction through the gain step");
+    }
+    require(prepared.ok, prepared.error);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(render<double>(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+            "the captured integer stereo Fold replays exactly at a different callback width");
+    require(project.store->close(), "close the captured integer stereo Fold project");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render<double>(*project.store, nullptr, nullptr, false, nullptr, 127) == heard,
+            "reopening preserves every wide integer stereo Fold sample");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the stereo Fold trace remains callback-safe");
+    std::printf("PASS -- stereo PCM%d Fold gain replays bit-for-bit in Float64 through reopen\n",
+                format == audio::WavFormat::Pcm16 ? 16 : 24);
 }
 
 void fadeTailAtCaptureBoundary() {
@@ -591,10 +710,13 @@ int main() {
         proof(true);
         followThroughGraph();
         fractionalRawLoop();
+        authoredWarpLoopWithPcmTape();
         liveRawRegion();
         liveRawGain<float>();
         liveRawGain<double>();
-        float64FoldRefused();
+        float64Fold(audio::WavFormat::Float32);
+        float64Fold(audio::WavFormat::Pcm16);
+        float64Fold(audio::WavFormat::Pcm24);
         fadeTailAtCaptureBoundary();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());

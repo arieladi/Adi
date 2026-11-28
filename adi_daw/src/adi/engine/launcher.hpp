@@ -128,6 +128,7 @@ struct LaunchTrackStatus {
     LaunchTrackSource source = LaunchTrackSource::Arrangement;
     LaunchQueuedStatus queued;
     std::int64_t loopStartTick = 0, loopLengthTicks = 0, remainingSamples = 0;
+    bool hasLiveRegion = false; // a pending or applied edit to the current run
     bool operator==(const LaunchTrackStatus&) const = default;
 };
 
@@ -136,6 +137,7 @@ struct LaunchStatusHeader {
     std::int64_t endSample = 0, endTick = 0;
     std::size_t trackCount = 0;
     bool transportPlaying = false, backToArrangement = false;
+    std::uint64_t regionEditsRead = 0;
 };
 
 struct LaunchSink {
@@ -167,6 +169,10 @@ public:
     }
     /// Owner only. Queue playback bounds for a single active prepared run.
     [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&) noexcept;
+    /// Owner only. Check for newer region edits on the specified tracks
+    /// that the supplied completed status has yet to account for.
+    [[nodiscard]] bool regionEditsSettled(const LaunchStatusHeader&,
+                                         std::span<const std::int64_t> tracks) const noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
