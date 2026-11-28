@@ -71,11 +71,15 @@ struct WarpPcmReader {
     void* context = nullptr;
     void (*read)(void*, std::uint64_t fileFrame, float* interleaved, std::uint32_t frames) = nullptr;
 };
-/// Worker only. Render a page of the legacy reversed Complex result at exact
-/// unity, 48 kHz, one or two channels, with the original two endpoint anchors.
-void renderReversedUnityComplexPage(const WarpPcmReader&, std::uint64_t sourceStart,
-                                    std::uint64_t sourceFrames, std::uint16_t channels,
-                                    std::uint64_t first, std::span<float> output);
+inline constexpr double kArrangementTonesGrainSeconds = 0.03;
+/// Admit the exact-unity, same-rate offline subset with less than one complete
+/// source window needed per page. Tones uses the default Arrangement grain.
+[[nodiscard]] std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan&,
+    std::uint32_t sourceRate,std::uint16_t channels) noexcept;
+/// Worker only. Render a page from an admitted plan in playback-reverse order.
+void renderReversedUnityR3Page(const WarpPcmReader&,std::uint64_t sourceStart,std::uint64_t sourceFrames,
+                               std::uint32_t rate,WarpMode,std::uint16_t channels,
+                               std::uint64_t first,std::span<float> output);
 
 
 /// A shared worker result. An empty result means the render is pending.

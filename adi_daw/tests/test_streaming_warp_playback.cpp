@@ -981,66 +981,77 @@ void playbackExportAndReopen(std::string_view mode, bool bezier) {
                 seekMatches ? "exact" : "different", reopenMatches ? "exact" : "different", exportMatches ? "exact" : "different");
 }
 
-constexpr std::uint32_t savedRate = 48000, windowStart = 263, windowFrames = 65573, placementFrame = 1379;
-constexpr std::int32_t alignment = 8192;
+constexpr std::uint32_t windowStart = 263, placementFrame = 1379;
 
 void requireUnity(bool condition,const char* failure) {
     if (!condition) throw std::runtime_error(failure);
 }
 
-std::int64_t reversedUnityTick(std::uint32_t at) {
-    return static_cast<std::int64_t>(std::llround(static_cast<double>(at)*quarter/(savedRate/2)));
-}
-
 struct SavedWindow {
-    test::TempDirectory directory{"arrangement-reversed-complex-unity","project"};
+    test::TempDirectory directory{"arrangement-reversed-r3-unity","project"};
     std::unique_ptr<Store> store;
+    const std::uint32_t rate, pageFrames, windowFrames;
 
-    SavedWindow() {
+    std::int64_t tick(std::uint32_t at) const {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(at)*quarter/(rate/2)));
+    }
+
+    SavedWindow(std::uint32_t sampleRate,audio::WarpMode mode)
+        : rate(sampleRate),pageFrames((8192u*rate+47999u)/48000u),windowFrames(8*pageFrames+37) {
         const auto song = directory.path()/"unity.adi";
         StoreError error{};
         store = Store::createEmpty(song,error);
         if (!store) throw std::runtime_error(toString(error));
         const auto path = directory.path()/"stereo.wav";
-        constexpr auto samples = windowStart+windowFrames+509;
+        const auto samples = windowStart+windowFrames+509;
         std::vector<float> input(2*samples,.94f);
         for (std::uint32_t frame=0;frame<windowFrames;++frame) {
-            const auto t = static_cast<double>(frame)/savedRate;
+            const auto t = static_cast<double>(frame)/rate;
             const auto section = static_cast<double>(frame/804);
             const auto phase = (995+section*315)*t*2*std::numbers::pi;
-            const auto pulse = frame%alignment < 29 ? .15 : 0.0;
-            input[(windowStart+frame)*2] = static_cast<float>(std::pow(std::sin(phase),3)*.6+pulse);
-            input[(windowStart+frame)*2+1] = static_cast<float>(std::pow(std::cos(phase/2),3)*-.8-pulse);
+            const auto pulse = frame%pageFrames < 29 ? .15 : 0.0;
+            for (std::size_t channel=0;channel<2;++channel) {
+                const auto edge = channel == 0 ? frame : windowFrames-1-frame;
+                double value = 0;
+                if (edge < 257)
+                    value = (1+std::cos(edge*std::numbers::pi/257))*.32;
+                else if (edge > 2048 && edge < windowFrames-4096)
+                    value = channel == 0 ? std::pow(std::sin(phase),3)*.6+pulse
+                                         : std::pow(std::cos(phase/2),3)*-.8-pulse;
+                input[(windowStart+frame)*2+channel] = static_cast<float>(value);
+            }
         }
-        audio::WavWriter writer(path,savedRate,2,audio::WavFormat::Float32);
+        audio::WavWriter writer(path,rate,2,audio::WavFormat::Float32);
         writer.write(input.data(),samples);
         writer.close();
         const auto digest = media::blake3File(path);
         requireUnity(static_cast<bool>(digest),"hash the saved source");
         {
             auto& db = store->db();
-            db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Reversed Complex',48000);"
+            db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Reversed R3'," + std::to_string(rate) + ");"
                     "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Reverse Wind'),(9,'master','Main');"
                     "DELETE FROM tempo_map;"
                     "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0)");
             SQLite::Statement media(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
-                                       "VALUES(1,?,'stereo.wav','wav',48000,2,?)");
+                                       "VALUES(1,?,'stereo.wav','wav',?,2,?)");
             media.bind(1,digest.hex);
-            media.bind(2,samples);
+            media.bind(2,rate);
+            media.bind(3,samples);
             media.exec();
             SQLite::Statement clip(db,"INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,gain_db) "
                                       "VALUES(7,1,'audio',?,?,-6.020599913279624)");
-            clip.bind(1,reversedUnityTick(placementFrame));
-            clip.bind(2,reversedUnityTick(windowFrames));
+            clip.bind(1,tick(placementFrame));
+            clip.bind(2,tick(windowFrames));
             clip.exec();
-            const auto blob = audio::writeWarpMap(std::array{WarpMarker{0,0},WarpMarker{windowFrames,reversedUnityTick(windowFrames)}},
+            const auto blob = audio::writeWarpMap(std::array{WarpMarker{0,0},WarpMarker{windowFrames,tick(windowFrames)}},
                                                   windowFrames);
             requireUnity(static_cast<bool>(blob),"encode exact unity Warp endpoints");
             SQLite::Statement audioRow(db,"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,"
-                                          "warp_enabled,warp_mode,warp_markers,reverse) VALUES(7,1,?,?,1,'complex',?,1)");
+                                          "warp_enabled,warp_mode,warp_markers,reverse) VALUES(7,1,?,?,1,?,?,1)");
             audioRow.bind(1,windowStart);
             audioRow.bind(2,windowFrames);
-            audioRow.bind(3,blob.bytes.data(),static_cast<int>(blob.bytes.size()));
+            audioRow.bind(3,audio::warpModeName(mode));
+            audioRow.bind(4,blob.bytes.data(),static_cast<int>(blob.bytes.size()));
             audioRow.exec();
         }
         store.reset();
@@ -1049,7 +1060,7 @@ struct SavedWindow {
     }
 
     void load(Session& session,bool prepared,std::uint32_t first=0) {
-        SessionSpec spec{2,savedRate,maxFrames};
+        SessionSpec spec{2,static_cast<double>(rate),maxFrames};
         spec.synchronousClipReads = prepared;
         session.graph().setFadeFrames(0);
         if (!session.load(*store,{},spec)) throw std::runtime_error(session.error());
@@ -1065,8 +1076,9 @@ bool bitEqual(std::span<const StereoFrame> a,std::span<const StereoFrame> b) {
     });
 }
 
-void reversedUnityPreparedParity() {
-    SavedWindow source;
+void reversedUnityPreparedParity(std::uint32_t rate,audio::WarpMode mode) {
+    SavedWindow source(rate,mode);
+    const auto windowFrames = source.windowFrames;
     Session native, reference;
     source.load(native,false);
     source.load(reference,true);
@@ -1074,19 +1086,25 @@ void reversedUnityPreparedParity() {
                  reference.graph().currentGraph()->latencySamples()==0,"worker and prepared have zero graph delay");
     requireUnity(reference.clips()->problems().size()==1 && native.clips()->problems().empty(),
                  "only the synchronous reference uses whole-clip preparation");
-    constexpr auto count=placementFrame+windowFrames+513;
+    const auto count=placementFrame+windowFrames+513;
     const auto heard=compensatedPlayback(native,count,377);
     const auto golden=compensatedPlayback(reference,count,231);
     requireUnity(bitEqual(heard,golden),"all samples including true window edges match the historical reverse");
-    requireUnity(std::abs(heard[placementFrame+79].left)>.015f &&
-                 std::abs(heard[placementFrame+windowFrames-137].right)>.015f,
-                 "the exact match includes audible PCM near each source edge");
+    // WindowShort and multi-window R3 put the edge transients at different
+    // offsets. Keep the edge fixtures audible without pinning either phase.
+    float headPeak = 0, tailPeak = 0;
+    for (std::size_t edge = 0; edge < 2048; ++edge) {
+        headPeak = std::max(headPeak,std::abs(heard[placementFrame+edge].right));
+        tailPeak = std::max(tailPeak,std::abs(heard[placementFrame+windowFrames-1-edge].left));
+    }
+    requireUnity(headPeak > .015f && tailPeak > .015f,
+                 "the exact match includes audible edge transients beside silent source channels");
     requireUnity(heard[placementFrame-1]==StereoFrame{} && heard[placementFrame+windowFrames]==StereoFrame{},
                  "the page producer emits nothing outside the saved window");
 
     {
         Session cold;
-        constexpr auto seek = placementFrame+2*alignment+alignment-79;
+        const auto seek = placementFrame+3*source.pageFrames-79;
         source.load(cold,false,seek);
         const auto result=compensatedPlayback(cold,4511,311);
         requireUnity(bitEqual(result,std::span(golden).subspan(seek,result.size())),
@@ -1097,11 +1115,25 @@ void reversedUnityPreparedParity() {
     requireUnity(native.clips()->underrunSamples()==0 && native.clips()->readErrors()==0,
                  "saved unity playback has no source errors or underruns");
 
+    std::printf("reversed unity %s at %u Hz: %u saved frames with prefix %u, bit-exact prepared PCM and cold pages, "
+                "graph latency 0\n",audio::warpModeName(mode),rate,windowFrames,windowStart);
+    if (mode == audio::WarpMode::ComplexPro) {
+        // This shift is intentionally smaller than the converted ratio's
+        // precision, but the authored clip still changed its formant setting.
+        source.store->db().exec("UPDATE audio_clips SET formant_shift=1e-17 WHERE clip_id=7");
+        Session shifted;
+        source.load(shifted,false);
+        requireUnity(shifted.clips()->problems().size()==1 &&
+                     shifted.graph().currentGraph()->latencySamples()==0,
+                     "a nondefault stored formant setting takes the prepared fallback");
+    }
+    if (mode != audio::WarpMode::Complex) return;
+
     constexpr auto tempoStart=placementFrame+19003;
     native.transport().locate(tempoStart);
     OpRequest tempo;
     tempo.opType="project.insertTempoEvent";
-    tempo.payload={{"pos",reversedUnityTick(tempoStart)},{"bpm",140},{"curve",0}};
+    tempo.payload={{"pos",source.tick(tempoStart)},{"bpm",140},{"curve",0}};
     requireUnity(OpJournal(*source.store).commit(tempo).ok && native.refresh(*source.store),
                  "publish changed clock while the reversed clip is playing");
     requireUnity(native.transport().position()==tempoStart && native.transport().playing() &&
@@ -1114,8 +1146,7 @@ void reversedUnityPreparedParity() {
     requireUnity(bitEqual(changed,expected),"edited clock remains bit-exact to the legacy prepared generation");
     requireUnity(native.clips()->underrunSamples()==0 && native.clips()->readErrors()==0,
                  "prepared fallback renders the changed clock without source problems");
-    std::printf("reversed unity Complex: %u saved frames with prefix %u, bit-exact prepared PCM and cold pages, "
-                "edited clock prepared, graph latency 0, callback allocation/I/O 0\n",windowFrames,windowStart);
+    std::printf("reversed Complex clock edit: bit-exact legacy prepared PCM\n");
 }
 }
 
@@ -1143,7 +1174,9 @@ int main() {
         reverseTexture();
         reverseTextureTypedTempo();
         reverseTextureRenderCursor();
-        reversedUnityPreparedParity();
+        reversedUnityPreparedParity(44100,audio::WarpMode::ComplexPro);
+        reversedUnityPreparedParity(48000,audio::WarpMode::Complex);
+        reversedUnityPreparedParity(96000,audio::WarpMode::Tones);
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.

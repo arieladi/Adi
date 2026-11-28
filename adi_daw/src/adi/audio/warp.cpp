@@ -328,16 +328,58 @@ void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std
 }
 }
 
-void renderReversedUnityComplexPage(const WarpPcmReader& reader,std::uint64_t sourceStart,
-                                    std::uint64_t sourceFrames,std::uint16_t channels,
-                                    std::uint64_t first,std::span<float> output) {
-    constexpr std::uint64_t pageFrames = 8192;
-    constexpr std::uint64_t historyFrames = 8192;
-    if (onAudioThread || !reader.read || channels < 1 || channels > 2 || output.empty() ||
-        output.size() % channels != 0 || output.size() / channels > pageFrames ||
-        sourceFrames > maxFrames || sourceStart > std::numeric_limits<std::uint64_t>::max()-sourceFrames ||
+namespace {
+struct UnityR3PageShape {
+    std::uint32_t pageFrames, historyFrames, maxReadFrames;
+};
+
+std::optional<UnityR3PageShape> unityR3PageShape(std::uint32_t rate,WarpMode mode) noexcept {
+    if ((rate != 44100 && rate != 48000 && rate != 96000) ||
+        (mode != WarpMode::Complex && mode != WarpMode::ComplexPro && mode != WarpMode::Tones))
+        return {};
+
+    // Pinned R3 rounds rate/32 up to a power of two for classification.
+    // The input window covers either the longest FFT (two classification
+    // windows) or the classification FFT plus its short-mode read-ahead.
+    const auto classification = rate == 96000 ? 4096u : 2048u;
+    const auto sourceWindow = mode == WarpMode::Tones ? classification + classification/4 : 2*classification;
+    const auto historyFrames = 2*sourceWindow;
+    const auto pageFrames = (8192u*rate+47999u)/48000u;
+    // Allow almost one feed block of outward alignment at each edge.
+    // Before clipping to the true source window the span is block-aligned.
+    const auto maxReadFrames = (pageFrames+2*historyFrames+2*(blockFrames-1))/blockFrames*blockFrames;
+    return UnityR3PageShape{pageFrames,historyFrames,maxReadFrames};
+}
+
+bool validUnityR3Source(std::uint64_t start,std::uint64_t frames,std::uint16_t channels,
+                         const UnityR3PageShape& shape) noexcept {
+    return channels >= 1 && channels <= 2 && frames > shape.maxReadFrames && frames <= maxFrames &&
+        start <= std::numeric_limits<std::uint64_t>::max()-frames;
+}
+}
+
+std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan& plan,
+    std::uint32_t sourceRate,std::uint16_t channels) noexcept {
+    const auto shape = unityR3PageShape(sourceRate,plan.mode);
+    if (!shape || sourceRate != plan.outputRate ||
+        !validUnityR3Source(plan.sourceStart,plan.sourceFrames,channels,*shape) ||
+        plan.transposeSemis != 0 || plan.formantScale != 1 ||
+        (plan.mode == WarpMode::Tones && plan.grainSeconds != kArrangementTonesGrainSeconds) ||
+        plan.anchors.size() != 2 || plan.anchors.front() != WarpAnchor{0,0} ||
+        plan.anchors.back() != WarpAnchor{plan.sourceFrames,plan.sourceFrames})
+        return {};
+    return shape->pageFrames;
+}
+
+void renderReversedUnityR3Page(const WarpPcmReader& reader,std::uint64_t sourceStart,std::uint64_t sourceFrames,
+                               std::uint32_t rate,WarpMode mode,std::uint16_t channels,
+                               std::uint64_t first,std::span<float> output) {
+    const auto shape = unityR3PageShape(rate,mode);
+    if (onAudioThread || !reader.read || !shape || !validUnityR3Source(sourceStart,sourceFrames,channels,*shape) ||
+        output.empty() || output.size() % channels != 0 || output.size() / channels > shape->pageFrames ||
         first > sourceFrames || output.size() / channels > sourceFrames-first)
-        throw std::invalid_argument("invalid reversed Complex page");
+        throw std::invalid_argument("invalid reversed R3 page");
+    const std::uint64_t historyFrames = shape->historyFrames;
     const auto count = static_cast<std::uint64_t>(output.size() / channels);
     const auto forwardBegin = sourceFrames-first-count;
     const auto forwardEnd = forwardBegin+count;
@@ -348,8 +390,9 @@ void renderReversedUnityComplexPage(const WarpPcmReader& reader,std::uint64_t so
                            blockFrames * blockFrames;
     const auto cropEnd = std::min(sourceFrames,(forwardEnd+historyFrames+blockFrames-1)/blockFrames*blockFrames);
     WarpRenderPlan plan;
-    plan.mode = WarpMode::Complex;
-    plan.outputRate = 48000;
+    plan.mode = mode;
+    plan.outputRate = rate;
+    if (mode == WarpMode::Tones) plan.grainSeconds = kArrangementTonesGrainSeconds;
     plan.sourceFrames = cropEnd-cropBegin;
     plan.anchors = {{0,0},{plan.sourceFrames,plan.sourceFrames}};
     std::vector<float> raw(static_cast<std::size_t>(plan.sourceFrames)*channels);
@@ -357,7 +400,7 @@ void renderReversedUnityComplexPage(const WarpPcmReader& reader,std::uint64_t so
     const auto wantedBegin = forwardBegin-cropBegin;
     const auto wantedEnd = forwardEnd-cropBegin;
     try {
-        renderR3(plan,48000,channels,[&](std::uint64_t position,float* pcm,std::uint32_t frames) {
+        renderR3(plan,rate,channels,[&](std::uint64_t position,float* pcm,std::uint32_t frames) {
             std::copy_n(raw.data()+position*channels,static_cast<std::size_t>(frames)*channels,pcm);
         },[&](std::uint64_t position,const float* pcm,std::uint32_t frames) {
             const auto begin = std::max(position,wantedBegin);
