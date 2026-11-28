@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 14:17 IST — seats/session-chain `249b98ca717e92208bdb4982412dd30d3b930511`
+
+Headless Debug compiled with Clang 20, libc++, Pd and the strict warning flags. The first full `ctest -LE performance` run had three failures while the root filesystem was below ADI's decode free-space floor. A full rerun with the same binaries and a RAM-backed test scratch directory passed all 303 suites, including Clip Playback, Warp Playback and AAC Import.
+
+JUCE Debug linked libc++ and libc++abi. All three offscreen window suites passed. `launch_audio_runtime.cpp`, `launch_audio.cpp`, `session.cpp` and `clip_playback.cpp` also passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers.
+
 ### 28 November 2026, 13:46 IST — libcxx/control/agent-chain `f11ae67a1ca3542afdb6254898982c87f6a07388`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
