@@ -69,6 +69,16 @@ bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexc
         before.physicalLoopEndFrame == after.physicalLoopEndFrame;
 }
 
+bool sameResidentWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
+                            const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
+    const auto residentWarp = [](const LaunchAudioClip* clip) {
+        return clip && clip->followsTempo() && !clip->usesPages() && clip->latencySamples() == 0;
+    };
+    return residentWarp(beforeAudio) && residentWarp(afterAudio) &&
+        before.track == after.track && before.startTick == after.startTick && before.endTick == after.endTick &&
+        before.loopStartTick == after.loopStartTick && before.loopEndTick == after.loopEndTick;
+}
+
 std::string deviceRef(const rows::Device& row) {
     std::string s = "devices#" + std::to_string(row.id);
     if (!row.name.empty()) s += " (" + row.name + ")";
@@ -1102,10 +1112,12 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     const auto newSlot = std::ranges::find(after,oldSlot.clip,&LaunchSlot::clip);
                     const auto* oldAudio = beforeClock->clip(oldSlot.clip);
                     const auto* newAudio = storedLaunchProject_ ? storedLaunchProject_->clip(oldSlot.clip) : nullptr;
-                    if (newSlot == after.end() || !samePhysicalWindow(oldSlot,*newSlot) ||
-                        !hasReadyPhysicalSource(oldAudio,oldSlot) || !hasReadyPhysicalSource(newAudio,*newSlot) ||
-                        oldAudio->pageReader() != newAudio->pageReader())
-                        throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing physical source windows");
+                    const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
+                        hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
+                        oldAudio->pageReader() == newAudio->pageReader();
+                    if (!samePhysical && (newSlot == after.end() ||
+                        !sameResidentWarpWindow(oldAudio,oldSlot,newAudio,*newSlot)))
+                        throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");
                     if (oldSlot.clip == target.clip && (!pinnedLegatoTarget(*newSlot,preparedScene_->scene) ||
                         !readyPinnedLegatoTarget(*storedLaunchProject_,*newSlot)))
                         throw std::runtime_error("a pinned Session Legato scene needs the target's complete physical window");

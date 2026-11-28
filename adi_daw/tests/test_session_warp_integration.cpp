@@ -1971,6 +1971,80 @@ void physicalLegatoLoopFollowsExternalTempo() {
             "physical loop Legato performs no callback allocation or file I/O");
 }
 
+void nativeWarpToPhysicalLegatoScene(const char* mode) {
+    constexpr auto targetStart = 4800, cue = 15086;
+    constexpr auto phaseFrames = cue - targetStart;
+    const auto render = [&](bool tempo,bool wraps) {
+        test::TempDirectory folder{"native_warp_to_raw_legato",wraps ? "wrap" : "advance"};
+        auto store = sceneProject(folder.path());
+        auto& db = store->db();
+        // Keep the outgoing reader native in both takes.
+        db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+                "INSERT INTO scenes(id,ord,tempo_enabled,tempo_bpm) VALUES(30,2,1,150);");
+        if (tempo) db.exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        addClip(*store,folder.path(),101,10,6,false,0,1,rate/2);
+        addClip(*store,folder.path(),102,20,5,true,3086,1,12000);
+        SQLite::Statement warpMode(db, "UPDATE audio_clips SET warp_mode=? WHERE clip_id=101");
+        warpMode.bind(1,mode);
+        warpMode.exec();
+        db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
+                "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
+                "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+                "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,1100000000);"
+                "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101;");
+        constexpr auto oldStart = quarter/5;
+        constexpr auto phaseTick = phaseFrames * quarter / (rate/2);
+        SQLite::Statement oldGeometry(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=?,"
+                "loop_start_ticks=?,loop_len_ticks=? WHERE id=101");
+        oldGeometry.bind(1,oldStart);
+        oldGeometry.bind(2,static_cast<int>(wraps));
+        oldGeometry.bind(3,wraps ? oldStart+phaseTick : 0);
+        if (wraps) oldGeometry.bind(4,quarter-phaseTick);
+        else oldGeometry.bind(4);
+        oldGeometry.exec();
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        session.transport().play();
+        const auto launch = tempoSceneFrame - (wraps ? rate/2 : phaseFrames);
+        constexpr auto stop = tempoSceneFrame + rate - phaseFrames;
+        std::vector<float> pcm(stop+blockFrames);
+        Playback playback{session,pcm};
+        playback.through(launch);
+        OpRequest start;
+        start.opType = "session.launchClip";
+        start.payload = {{"track",1},{"scene",10},{"clip",101},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(start).ok,"start the native Warp slot before the scene");
+        playback.through(tempoSceneFrame - 3*blockFrames);
+        require(playback.count == 1 && playback.edges[0].sample == launch,
+                "the native source starts at the intended frame");
+        scene(*store,session,20);
+        playback.through(stop+blockFrames);
+        const auto* edge = playback.count >= 2 ? &playback.edges[1] : nullptr;
+        const auto actualStop = playback.count >= 3 ? playback.edges[2].sample : -1;
+        std::printf("Native %s Warp to raw Legato wraps=%d tempo=%d, cut %lld, source tick %lld, stop %lld/%lld, attack %.6f, clock %.0f\n",
+            mode,wraps,tempo,static_cast<long long>(edge ? edge->sample : -1),
+            static_cast<long long>(edge ? edge->sourceTick : -1),static_cast<long long>(actualStop),
+            static_cast<long long>(stop),static_cast<double>(pcm[tempoSceneFrame]),
+            session.beginRender().bpmAtTick(4*quarter));
+        if (!session.error().empty()) std::printf("  %s\n",session.error().c_str());
+        require(playback.sceneCount == 1 && playback.scenes[0].sample == tempoSceneFrame &&
+                session.beginRender().bpmAtTick(4*quarter) == (tempo ? 140 : 120) && edge &&
+                edge->newClip == 102 && edge->sample == tempoSceneFrame && playback.count == 3 &&
+                playback.edges[2].newClip == 0 && actualStop == stop && pcm[tempoSceneFrame] == -.6f &&
+                session.graph().renderedLatency() == 0 && session.problems().empty() &&
+                callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "native outgoing source phase maps to the exact raw cue and End on the scene clock");
+        return pcm;
+    };
+    for (bool wraps : {false,true}) {
+        const auto steady = render(false,wraps);
+        const auto moved = render(true,wraps);
+        require(steady == moved,"the tempo scene inherits the same source phase as the unchanged clock");
+    }
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -2065,6 +2139,7 @@ int main() {
         physicalLegatoOneShotRetainedByTempoScene(true);
         physicalLegatoOneShotRetainedByTempoScene(false);
         physicalLegatoOneShotTempoScene();
+        for (const auto* mode : {"re-pitch","beats","texture"}) nativeWarpToPhysicalLegatoScene(mode);
         physicalLegatoRebasesItsCueOnLaterBank();
         physicalLegatoLoopFollowsExternalTempo();
         pinnedRepeatUsesItsLaunchClock();
