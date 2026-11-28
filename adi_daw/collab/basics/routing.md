@@ -16,24 +16,24 @@ Win brought SC-261 (`f5811eb85`), SC-252/253 (`93de1ee49`), SC-404 (`f8fc342b1`)
 
 ## Follow-ups on current main
 
-- SC-261 candidate `f26e1d35a` keeps Main on the first complete available physical stereo pair when the saved one disappears and rejects stale Main and Cue menu selections. The SC-431 Cue silence behavior is preserved. Added Cue Monitor and shell regressions. Selected-track Audio To remains to be carried forward as one Undo edit.
-- SC-252 candidate `501e5999f` preserves overwritten concrete audio aliases. Its regression checks the original and alias archives plus exact Undo and Redo. The landed lane controls also lack a global Insert Take Lane shortcut and Create menu entry. A focused take header needs a lane edit target before forwarding Delete.
+- SC-261 candidate `27a88fde7` keeps Main on a complete available physical stereo pair, rejects stale Main and Cue menu selections and changes compatible selected Audio To tracks in one Undo step. It preserves SC-431 Cue silence and rejects feedback for the whole edit. The one-job Linux core and Cue build is active on the unchanged engine candidate `f26e1d35a`. Its exact Debug shell follow-up has a focused chooser mode before the full peerless run.
+- SC-252/253 candidate `4d2d33508` preserves overwritten concrete audio aliases, targets Delete to the focused take header, and adds the global Show and Insert Take Lane shortcuts plus the Create menu entry. Regressions verify the two archives, exact Undo and Redo, repeated Delete preserving the track and Main, and the menu and keymap. [Live take-lane controls](https://www.ableton.com/en/live-manual/12/comping/#inserting-and-managing-take-lanes)
 - SC-404 candidate `98b49cb04` retains failed Note Off and pedal release bytes for the exact output. It retries idle or before fresh packets on reopen. The fake worker fixture covers active recovery, stale attacks and same-name endpoint isolation.
 - SC-269 landed with the Resampling channel field disabled and its mixed physical inputs staged before graph rendering. Candidate `92a071309` keeps gated routes' PDC history warm and tests both sample widths. The recorded audio itself can sit late in the take when the Main path has nonzero latency.
-- SC-276 candidate `30c8780f2` holds the old source list through enqueue, so a reconnect cannot reset the Session between reading an old attack and submitting it. The shell fixture holds an in-flight enqueue while a replacement opening is published.
+- SC-276 candidate `30c8780f2` holds the old source list through enqueue, so a reconnect cannot reset the Session between reading an old attack and submitting it. Its extracted shell fixture reproduced one reconnect failure in 14 checks on main and passed all 14 with the candidate in standalone Linux GCC. The linked shell is pending.
 - SC-406 plug-in candidate `8f14f5756` carries the open-instance zone choice and authored pitch-wheel regression onto current main. Standalone Linux GCC caught a duplicated argument left in the merge. After that fix, the exact source passed all 183 checks with warnings as errors. Linked CLAP, VST3 and JUCE checks are pending, along with hardware output and project persistence.
 
 The follow-ups are local while Linux builds and runtime checks proceed. The first verification target on current main is SC-261 Cue Monitor.
 
 ## Build storage
 
-The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (5,968,953,344 bytes at the latest measurement). The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (2,518,614,016 bytes). Both are standalone. The D: build copy was verified before removal of this session's dedicated C: build original.
+The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (5,969,149,952 bytes at the latest measurement). The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (2,518,614,016 bytes). Both are standalone. The D: build copy was verified before removal of this session's dedicated C: build original.
 
 The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes) is retained because exclusive use could not be established. The D: copy was verified. The checkout and guest build and cache are on D:. New host downloads and temporary staging use `D:\adi-routing-vm\runtime\downloads` and `D:\adi-routing-vm\runtime\tmp`.
 
 The inactive C: image `%TEMP%\adi-routing-linux\build.qcow2` (197,120 bytes) and original read-only seed `%TEMP%\adi-routing-linux\seed.iso` (55,296 bytes) were also retained.
 
-C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 02:45 local time showed **15,222,919,168 bytes free (14.18 GiB)**.
+C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 02:57 local time showed **15,216,656,384 bytes free (14.17 GiB)**.
 
 ## For the director
 
@@ -45,4 +45,4 @@ Reserve a schema minor for SC-277's native track-to-track input and output state
 
 For SC-406, I recommend storing the optional hardware zone and member count on the landed MIDI routing row as versioned channel-map fields. The draft's staged SQL predates that encoding. Win's 28 November log records the SC-277 and SC-406 format rows as owed. I recommend project-owned plug-in zone storage keyed by device instance, so two instances of the same plug-in can keep different configurations after reopening. The draft uses existing MIDI To and device MPE menus. [Win's landing log](https://github.com/arieladi/Adi/blob/bdcccb3e0/adi_daw/collab/win.md) [Ableton plug-in MPE guide](https://github.com/Ableton/ableton.github.io/blob/main/plugins/mpe-support-plugins.md#example-cc-event-sequences-to-indicate-mpe-mode-and-zone-configuration)
 
-For SC-269 I recommend an impulse test with nonzero plug-in latency before ruling on linear placement, punch limits and loop pass alignment. The draft captures Main and excludes the recording track. [Ableton Live manual](https://www.ableton.com/en/live-manual/12/routing-and-i-o/#resampling)
+For SC-269 I recommend an impulse test with nonzero plug-in latency before ruling on linear placement, punch limits and loop pass alignment. Live documents the Main tap and recording-track suppression in its Resampling section. Its latency guidance describes monitoring settings separately. [Ableton routing manual](https://www.ableton.com/en/manual/routing-and-i-o/#resampling) [Ableton latency guide](https://help.ableton.com/hc/en-us/articles/19450890686876-Recordings-are-out-of-sync)
