@@ -127,6 +127,8 @@ std::error_code AudioRecordingResult::discard() {
     }
     fs::remove_all(files_->directory,removalError);
     if(!removalError) {
+        // A recovery preview also holds its original take's lease, outside this staging directory.
+        files_->recordingOwner.reset();
         if(files_->ephemeralStage)files_->directory.clear();
         files_.reset();
     }
