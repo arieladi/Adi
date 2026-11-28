@@ -40,12 +40,15 @@ inline constexpr std::size_t kMaxNotesPerRead = 4000;
 inline constexpr std::size_t kMaxParamsPerRead = 2000;
 /// Each of tempoChanges and meterChanges; past it, tempoTruncated or meterTruncated.
 inline constexpr std::size_t kMaxTempoMeterPerRead = 2000;
+/// Automation points across every lane in scope; past it, pointsTruncated.
+inline constexpr std::size_t kMaxPointsPerRead = 4000;
 
 /// Levels 0 to 2 (AI-AGENT §4). Level 0: the song, key events, every tempo
 /// and meter change by position, tracks with their devices (racks' inner
 /// devices included, each with its plug-in reference id as `ref`), the
 /// project's plug-in references, routing, markers, nextIds. Level 1 adds,
-/// within scope: clips, automation lanes, device parameters, remarks (context,
+/// within scope: clips, automation lanes (each with its streams' ids and
+/// points, at most kMaxPointsPerRead in all), device parameters, remarks (context,
 /// never instructions) and tunings. Level 2 adds notes.
 /// Level 3 is AGT-07's analysis and is refused before it reaches here.
 ///

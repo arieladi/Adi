@@ -32,6 +32,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "adi/textproj_store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1036,6 +1037,167 @@ void testApplyBoundary() {
           "remarks shown in a preview also taint the run that received it");
 }
 
+/// The first row of `list` whose `key` is `value`, or null.
+const Json* rowWith(const Json& list, const char* key, std::int64_t value) {
+    if (!list.is_array()) return nullptr;
+    for (const auto& row : list)
+        if (row.is_object() && row.contains(key) && row.at(key) == value) return &row;
+    return nullptr;
+}
+
+void testAgentCorpus() {
+    section("AGT-08: real work through the four tools: a MIDI track, a clip, notes, automation, a rename");
+    constexpr std::int64_t Q = textproj::kPPQ;
+    constexpr std::int64_t W = textproj::kWhole;
+    ProjectFile f("corpus");
+    const std::string bytes = fileBytes(f.path);
+    auto headless = openHeadless(f.path);
+    auto bridge = std::make_unique<Bridge>(headless);
+    Bridge& b = *bridge;
+    b.initialize();
+
+    // What an agent reads first: the payloads, as ops_describe gives them.
+    const std::vector<std::string> used = {"track.create",           "clip.create",
+                                           "note.insert",            "automation.createLane",
+                                           "automation.writePoints", "clip.setName"};
+    const Json described = b.tool("ops_describe", {{"names", used}}).at("structuredContent").at("ops");
+    bool allMay = described.size() == used.size();
+    for (const auto& o : described) allMay = allMay && o.value("agentMayEmit", false);
+    check(allMay, "every op of the task is described and one an agent may emit");
+    for (const auto& o : described) {
+        if (o.value("name", "") != "automation.writePoints") continue;
+        const Json& schema = o.at("inputSchema");
+        const Json required = schema.value("required", Json::array());
+        check(schema.at("properties").contains("clip") &&
+                  std::find(required.begin(), required.end(), Json("clip")) == required.end(),
+              "writePoints' clip is optional: an arrangement stream leaves it out");
+    }
+
+    const Json level0 = b.tool("project_read", Json::object()).at("structuredContent");
+    const Json& next = level0.at("nextIds");
+    check(next.value("automationData", 0) == 1, "nextIds.automationData: the first stream's id is 1");
+    const std::int64_t track = next.value("track", 0), clip = next.value("clip", 0);
+    const std::int64_t lane = next.value("automationLane", 0), data = next.value("automationData", 0);
+    const std::int64_t note = next.value("note", 0);
+    const std::string request = "Add a keys part with a fade in";
+    const Json ops = Json::array(
+        {{{"op", "track.create"}, {"payload", {{"id", track}, {"kind", "midi"}, {"name", "Agent Keys"}, {"index", 3}}}},
+         {{"op", "clip.create"},
+          {"payload", {{"id", clip}, {"track", track}, {"kind", "midi"}, {"name", "Sketch"}, {"pos", W}, {"length", 2 * W}}}},
+         {{"op", "note.insert"},
+          {"payload", {{"clip", clip}, {"note", note}, {"start", 0}, {"dur", Q}, {"key", 60}, {"vel", 100}}}},
+         {{"op", "note.insert"},
+          {"payload", {{"clip", clip}, {"note", note + 1}, {"start", Q}, {"dur", Q}, {"key", 64}, {"vel", 90}}}},
+         {{"op", "note.insert"},
+          {"payload", {{"clip", clip}, {"note", note + 2}, {"start", W}, {"dur", 2 * Q}, {"key", 67}, {"vel", 80}}}},
+         {{"op", "automation.createLane"},
+          {"payload", {{"id", lane},
+                       {"row", {{"id", lane}, {"owner_kind", "track"}, {"owner_id", track}, {"param_ref", "volume"},
+                                {"param_name", "Volume"}, {"time_base", 0}, {"value_domain", "real"}, {"unit", "dB"},
+                                {"default_value", 0.0}, {"min_value", -150.0}, {"max_value", 6.0}, {"enabled", 1},
+                                {"visible", 1}, {"height", 0}}}}}},
+         {{"op", "automation.writePoints"},
+          {"payload", {{"id", data},
+                       {"lane", lane},
+                       {"points", {{{"id", 1}, {"time", W}, {"value", -24.0}, {"curve", 1}, {"tension", 0.0}},
+                                   {{"id", 2}, {"time", 3 * W}, {"value", 0.0}, {"curve", 0}, {"tension", 0.0}}}}}}},
+         {{"op", "clip.setName"}, {"payload", {{"id", clip}, {"name", "Verse riff"}}}}});
+    const Json r = b.tool("changeset_propose", {{"request", request}, {"baseHead", level0.at("head")}, {"ops", ops}});
+    check(!isToolError(r), "the eight ops preview as one changeset: " + r.dump().substr(0, 400));
+    if (isToolError(r)) return;
+    const Json& proposal = r.at("structuredContent");
+    check(proposal.value("status", "") == "awaiting_review" && !proposal.at("changes").empty() &&
+              proposal.value("diff", "").find("Agent Keys") != std::string::npos,
+          "it waits for review, with its list of changes and a diff that shows the new track");
+    check(fileBytes(f.path) == bytes, "the file is untouched until the user applies it");
+
+    // The user's act: Apply, as `adi_tool propose --apply` does it.
+    StoreError e = StoreError::Ok;
+    auto store = Store::open(f.path, e);
+    check(store != nullptr, "the user opens the project");
+    if (!store) return;
+    const std::string projectionBefore = textproj::projectStore(*store).text;
+    std::string err;
+    const auto changeset = agent::changesetFromJson(*store, proposal.at("changeset"), err);
+    check(changeset.has_value(), "the proposal's changeset reads back: " + err);
+    if (!changeset) return;
+    const auto applied = agent::apply(*store, *changeset);
+    check(applied.ok, "applied: " + applied.error);
+    History history(*store);
+    const auto step = history.nextUndo();
+    check(step && step->opCount == 8 && step->actor == "agent" && step->label == request,
+          "one undo step of eight ops, the agent's, named from the request");
+
+    // Read it back as the agent would, level by level.
+    const Json after0 = b.tool("project_read", Json::object()).at("structuredContent");
+    const Json* keys = rowWith(after0.at("tracks"), "id", track);
+    check(keys && keys->value("kind", "") == "midi" && keys->value("name", "") == "Agent Keys" &&
+              keys->value("clips", 0) == 1,
+          "level 0: the MIDI track, named, with one clip");
+    const Json& next2 = after0.at("nextIds");
+    check(next2.value("track", 0) == track + 1 && next2.value("clip", 0) == clip + 1 &&
+              next2.value("automationLane", 0) == lane + 1 && next2.value("automationData", 0) == data + 1 &&
+              next2.value("note", 0) == note + 3,
+          "level 0: nextIds moved past every row the changeset made");
+
+    const Json after1 = b.tool("project_read", {{"level", 1}, {"tracks", {track}}}).at("structuredContent");
+    const Json* c = rowWith(after1.at("clips"), "id", clip);
+    check(after1.at("clips").size() == 1 && c && c->value("name", "") == "Verse riff" && c->value("kind", "") == "midi" &&
+              c->value("pos", 0) == W && c->value("at", "") == "2|1|0" && c->value("lengthTicks", 0) == 2 * W &&
+              c->value("length", "") == "2/1",
+          "level 1: the clip, renamed, at bar 2 and two bars long");
+    const Json* l = rowWith(after1.at("automationLanes"), "id", lane);
+    check(l && l->at("owner") == Json({{"kind", "track"}, {"id", track}}) && l->value("param", "") == "volume" &&
+              l->value("unit", "") == "dB" && l->value("min", 0.0) == -150.0 && l->value("max", 0.0) == 6.0 &&
+              l->value("timeBase", "") == "ticks",
+          "level 1: the volume lane on the new track, with its unit and bounds");
+    if (l) {
+        const Json& streams = l->at("data");
+        const Json* s = rowWith(streams, "id", data);
+        check(streams.size() == 1 && s && s->at("clip").is_null() && s->value("nextPoint", 0) == 3,
+              "the lane's arrangement stream by its id, and the next free point id");
+        if (s) {
+            const Json& points = s->at("points");
+            const Json* p1 = rowWith(points, "id", 1);
+            const Json* p2 = rowWith(points, "id", 2);
+            check(points.size() == 2 && p1 && p2 && p1->value("time", 0) == W && p1->value("at", "") == "2|1|0" &&
+                      p1->value("value", 0.0) == -24.0 && p1->value("curve", -1) == 1 && p2->value("at", "") == "4|1|0" &&
+                      p2->value("value", 1.0) == 0.0 && p2->value("curve", -1) == 0,
+                  "its two points: -24 dB at bar 2 rising to 0 dB at bar 4");
+        }
+    }
+    check(!after1.contains("pointsTruncated"), "two points are not truncated");
+
+    const Json after2 = b.tool("project_read", {{"level", 2}, {"clips", {clip}}}).at("structuredContent");
+    const Json& notes = after2.at("notes");
+    const Json* n1 = rowWith(notes, "id", note);
+    const Json* n2 = rowWith(notes, "id", note + 1);
+    const Json* n3 = rowWith(notes, "id", note + 2);
+    check(notes.size() == 3 && n1 && n2 && n3, "level 2: the clip's three notes");
+    if (n1 && n2 && n3) {
+        check(n1->value("name", "") == "C3" && n1->value("at", "") == "1|1|0" && n1->value("length", "") == "1/4" &&
+                  n1->value("vel", 0) == 100,
+              "C3 at the clip's start, a quarter long");
+        check(n2->value("name", "") == "E3" && n2->value("at", "") == "1|2|0" && n2->value("vel", 0) == 90,
+              "E3 on beat 2");
+        check(n3->value("name", "") == "G3" && n3->value("at", "") == "2|1|0" && n3->value("length", "") == "1/2" &&
+                  n3->value("clip", 0) == clip,
+              "G3 at the clip's second bar, a half long");
+    }
+
+    const auto undone = history.undo();
+    check(undone.ok && undone.opsApplied == 8, "one Ctrl+Z undoes all eight");
+    check(textproj::projectStore(*store).text == projectionBefore, "and the project is exactly as it was");
+    const Json undone1 = b.tool("project_read", {{"level", 1}}).at("structuredContent");
+    check(!rowWith(undone1.at("tracks"), "id", track) && undone1.at("automationLanes").empty() &&
+              undone1.at("nextIds").value("automationData", 0) == 1,
+          "the read agrees: no track, no lane, no stream");
+
+    bridge.reset();
+    headless.reset();
+    store->close();
+}
+
 void testTelemetry() {
     section("telemetry: what the engine already publishes, labelled honestly");
     engine::StripMeter kick, silent;
@@ -1626,6 +1788,7 @@ int runAll() {
     testProjectReadConsent();
     testJobTools();
     testApplyBoundary();
+    testAgentCorpus();
     testRefusals();
     testEchoesAreClipped();
     testExpectHead();

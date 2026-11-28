@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/control/projection.hpp"
 
+#include "adi/blob.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/textproj_store.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <limits>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -248,6 +251,9 @@ Json nextIds(const rows::Model& m) {
         {"pluginRef", nextOf(m.pluginRefs, [](const rows::PluginRef& r) { return r.id; })},
         {"marker", nextOf(m.markers, [](const rows::Marker& r) { return r.id; })},
         {"automationLane", nextOf(m.automationLanes, [](const rows::AutomationLane& r) { return r.id; })},
+        // automation.writePoints addresses a lane's stream by its own row id
+        // beside the lane's: a lane with no points yet takes this one.
+        {"automationData", nextOf(m.automationData, [](const rows::AutomationData& r) { return r.id; })},
     };
 }
 
@@ -414,16 +420,64 @@ Json projectLevel(const rows::Model& m, int level, const ReadScope& scope,
     out["clips"] = std::move(clipRows);
 
     const auto devices = devicesOn(m, inTracks);
+    // Each lane's streams and their points (AGT-08): an agent that writes
+    // points has to read them back, and automation.writePoints and its
+    // siblings address a stream by its own row id beside the lane's.
+    std::unordered_map<std::int64_t, std::vector<const rows::AutomationData*>> streams;
+    for (const auto& d : m.automationData) streams[d.laneId].push_back(&d);
+    std::size_t pointCount = 0;
+    bool pointsTruncated = false;
     Json lanes = Json::array();
     for (const auto& l : m.automationLanes) {
         const bool inScope = (l.ownerKind == "track" && inTracks.count(l.ownerId)) ||
                              (l.ownerKind == "device" && devices.count(l.ownerId)) ||
                              (l.ownerKind != "track" && l.ownerKind != "device" && scope.tracks.empty());
         if (!inScope) continue;
-        lanes.push_back({{"id", l.id}, {"owner", endpoint(l.ownerKind, l.ownerId)}, {"param", l.paramRef},
-                         {"name", l.paramName}, {"enabled", l.enabled}, {"default", l.defaultValue}});
+        Json lane = {{"id", l.id}, {"owner", endpoint(l.ownerKind, l.ownerId)}, {"param", l.paramRef},
+                     {"name", l.paramName}, {"enabled", l.enabled}, {"default", l.defaultValue},
+                     {"timeBase", l.timeBase == 1 ? "ns" : "ticks"}, {"domain", l.valueDomain}, {"unit", l.unit},
+                     {"min", l.minValue ? Json(*l.minValue) : Json(nullptr)},
+                     {"max", l.maxValue ? Json(*l.maxValue) : Json(nullptr)}};
+        Json data = Json::array();
+        if (const auto it = streams.find(l.id); it != streams.end()) {
+            for (const auto* d : it->second) {
+                Json stream = {{"id", d->id}, {"clip", d->clipId ? Json(*d->clipId) : Json(nullptr)}};
+                const std::span<const std::byte> bytes(d->blob);
+                const StreamReader<AutomationPoint> reader(bytes, FourCC::Automation);
+                if (!reader.ok()) {
+                    stream["unreadable"] = true;
+                    data.push_back(std::move(stream));
+                    continue;
+                }
+                Json points = Json::array();
+                std::uint64_t top = 0;
+                for (std::uint32_t i = 0; i < reader.count(); ++i) {
+                    const auto point = reader.at(i);
+                    if (!point) break;
+                    top = std::max(top, point->point_id);
+                    // Past the cap the ids are still counted, so nextPoint
+                    // stays free in a stream that was cut short.
+                    if (pointCount >= kMaxPointsPerRead) {
+                        pointsTruncated = true;
+                        continue;
+                    }
+                    ++pointCount;
+                    Json row = {{"id", point->point_id}, {"time", point->time}, {"value", point->value},
+                                {"curve", point->curve}, {"tension", static_cast<double>(point->tension)}};
+                    if (l.timeBase == 0 && !d->clipId) row["at"] = at(point->time);
+                    points.push_back(std::move(row));
+                }
+                stream["points"] = std::move(points);
+                stream["nextPoint"] =
+                    top == std::numeric_limits<std::uint64_t>::max() ? Json(nullptr) : Json(top + 1);
+                data.push_back(std::move(stream));
+            }
+        }
+        lane["data"] = std::move(data);
+        lanes.push_back(std::move(lane));
     }
     out["automationLanes"] = std::move(lanes);
+    if (pointsTruncated) out["pointsTruncated"] = true;
 
     Json params = Json::array();
     bool paramsTruncated = false;

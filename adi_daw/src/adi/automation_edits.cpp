@@ -38,8 +38,16 @@ std::uint64_t identity(const Payload& p) {
     if (!id) throw std::runtime_error("automation: zero point ID");
     return id;
 }
+/// The optional `clip` field: absent reads as null, an arrangement stream, as
+/// the op's schema says (`clip` is not required). The handlers used to read it
+/// with at(), so a changeset that followed the schema and left it out failed.
+const Payload& clipOf(const Payload& p) {
+    static const Payload none;
+    const auto it = p.find("clip");
+    return it == p.end() ? none : *it;
+}
 Payload address(const Payload& p) {
-    return {{"id", p.at("id")}, {"lane", p.at("lane")}, {"clip", p.at("clip")}};
+    return {{"id", p.at("id")}, {"lane", p.at("lane")}, {"clip", clipOf(p)}};
 }
 Data read(OpContext& c, const Payload& p) {
     const auto id = integer(p.at("id")), lane = integer(p.at("lane"));
@@ -51,8 +59,8 @@ Data read(OpContext& c, const Payload& p) {
     result.timeBase = owner.getColumn(0).getInt();
     if (!owner.getColumn(1).isNull()) result.minimum = owner.getColumn(1).getDouble();
     if (!owner.getColumn(2).isNull()) result.maximum = owner.getColumn(2).getDouble();
-    if (!p.at("clip").is_null()) {
-        const auto clip = integer(p.at("clip"));
+    if (!clipOf(p).is_null()) {
+        const auto clip = integer(clipOf(p));
         SQLite::Statement q(c.db, "SELECT 1 FROM clips WHERE id=?");
         q.bind(1, clip);
         if (clip <= 0 || !q.executeStep()) throw std::runtime_error("automation: missing clip");
@@ -62,13 +70,13 @@ Data read(OpContext& c, const Payload& p) {
     if (!q.executeStep()) {
         SQLite::Statement slot(c.db, "SELECT 1 FROM automation_data WHERE lane_id=? AND clip_id IS ?");
         slot.bind(1, lane);
-        if (p.at("clip").is_null()) slot.bind(2); else slot.bind(2, integer(p.at("clip")));
+        if (clipOf(p).is_null()) slot.bind(2); else slot.bind(2, integer(clipOf(p)));
         if (slot.executeStep()) throw std::runtime_error("automation: slot has another data ID");
         return result;
     }
     if (q.getColumn(0).getInt64() != lane ||
-        (q.getColumn(1).isNull() != p.at("clip").is_null()) ||
-        (!p.at("clip").is_null() && q.getColumn(1).getInt64() != integer(p.at("clip"))))
+        (q.getColumn(1).isNull() != clipOf(p).is_null()) ||
+        (!clipOf(p).is_null() && q.getColumn(1).getInt64() != integer(clipOf(p))))
         throw std::runtime_error("automation: data address mismatch");
     result.present = true;
     const auto col = q.getColumn(2);
@@ -97,7 +105,7 @@ void store(OpContext& c, const Payload& p, const Bytes* bytes, bool exists) {
     }
     SQLite::Statement q(c.db, "INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,?,?,?)");
     q.bind(1, id); q.bind(2, integer(p.at("lane")));
-    if (p.at("clip").is_null()) q.bind(3); else q.bind(3, integer(p.at("clip")));
+    if (clipOf(p).is_null()) q.bind(3); else q.bind(3, integer(clipOf(p)));
     q.bind(4, value, size);
     q.exec();
 }
@@ -265,7 +273,7 @@ void restoreMove(OpContext& c, const Payload& p, const Payload& state, const Dat
         return integer(a.at("id")) < integer(b.at("id"));
     });
     store(c, p, &out, true);
-    range_rows::replace(c.db, integer(p.at("id")), p.at("clip"), ranges);
+    range_rows::replace(c.db, integer(p.at("id")), clipOf(p), ranges);
 }
 bool restore(OpContext& c, const Payload& p, std::string& err) {
     try {
@@ -282,7 +290,7 @@ bool restore(OpContext& c, const Payload& p, std::string& err) {
         const auto ranges=state.value("ranges",Payload::array());
         if(!present && !ranges.empty())throw std::runtime_error("automation: absent data with curve ranges");
         store(c,p,present?&bytes:nullptr,data.present);
-        range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),ranges);return true;
+        range_rows::replace(c.db,integer(p.at("id")),clipOf(p),ranges);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 enum class Edit { Write, Delete, Move, Curve };
@@ -316,7 +324,7 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
         for(const auto& range:d.ranges){
             const auto index=integer(range.at("record_index"));
             if(index<0 || static_cast<std::uint64_t>(index)>=originalPoints.size() ||
-               range.at("clip_id")!=p.at("clip") ||
+               range.at("clip_id")!=clipOf(p) ||
                !originalRanges.emplace(static_cast<std::size_t>(index),range).second)
                 throw std::runtime_error("automation: invalid retained curve range");
         }
@@ -380,7 +388,7 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
             auto range=old->second;range["record_index"]=static_cast<std::int64_t>(index);retained.push_back(std::move(range));
         }
         store(c,p,&out,d.present);
-        range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),retained);return true;
+        range_rows::replace(c.db,integer(p.at("id")),clipOf(p),retained);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 constexpr Field pointsFields[] = {{"id", FieldType::Int}, {"lane", FieldType::Int}, {"clip", FieldType::Int, false}, {"points", FieldType::Array}};
