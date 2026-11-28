@@ -2218,6 +2218,77 @@ void storedSessionMidiCurves() {
     }
 }
 
+void storedSessionMidiPitchBend() {
+    Fixture f(48000,257);
+    test::applySessionSchema(f.store->db());
+    f.clip(11,0,2*textproj::kPPQ,4*textproj::kPPQ,64);
+    const std::array bends{controllers::Point{0,0,.75,0,1,0}, controllers::Point{0,48048,.25}};
+    const auto pitch = controllers::prepareWrite(*f.store,11,15,kCtrlPitchBend,bends);
+    if (!pitch.ok || !controllers::commitPrepared(*f.store,pitch).ok)
+        throw std::runtime_error("write native channel pitch before moving the clip into Session");
+    const auto commit = [&](std::string type,Payload payload) {
+        OpRequest request;
+        request.opType = std::move(type);
+        request.payload = std::move(payload);
+        const auto result = OpJournal(*f.store).commit(request);
+        if (!result.ok) throw std::runtime_error("commit Session slot operation: "+result.error);
+    };
+    commit("scene.create",{{"id",100},{"ord",0}});
+    commit("session.setSlotClip",{{"track",1},{"scene",100},{"clip",11}});
+    commit("session.setLaunchQuant",{{"clip",11},{"quant",1}});
+    const auto path = f.store->path();
+    f.store.reset();
+    StoreError error{};
+    f.store = Store::open(path,error);
+    if (!f.store) throw std::runtime_error("reopen stored pitch-bend slot: "+std::string(toString(error)));
+    const auto rows = controllers::readLanes(*f.store,11);
+    check(rows.ok && rows.lanes.size()==1 && rows.lanes[0].controller==kCtrlPitchBend,
+          "moving a clip through session.setSlotClip and reopening preserves its native pitch lane");
+    f.load();
+    for (const auto& problem : f.session.problems()) std::printf("Slot diagnostic: %s\n",problem.c_str());
+    check(f.session.problems().empty(),"a persisted pitch lane prepares as a native Session controller");
+    LaunchRequest launch;
+    launch.track = 1;
+    launch.scene = 100;
+    launch.clip = 11;
+    launch.incarnation = f.session.launchIncarnation();
+    check(f.session.postLaunchGesture(std::array{launch}),"launch the slot through the persisted Session graph");
+    f.render();
+    const auto events = std::span(f.instrument->heard);
+    auto findBend = [&](std::int64_t sample,double value) {
+        const auto end = events.begin()+static_cast<std::ptrdiff_t>(f.instrument->count);
+        const auto found = std::find_if(events.begin(),end,[&](const Heard& item) {
+            return item.clock==sample && item.e.type==EventType::Controller &&
+                item.e.channel==15 && item.e.paramId==kCtrlPitchBend && item.e.value==value;
+        });
+        return found==end ? events.end() : found;
+    };
+    auto findNote = [&] {
+        const auto end = events.begin()+static_cast<std::ptrdiff_t>(f.instrument->count);
+        const auto found = std::find_if(events.begin(),end,[](const Heard& item) {
+            return item.clock==0 && item.e.type==EventType::NoteOn;
+        });
+        return found==end ? events.end() : found;
+    };
+    const auto first = findBend(0,.75);
+    const auto note = findNote();
+    const auto knot = findBend(200,.25);
+    check(first!=events.end() && note!=events.end() && first<note && knot!=events.end(),
+          "channel 16 bend reaches the instrument before the note and at the exact 200-frame knot");
+    LaunchRequest back;
+    back.kind = LaunchRequestKind::BackToArrangement;
+    back.track = 1;
+    back.incarnation = f.session.launchIncarnation();
+    check(f.session.postLaunchGesture(std::array{back}),"release slot ownership with Back to Arrangement");
+    f.render();
+    const auto reset = findBend(257,.5);
+    check(reset!=events.end(),"the channel 16 wheel returns to center at the exact slot handover");
+    std::printf("Slot channel 16 bend: onset=%lld, knot=%lld, neutral=%lld samples\n",
+          static_cast<long long>(first==events.end()?-1:first->clock),
+          static_cast<long long>(knot==events.end()?-1:knot->clock),
+          static_cast<long long>(reset==events.end()?-1:reset->clock));
+}
+
 } // namespace
 
 int main(int argc,char** argv){
@@ -2257,6 +2328,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "session-slots") storedSessionSlots(); }
     catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "session-slot-pitch") storedSessionMidiPitchBend(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "session-curves") storedSessionMidiCurves(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
