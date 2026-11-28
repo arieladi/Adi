@@ -166,6 +166,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-347 | `basics/test-chain-2` at `aa1575ca5` | The automation curve gesture and rendering already landed in #830. Automation and Arrangement seats. | The current suite exercises the curve gesture and the stored curve rendering. Physical Option on macOS remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Already on main |
 | SC-448 | `basics/test-chain-2` at `46512e011` | Draw loop repeats with marks at the points where the loop turns. Clips and Arrangement seats. | Software-painted loop fixtures check repeated contents and marks through the Arrangement renderer. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-468 | `basics/test-chain-2` at `89aee0ff3` | Show the horizontal resize pointer over the existing Loop brace end grips. Arrangement seat. | The peerless pointer replay checks both grips, the middle, the band below, and exit. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-472 | `basics/test-chain-2` at `b2737141e` | Use plain punctuation in the three project-open progress labels. Project seat. | Source traces all three strings through the same narrow-string path. The native window is not opened by the headless gate. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -336,3 +337,7 @@ The peerless 1500 × 900 fixture places the scrub area at (328, 84, 848, 24) in 
 The grip limits are the existing drag hit test. Entering at (200, 4) gives the horizontal resize, and leaving the component restores the scrub hand. The test exercises both ±5 px edge limits plus the first point below the 8 px brace. The native-size cursor glyph is supplied by the OS.
 
 The focused Debug fixture built with the existing warnings-as-errors command and ran with DISPLAY unset. It passed five of eight checks against the baseline and all eight against the fix. The scrub and brace bounds measured the same before and after. No window or menu was shown.
+
+#### SC-472 · Project-open progress
+
+The three open stages passed a UTF-8 ellipsis through JUCE's narrow ASCII-string path. The first now reads “Reading the project...” and the following stages use the same plain punctuation. In the 390 × 136 px progress body the status label stays at `(14,37,362,23)`. The change is in the project seat. The headless suite builds this native path with warnings as errors, and never starts the progress window.
