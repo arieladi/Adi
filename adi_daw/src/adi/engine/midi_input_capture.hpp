@@ -64,6 +64,8 @@ private:
     bool nextSpan() noexcept;
 
     static constexpr std::size_t capacity = 4096;
+    // Published packets the owner has not read, from which complete slices are held back.
+    static constexpr std::size_t holdThreshold = capacity / 4;
     std::array<MidiCapturePacket, capacity> ring_{};
     std::atomic<std::size_t> read_{0}, written_{0};
     std::atomic<std::uint64_t> epoch_{0}, stopEpoch_{0};
@@ -87,6 +89,11 @@ private:
     std::int64_t sliceStream_ = 0, spanTimeline_ = 0;
     std::int32_t sliceFrames_ = 0, spanBegin_ = 0, spanEnd_ = 0, lastEventFrame_ = -1;
     std::size_t cursor_ = 0, limitRead_ = 0;
+    // Complete slices may stay unpublished while the owner is far behind (endSlice). The open
+    // slice may grow the last held span; a failure in it restores that span's length.
+    std::size_t sliceBegin_ = 0;
+    std::int32_t heldFrames_ = 0;
+    bool extended_ = false;
 };
 
 }  // namespace adi::engine

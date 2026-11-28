@@ -54,6 +54,13 @@ bool MidiInputCapture::overdubs(std::int64_t track) const noexcept {
 }
 
 void MidiInputCapture::finish(MidiCaptureState state) noexcept {
+    // Every complete slice is published before the terminal state, held ones included. A slice
+    // still open publishes nothing: a span it grew goes back to its length before the slice.
+    if (transport_ && extended_)
+        ring_[(sliceBegin_ - 1) % capacity].frames = heldFrames_;
+    written_.store(transport_ ? sliceBegin_ : cursor_, std::memory_order_release);
+    cursor_ = transport_ ? sliceBegin_ : cursor_;
+    extended_ = false;
     active_ = false;
     transport_ = nullptr;
     state_.store(state, std::memory_order_release);
@@ -119,7 +126,9 @@ void MidiInputCapture::beginSlice(const AudioIo& io, const Transport& transport,
     sliceFrames_ = io.frames;
     spanBegin_ = spanEnd_ = 0;
     lastEventFrame_ = -1;
-    cursor_ = written_.load(std::memory_order_relaxed);
+    // The cursor carries on after slices held back from the owner (endSlice).
+    sliceBegin_ = cursor_;
+    extended_ = false;
     limitRead_ = read_.load(std::memory_order_acquire);
 }
 
@@ -148,8 +157,24 @@ bool MidiInputCapture::nextSpan() noexcept {
     }
     expectedTimeline_ = spanTimeline_ + frames;
     spanEnd_ += static_cast<std::int32_t>(frames);
-    return append({MidiCapturePacket::Kind::Span, driverEpoch_, pass_, sliceStream_ + spanBegin_,
-                   spanTimeline_, 0, static_cast<std::int32_t>(frames), {}});
+    const auto stream = sliceStream_ + spanBegin_;
+    const auto length = static_cast<std::int32_t>(frames);
+    // Held slices are not yet visible to the owner, so their last span can grow in place
+    // instead of this span taking a packet of its own.
+    if (cursor_ != written_.load(std::memory_order_relaxed)) {
+        auto &last = ring_[(cursor_ - 1) % capacity];
+        if (last.kind == MidiCapturePacket::Kind::Span && last.epoch == driverEpoch_ && last.pass == pass_ &&
+            last.streamSample + last.frames == stream && last.timelineSample + last.frames == spanTimeline_ &&
+            last.frames <= std::numeric_limits<std::int32_t>::max() - length) {
+            if (cursor_ == sliceBegin_ && !extended_) {
+                heldFrames_ = last.frames;
+                extended_ = true;
+            }
+            last.frames += length;
+            return true;
+        }
+    }
+    return append({MidiCapturePacket::Kind::Span, driverEpoch_, pass_, stream, spanTimeline_, 0, length, {}});
 }
 void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event,
                               std::uint64_t port) noexcept {
@@ -172,7 +197,13 @@ void MidiInputCapture::endSlice() noexcept {
         if (!nextSpan()) return;
     expectedStream_ = sliceStream_ + sliceFrames_;
     transport_ = nullptr;
-    written_.store(cursor_, std::memory_order_release);
+    extended_ = false;
+    // An owner far behind (a stalled window) would see the ring fill with a span per slice and
+    // the take end. Hold complete slices back while it is: the next slices then grow the last
+    // span. They are published as soon as the owner catches up, or when the take finishes.
+    const auto published = written_.load(std::memory_order_relaxed);
+    if (published - limitRead_ < holdThreshold)
+        written_.store(cursor_, std::memory_order_release);
 }
 
 }  // namespace adi::engine
