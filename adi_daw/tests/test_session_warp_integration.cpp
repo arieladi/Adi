@@ -6,6 +6,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/engine/capture_scene.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
@@ -623,6 +624,100 @@ void physicalOneShotsFollowExternalTempo() {
         std::printf("Physical unwarped %s: %lld exact frames through ordinary tempo updates\n",
                     ram ? "RAM" : "paged",static_cast<long long>(span));
     }
+}
+
+void unpinnedAbsoluteOneShotFollowsItsSource() {
+    enum class Clock { Steady, AuthoredRamp, External };
+    constexpr auto span = 2 * rate;
+    std::vector<float> source(span);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame % 97) - 48.f) * .005f;
+    source[3000] = .55f;
+    source[87000] = -.65f;
+    bool matched = true;
+
+    for (const bool ram : {true,false}) {
+        for (const auto clock : {Clock::Steady,Clock::AuthoredRamp,Clock::External}) {
+            test::TempDirectory folder{"unpinned_flatten_slot",ram ? "ram" : "paged"};
+            auto store = sceneProject(folder.path());
+            const auto file = folder.path() / "flatten.wav";
+            {
+                audio::WavWriter writer(file,rate,1,audio::WavFormat::Float32);
+                writer.write(source.data(),span);
+                writer.close();
+            }
+            const auto hash = media::blake3File(file);
+            require(static_cast<bool>(hash),"hash the flattened source");
+            {
+                auto& db = store->db();
+                if (clock == Clock::AuthoredRamp) {
+                    SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
+                    tempo.bind(1,2*quarter);
+                    tempo.exec();
+                } else {
+                    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+                }
+                SQLite::Statement mediaRow(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames)"
+                    " VALUES(101,?,'flatten.wav','wav',48000,1,?)");
+                mediaRow.bind(1,hash.hex);
+                mediaRow.bind(2,span);
+                mediaRow.exec();
+
+                // Same absolute clip and full source attachment as Flatten.
+                edit::RowEdits placement(db);
+                placement.set("clips",101,edit::defaultRow(db,"clips",{{"id",101},{"track_id",1},{"kind","audio"},
+                    {"time_base",1},{"pos_ns",0},{"length_ns",2000000000}}));
+                placement.set("audio_clips",101,edit::defaultRow(db,"audio_clips",{{"clip_id",101},{"media_id",101},
+                    {"src_start_frames",0},{"src_len_frames",span},{"warp_enabled",0}}));
+                std::array<OpRequest,3> operations;
+                operations[0].opType = "clip.duplicate";
+                operations[0].payload = {{"id",101},{"changes",placement.changes()}};
+                operations[1].opType = "session.setSlotClip";
+                operations[1].payload = {{"track",1},{"scene",10},{"clip",101}};
+                operations[2].opType = "session.setLaunchSettings";
+                operations[2].payload = {{"clip",101},{"ram",ram},{"fade",false}};
+                require(OpJournal(*store).commit(operations).ok,"move the flattened clip into a stored Session slot");
+            }
+            store.reset();
+            StoreError openError{};
+            store = Store::open(folder.path() / "song.adi",openError);
+            require(static_cast<bool>(store),"reopen the saved absolute unpinned clip");
+            const auto hasPins = [&] {
+                return store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() != 0;
+            };
+            require(!hasPins(),"the producer and slot assignment leave both source pins absent");
+
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+            std::vector<float> pcm(span+blockFrames);
+            Playback playback{session,pcm};
+            playback.paged = !ram;
+            scene(*store,session,10);
+            constexpr auto cut = span - 9000;
+            constexpr auto cutTick = cut * quarter / (rate / 2);
+            playback.through(cut-100);
+            if (clock == Clock::External)
+                require(session.setExternalTempoAt(*store,140,cutTick),"perform a late 120 to 140 boundary");
+            playback.through(cut+1);
+            const auto observed = session.beginRender().bpmAtTick(cutTick);
+            playback.through(span+blockFrames);
+
+            const auto stop = playback.count == 2 && playback.edges[1].newClip == 0 ? playback.edges[1].sample : -1;
+            const bool exact = std::equal(source.begin(),source.end(),pcm.begin()) &&
+                std::all_of(pcm.begin()+span,pcm.end(),[](float sample) { return sample == 0; });
+            const auto label = clock == Clock::Steady ? "straight" : clock == Clock::AuthoredRamp ? "authored ramp" : "external";
+            std::printf("Unpinned absolute %s %s: BPM %.0f, early/late %.3f/%.3f, Stop %lld, exact PCM %d\n",
+                ram ? "RAM" : "paged",label,observed,static_cast<double>(pcm[3000]),static_cast<double>(pcm[87000]),
+                static_cast<long long>(stop),exact);
+            for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+            matched &= exact && observed == (clock == Clock::Steady ? 120 : 140) && stop == span &&
+                playback.edges[0].newClip == 101 && playback.edges[0].sample == 0 && session.problems().empty() && !hasPins();
+        }
+    }
+    require(matched,"a saved unpinned absolute slot reads the original PCM to its physical End on all clocks");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "an inferred absolute source window adds no callback allocation or file I/O");
 }
 
 void retainPagedOneShotOnSlotRefresh() {
@@ -3136,6 +3231,7 @@ int main() {
         mixedTempoScene(MixedScene::ChangeNativeGain);
         absoluteWarpFallback();
         physicalOneShotsFollowExternalTempo();
+        unpinnedAbsoluteOneShotFollowsItsSource();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();
         pausedSupersessionReturnsToSameClock(false);
