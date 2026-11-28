@@ -169,6 +169,46 @@ void batchImports() {
     check(History(*p.store).redo().ok && digestProject(*p.store).text == after,
           "SC-158: Redo of the drop repeats every project row");
 }
+// SC-35: an audio file dropped on the Arrangement over a clip replaces what it
+// covers, in the same Undo step as its import (arrangementPlacement).
+void dropReplacesCovered() {
+    Project p;
+    auto &db = p.store->db();
+    auto earlier = p.options();
+    earlier.clipId = 5;
+    earlier.mediaId = 6;
+    const auto seeded = clip_edit::prepareImportAudio(*p.store, earlier, 48000);
+    if (!seeded.edit.ok || !clip_edit::commitMaterial(*p.store, seeded).ok) {
+        check(false, "SC-35: seed the clip the drop covers");
+        return;
+    }
+    auto dropped = p.options();
+    dropped.source = p.temporary.path() / "dropped.wav";
+    {
+        std::vector<float> samples(2048, 0.2f);
+        audio::WavWriter writer(dropped.source, 48000, 2, audio::WavFormat::Float32);
+        writer.write(samples.data(), 1024);
+        writer.close();
+    }
+    dropped.at = {1, 10000000};
+    dropped.arrangementPlacement = edit_plan::EditPolicy{};
+    const auto before = digestProject(*p.store).text;
+    const auto head = History(*p.store).head();
+    const auto prepared = clip_edit::prepareImportAudio(*p.store, dropped, 48000);
+    const auto landed = prepared.edit.ok ? clip_edit::commitMaterial(*p.store, prepared) : CommitResult{};
+    check(prepared.edit.ok && landed.ok, ("SC-35: the drop over a clip commits: " + prepared.edit.error + landed.error).c_str());
+    if (!landed.ok)
+        return;
+    check(db.execAndGet("SELECT count(*) FROM clips WHERE id=5 AND pos_ns=0 AND length_ns=10000000").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE id=7 AND pos_ns=10000000").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM media_files").getInt() == 2,
+          "SC-35: the dropped file is imported and the covered part of the clip is gone");
+    const auto after = digestProject(*p.store).text;
+    check(History(*p.store).undo().ok && History(*p.store).head() == head && digestProject(*p.store).text == before,
+          "SC-35: one Undo of the drop restores the covered clip, the media pool and every other row");
+    check(History(*p.store).redo().ok && digestProject(*p.store).text == after,
+          "SC-35: Redo of the drop repeats every project row");
+}
 void batchReplacement() {
     Project project;
     auto& db = project.store->db();
@@ -270,4 +310,4 @@ void bounceInPlaceAndStale() {
 }
 
 }
-int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();batchReplacement();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();dropReplacesCovered();batchReplacement();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
