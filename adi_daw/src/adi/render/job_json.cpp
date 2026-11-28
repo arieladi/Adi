@@ -131,6 +131,18 @@ void serializable(const Job& job) {
     require(job.container == PcmContainer::Wav, "$.container", "only WAV jobs are representable in version 2");
     require(!job.exactWavFilename && !job.exactPcmFilename, "$.nameTemplate",
             "a literal save-dialog filename is not representable in version 2");
+    // The held export stack's options (EX-02..EX-12) also came after version 2: refused, never dropped.
+    require(job.deliveries.empty() && !job.analysisOnly && job.tail.mode == TailMode::Off && !job.renderAsLoop &&
+            !job.gaplessBatch && job.ratePolicy == ExportRatePolicy::RequestedRate && !job.source.signalTap,
+            "$", "these export options are not representable in version 2");
+    require(job.encoding.container == ExportContainer::Wav && job.encoding.channelFold == ChannelFold::Preserve &&
+            job.encoding.speakerMask == 0 &&
+            (job.encoding.dither == audio::WavDither::None || job.encoding.dither == audio::WavDither::Triangular ||
+             job.encoding.dither == audio::WavDither::Rectangular),
+            "$.encoding", "this encoding is not representable in version 2");
+    require(job.normalization.target == NormalizationTarget::Integrated && !job.normalization.brickwall &&
+            job.normalization.when == NormalizeWhen::Always && !job.normalization.skippedLoudnessCeiling,
+            "$.normalization", "this normalization is not representable in version 2");
     require(std::isfinite(job.normalization.targetLufs) && std::isfinite(job.normalization.truePeakCeilingDb),
             "$.normalization", "stored numbers must be finite even when normalization is off");
     for (const auto weight : job.normalization.channelWeights)

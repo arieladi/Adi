@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <array>
+#include "adi/audio/quantizer.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -9,7 +10,7 @@
 
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
-enum class WavDither { None, Triangular, Rectangular };
+// WavDither lives in quantizer.hpp (its first three values unchanged).
 // The sample read back after encoding at this depth without dither.
 [[nodiscard]] float wavSampleAtDepth(float value, WavFormat) noexcept;
 struct BwfV2Metadata {
@@ -27,6 +28,10 @@ struct BwfV2Metadata {
     std::optional<double> loudnessValue, loudnessRange, maxTruePeakLevel;
     std::optional<double> maxMomentaryLoudness, maxShortTermLoudness;
 };
+
+// Zero keeps direct channel order unspecified. An explicit mask assigns
+// every channel a speaker, in order of increasing bit significance.
+[[nodiscard]] bool validWavSpeakerMask(std::uint16_t channels, std::uint32_t mask) noexcept;
 struct WavMetadata {
     std::string description;
     std::string originator;
@@ -51,23 +56,23 @@ public:
               std::uint16_t channels, WavFormat,
               const WavMetadata* = nullptr,
               std::uint64_t promoteThresholdBytes = (std::uint64_t{1} << 32),
-              WavDither = WavDither::None, std::uint64_t ditherSeed = 0);
+              WavDither = WavDither::None, std::uint64_t ditherSeed = 0, std::uint32_t speakerMask = 0);
     ~WavWriter();
     WavWriter(const WavWriter&) = delete;
     WavWriter& operator=(const WavWriter&) = delete;
     void write(const float* interleaved, std::uint32_t frames);
     void write(const double* interleaved, std::uint32_t frames);
     void close();
+    [[nodiscard]] double quantizationGain() const noexcept {
+        return quantizer_ ? quantizer_->gain() : 1.0;
+    }
 private:
     std::fstream file_;
     WavFormat format_;
     std::uint16_t channels_, bytes_;
     std::uint64_t threshold_, dataOffset_ = 0, factOffset_ = 0, dataBytes_ = 0;
     bool promoted_ = false;
-    WavDither dither_;
-    std::uint64_t randomState_;
-    double uniform() noexcept;
-    double noise() noexcept;
+    std::optional<PcmQuantizer> quantizer_;
     template<class Sample> void writeSamples(const Sample*, std::uint32_t);
     void header();
 };

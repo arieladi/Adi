@@ -304,6 +304,7 @@ add_library(adi_core STATIC
     src/adi/interchange/midi_clip_file.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/aiff_file.cpp
+    src/adi/audio/quantizer.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
@@ -417,6 +418,7 @@ add_library(adi_core STATIC
     src/adi/render/job_preset.cpp
     src/adi/render/project_jobs.cpp
     src/adi/render/user_presets.cpp
+    src/adi/render/after_export.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
     src/adi/freeze_groups.cpp
@@ -495,6 +497,33 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
+include(cmake/SoxrExport.cmake)
+include(cmake/LameExport.cmake)
+target_sources(adi_core PRIVATE src/adi/render/aiff_writer.cpp)
+target_sources(adi_core PRIVATE src/adi/render/flac_writer.cpp)
+set(ADI_FLAC_SOURCE "${ADI_THIRD_PARTY}/flac" CACHE PATH "Pinned libFLAC source for export")
+if(EXISTS "${ADI_FLAC_SOURCE}/CMakeLists.txt")
+    function(adi_add_libflac)
+        set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+        set(BUILD_CXXLIBS OFF)
+        set(BUILD_PROGRAMS OFF)
+        set(BUILD_EXAMPLES OFF)
+        set(BUILD_TESTING OFF)
+        set(BUILD_DOCS OFF)
+        set(INSTALL_MANPAGES OFF)
+        set(WITH_OGG OFF)
+        add_subdirectory("${ADI_FLAC_SOURCE}" "${CMAKE_BINARY_DIR}/third_party/flac" EXCLUDE_FROM_ALL SYSTEM)
+    endfunction()
+    adi_add_libflac()
+    target_link_libraries(adi_core PRIVATE FLAC::FLAC)
+    target_compile_definitions(adi_core PRIVATE ADI_HAVE_FLAC=1)
+endif()
+
+# Native FLAC sees only its configured dependencies. libFLAC 1.5.0 links an
+# already-declared Ogg target even when its WITH_OGG build option is off.
+include(cmake/VorbisExport.cmake)
+include(cmake/OpusExport.cmake)
+
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)
 
@@ -2280,6 +2309,10 @@ add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 # ADR-0071/0205: queued offline master renders, isolated and published without replacement.
 add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
 target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
+if(TARGET FLAC::FLAC)
+    target_link_libraries(adi_render_queue_tests PRIVATE FLAC::FLAC)
+    target_compile_definitions(adi_render_queue_tests PRIVATE ADI_HAVE_FLAC=1)
+endif()
 add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 
 add_executable(adi_render_job_json_tests tests/test_render_job_json.cpp)

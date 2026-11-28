@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
+#include "adi/dsp/spectrum.hpp"
 #include "temp_directory.hpp"
 #include <array>
 #include <bit>
@@ -250,6 +251,133 @@ void dither(const std::filesystem::path& p) {
   check(bounded && std::abs(sum/frames-0.25)<0.01,"rectangular half-LSB dither removes quarter-LSB DC rounding bias");
  }
 }
+std::array<double,2> ditherBandEnergy(std::uint32_t rate,WavDither mode) {
+    constexpr std::int32_t size=8192;
+    const auto frequencyStep=static_cast<double>(rate)/size;
+    adi::dsp::Spectrum spectrum(size,adi::dsp::Window::Hann);
+    std::vector<float> error(size);
+    std::vector<float> bins(static_cast<std::size_t>(spectrum.bins()));
+    std::array<double,2> energy{};
+    PcmQuantizer quantizer(rate,1,16,mode,6678);
+    for(unsigned window=0;window<8;++window) {
+        for(float& residual:error)residual=static_cast<float>(quantizer.quantize(0));
+        spectrum.analyse(error,bins);
+        for(std::size_t bin=1;bin<bins.size();++bin) {
+            const double hz=static_cast<double>(bin)*frequencyStep;
+            const double magnitude=bins[bin];
+            if(hz>=1000 && hz<=5000)energy[0]+=magnitude*magnitude;
+            if(hz>=15000 && hz<static_cast<double>(rate)/2)energy[1]+=magnitude*magnitude;
+        }
+    }
+    return energy;
+}
+void shapedDither(const std::filesystem::path& file) {
+    const auto modes={WavDither::Shaped1,WavDither::Shaped2,WavDither::Shaped3};
+    for(const auto depth:{16U,24U}) {
+        const auto format=depth==16?WavFormat::Pcm16:WavFormat::Pcm24;
+        for(const auto mode:modes) {
+            constexpr std::uint32_t frames=32768;
+            std::vector<double> input(static_cast<std::size_t>(frames)*2);
+            for(std::uint32_t i=0;i<frames;++i) {
+                input[2*i]=i<1024?0.0:(i%2==0?1.0:-1.0);
+                input[2*i+1]=i<frames/2?1.0:-1.0;
+            }
+            PcmQuantizer reference(44100,2,depth,mode,42);
+            for(const auto value:input) (void)reference.quantize(value);
+            check(reference.gain()>0 && reference.gain()<1 && reference.saturationCount()==0,
+                  "shaped full-scale DC and alternating stereo peaks do not saturate");
+            const auto write=[&](std::uint64_t seed,bool split) {
+                WavWriter out(file,44100,2,format,nullptr,std::uint64_t{1}<<32,mode,seed);
+                if(split) {
+                    out.write(input.data(),127);
+                    out.write(input.data()+254,frames-127);
+                } else out.write(input.data(),frames);
+                out.close();
+            };
+            write(42,false);
+            const auto whole=load(file);
+            write(42,true);
+            check(whole==load(file),"shaped WAV is byte-identical across output partitions");
+            write(43,true);
+            check(whole!=load(file),"shaped WAV seed controls the dither stream");
+        }
+    }
+    for(auto rate:{44100U,48000U}) {
+        const auto triangular=ditherBandEnergy(rate,WavDither::Triangular);
+        for(const auto selected:modes) {
+            const auto effective=effectiveDither(selected,rate);
+            if(effective==WavDither::Triangular)continue;
+            const auto shaped=ditherBandEnergy(rate,selected);
+            std::printf("Shaped dither %s %u Hz: 1-5 kHz %.3f dB, above 15 kHz %.3f dB relative to TPDF\n",
+                ditherName(selected),rate,10*std::log10(shaped[0]/triangular[0]),
+                10*std::log10(shaped[1]/triangular[1]));
+            check(shaped[0]<triangular[0] && shaped[1]>triangular[1],
+                  "SoX shaping lowers the 1-5 kHz band and raises energy above 15 kHz");
+        }
+    }
+    for(const auto selected:modes) {
+        PcmQuantizer requested(96000,1,24,selected,123),triangular(96000,1,24,WavDither::Triangular,123);
+        bool exact=effectiveDither(selected,96000)==WavDither::Triangular && requested.gain()==1;
+        for(unsigned i=0;i<2048;++i) {
+            const double value=i==11?std::numeric_limits<double>::quiet_NaN():0.43125;
+            if(requested.quantize(value)!=triangular.quantize(value))exact=false;
+        }
+        check(exact,"unsupported rate uses the exact seeded triangular stream, including after a NaN");
+    }
+    const std::array<float,3> input{-0.0f,std::numeric_limits<float>::quiet_NaN(),1.0f};
+    {
+        WavWriter out(file,44100,1,WavFormat::Float32,nullptr,std::uint64_t{1}<<32,WavDither::Shaped3,45);
+        out.write(input.data(),3);
+        check(out.quantizationGain()==1,"Float32 bypasses shaped gain and RNG");
+    }
+    WavReader reader(file);
+    std::array<float,3> output{};
+    check(reader.read(output.data(),3)==3 &&
+          std::bit_cast<std::array<std::uint32_t,3>>(input)==std::bit_cast<std::array<std::uint32_t,3>>(output),
+          "requested shaped Float32 export preserves all source bits");
+}
+void speakerMask(const std::filesystem::path& path) {
+    constexpr auto threshold = std::uint64_t{1} << 32;
+    constexpr std::uint32_t front = 0x0003; // FL, FR
+    constexpr std::uint32_t surround = 0x060f; // FL, FR, FC, LFE, SL, SR
+    const std::array<float, 6> channels{0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f};
+    {
+        WavWriter output(path, 48000, 6, WavFormat::Pcm24, nullptr, threshold,
+                         WavDither::None, 0, surround);
+        output.write(channels.data(), 1);
+        output.close();
+    }
+    const auto surroundFile = load(path);
+    const auto fmt = chunk(surroundFile, "fmt ");
+    check(le(surroundFile, fmt + 8, 2) == 0xfffe && le(surroundFile, fmt + 28, 4) == surround,
+          "explicit surround positions are stored in the extensible fmt chunk");
+    {
+        WavReader input(path);
+        std::array<float, 6> readBack{};
+        check(input.read(readBack.data(), 1) == 1 && readBack == channels,
+              "setting speaker positions preserves the original interleaved samples");
+    }
+    {
+        WavWriter output(path, 48000, 2, WavFormat::Float32, nullptr, threshold,
+                         WavDither::None, 0, front);
+        output.write(channels.data(), 1);
+        output.close();
+    }
+    const auto stereo = load(path);
+    const auto stereoFmt = chunk(stereo, "fmt ");
+    check(le(stereo, stereoFmt + 8, 2) == 0xfffe && le(stereo, stereoFmt + 28, 4) == front,
+          "explicit stereo also writes the extensible mask");
+    for (const auto mask : {std::uint32_t{1}, std::uint32_t{0x80000001}}) {
+        bool rejected = false;
+        try {
+            WavWriter invalid(path, 48000, 2, WavFormat::Pcm16, nullptr, threshold,
+                              WavDither::None, 0, mask);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected && load(path) == stereo, "invalid mask refuses before truncating the destination");
+    }
+}
 void big(const std::filesystem::path& p) {
  if(!envVar("ADI_WAV_BIG") || std::strcmp(envVar("ADI_WAV_BIG"),"1")!=0){std::puts("SKIP real >4GiB test (set ADI_WAV_BIG=1)");return;}
  constexpr std::uint32_t block=262144; constexpr std::uint64_t frames=(std::uint64_t{1}<<30)+block;
@@ -259,7 +387,7 @@ void big(const std::filesystem::path& p) {
 }
 }
 int main() {
- try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);metadataV2(p);invalidMetadataV2(p);doubleQuantization(p);dither(p);big(p);}
+ try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);metadataV2(p);invalidMetadataV2(p);doubleQuantization(p);dither(p);shapedDither(p);speakerMask(p);big(p);}
  catch(const std::exception& e){check(false,e.what());}
  std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

@@ -100,10 +100,12 @@ void validateNiStems(const Job &job) {
         ni.bitRate > 320000)
         throw std::invalid_argument(
             "NI Stems requires one to four stereo sources, 44.1/48 kHz and 64000..320000 bit/s per track");
-    if (job.source.trackId != 0 || job.source.tap != engine::OfflineTap::PostFader)
+    if (job.source.trackId != 0 || job.source.resolvedTap() != engine::Tap::PostFader)
         throw std::invalid_argument("NI Stems master must select the Main post-fader output");
     for (const auto &stem : ni.stems)
         if (stem.source.trackId <= 0 ||
+            (stem.source.resolvedTap() != engine::Tap::PostFx &&
+             stem.source.resolvedTap() != engine::Tap::PostFader) ||
             (stem.source.tap != engine::OfflineTap::PreFader &&
              stem.source.tap != engine::OfflineTap::PostFader) ||
             stem.name.size() > 1024 || !audio::stemColorValid(stem.color))

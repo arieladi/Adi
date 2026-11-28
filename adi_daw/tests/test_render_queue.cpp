@@ -2,6 +2,13 @@
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/render/flac_writer.hpp"
+#include "adi/render/after_export.hpp"
+#include "adi/render/delivery_src.hpp"
+#include "adi/render/mp3_writer.hpp"
+#include "adi/render/opus_writer.hpp"
+#include "adi/render/vorbis_writer.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -15,14 +22,21 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#if defined(ADI_HAVE_FLAC)
+#include <FLAC/stream_decoder.h>
+#include <memory>
+#endif
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -101,7 +115,7 @@ struct Delay : device::DeviceInstance {
     int delay = 77;
     std::array<std::array<double,256>,2> ring{};
     int at = 0;
-    double gain = 1;
+    double gain = 1, feedback = 0;
     bool distinguishWidth = false;
     int changeAfter = 0, processed = 0;
     std::uint64_t epoch = 0;
@@ -110,7 +124,7 @@ struct Delay : device::DeviceInstance {
     bool processesDouble() const noexcept override {return true;}
     std::int32_t latencySamples() const noexcept override {return delay;}
     std::uint64_t latencyEpoch() const noexcept override {return epoch;}
-    std::int64_t tailSamples() const noexcept override {return delay;}
+    std::int64_t tailSamples() const noexcept override {return feedback == 0 ? delay : 256;}
     void process(const NodeIo& io) noexcept override {
         for (int i = 0; i < io.frames; ++i) {
             for (int c = 0; c < io.channels; ++c) {
@@ -118,7 +132,7 @@ struct Delay : device::DeviceInstance {
                 const auto index = static_cast<std::size_t>(io.blockOffset+i);
                 const double x = io.wide() ? io.in64[c][index] : static_cast<double>(io.in[c][index]);
                 const double y = ring[channel][static_cast<std::size_t>((at+256-delay)%256)];
-                ring[channel][static_cast<std::size_t>(at)] = x;
+                ring[channel][static_cast<std::size_t>(at)] = x + feedback * y;
                 const double out = y * gain * (distinguishWidth && io.wide() ? 2.0 : 1.0);
                 if (io.wide()) io.out64[c][index] = out;
                 else io.out[c][index] = static_cast<float>(out);
@@ -140,6 +154,13 @@ std::vector<float> read(const Result& result, std::uint64_t frames, std::uint32_
     check(wave.read(samples.data(),static_cast<std::uint32_t>(frames))==frames,"published samples decode");
     return samples;
 }
+bool hasStereoSpeakerMask(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::string header(80, '\0');
+    file.read(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto fmt = header.find("fmt ");
+    return file && fmt != std::string::npos && header.compare(fmt + 28, 4, "\x03\0\0\0", 4) == 0;
+}
 bool matches(const std::vector<float>& samples, std::int64_t begin, double gain = 1, std::int64_t delay = 0) {
     if (samples.empty()) return false;
     for (std::size_t i = 0; i < samples.size()/2; ++i) for (int c = 0; c < 2; ++c) {
@@ -148,6 +169,257 @@ bool matches(const std::vector<float>& samples, std::int64_t begin, double gain 
         if (samples[2*i+static_cast<std::size_t>(c)] != expected) return false;
     }
     return true;
+}
+void loopAndTailRenders() {
+    Fixture f;
+    f.effect();
+    const auto setSource = [&](std::initializer_list<int> impulses) {
+        std::vector<float> pcm(8192);
+        for (const auto at : impulses) pcm[static_cast<std::size_t>(2 * at + 1)] = 0.75f;
+        audio::WavWriter wave(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+        wave.write(pcm.data(), 4096);
+        wave.close();
+    };
+    const DeviceLoader echo = [](const DeviceRequest&, std::string&) {
+        auto device = std::make_unique<Delay>();
+        device->delay = 17;
+        device->feedback = 0.5;
+        return device;
+    };
+    setSource({70, 127});
+    auto job = f.job("continuous");
+    job.beginSample = 0;
+    job.endSample = 320;
+    const auto continuous = read(renderWav(job, echo), 320);
+
+    job.nameTemplate = "fixed-tail";
+    job.beginSample = 96;
+    job.endSample = 128;
+    job.tail = {TailMode::Fixed, 2};
+    const auto fixed = read(renderWav(job, echo), 128);
+    check(continuous.size() == 640 && fixed.size() == 256 &&
+          std::equal(fixed.begin(), fixed.end(), continuous.begin() + 2 * 96) &&
+          fixed[2 * 8 + 1] > 0 && fixed[2 * 48 + 1] > 0,
+          "fixed tail and pre-range decay null against the continuous compensated render");
+    setSource({70, 127, 145});
+    job.nameTemplate = "fixed-tail-extra-input";
+    const auto extra = read(renderWav(job, echo), 128);
+    check(extra == fixed, "fixed tail ignores post-range input at the original block size");
+    job.nameTemplate = "fixed-tail-block-change";
+    job.session.maxFrames = 11;
+    const auto partitioned = read(renderWav(job, echo), 128);
+    check(partitioned == fixed,
+          "tail excludes later arrangement input and is independent of callback partition");
+
+    job.nameTemplate = "until-silent";
+    job.tail = {TailMode::UntilSilent, 4, -20, 1};
+    const auto result = renderWav(job, echo);
+    auto expectedEnd = std::size_t{128};
+    std::size_t quiet = 0;
+    while (continuous.size() == 640 && expectedEnd < 320 && quiet < 48) {
+        const auto sample = continuous[2 * expectedEnd + 1];
+        quiet = std::abs(sample) <= 0.1 ? quiet + 1 : 0;
+        ++expectedEnd;
+    }
+    const auto until = read(result, expectedEnd - 96);
+    check(quiet == 48 && expectedEnd < 320 && !until.empty() &&
+          std::equal(until.begin(), until.end(), continuous.begin() + 2 * 96),
+          "Until Silent counts the exact consecutive quiet frames across both output channels");
+
+    const auto deliveredFrames = expectedEnd - 96;
+    const std::array lossy{
+        std::pair{ExportContainer::Mp3, mp3ExportAvailable()},
+        std::pair{ExportContainer::OggVorbis, vorbisExportAvailable()},
+        std::pair{ExportContainer::OggOpus, opusExportAvailable()}
+    };
+    for (const auto& [container, available] : lossy) {
+        if (!available) continue;
+        auto codec = job;
+        codec.nameTemplate = "until-silent-lossy";
+        codec.encoding.container = container;
+        const auto actual = renderWav(codec, echo);
+        check(actual.state == JobState::Completed && actual.framesWritten == deliveredFrames,
+              actual.error.empty() ? "lossy verification uses the shortened tail length" : actual.error.c_str());
+    }
+    if (deliverySrcAvailable()) {
+        auto converted = job;
+        converted.nameTemplate = "until-silent-soxr";
+        converted.session.sampleRate = 32000;
+        converted.ratePolicy = ExportRatePolicy::ProjectThenDownsample;
+        converted.beginSample = 64;
+        converted.endSample = 85;
+        auto aiff = converted.encoding;
+        aiff.container = ExportContainer::Aiff;
+        converted.deliveries = {{converted.encoding, ""}, {aiff, ""}};
+        const auto report = renderWav(converted, echo);
+        const auto expected = (deliveredFrames * 2 + 1) / 3;
+        check(report.state == JobState::Completed && report.framesWritten == expected &&
+              report.deliveries.size() == 2 && report.snapshot && report.snapshot->graphSampleRate == 48000,
+              report.error.empty() ? "the shortened tail uses one shared graph-rate window" : report.error.c_str());
+        if (report.state == JobState::Completed && report.deliveries.size() == 2) {
+            auto wave = audio::openPcmStream(report.deliveries[0].output);
+            auto aif = audio::openPcmStream(report.deliveries[1].output);
+            std::vector<float> first(expected * 2), second(expected * 2);
+            check(wave.ready() && aif.ready() && wave.stream->info().sampleRate == 32000 &&
+                  aif.stream->info().sampleRate == 32000 && wave.stream->info().frames == expected &&
+                  aif.stream->info().frames == expected && wave.stream->read(first).frames == expected &&
+                  aif.stream->read(second).frames == expected && first == second,
+                  "WAV and AIFF decode to identical resampled tails at the delivery clock");
+        }
+        converted.nameTemplate = "fixed-tail-soxr";
+        converted.deliveries.clear();
+        converted.tail = {TailMode::Fixed, 2};
+        const auto fixedDelivery = renderWav(converted, echo);
+        check(fixedDelivery.state == JobState::Completed && fixedDelivery.framesWritten == 85,
+              fixedDelivery.error.empty() ? "a fixed tail adds exactly 64 frames at 32 kHz" : fixedDelivery.error.c_str());
+    }
+
+    job.nameTemplate = "until-maximum";
+    job.tail = {TailMode::UntilSilent, 1, -80, 1};
+    check(renderWav(job, echo).framesWritten == 80, "Until Silent respects its maximum");
+
+    setSource({70, 111, 127, 198, 239, 255});
+    job.nameTemplate = "plain-second-pass";
+    job.beginSample = 128;
+    job.endSample = 256;
+    job.tail = {};
+    const auto second = read(renderWav(job, echo), 128);
+    job.nameTemplate = "loop-second-pass";
+    job.beginSample = 0;
+    job.endSample = 128;
+    job.renderAsLoop = true;
+    const auto looped = read(renderWav(job, echo), 128);
+    check(!looped.empty() && looped == second && looped[1] > 0,
+          "Render as Loop writes the compensated second pass with the first pass's wrapped decay");
+
+    job.gaplessBatch = true;
+    check(renderWav(job, echo).error.find("gapless batches") != std::string::npos && f.noStage(),
+          "a gapless batch refuses an independent loop before staging");
+    job.renderAsLoop = false;
+    job.tail = {TailMode::Fixed, 1};
+    check(renderWav(job, echo).error.find("gapless batches") != std::string::npos && f.noStage(),
+          "a gapless batch refuses an independent tail before staging");
+    job.gaplessBatch = false;
+    job.tail = {TailMode::UntilSilent, 1, -20, 2};
+    check(renderWav(job, echo).state == JobState::Failed && f.noStage(),
+          "until-silent hold cannot exceed its bound");
+}
+void gaplessCycleRenders() {
+    Fixture f;
+    f.effect();
+    std::vector<float> impulse(8192);
+    impulse[2 * 118 + 1] = 0.75f;
+    audio::WavWriter wave(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    wave.write(impulse.data(), 4096);
+    wave.close();
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES"
+        "(12,1,0,2666667,'Part one','cycle'),(13,1,2666667,2666666,'Part two','cycle')");
+    auto job = f.job("{region}");
+    job.session.maxFrames = 37;
+    job.encoding.format = audio::WavFormat::Pcm24;
+    job.encoding.dither = audio::WavDither::Triangular;
+    job.encoding.ditherSeed = 222;
+    int loads = 0;
+    const DeviceLoader echo = [&](const DeviceRequest&, std::string&) {
+        ++loads;
+        auto d = std::make_unique<Delay>();
+        d->delay = 17;
+        d->feedback = 0.5;
+        return d;
+    };
+    const std::array<std::int64_t, 2> selected{13, 12};
+    auto uninterrupted = job;
+    uninterrupted.nameTemplate = "independent-continuous-reference";
+    uninterrupted.beginSample = 0;
+    uninterrupted.endSample = 256;
+    const auto expected = read(renderWav(uninterrupted, echo), 256, 48000, audio::WavFormat::Pcm24);
+    loads = 0;
+    const auto batch = renderGaplessWav(job, selected, echo);
+    check(batch.state == JobState::Completed && batch.regions.size() == 2 && loads == 1,
+          batch.error.empty() ? "unordered cycle selection renders one graph with two outputs" : batch.error.c_str());
+    if (batch.state != JobState::Completed || batch.regions.size() != 2) return;
+    const auto& first = batch.regions[0];
+    const auto& second = batch.regions[1];
+    auto firstSamples = read(first, 128, 48000, audio::WavFormat::Pcm24);
+    const auto secondSamples = read(second, 128, 48000, audio::WavFormat::Pcm24);
+    firstSamples.insert(firstSamples.end(), secondSamples.begin(), secondSamples.end());
+    check(firstSamples == expected && secondSamples.size() == 256 && secondSamples[2 * 7 + 1] > 0.3f && f.noStage(),
+          "concatenation preserves the exact dithered PCM, including decay across the boundary");
+    check(first.snapshot && second.snapshot && first.snapshot->journalHead == second.snapshot->journalHead &&
+          first.snapshot->endSample == second.snapshot->beginSample &&
+          first.output.filename() == "Part one.wav" && second.output.filename() == "Part two.wav",
+          "gapless deliveries carry one revision, individual region names and a shared exact boundary");
+
+    if (deliverySrcAvailable()) {
+        auto reduced = job;
+        reduced.nameTemplate = "32k-{region}";
+        reduced.ratePolicy = ExportRatePolicy::ProjectThenDownsample;
+        reduced.session.sampleRate = 32000;
+        reduced.encoding.speakerMask = 3;
+        reduced.encoding.dither = audio::WavDither::Shaped1;
+        auto whole = reduced;
+        whole.nameTemplate = "32k-continuous";
+        whole.beginSample = 0;
+        whole.endSample = 171;
+        const auto reference = read(renderWav(whole, echo), 171, 32000, audio::WavFormat::Pcm24);
+        Control control;
+        control.fingerprintDelivery = true;
+        loads = 0;
+        const auto downsampled = renderGaplessWav(reduced, selected, echo, control);
+        check(downsampled.state == JobState::Completed && downsampled.regions.size() == 2 && loads == 1,
+              downsampled.error.empty() ? "cycle export resamples the continuous capture once" : downsampled.error.c_str());
+        if (downsampled.state == JobState::Completed && downsampled.regions.size() == 2) {
+            const auto& one = downsampled.regions[0];
+            const auto& two = downsampled.regions[1];
+            auto joined = read(one, 85, 32000, audio::WavFormat::Pcm24);
+            const auto remainder = read(two, 86, 32000, audio::WavFormat::Pcm24);
+            joined.insert(joined.end(), remainder.begin(), remainder.end());
+            check(!joined.empty() && joined == reference, "cycle slicing preserves the resampled, quantized PCM exactly");
+            check(one.snapshot && two.snapshot && one.snapshot->graphSampleRate == 48000 &&
+                  two.snapshot->graphSampleRate == 48000 && one.deliveryBlake3 && two.deliveryBlake3 &&
+                  *one.deliveryBlake3 == media::blake3File(one.output).hex &&
+                  *two.deliveryBlake3 == media::blake3File(two.output).hex,
+                  "cycle receipts retain the original graph clock and final file digests");
+            check(hasStereoSpeakerMask(two.output),
+                  "cycle output preserves the speaker mask after slicing");
+        }
+    }
+
+    auto corrupt = job;
+    corrupt.nameTemplate = "corrupt-{region}";
+    Control damage;
+    bool truncated = false;
+    damage.serviceHost = [&] {
+        if (truncated) return;
+        for (const auto& entry : fs::directory_iterator(job.directory)) {
+            if (!media::pathUtf8(entry.path().filename()).starts_with(".adi-render-") ||
+                !fs::exists(entry.path() / "slice-1.wav")) continue;
+            // A later slice exists, so the first writer has already closed.
+            fs::resize_file(entry.path() / "slice-0.wav", 12);
+            truncated = true;
+            return;
+        }
+    };
+    const auto refused = renderGaplessWav(corrupt, selected, echo, damage);
+    check(truncated && refused.state == JobState::Failed && refused.error.find("staged PCM") != std::string::npos &&
+          !fs::exists(job.directory / "corrupt-Part one.wav") &&
+          !fs::exists(job.directory / "corrupt-Part two.wav") && f.noStage(),
+          "a truncated cycle slice fails the shared readback before any file publishes");
+
+    job.nameTemplate = "tail-{region}";
+    auto tail = job;
+    tail.tail = {TailMode::Fixed, 1};
+    check(renderGaplessWav(tail, selected, echo).state == JobState::Failed && f.noStage(),
+          "gapless runner refuses independent effect tails");
+    auto repeated = job;
+    repeated.nameTemplate = "same-name";
+    const auto collision = renderGaplessWav(repeated, selected, echo);
+    check(collision.state == JobState::Failed && collision.regions.empty() && f.noStage(),
+          "duplicate region output names are refused before any delivery");
+    f.store->db().exec("UPDATE markers SET pos_ns=2687500 WHERE id=13");
+    const auto gap = renderGaplessWav(job, selected, echo);
+    check(gap.state == JobState::Failed && gap.regions.empty() && !fs::exists(job.directory / "tail-Part one.wav"),
+          "one skipped sample makes the whole gapless request invalid");
 }
 void ranges() {
     Fixture f; f.effect(); f.parallel();
@@ -319,6 +591,100 @@ void largeSongExportSpeed() {
     }
     check(exact, "400 contiguous clips export the same complete PCM as 8 whole clips, across off-block seams");
     check(splitSeconds <= wholeSeconds * 3, "400 contiguous clips export within 3x the time of the same 8 whole clips");
+}
+void projectRateDelivery() {
+    Fixture f;
+    f.effect();
+    std::vector<float> dc(8192, 0.25f);
+    audio::WavWriter sourceFile(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    sourceFile.write(dc.data(), 4096);
+    sourceFile.close();
+    auto job = f.job("project-then-soxr");
+    job.session.sampleRate = 44100;
+    job.ratePolicy = ExportRatePolicy::ProjectThenDownsample;
+    if (!deliverySrcAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("SoXR") != std::string::npos && f.noStage(),
+              "source-free builds refuse project-rate conversion before staging");
+        return;
+    }
+    double preparedAt = 0;
+    const DeviceLoader capture = [&](const DeviceRequest& request, std::string&) {
+        preparedAt = request.sampleRate;
+        auto delay = std::make_unique<Delay>();
+        delay->delay = 31;
+        delay->gain = 2;
+        return delay;
+    };
+    job.endSample = job.beginSample + 2301;
+    const auto first = renderWav(job, capture);
+    const auto pcm = read(first, 2301, 44100);
+    check(preparedAt == 48000 && first.snapshot && first.snapshot->graphSampleRate == 48000 &&
+          first.snapshot->sampleRate == 44100 && first.snapshot->beginSample == 137 &&
+          first.snapshot->endSample == 2438,
+          "lower-rate delivery keeps project-rate effects and records both clocks");
+    check(pcm.size() == 4602 && std::all_of(pcm.begin() + 512, pcm.end() - 512,
+          [](float value) { return std::abs(value - 0.5f) < 1e-5f; }),
+          "SoXR receives the compensated selected effect output and preserves its interior gain");
+
+    job.session.maxFrames = 111;
+    job.nameTemplate = "repartitioned-soxr";
+    const auto repeated = read(renderWav(job, capture), 2301, 44100);
+    check(!repeated.empty() && repeated == pcm, "small graph blocks produce the same trimmed SoXR samples");
+
+    job.nameTemplate = "soxr-delivery-group";
+    auto aiff = job.encoding;
+    aiff.container = ExportContainer::Aiff;
+    job.deliveries = {{job.encoding, ""}, {aiff, ""}};
+    const auto group = renderWav(job, capture);
+    check(group.state == JobState::Completed && group.deliveries.size() == 2 &&
+          group.framesWritten == 2301 && preparedAt == 48000,
+          group.error.empty() ? "two formats share the project-rate render" : group.error.c_str());
+    if (group.state == JobState::Completed) {
+        for (const auto& file : group.deliveries) {
+            auto stream = audio::openPcmStream(file.output);
+            std::vector<float> converted(pcm.size());
+            check(stream.ready() && stream.stream->info().sampleRate == 44100 &&
+                  stream.stream->read(converted).frames == 2301 && converted == pcm,
+                  "each delivery decodes to the same compensated, downsampled PCM");
+        }
+    }
+    job.nameTemplate = "soxr-mono-delivery-group";
+    for (auto& delivery : job.deliveries) delivery.encoding.channelFold = ChannelFold::StereoAverage;
+    job.deliveries.front().encoding.speakerMask = 4; // front centre on the mono WAV
+    const auto mono = renderWav(job, capture);
+    check(mono.state == JobState::Completed && mono.deliveries.size() == 2 && mono.framesWritten == 2301,
+          "one mono fold follows shared SoXR conversion for every requested format");
+    if (mono.state == JobState::Completed) {
+        auto decoded = audio::openPcmStream(mono.deliveries.front().output);
+        std::vector<float> folded(2301);
+        bool same = decoded.ready() && decoded.stream->info().channels == 1 &&
+            decoded.stream->read(folded).frames == folded.size() && pcm.size() == folded.size() * 2;
+        for (std::size_t i = 0; same && i < folded.size(); ++i) same = folded[i] == pcm[i * 2];
+        check(same, "post-SRC mono keeps the exact equal-channel reference");
+    }
+    job.deliveries.clear();
+    if (opusExportAvailable()) {
+        f.store->db().exec("UPDATE project SET sample_rate=96000");
+        job.nameTemplate = "soxr-into-opus";
+        job.session.sampleRate = 48000;
+        auto opus = job.encoding;
+        opus.container = ExportContainer::OggOpus;
+        job.deliveries = {{job.encoding, ""}, {opus, ""}};
+        const auto throughOpus = renderWav(job, capture);
+        check(throughOpus.state == JobState::Completed && throughOpus.deliveries.size() == 2 &&
+              throughOpus.framesWritten == 2301 && preparedAt == 96000 && throughOpus.snapshot &&
+              throughOpus.snapshot->sampleRate == 48000,
+              throughOpus.error.empty() ? "Opus and WAV share one 96-to-48 kHz delivery clock" : throughOpus.error.c_str());
+        job.deliveries.clear();
+    }
+    job.nameTemplate = "higher-direct";
+    job.session.sampleRate = 96000;
+    const auto higher = renderWav(job, capture);
+    check(higher.state == JobState::Completed && preparedAt == 96000 && higher.snapshot &&
+          higher.snapshot->graphSampleRate == higher.snapshot->sampleRate &&
+          higher.framesWritten == 2301 && f.noStage(),
+          "higher-rate job prepares the graph directly at the delivery rate");
 }
 void cancellationAndFailures() {
     Fixture f;
@@ -609,6 +975,156 @@ void directStems() {
         check(matches(read(renderWav(j,{}),270),31),"pre-fader endpoint excludes the strip's track delay");
     }
 }
+void explicitDirectTaps() {
+    Fixture f;
+    f.effect();
+    f.parallel();
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    auto job = f.job("direct-dry");
+    job.source.trackId = 1;
+    const DeviceLoader loader = [](const DeviceRequest&, std::string&) {
+        auto device = std::make_unique<Delay>();
+        device->delay = 23;
+        device->gain = 2;
+        return device;
+    };
+    job.source.signalTap = Tap::PreFx;
+    check(matches(read(renderWav(job, loader), 866), 137),
+          "explicit PreFx excludes source effects and the solo gate");
+    job.nameTemplate = "direct-post-fx";
+    job.source.signalTap = Tap::PostFx;
+    check(matches(read(renderWav(job, loader), 866), 137, 2),
+          "explicit PostFx includes the compensated effect before the strip");
+    job.nameTemplate = "direct-post-fader";
+    job.source.signalTap = Tap::PostFader;
+    const auto soloedOut = read(renderWav(job, loader), 866);
+    check(!soloedOut.empty() && std::all_of(soloedOut.begin(), soloedOut.end(), [](float value) { return value == 0; }),
+          "engine's current PostFader strip is silent when another track is soloed");
+    f.store->db().exec("UPDATE tracks SET soloed=0 WHERE id=2");
+    job.nameTemplate = "direct-post-fader-alone";
+    check(matches(read(renderWav(job, loader), 866), 137, 2), "PostFader includes the effect on an audible track");
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    job.nameTemplate = "direct-post-mixer";
+    job.source.signalTap = Tap::PostMixer;
+    Queue queue;
+    queue.add(job);
+    queue.run(loader);
+    const auto pcm = read(queue.snapshot()[0].result, 866);
+    check(!pcm.empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0; }),
+          "explicit PostMixer follows the actual solo gate");
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["source"]["signal_tap"] == "post_mixer" &&
+          manifest["members"][0]["result"]["resolved_snapshot"]["source"]["signal_tap"] == "post_mixer",
+          "manifest states the actual requested and captured signal point");
+    job.nameTemplate = "invalid-tail";
+    job.source.signalTap = Tap::Tail;
+    check(renderWav(job, loader).state == JobState::Failed && f.noStage(),
+          "internal Tail is not a public EX-02 tap");
+}
+void directStemBatch() {
+    Fixture f;
+    f.parallel();
+    Queue queue;
+    auto job = f.job("{track}-{counter}");
+    const std::array sources{Source{1, OfflineTap::PostFader}, Source{2, OfflineTap::PreFader}};
+    const auto preview = queue.previewStemBatch(job, sources);
+    check(preview.size() == 2 && preview[0].ordinal == 1 && preview[0].output.filename() == "Audio-1.wav" &&
+          preview[1].ordinal == 2 && preview[1].output.filename() == "Parallel-2.wav" &&
+          preview[1].source.resolvedTap() == Tap::PostFx && queue.snapshot().empty(),
+          "preview resolves each requested stem and reports cardinality without enqueuing");
+    const auto ids = queue.addStemBatch(job, sources);
+    check(ids == std::vector<JobId>{1, 2}, "batch enqueue uses the preview's stable ordinals");
+    f.store->db().exec("UPDATE tracks SET name='Later' WHERE id=2");
+    queue.run();
+    const auto entries = queue.snapshot();
+    check(entries.size() == 2 && entries[0].result.state == JobState::Completed &&
+          entries[0].result.output.filename() == "Audio-1.wav" && entries[1].result.state == JobState::Completed &&
+          entries[1].result.output.filename() == "Later-2.wav",
+          "names resolve again at the ordinary job-start revision");
+
+    const std::array duplicateMain{Source{}, Source{9}};
+    bool duplicateRefused = false;
+    try { (void)queue.addStemBatch(job, duplicateMain); }
+    catch (const std::invalid_argument&) { duplicateRefused = true; }
+    check(duplicateRefused && queue.snapshot().size() == 2,
+          "main alias and explicit main ID cannot duplicate the same signal");
+    job.nameTemplate = "shared";
+    bool namesRefused = false;
+    try { (void)queue.addStemBatch(job, sources); }
+    catch (const std::runtime_error&) { namesRefused = true; }
+    check(namesRefused && queue.snapshot().size() == 2 && f.noStage(),
+          "Fail refuses a colliding template without partially enqueueing or staging");
+    job.collision = Collision::Increment;
+    const auto numbered = queue.previewStemBatch(job, sources);
+    check(numbered.size() == 2 && numbered[0].ordinal == 3 &&
+          numbered[0].output.filename() == "shared.wav" && numbered[1].output.filename() == "shared (2).wav",
+          "Increment preview reserves preceding names and failed additions consume no ordinals");
+    const auto numberedIds = queue.addStemBatch(job, sources);
+    queue.run();
+    const auto afterIncrement = queue.snapshot();
+    check(numberedIds == std::vector<JobId>{3, 4} && afterIncrement.size() == 4 &&
+          afterIncrement[2].result.state == JobState::Completed && afterIncrement[3].result.state == JobState::Completed &&
+          fs::equivalent(afterIncrement[2].result.output, numbered[0].output) &&
+          fs::equivalent(afterIncrement[3].result.output, numbered[1].output),
+          "incremented batch delivers distinct previewed names");
+
+    job.nameTemplate = "{track}-replace";
+    job.collision = Collision::Replace;
+    const auto replacements = queue.addStemBatch(job, sources);
+    f.store->db().exec("UPDATE tracks SET name='Audio' WHERE id=2");
+    queue.run();
+    const auto afterReplace = queue.snapshot();
+    check(replacements == std::vector<JobId>{5, 6} && afterReplace.size() == 6 &&
+          afterReplace[4].result.state == JobState::Completed &&
+          afterReplace[5].result.state == JobState::Failed &&
+          afterReplace[5].result.error.find("earlier delivery") != std::string::npos &&
+          matches(read(afterReplace[4].result, 866), 137) && f.noStage(),
+          "a later naming change cannot let one batch member replace its predecessor");
+}
+void sparseRenderMatrix() {
+    Fixture f;
+    f.parallel();
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES"
+        "(11,1,2000000,8000000,'One','cycle'),(12,1,10000000,4000000,'Two','cycle'),"
+        "(13,1,1000000,NULL,'Point','position')");
+    Queue queue;
+    auto job = f.job("{region}-{track}-{counter}");
+    const std::array cells{RenderCell{Source{2}, 12}, RenderCell{Source{1}, 11}, RenderCell{Source{1}, 12}};
+    const auto preview = queue.previewRenderMatrix(job, cells);
+    check(preview.size() == 3 && preview[0].ordinal == 1 && preview[0].regionId == 12 &&
+          preview[0].beginSample == 480 && preview[0].endSample == 672 &&
+          preview[0].output.filename() == "Two-Parallel-1.wav" &&
+          preview[1].output.filename() == "One-Audio-2.wav" &&
+          preview[2].output.filename() == "Two-Audio-3.wav",
+          "sparse matrix previews only individually selected cells and exact marker bounds");
+
+    const std::array repeated{cells[0], cells[0]};
+    bool repeatedRefused = false;
+    try { (void)queue.addRenderMatrix(job, repeated); }
+    catch (const std::invalid_argument&) { repeatedRefused = true; }
+    auto badCell = cells;
+    badCell[2].regionId = 13;
+    bool badMarkerRefused = false;
+    try { (void)queue.addRenderMatrix(job, badCell); }
+    catch (const std::invalid_argument&) { badMarkerRefused = true; }
+    check(repeatedRefused && badMarkerRefused && queue.snapshot().empty(),
+          "a repeated cell or a point marker leaves the matrix queue unchanged");
+
+    const auto ids = queue.addRenderMatrix(job, cells);
+    f.store->db().exec("UPDATE markers SET name='Updated' WHERE id=12");
+    queue.run();
+    const auto results = queue.snapshot();
+    check(ids == std::vector<JobId>{1, 2, 3} && results.size() == 3 &&
+          results[0].result.output.filename() == "Updated-Parallel-1.wav" &&
+          results[1].result.output.filename() == "One-Audio-2.wav" &&
+          results[2].result.output.filename() == "Updated-Audio-3.wav",
+          "selected matrix cells become ordinary jobs with job-start marker names and original order");
+    if (results.size() != 3) return;
+    check(matches(read(results[0].result, 192), 480) &&
+          matches(read(results[1].result, 384), 96) &&
+          matches(read(results[2].result, 192), 480) && f.noStage(),
+          "each selected matrix cell renders its own source and sample-exact region");
+}
 void groupStems() {
     Fixture f;f.effect();f.parallel();
     f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
@@ -655,6 +1171,752 @@ void multichannelStem() {
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
 }
+#if defined(ADI_HAVE_FLAC)
+struct FlacReadback {
+    unsigned channels = 0, bits = 0;
+    std::size_t valuesRead = 0;
+    std::span<const float> expected;
+    bool valid = true;
+};
+
+FLAC__StreamDecoderWriteStatus compareFlacBlock(const FLAC__StreamDecoder*, const FLAC__Frame* frame,
+        const FLAC__int32* const samples[], void* context) {
+    auto& readback = *static_cast<FlacReadback*>(context);
+    const auto& header = frame->header;
+    const auto values = static_cast<std::size_t>(header.blocksize) * header.channels;
+    if (header.channels != readback.channels || header.bits_per_sample != readback.bits ||
+        header.sample_rate != 48000 || values > readback.expected.size() - readback.valuesRead)
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    for (unsigned i = 0; i < header.blocksize; ++i)
+        for (unsigned c = 0; c < header.channels; ++c) {
+            const auto expected = std::ldexp(readback.expected[readback.valuesRead++],
+                                            static_cast<int>(readback.bits) - 1);
+            readback.valid = readback.valid && expected == static_cast<float>(samples[c][i]);
+        }
+    return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+void flacDecodeError(const FLAC__StreamDecoder*, FLAC__StreamDecoderErrorStatus, void* context) {
+    static_cast<FlacReadback*>(context)->valid = false;
+}
+
+bool equivalentFlac(const fs::path& path, FlacReadback& readback) {
+    std::unique_ptr<FLAC__StreamDecoder, decltype(&FLAC__stream_decoder_delete)>
+        decoder(FLAC__stream_decoder_new(), FLAC__stream_decoder_delete);
+    const auto utf8 = media::pathUtf8(path);
+    if (!decoder || !FLAC__stream_decoder_set_md5_checking(decoder.get(), true) ||
+        FLAC__stream_decoder_init_file(decoder.get(), utf8.c_str(), compareFlacBlock, nullptr,
+                                       flacDecodeError, &readback) != FLAC__STREAM_DECODER_INIT_STATUS_OK)
+        return false;
+    const bool decoded = FLAC__stream_decoder_process_until_end_of_stream(decoder.get());
+    return FLAC__stream_decoder_finish(decoder.get()) && decoded && readback.valid &&
+           readback.valuesRead == readback.expected.size();
+}
+#endif
+
+void flacExports() {
+    Fixture f;
+    auto j = f.job("flac");
+    j.encoding.container = ExportContainer::Flac;
+    j.encoding.format = audio::WavFormat::Float32;
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(),
+          "FLAC rejects Float32 before creating a stage");
+#if defined(ADI_HAVE_FLAC)
+    j.endSample = j.beginSample + 4201;
+    j.encoding.dither = audio::WavDither::Shaped2;
+    j.encoding.ditherSeed = 6789;
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24}) {
+        j.encoding.format = format;
+        j.nameTemplate = format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24";
+        auto wave = j;
+        wave.encoding.container = ExportContainer::Wav;
+        const auto expected = read(renderWav(wave, {}), 4201, 48000, format);
+        const auto result = renderWav(j, {});
+        check(result.state == JobState::Completed && result.output.extension() == ".flac",
+              result.error.empty() ? "FLAC publishes the resolved file" : result.error.c_str());
+        FlacReadback readback{2, format == audio::WavFormat::Pcm16 ? 16U : 24U, 0, expected};
+        check(expected.size() == 8402 && equivalentFlac(result.output, readback),
+              "FLAC decodes to the same dithered PCM codes as WAV across the last partial block");
+        j.collision = Collision::Increment;
+        const auto increment = renderWav(j, {});
+        check(increment.state == JobState::Completed && increment.output != result.output &&
+              increment.output.extension() == ".flac" && f.noStage(),
+              "incremented FLAC retains the extension and leaves no staging directory");
+        j.collision = Collision::Fail;
+    }
+#else
+    j.encoding.format = audio::WavFormat::Pcm24;
+    const auto missing = renderWav(j, {});
+    check(missing.state == JobState::Failed && missing.error.find("libFLAC") != std::string::npos && f.noStage(),
+          "source-free builds explain FLAC unavailability before staging");
+#endif
+}
+
+std::uint32_t readAiffBigEndian(std::istream& file, unsigned bytes) {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < bytes; ++i) {
+        const auto next = file.get();
+        if (next == std::char_traits<char>::eof()) throw std::runtime_error("unexpected AIFF EOF");
+        value = (value << 8U) | static_cast<std::uint32_t>(next);
+    }
+    return value;
+}
+
+bool equivalentAiff(const fs::path& path, std::span<const float> samples,
+                    unsigned channels, audio::WavFormat format) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file || samples.empty()) return false;
+    const auto readInteger = [&](unsigned n) { return readAiffBigEndian(file, n); };
+    const auto fourcc = [&](std::string_view id) {
+        char text[4]{};
+        return bool(file.read(text, 4)) && std::string_view(text, 4) == id;
+    };
+    const bool floating = format == audio::WavFormat::Float32;
+    const unsigned bytes = floating ? 4U : (format == audio::WavFormat::Pcm24 ? 3U : 2U);
+    const auto dataBytes = samples.size() * bytes;
+    const bool padding = (dataBytes & 1U) != 0;
+    if (!fourcc("FORM") || readInteger(4) != dataBytes + (floating ? 64U : 46U) + padding ||
+        !fourcc(floating ? "AIFC" : "AIFF")) return false;
+    if (floating && (!fourcc("FVER") || readInteger(4) != 4 || readInteger(4) != 0xa2805140))
+        return false;
+    if (!fourcc("COMM") || readInteger(4) != (floating ? 24U : 18U) ||
+        readInteger(2) != channels || readInteger(4) != samples.size() / channels ||
+        readInteger(2) != bytes * 8 || readInteger(2) != 0x400e ||
+        readInteger(4) != 0xbb800000 || readInteger(4) != 0) return false; // ext80 48000 Hz
+    if (floating && (!fourcc("fl32") || readInteger(2) != 0)) return false;
+    if (!fourcc("SSND") || readInteger(4) != dataBytes + 8 ||
+        readInteger(4) != 0 || readInteger(4) != 0) return false;
+    const auto mask = floating ? 0xffffffffU : ((std::uint32_t{1} << (bytes * 8)) - 1);
+    for (float sample : samples) {
+        const auto expected = floating ? std::bit_cast<std::uint32_t>(sample) :
+            static_cast<std::uint32_t>(static_cast<std::int32_t>(std::ldexp(sample, static_cast<int>(bytes * 8 - 1)))) & mask;
+        if (readInteger(bytes) != expected) return false;
+    }
+    return (!padding || readInteger(1) == 0) && file.peek() == std::char_traits<char>::eof();
+}
+
+// The held export stack's AIFF delivery (ExportContainer::Aiff); aiffExports is main's save-dialog AIFF.
+void aiffDeliveryExports() {
+    Fixture f;
+    auto j = f.job("aiff");
+    j.encoding.container = ExportContainer::Aiff;
+    j.encoding.dither = audio::WavDither::Shaped3;
+    j.encoding.ditherSeed = 1234;
+    j.endSample = j.beginSample + 4201;
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24, audio::WavFormat::Float32}) {
+        j.encoding.format = format;
+        j.nameTemplate = "aiff-" + std::to_string(static_cast<int>(format));
+        auto wave = j;
+        wave.encoding.container = ExportContainer::Wav;
+        const auto expected = read(renderWav(wave, {}), 4201, 48000, format);
+        const auto result = renderWav(j, {});
+        check(result.state == JobState::Completed && result.output.extension() == ".aiff" && f.noStage(),
+              result.error.empty() ? "AIFF publishes the resolved file" : result.error.c_str());
+        check(expected.size() == 8402 && equivalentAiff(result.output, expected, 2, format),
+              "AIFF decodes to the exact same seed-quantized WAV PCM or Float32 bits");
+    }
+    j.nameTemplate = "mono-odd";
+    j.encoding.format = audio::WavFormat::Pcm24;
+    j.session.channels = 1;
+    j.endSample = j.beginSample + 5;
+    auto wave = j;
+    wave.encoding.container = ExportContainer::Wav;
+    const auto mono = renderWav(wave, {});
+    audio::WavReader monoReference(mono.output);
+    std::vector<float> expected(5);
+    const auto odd = renderWav(j, {});
+    check(monoReference.channels() == 1 && monoReference.read(expected.data(), 5) == 5 &&
+          odd.state == JobState::Completed && equivalentAiff(odd.output, expected, 1, j.encoding.format),
+          "odd-length mono PCM24 uses one padding byte outside SSND");
+    j.exactWavFilename = "literal.wav";
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(), "AIFF rejects exact-WAV mode");
+    j.exactWavFilename.reset();
+    j.encoding.format = static_cast<audio::WavFormat>(99);
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(), "AIFF rejects unsupported encodings");
+}
+
+void cbrMp3Delivery() {
+    Fixture f;
+    auto job = f.job("cbr-mp3");
+    job.encoding.container = ExportContainer::Mp3;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    if (!mp3ExportAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("pinned LAME") != std::string::npos && f.noStage(),
+              "builds without LAME explain MP3 refusal before staging");
+        return;
+    }
+    const auto first = renderWav(job, {});
+    check(first.state == JobState::Completed && first.output.extension() == ".mp3" && first.framesWritten == 4201,
+          first.error.empty() ? "verified CBR MP3 publishes with its native suffix" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    auto pcm = audio::openPcmStream(first.output);
+    check(pcm.ready() && pcm.stream->info().format == audio::SourceFormat::Mp3 &&
+          pcm.stream->info().sampleRate == 48000 && pcm.stream->info().channels == 2 &&
+          pcm.stream->info().frames == 4201,
+          "dr_mp3 removes the LAME delay and padding to recover the exact authored length");
+    const auto fileBytes = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    job.nameTemplate = "cbr-mp3-repartitioned";
+    job.session.maxFrames = 103;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 7282;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && fileBytes(first.output) == fileBytes(again.output),
+          "MP3 bits ignore PCM dither/seed and stay stable across graph block partition");
+
+    job.nameTemplate = "cbr-mp3-mono";
+    job.session.channels = 1;
+    job.session.sampleRate = 44100;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719 && f.noStage(),
+          mono.error.empty() ? "44.1 kHz mono uses the same exact MPEG-1 and trim gate" : mono.error.c_str());
+
+    job.nameTemplate = "invalid-cbr-mp3";
+    job.session.sampleRate = 96000;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "unsupported MPEG-1 rate is refused before staging");
+    job.session.sampleRate = 44100;
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "MP3 normalization waits for a verified lossy normalization path");
+}
+void vorbisDelivery() {
+    Fixture f;
+    auto job = f.job("vorbis");
+    job.encoding.container = ExportContainer::OggVorbis;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    if (!vorbisExportAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("pinned Xiph") != std::string::npos &&
+              f.noStage(), "builds without the Xiph libraries explain Vorbis refusal before staging");
+        return;
+    }
+    const auto first = renderWav(job, {});
+    check(first.state == JobState::Completed && first.output.extension() == ".ogg" &&
+          first.framesWritten == 4201, first.error.empty() ? "Vorbis publishes at its native suffix" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    auto pcm = audio::openPcmStream(first.output);
+    check(pcm.ready() && pcm.stream->info().format == audio::SourceFormat::Ogg &&
+          pcm.stream->info().sampleRate == 48000 && pcm.stream->info().channels == 2 &&
+          pcm.stream->info().frames == 4201, "Ogg reports exactly the requested stereo duration");
+    const auto readFile = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    job.nameTemplate = "vorbis-repartitioned";
+    job.session.maxFrames = 103;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 7282;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && readFile(first.output) == readFile(again.output),
+          "Vorbis bytes ignore PCM dither and remain stable across graph block partitions");
+    job.nameTemplate = "vorbis-low-quality";
+    job.encoding.vorbisQuality = 0.0f;
+    const auto low = renderWav(job, {});
+    check(low.state == JobState::Completed && readFile(first.output) != readFile(low.output),
+          "the VBR quality choice reaches the Vorbis encoder");
+    job.nameTemplate = "vorbis-mono";
+    job.session.channels = 1;
+    job.session.sampleRate = 44100;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719 && f.noStage(),
+          mono.error.empty() ? "short mono renders keep the actual duration" : mono.error.c_str());
+    job.encoding.vorbisQuality = 1.1f;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "unknown VBR quality is refused before staging");
+    job.encoding.vorbisQuality = 0.5f;
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "Vorbis normalization waits for decoded-output measurement");
+}
+void opusDelivery() {
+    Fixture f;
+    auto job = f.job("opus");
+    job.encoding.container = ExportContainer::OggOpus;
+    job.encoding.opusBitRate = 160000;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    const auto first = renderWav(job, {});
+    if (!opusExportAvailable()) {
+        check(first.state == JobState::Failed && first.error.find("pinned Xiph") != std::string::npos &&
+              f.noStage(), "source-free builds explain Opus refusal before staging");
+        return;
+    }
+    check(first.state == JobState::Completed && first.output.extension() == ".opus" &&
+          first.framesWritten == 4201 && f.noStage(),
+          first.error.empty() ? "Opus verifies a complete 4201-frame decode before publication" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    const auto bytes = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    const auto payload = bytes(first.output);
+    check(payload.starts_with("OggS") && payload.find("OpusHead") != std::string::npos,
+          "output is an Ogg Opus stream");
+    job.nameTemplate = "opus-repartitioned";
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 698;
+    job.session.maxFrames = 103;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && bytes(again.output) == payload,
+          "Opus is byte-identical across graph partition and PCM-only dither changes");
+    job.nameTemplate = "opus-mono";
+    job.session.channels = 1;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719,
+          mono.error.empty() ? "short mono Opus retains authored length" : mono.error.c_str());
+    job.session.sampleRate = 44100;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "Opus capability check refuses a different clock");
+    job.session.sampleRate = 48000;
+    job.encoding.opusBitRate = 512000;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "the stereo bitrate ceiling does not apply to a mono job");
+}
+
+void stereoFoldDelivery() {
+    Fixture f;
+    f.effect();
+    const std::array pairs{std::pair{0.75f, -0.75f}, std::pair{0.25f, 0.25f},
+                           std::pair{0.625f, 0.0f}, std::pair{0.0f, -0.25f}};
+    std::vector<float> stereo(8192);
+    for (std::size_t frame = 0; frame < 4096; ++frame) {
+        const auto [left, right] = pairs[frame % pairs.size()];
+        stereo[2 * frame] = left;
+        stereo[2 * frame + 1] = right;
+    }
+    audio::WavWriter input(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    input.write(stereo.data(), 4096);
+    input.close();
+    const DeviceLoader observer = [](const DeviceRequest&, std::string&) {
+        auto delay = std::make_unique<Delay>();
+        delay->delay = 29;
+        delay->gain = 2;
+        return delay;
+    };
+    auto job = f.job("mono");
+    job.session.precision = Precision::Float64;
+    job.encoding.channelFold = ChannelFold::StereoAverage;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.format = audio::WavFormat::Pcm16;
+    const auto result = renderWav(job, observer);
+    check(result.state == JobState::Completed,
+          result.error.empty() ? "mono delivery completes" : result.error.c_str());
+    if (result.state != JobState::Completed) return;
+    audio::WavReader mono(result.output);
+    std::vector<float> actual(866);
+    check(mono.channels() == 1 && mono.sampleRate() == 48000 && mono.frames() == 866 &&
+          mono.format() == audio::WavFormat::Pcm16 && mono.read(actual.data(), 866) == 866,
+          "stereo graph delivers one PCM16 channel and preserves exact duration");
+    bool exact = true;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        const auto [left, right] = pairs[(137 + i) % pairs.size()];
+        exact = exact && actual[i] == left + right; // stereo effect doubles before the fold
+    }
+    check(exact, "correlated, anti-phase and one-sided signals fold after compensated stereo processing");
+
+    job.nameTemplate = "mono-normalized";
+    job.encoding.format = audio::WavFormat::Float32;
+    job.normalization.mode = NormalizeMode::Peak;
+    const auto normalized = renderWav(job, observer);
+    check(normalized.state == JobState::Completed && normalized.normalization &&
+          normalized.normalization->sourceSamplePeakDb &&
+          std::abs(*normalized.normalization->sourceSamplePeakDb - 20 * std::log10(0.625)) < 1e-6,
+          "normalization measures the folded signal, after cancellation and before the encoder");
+
+    job.nameTemplate = "unsupported-fold";
+    job.session.channels = 6;
+    check(renderWav(job, observer).state == JobState::Failed && f.noStage(),
+          "an ambiguous multichannel fold is refused before staging");
+}
+void deliveryProfilePreflight() {
+    Job profile;
+    profile.session = {2,48000,64};
+    const std::array formats{
+        std::pair{ExportContainer::Wav, true},
+        std::pair{ExportContainer::Aiff, true},
+        std::pair{ExportContainer::Flac, flacExportAvailable()},
+        std::pair{ExportContainer::Mp3, mp3ExportAvailable()},
+        std::pair{ExportContainer::OggVorbis, vorbisExportAvailable()},
+        std::pair{ExportContainer::OggOpus, opusExportAvailable()}
+    };
+    const auto reason = [](const Job& job) {
+        try {
+            validateDeliveryProfile(job);
+        } catch (const std::exception& error) {
+            return std::string(error.what());
+        }
+        return std::string{};
+    };
+    for (const auto& [container, available] : formats) {
+        profile.encoding.container = container;
+        profile.encoding.format = audio::WavFormat::Pcm24;
+        check(reason(profile).empty() == available,
+              "profile validation reports the compiled format without opening a project or directory");
+    }
+
+    Fixture f;
+    profile.project = f.store->path();
+    profile.directory = f.dir.path() / "out";
+    profile.beginSample = 0;
+    profile.endSample = 10;
+    profile.encoding.container = ExportContainer::Wav;
+    profile.encoding.speakerMask = 4;
+    const auto preview = reason(profile);
+    const auto run = renderWav(profile, {});
+    check(!preview.empty() && run.state == JobState::Failed && run.error == preview && f.noStage(),
+          "the runner and delivery profile reject the same invalid speaker layout");
+}
+
+void waveSpeakerMask() {
+    Fixture f;
+    auto job = f.job("speaker-mask");
+    job.encoding.speakerMask = 3;
+    for (const auto mode : {NormalizeMode::Off, NormalizeMode::Peak}) {
+        job.normalization.mode = mode;
+        job.nameTemplate = mode == NormalizeMode::Off ? "speaker-mask" : "speaker-mask-normalized";
+        const auto rendered = renderWav(job, {});
+        check(rendered.state == JobState::Completed && hasStereoSpeakerMask(rendered.output),
+              "rendered WAV retains the mask through ordinary and normalized encoding");
+    }
+    job.nameTemplate = "speaker-mask-invalid";
+    job.encoding.speakerMask = 1;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "invalid render channel-mask pair fails before staging");
+}
+void losslessReadbackGate() {
+    Fixture f;
+    auto job = f.job("corrupt-pcm-stage");
+    const auto length = static_cast<std::uint64_t>(job.endSample - job.beginSample);
+    bool corrupted = false;
+    Control control;
+    control.serviceHost = [&] {
+        if (corrupted) return;
+        for (const auto& entry : fs::directory_iterator(job.directory)) {
+            if (!media::pathUtf8(entry.path().filename()).starts_with(".adi-render-")) continue;
+            const auto stage = entry.path() / "render.wav";
+            bool finalized = false;
+            // The WAV length field is patched at close. Wait for a complete
+            // header and then truncate exactly one byte before verification.
+            try {
+                audio::WavReader candidate(stage);
+                finalized = candidate.frames() == length;
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (finalized) {
+                fs::resize_file(stage, fs::file_size(stage) - 1);
+                corrupted = true;
+                return;
+            }
+        }
+    };
+    const auto result = renderWav(job, {}, control);
+    check(corrupted && result.state == JobState::Failed && !result.publication &&
+          !fs::exists(job.directory / "corrupt-pcm-stage.wav") && f.noStage(),
+          "a truncated finalized WAV is refused before publication and its stage is removed");
+}
+
+void afterExportImport() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','After Export',2)");
+    auto job = f.job("delivered");
+    auto ordinary = job;
+    ordinary.nameTemplate = "ordinary";
+    check(!renderWav(ordinary, {}).deliveryBlake3, "ordinary exports do not fingerprint their delivery");
+    Control control;
+    control.fingerprintDelivery = true;
+    const auto delivery = renderWav(job, {}, control);
+    const auto actual = media::blake3File(delivery.output);
+    check(delivery.state == JobState::Completed && actual && delivery.deliveryBlake3 == actual.hex,
+          "completed delivery records the actual published bytes for an After Export action");
+
+    clip_edit::ImportOptions target;
+    target.track = 3;
+    target.clipId = 40;
+    target.mediaId = 50;
+    target.at = {1, 200000000};
+    const auto originalHead = OpJournal(*f.store).headSeq();
+    auto cancelled = delivery;
+    cancelled.state = JobState::Cancelled;
+    check(!importAfterExport(*f.store, cancelled, target, 48000).ok && OpJournal(*f.store).headSeq() == originalHead,
+          "cancelled jobs cannot import and leave the project untouched");
+    check(importAfterExport(*f.store, delivery, target, 48000).ok &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40 AND track_id=3").getInt() == 1,
+          "After Export places audio on the explicit destination track");
+    auto placed = f.job("after-export-playback");
+    placed.source.trackId = 3;
+    placed.beginSample = 9600;
+    placed.endSample = 10466;
+    check(matches(read(renderWav(placed, {}), 866), 137), "the imported clip plays the exported sample range at its new placement");
+    check(History(*f.store).undo().ok && OpJournal(*f.store).headSeq() == originalHead &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40").getInt() == 0 &&
+          fs::exists(delivery.output) && media::blake3File(delivery.output).hex == actual.hex,
+          "one Undo removes the import and preserves the original delivery file");
+
+    audio::WavWriter swapped(delivery.output, 48000, 2, audio::WavFormat::Float32);
+    std::vector<float> silence(866 * 2);
+    swapped.write(silence.data(), 866);
+    swapped.close();
+    const auto wrongBytes = importAfterExport(*f.store, delivery, target, 48000);
+    check(!wrongBytes.ok && wrongBytes.error.find("changed") != std::string::npos &&
+          OpJournal(*f.store).headSeq() == originalHead && f.noStage(),
+          "same-dimensional replacement is refused without journal or export-stage changes");
+}
+void importSelectedDelivery() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','After Export',2)");
+    auto job = f.job("import-selected-file");
+    auto aiff = job.encoding;
+    aiff.container = ExportContainer::Aiff;
+    job.deliveries = {{job.encoding, ""}, {aiff, ""}};
+    Control control;
+    control.fingerprintDelivery = true;
+    Queue queue;
+    queue.add(job);
+    queue.run({}, control);
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.deliveries.size() == 2 &&
+          !result.deliveryBlake3 && result.deliveries[0].deliveryBlake3 && result.deliveries[1].deliveryBlake3 &&
+          result.deliveries[0].deliveryBlake3 != result.deliveries[1].deliveryBlake3,
+          "each published file carries its own opt-in After Export identity");
+    if (result.state != JobState::Completed || result.deliveries.size() != 2 ||
+        !result.deliveries[0].deliveryBlake3 || !result.deliveries[1].deliveryBlake3) return;
+    const auto& chosen = result.deliveries[1];
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["result"]["deliveries"][1]["delivery_blake3"] == *chosen.deliveryBlake3,
+          "the requested delivery identity is visible on the selected manifest row");
+    clip_edit::ImportOptions target;
+    target.track = 3;
+    target.clipId = 40;
+    target.mediaId = 50;
+    target.at = {1, 200000000};
+    const auto before = OpJournal(*f.store).headSeq();
+    const auto imported = importAfterExport(*f.store, chosen, target, 48000);
+    check(imported.ok && f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40 AND track_id=3").getInt() == 1,
+          imported.error.empty() ? "After Export imports only the chosen AIFF file" : imported.error.c_str());
+    if (imported.ok) {
+        check(History(*f.store).undo().ok && OpJournal(*f.store).headSeq() == before &&
+              media::blake3File(result.deliveries[0].output).hex == *result.deliveries[0].deliveryBlake3 &&
+              media::blake3File(chosen.output).hex == *chosen.deliveryBlake3,
+              "one Undo restores the project and both original delivery files keep their bytes");
+    }
+}
+
+void batchFileConversion() {
+    Fixture f;
+    FileConversion job;
+    job.source = f.dir.path() / "audio.wav";
+    job.directory = f.job().directory;
+    job.name = "converted";
+    job.encoding.format = audio::WavFormat::Pcm16;
+    job.encoding.dither = audio::WavDither::None;
+    const auto original = media::blake3File(job.source);
+    const auto converted = convertAudioFile(job);
+    check(matches(read(converted, 4096, 48000, audio::WavFormat::Pcm16), 0) &&
+          !converted.snapshot && media::blake3File(job.source).hex == original.hex,
+          "file conversion uses the shared PCM delivery with no project or source mutation");
+
+    job.name = "converted-aiff";
+    job.encoding.container = ExportContainer::Aiff;
+    const auto aiff = convertAudioFile(job);
+    const auto reference = read(converted, 4096, 48000, audio::WavFormat::Pcm16);
+    check(aiff.state == JobState::Completed && aiff.output.extension() == ".aiff" &&
+          equivalentAiff(aiff.output, reference, 2, audio::WavFormat::Pcm16),
+          "file-to-AIFF conversion uses the shared lossless path and the same quantized samples");
+    if (opusExportAvailable()) {
+        job.name = "converted-opus";
+        job.encoding.container = ExportContainer::OggOpus;
+        const auto opus = convertAudioFile(job);
+        check(opus.state == JobState::Completed && opus.output.extension() == ".opus" &&
+              opus.framesWritten == 4096 && !opus.snapshot,
+              opus.error.empty() ? "file-to-Opus conversion uses the shared native decode gate" : opus.error.c_str());
+    }
+
+    job.name = "converted-normalized";
+    job.encoding.container = ExportContainer::Wav;
+    job.normalization.mode = NormalizeMode::Peak;
+    const auto peak = convertAudioFile(job);
+    check(peak.state == JobState::Completed && peak.normalization && peak.normalization->appliedGainDb > 0,
+          "file conversion uses the same verified normalization pass");
+
+    auto same = job;
+    same.directory = job.source.parent_path();
+    same.name.clear();
+    same.collision = Collision::Replace;
+    const auto kept = convertAudioFile(same);
+    check(kept.state == JobState::Failed && kept.error.find("replace its input") != std::string::npos &&
+          media::blake3File(job.source).hex == original.hex,
+          "Replace refuses the input file identity and preserves the original");
+
+    job.name = "converted-cancel";
+    std::stop_source stopped;
+    Control cancel;
+    cancel.stop = stopped.get_token();
+    cancel.progress = [&](JobId, std::uint64_t done, std::uint64_t total) {
+        if (done > 0 && total == 4096) stopped.request_stop();
+    };
+    const auto cancelled = convertAudioFile(job, cancel);
+    check(cancelled.state == JobState::Cancelled && !fs::exists(cancelled.output) && f.noStage(),
+          "cancellation leaves no destination or staging directory");
+
+    job.name = "converted-after-mutation";
+    job.normalization.mode = NormalizeMode::Off;
+    bool edited = false;
+    Control editInput;
+    editInput.progress = [&](JobId, std::uint64_t done, std::uint64_t) {
+        if (done == 0 || edited) return;
+        std::fstream sourceFile(job.source, std::ios::binary | std::ios::in | std::ios::out);
+        sourceFile.seekp(-1, std::ios::end);
+        sourceFile.put(0);
+        sourceFile.close();
+        edited = !sourceFile.fail();
+    };
+    const auto changed = convertAudioFile(job, editInput);
+    check(edited && changed.state == JobState::Failed && changed.error.find("source changed") != std::string::npos &&
+          !fs::exists(changed.output) && f.noStage(),
+          "same-size replacement during conversion cannot publish an inconsistent output");
+}
+void batchProtectsSourcesAndEarlierFiles() {
+    Fixture f;
+    const auto firstSource = f.dir.path() / "audio.wav";
+    const auto secondSource = f.dir.path() / "second.wav";
+    fs::copy_file(firstSource, secondSource);
+    const auto unchanged = media::blake3File(secondSource);
+    FileConversion first;
+    first.source = firstSource;
+    first.directory = secondSource.parent_path();
+    first.name = "second";
+    first.collision = Collision::Replace;
+    auto second = first;
+    second.source = secondSource;
+    second.directory = f.job().directory;
+    second.name = "converted-second";
+    auto third = second;
+    third.source = firstSource;
+    const std::array jobs{first, second, third};
+    const auto result = convertAudioFiles(jobs);
+    check(result.size() == 3 && result[0].state == JobState::Failed &&
+          media::blake3File(secondSource).hex == unchanged.hex &&
+          result[1].state == JobState::Completed && result[2].state == JobState::Failed &&
+          result[2].error.find("earlier delivery") != std::string::npos,
+          "a batch protects another input and its earlier successful delivery under Replace");
+
+    auto cancellable = second;
+    cancellable.name = "cancelled-batch";
+    const std::array cancelledJobs{cancellable, cancellable};
+    std::stop_source stop;
+    Control control;
+    control.stop = stop.get_token();
+    JobId reported = 0;
+    control.progress = [&](JobId id, std::uint64_t frames, std::uint64_t) {
+        if (frames == 0) return;
+        reported = id;
+        stop.request_stop();
+    };
+    const auto cancelled = convertAudioFiles(cancelledJobs, control);
+    check(reported == 1 && cancelled[0].state == JobState::Cancelled &&
+          cancelled[1].state == JobState::Pending && !fs::exists(cancelled[0].output) && f.noStage(),
+          "indices stay stable and cancellation leaves remaining requests pending");
+}
+
+void convertedDeliveryClockAndMask() {
+    Fixture f;
+    FileConversion conversion;
+    conversion.source = f.dir.path() / "audio.wav";
+    conversion.directory = f.job().directory;
+    conversion.name = "converter-mono-44100";
+    conversion.outputSampleRate = 44100;
+    conversion.encoding.format = audio::WavFormat::Float32;
+    conversion.encoding.channelFold = ChannelFold::StereoAverage;
+    conversion.encoding.speakerMask = 4;
+    Control control;
+    control.fingerprintDelivery = true;
+    const auto converted = convertAudioFile(conversion, control);
+    if (!deliverySrcAvailable()) {
+        check(converted.state == JobState::Failed && converted.error.find("SoXR") != std::string::npos && f.noStage(),
+              "a missing SoXR build explains rate conversion refusal");
+        return;
+    }
+    check(converted.state == JobState::Completed && !converted.snapshot && converted.framesWritten == 3763 &&
+          converted.deliveryBlake3 && *converted.deliveryBlake3 == media::blake3File(converted.output).hex,
+          converted.error.empty() ? "converter resamples then folds and verifies the actual delivery" : converted.error.c_str());
+    if (converted.state == JobState::Completed) {
+        audio::WavReader reader(converted.output);
+        check(reader.sampleRate() == 44100 && reader.channels() == 1 && reader.frames() == 3763,
+              "converted file has the expected final rate, channels and duration");
+    }
+    conversion.name = "converted-rms";
+    conversion.encoding.format = audio::WavFormat::Pcm24;
+    conversion.encoding.dither = audio::WavDither::Shaped2;
+    conversion.normalization.mode = NormalizeMode::Loudness;
+    conversion.normalization.target = NormalizationTarget::Rms;
+    conversion.normalization.targetRmsDbfs = -16.0;
+    const auto normalized = convertAudioFile(conversion);
+    check(normalized.state == JobState::Completed && normalized.normalization &&
+          normalized.normalization->decoded.rmsDbfs &&
+          std::abs(*normalized.normalization->decoded.rmsDbfs + 16.0) <= 0.1 &&
+          normalized.normalization->decoded.truePeakDbtp &&
+          *normalized.normalization->decoded.truePeakDbtp <= -1.0,
+          normalized.error.empty() ? "RMS correction verifies the folded, shaped PCM after SRC" : normalized.error.c_str());
+    conversion.name = "refuse-upsampling";
+    conversion.outputSampleRate = 96000;
+    check(convertAudioFile(conversion).state == JobState::Failed && f.noStage(),
+          "file conversion refuses an unsupported upsampling request before a staging write");
+}
+
+void analysisOnly() {
+    Fixture f;
+    auto job = f.job();
+    job.analysisOnly = true;
+    job.directory.clear();
+    Queue queue;
+    queue.add(job);
+    queue.run();
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.framesAnalyzed == 866 && result.framesWritten == 0 &&
+          result.output.empty() && !result.publication && fs::is_empty(f.dir.path() / "out"),
+          "Analyze Only processes the selection without a staging file or publication");
+    double peak = 0.0;
+    double squares = 0.0;
+    for (auto frame = job.beginSample; frame < job.endSample; ++frame) {
+        for (int channel = 0; channel < 2; ++channel) {
+            const auto value = static_cast<double>(source(frame, channel));
+            peak = std::max(peak, std::abs(value));
+            squares += value * value;
+        }
+    }
+    check(result.analysis && result.analysis->samplePeakDbfs && result.analysis->rmsDbfs &&
+          std::abs(*result.analysis->samplePeakDbfs - 20.0 * std::log10(peak)) < 1e-9 &&
+          std::abs(*result.analysis->rmsDbfs - 10.0 * std::log10(squares / 1732.0)) < 1e-9,
+          "analysis measures exactly the selected output samples");
+    const auto report = serializeRunManifest(queue.lastRun());
+    check(result.mediaVerification && result.mediaVerification->analysisVerified &&
+          !result.mediaVerification->publicationVerified &&
+          report.find("frames_analyzed") != std::string::npos,
+          "analysis evidence verifies its input without recording a file publication");
+
+    std::stop_source stop;
+    Control control;
+    control.stop = stop.get_token();
+    control.progress = [&](auto, auto frames, auto) { if (frames > 0) stop.request_stop(); };
+    const auto cancelled = renderWav(job, {}, control);
+    check(cancelled.state == JobState::Cancelled && cancelled.framesAnalyzed > 0 && !cancelled.analysis &&
+          cancelled.framesWritten == 0, "cancelled analysis reports progress and no finished readings");
+
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed,
+          "Analyze Only refuses a contradictory normalization request");
+}
+
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -725,6 +1987,26 @@ void pcmExports() {
     Queue q;j.nameTemplate="queued-{counter}";q.add(j);q.add(j);q.run({});const auto entries=q.snapshot();
     check(read(entries[0].result,866,48000,audio::WavFormat::Pcm24)!=read(entries[1].result,866,48000,audio::WavFormat::Pcm24),
           "different queued jobs have different dither streams");
+    Queue shaped;
+    j.nameTemplate="shaped-{counter}";
+    j.encoding.dither=audio::WavDither::Shaped1;
+    shaped.add(j);
+    j.encoding.dither=audio::WavDither::Shaped3;
+    shaped.add(j);
+    j.encoding.format=audio::WavFormat::Float32;
+    shaped.add(j);
+    shaped.run({});
+    const auto shapedManifest=nlohmann::json::parse(serializeRunManifest(shaped.lastRun()));
+    const auto& shapedMembers=shapedManifest["members"];
+    const auto& shape1=shapedMembers[0]["job"]["requested_profile"];
+    const auto& shape3=shapedMembers[1]["job"]["requested_profile"];
+    const auto& floatProfile=shapedMembers[2]["job"]["requested_profile"];
+    check(shape1["dither"]=="shaped1" && shape1["effective_dither"]=="triangular" &&
+          shape3["dither"]=="shaped3" && shape3["effective_dither"]=="shaped3" &&
+          floatProfile["dither"]=="shaped3" && floatProfile["effective_dither"]=="none" &&
+          shapedMembers[0]["state"]=="completed" && shapedMembers[1]["state"]=="completed" &&
+          shapedMembers[2]["state"]=="completed",
+          "queue records requested shaping, rate fallback and Float32 bypass separately");
     f.effect();
     struct Constant final : Delay {
         double value=0;
@@ -944,6 +2226,50 @@ void normalizedRenders() {
     queue.run();check(queue.snapshot()[0].result.state==JobState::Completed && queue.snapshot()[0].result.normalization.has_value(),"a queued normalization choice produces a report on its completed job");
 }
 
+void brickwallNormalization() {
+    test::TempDirectory scratch{"render_queue","brickwall_normalization"};
+    constexpr std::uint32_t rate=48000,frames=48000;
+    constexpr double pi=3.14159265358979323846;
+    std::vector<double> signal(frames*2);
+    for(std::uint32_t frame=0;frame<frames;++frame) {
+        const auto sample=0.065*std::sin(2*pi*997*frame/rate);
+        signal[2*frame]=sample;
+        signal[2*frame+1]=-sample;
+    }
+    const auto run=[&](const char* name,NormalizeMode mode,bool enabled) {
+        Normalization settings;settings.mode=mode;settings.targetLufs=-20;settings.truePeakCeilingDb=-1;
+        settings.brickwall=enabled;
+        const auto staged=scratch.path()/(std::string(name)+".wav");
+        NormalizationCapture capture(scratch.path()/(std::string(name)+".pcm"),rate,2,settings);
+        for(std::uint32_t offset=0;offset<frames;) {
+            const auto count=std::min<std::uint32_t>(4096,frames-offset);
+            capture.append(std::span<const double>(signal).subspan(2*offset,2*count),count);
+            offset+=count;
+        }
+        const auto report=capture.finish(staged,audio::WavFormat::Pcm24,audio::WavDither::Triangular,999);
+        audio::WavReader wave(staged);
+        check(wave.frames()==frames && wave.channels()==2 && wave.sampleRate()==rate,
+              "brickwall export preserves programme length and channel format");
+        return std::pair{report,media::blake3File(staged).hex};
+    };
+    const auto [ordinary,ordinaryHash]=run("below-off",NormalizeMode::Loudness,false);
+    const auto [enabled,enabledHash]=run("below-on",NormalizeMode::Loudness,true);
+    check(!ordinaryHash.empty() && ordinaryHash==enabledHash && !enabled.brickwallApplied &&
+          ordinary.outputTruePeakDb && enabled.outputTruePeakDb==ordinary.outputTruePeakDb,
+          "below the ceiling, enabling Brickwall preserves the entire seeded PCM file byte for byte");
+    signal[2*13451]=0.97;
+    signal[2*31077+1]=-0.97;
+    const auto [limited,limitedHash]=run("loudness-limited",NormalizeMode::Loudness,true);
+    check(!limitedHash.empty() && limited.brickwallApplied && limited.ceilingLimited &&
+          limited.outputTruePeakDb && *limited.outputTruePeakDb<=-1 &&
+          limited.encodingPasses>=1 && limited.encodingPasses<=4,
+          "over-ceiling true peaks are limited before dither and the encoded 4x meter verifies the ceiling");
+    const auto [peakOff,peakOffHash]=run("peak-off",NormalizeMode::Peak,false);
+    const auto [peakOn,peakOnHash]=run("peak-on",NormalizeMode::Peak,true);
+    check(!peakOffHash.empty() && peakOffHash==peakOnHash && !peakOn.brickwallApplied &&
+          peakOff.outputTruePeakDb==peakOn.outputTruePeakDb,
+          "Peak normalization ignores the Brickwall setting");
+}
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
     c.format="wav";c.rate=44100;c.index=9;
@@ -1603,6 +2929,131 @@ void runManifests() {
     check(incompleteDoc["planned_count"]==2 && incompleteDoc["capture_complete"]==false && incompleteDoc["members"].empty(),
           "incomplete capture is explicit, never an apparently complete empty run");
 }
+void multipleDeliveries() {
+    const auto contents = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    Fixture f;
+    f.effect();
+    auto job = f.job("several");
+    job.endSample = job.beginSample + 4201;
+    job.session.precision = Precision::Float64;
+    auto pcm = job.encoding;
+    pcm.format = audio::WavFormat::Pcm24;
+    pcm.dither = audio::WavDither::Shaped2;
+    pcm.ditherSeed = 603;
+    auto aiff = pcm;
+    aiff.container = ExportContainer::Aiff;
+    job.deliveries = {{pcm, ""}, {aiff, ""}};
+#if defined(ADI_HAVE_FLAC)
+    auto flac = pcm;
+    flac.container = ExportContainer::Flac;
+    const auto flacIndex = job.deliveries.size();
+    job.deliveries.push_back({flac, ""});
+#endif
+    if (mp3ExportAvailable()) {
+        auto mp3 = pcm;
+        mp3.container = ExportContainer::Mp3;
+        job.deliveries.push_back({mp3, ""});
+    }
+    if (vorbisExportAvailable()) {
+        auto vorbis = pcm;
+        vorbis.container = ExportContainer::OggVorbis;
+        job.deliveries.push_back({vorbis, ""});
+    }
+    if (opusExportAvailable()) {
+        auto opus = pcm;
+        opus.container = ExportContainer::OggOpus;
+        job.deliveries.push_back({opus, ""});
+    }
+
+    std::uint64_t processed = 0;
+    int loads = 0;
+    struct CountedDelay final : Delay {
+        explicit CountedDelay(std::uint64_t& count) : frames(count) {}
+        void process(const NodeIo& io) noexcept override {
+            frames += static_cast<std::uint64_t>(io.frames);
+            Delay::process(io);
+        }
+        std::uint64_t& frames;
+    };
+    auto loader = [&](const DeviceRequest&, std::string&) {
+        ++loads;
+        return std::make_unique<CountedDelay>(processed);
+    };
+    Queue queue;
+    queue.add(job);
+    queue.run(loader);
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.deliveries.size() == job.deliveries.size() &&
+          result.framesWritten == 4201 && f.noStage(),
+          result.error.empty() ? "write all requested verified files from one job" : result.error.c_str());
+    if (result.state != JobState::Completed) return;
+    const auto batchFrames = processed;
+    const auto batchLoads = loads;
+    auto baseline = job;
+    baseline.deliveries.clear();
+    baseline.encoding = pcm;
+    baseline.nameTemplate = "one-graph-reference";
+    const auto once = renderWav(baseline, loader);
+    const auto referenceFrames = processed - batchFrames;
+    std::printf("Multi-delivery graph: %d load(s), %llu device frames; single: %d, %llu\n",
+                batchLoads, static_cast<unsigned long long>(batchFrames), loads - batchLoads,
+                static_cast<unsigned long long>(referenceFrames));
+    check(once.state == JobState::Completed && batchLoads == 1 && loads - batchLoads == 1 &&
+          batchFrames > 0 && batchFrames == referenceFrames,
+          "all deliveries share the same one graph run as a single compensated delivery");
+    check(std::ranges::all_of(result.deliveries, [](const auto& file) {
+        return file.state == JobState::Completed && file.publication.has_value();
+    }), "each delivery has its own publication outcome");
+
+    audio::WavReader wav(result.deliveries[0].output);
+    std::vector<float> expected(8402);
+    check(wav.read(expected.data(), 4201) == 4201 &&
+          equivalentAiff(result.deliveries[1].output, expected, 2, pcm.format),
+          "simultaneous WAV and AIFF carry identical dithered sample values");
+#if defined(ADI_HAVE_FLAC)
+    FlacReadback flacReadback{2, 24, 0, expected};
+    check(equivalentFlac(result.deliveries[flacIndex].output, flacReadback),
+          "simultaneous FLAC carries the identical seeded WAV PCM");
+#endif
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["deliveries"].size() == job.deliveries.size() &&
+          manifest["members"][0]["result"]["deliveries"].size() == job.deliveries.size(),
+          "manifest records the requested formats and per-file outcomes");
+
+    auto collision = job;
+    collision.deliveries = {{pcm, "-Mix"}, {pcm, "-mix"}};
+    check(renderWav(collision, loader).state == JobState::Failed && loads == 2,
+          "duplicate folded names refuse before loading the graph");
+    collision.nameTemplate = "late-collision";
+    collision.deliveries = {{pcm, ""}, {aiff, ""}};
+    Control control;
+    control.publicationHooks.rename = [](const fs::path& source, const fs::path& target) {
+        if (target.extension() == ".aiff") {
+            std::ofstream(target, std::ios::binary) << "late arrival";
+        }
+        return nativeExclusiveRename(source, target);
+    };
+    const auto partial = renderWav(collision, loader, control);
+    check(partial.state == JobState::Failed && partial.deliveries.size() == 2 &&
+          partial.deliveries[0].state == JobState::Completed && partial.deliveries[0].publication &&
+          partial.deliveries[1].state == JobState::Failed && !partial.deliveries[1].publication &&
+          contents(partial.deliveries[1].output) == "late arrival" && f.noStage(),
+          "late collision records the earlier commit and preserves the competing file");
+    collision.collision = Collision::Increment;
+    collision.nameTemplate = "number-group";
+    std::ofstream(collision.directory / "number-group.wav", std::ios::binary) << "existing";
+    const auto incremented = renderWav(collision, loader);
+    check(incremented.state == JobState::Completed && incremented.deliveries.size() == 2 &&
+          incremented.deliveries[0].output.filename() == "number-group (2).wav" &&
+          incremented.deliveries[1].output.filename() == "number-group (2).aiff" &&
+          contents(collision.directory / "number-group.wav") == "existing" &&
+          !fs::exists(collision.directory / "number-group.aiff"),
+          "one occupied filename increments the entire delivery group");
+}
+
 void mediaIdentities() {
     {
         // Synthetic wide IDs isolate truncation from whichever filesystem the
@@ -1824,7 +3275,7 @@ void mediaIdentities() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--export-speed-only") largeSongExportSpeed();
-        else {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); deliveryNameTokens(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+        else {ranges(); loopAndTailRenders(); gaplessCycleRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); directStemBatch(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffDeliveryExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); deliveryProfilePreflight(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); deliveryNameTokens(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     }
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);

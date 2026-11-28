@@ -106,29 +106,37 @@ float wavSampleAtDepth(float value, WavFormat format) noexcept {
     const auto scale = pcmScale(format);
     return static_cast<float>(quantizePcm(value, scale, 0.0) / scale);
 }
+bool validWavSpeakerMask(std::uint16_t channels, std::uint32_t mask) noexcept {
+    constexpr std::uint32_t definedSpeakers = 0x0003ffff;
+    return mask == 0 || ((mask & ~definedSpeakers) == 0 && std::popcount(mask) == channels);
+}
+
 WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
                      std::uint16_t channels, WavFormat format, const WavMetadata* metadata,
-                     std::uint64_t threshold, WavDither dither, std::uint64_t seed)
-    : format_(format), channels_(channels), bytes_(sampleBytes(format)), threshold_(threshold),
-      dither_(dither), randomState_(seed) {
-    require(dither == WavDither::None || dither == WavDither::Triangular || dither == WavDither::Rectangular);
+                     std::uint64_t threshold, WavDither dither, std::uint64_t seed, std::uint32_t speakerMask)
+    : format_(format), channels_(channels), bytes_(sampleBytes(format)), threshold_(threshold) {
+    require(validDither(dither));
+    if (!validWavSpeakerMask(channels, speakerMask)) {
+        throw std::invalid_argument("WAV speaker mask needs one defined speaker per interleaved channel");
+    }
     const auto align=static_cast<std::uint32_t>(channels)*bytes_;
     require(channels && rate && align<=65535 && static_cast<std::uint64_t>(align)*rate<=sentinel);
     require(!metadata || metadata->ixml.size()<sentinel);
     std::array<std::uint16_t,5> loudness{};
     if(metadata && metadata->bwfV2)loudness=validateV2(*metadata);
+    if(format!=WavFormat::Float32)quantizer_.emplace(rate,channels,bytes_*8U,dither,seed);
     file_.exceptions(std::ios::failbit|std::ios::badbit);
     file_.open(path,std::ios::binary|std::ios::in|std::ios::out|std::ios::trunc);
     tag(file_,"RIFF"); put(file_,0,4); tag(file_,"WAVE");
     tag(file_,"JUNK"); put(file_,28,4); zeros(file_,28);
-    const bool extensible=channels>2;
+    const bool extensible=channels>2 || speakerMask!=0;
     const unsigned fmtSize=extensible?40U:(format==WavFormat::Float32?18U:16U);
     tag(file_,"fmt "); put(file_,fmtSize,4);
     const unsigned encoding=format==WavFormat::Float32?3U:1U;
     put(file_,extensible?0xfffeU:encoding,2); put(file_,channels,2); put(file_,rate,4);
     put(file_,static_cast<std::uint64_t>(rate)*align,4); put(file_,align,2); put(file_,bytes_*8U,2);
     if(extensible) {
-        put(file_,22,2); put(file_,bytes_*8U,2); put(file_,0,4); // unspecified speaker mask
+        put(file_,22,2); put(file_,bytes_*8U,2); put(file_,speakerMask,4);
         put(file_,encoding,4);
         for(auto c:guidTail) file_.put(static_cast<char>(c));
     } else if(format==WavFormat::Float32) put(file_,0,2); // WAVEFORMATEX cbSize
@@ -171,20 +179,6 @@ void WavWriter::header() {
     if(factOffset_) { file_.seekp(offset(factOffset_)); put(file_,std::min(dataBytes_/(channels_*bytes_),sentinel),4); }
     file_.flush(); file_.seekp(offset(end));
 }
-double WavWriter::uniform() noexcept {
-    // SplitMix64, specified unsigned arithmetic; no library distribution whose
-    // sequence could differ between standard libraries. The top 53 bits map
-    // exactly to [0,1) in double, including seed zero.
-    auto z = (randomState_ += 0x9e3779b97f4a7c15ULL);
-    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-    return static_cast<double>((z ^ (z >> 31)) >> 11) * 0x1p-53;
-}
-double WavWriter::noise() noexcept {
-    if (dither_ == WavDither::None) return 0.0;
-    const double a = uniform();
-    return dither_ == WavDither::Triangular ? a - uniform() : a - 0.5;
-}
 void WavWriter::write(const float* input, std::uint32_t frames) { writeSamples(input, frames); }
 void WavWriter::write(const double* input, std::uint32_t frames) { writeSamples(input, frames); }
 template<class Sample> void WavWriter::writeSamples(const Sample* input, std::uint32_t frames) {
@@ -203,9 +197,7 @@ template<class Sample> void WavWriter::writeSamples(const Sample* input, std::ui
                 require(!std::isfinite(f) || std::abs(static_cast<double>(f)) <= std::numeric_limits<float>::max());
                 bits=std::bit_cast<std::uint32_t>(static_cast<float>(f));
             }
-            else {
-                bits=static_cast<std::uint32_t>(quantizePcm(f, pcmScale(format_), noise()));
-            }
+            else bits=static_cast<std::uint32_t>(quantizer_->quantize(static_cast<double>(f)));
             for(unsigned j=0;j<bytes_;++j) buffer[i*bytes_+j]=static_cast<char>((bits>>(j*8))&255U);
         }
         file_.write(buffer.data(),static_cast<std::streamsize>(n*bytes_)); pos+=n;

@@ -60,8 +60,15 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  "chirlu/soxr soxr LGPL-2.1-or-later 0.1.3 945b592b70470e29f917f4de89b4281fbbd540c0 build"
+  # EX-04: the native Ogg container, Vorbis and Opus encoders.
+  "xiph/opus opus BSD-3-Clause v1.6.1 22244de5a79bd1d6d623c32e72bf1954b56235be build"
+  "xiph/libopusenc libopusenc BSD-3-Clause v0.3 0dba1bea736ab8bb811409dce80c994a00a2ced9 build"
+  "xiph/ogg ogg BSD-3-Clause v1.3.6 be05b13e98b048f0b5a0f5fa8ce514d56db5f822 build"
+  "xiph/vorbis vorbis BSD-3-Clause v1.3.7 0657aee69dec8508a0011f47f3b69d7538e9d262 build"
   # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
   "Ableton/link link GPL-2.0-or-later Link-4.1.1 5ba907ae027a8c2ec8824463e37296dcefc5e9be build submodules"
+  "xiph/flac flac BSD-3-Clause 1.5.0 1507800de4b70e21be71f38caa0d9079d0bc6e45 build"
   # Public headers only: independent ABI shims dynamically load Linux AAC.
   "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
   "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
@@ -263,6 +270,43 @@ fetch_pinned() {
     printf '%s %s  %-9s [%s]\n' "${got:0:9}" "$(git -C "$path" log -1 --format='%cs')" "$tag" "$lic"
 }
 
+# LAME publishes this release as a source archive. A mirror is usable only
+# when its complete bytes agree with the reviewed archive SHA-256.
+fetch_lame_archive() (
+    local path=third_party/lame-3.100
+    local digest=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+    if [ -f "$path/include/lame.h" ] && [ -f "$path/.archive-sha256" ] &&
+       [ "$(cat "$path/.archive-sha256")" = "$digest" ]; then
+        printf '  %-18s 3.100 [LGPL-2.0-or-later, SHA-256 pinned]\n' lame
+        exit 0
+    fi
+    if [ -e "$path" ]; then
+        echo "FATAL: $path exists without the reviewed LAME archive hash" >&2
+        exit 1
+    fi
+    local stage actual
+    stage=$(mktemp -d third_party/.lame-3.100.XXXXXX)
+    trap 'rm -rf -- "$stage"' EXIT
+    if ! curl --fail --silent --show-error --location --max-time 90 \
+        'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz' -o "$stage/release.tar.gz"; then
+        curl --fail --silent --show-error --location --max-time 90 \
+            'https://download.videolan.org/pub/contrib/lame/lame-3.100.tar.gz' -o "$stage/release.tar.gz"
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$stage/release.tar.gz")
+    else
+        actual=$(shasum -a 256 "$stage/release.tar.gz")
+    fi
+    if [ "${actual%% *}" != "$digest" ]; then
+        echo "FATAL: unexpected LAME archive SHA-256" >&2
+        exit 1
+    fi
+    tar -xzf "$stage/release.tar.gz" -C "$stage"
+    printf '%s\n' "$digest" > "$stage/lame-3.100/.archive-sha256"
+    mv "$stage/lame-3.100" "$path"
+    printf '  %-18s 3.100 [LGPL-2.0-or-later, SHA-256 pinned]\n' lame
+)
+
 # --- unpinned: reference/ ---------------------------------------------------
 fetch_floating() {
     local repo dir lic path
@@ -283,6 +327,7 @@ fetch_floating() {
 
 echo "third_party/ -- linked and shipped, PINNED (ADR-0024):"
 for e in "${THIRD_PARTY[@]}"; do fetch_pinned "$e"; done
+fetch_lame_archive
 
 if [ "$WANT_REFERENCE" = 1 ]; then
     echo

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -28,13 +29,30 @@ enum class PcmContainer { Wav, Aiff };
 struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
+    // The legacy PreFader spelling is the wet PostFx tap. Existing jobs can
+    // keep that field; explicit EX-02 jobs choose the actual signal point.
+    std::optional<engine::Tap> signalTap{};
+    [[nodiscard]] engine::Tap resolvedTap() const noexcept {
+        return signalTap.value_or(tap == engine::OfflineTap::PreFader ? engine::Tap::PostFx : engine::Tap::PostFader);
+    }
 };
+enum class ExportContainer { Wav, Flac, Aiff, Mp3, OggVorbis, OggOpus };
+enum class ChannelFold { Preserve, StereoAverage };
 struct Encoding {
     audio::WavFormat format = audio::WavFormat::Pcm24;
     audio::WavDither dither = audio::WavDither::Triangular;
     // Mixed with the stable enqueue ordinal. Retry is reproducible; different
     // jobs get separate streams. Float32 ignores dither without adding noise.
     std::uint64_t ditherSeed = 0;
+    ExportContainer container = ExportContainer::Wav;
+    float vorbisQuality = 0.5f;
+    ChannelFold channelFold = ChannelFold::Preserve;
+    std::uint32_t opusBitRate = 160000;
+    std::uint32_t speakerMask = 0; // WAV order, after channel folding
+};
+struct DeliverySpec {
+    Encoding encoding;
+    std::string nameSuffix;
 };
 struct NiStem {
     Source source;
@@ -44,6 +62,14 @@ struct NiStem {
 struct NiStems {
     std::vector<NiStem> stems; // one to four direct wet sources; unused slots silent
     std::uint32_t bitRate = 256000; // per stereo track, one codec setting for all five
+};
+enum class ExportRatePolicy { RequestedRate, ProjectThenDownsample };
+enum class TailMode { Off, Fixed, UntilSilent };
+struct Tail {
+    TailMode mode = TailMode::Off;
+    std::uint32_t maxMilliseconds = 0; // fixed length, or the upper bound of UntilSilent
+    double thresholdDbfs = -90;
+    std::uint32_t holdMilliseconds = 50;
 };
 struct Job {
     std::filesystem::path project;
@@ -66,6 +92,16 @@ struct Job {
     PcmContainer container = PcmContainer::Wav;
     // The complete literal filename from a single PCM delivery's save dialog.
     std::optional<std::string> exactPcmFilename;
+    // Empty preserves the ordinary one-file contract. Nonempty deliveries share
+    // one graph render and the same output clock, range and channel layout.
+    std::vector<DeliverySpec> deliveries{};
+    ExportRatePolicy ratePolicy = ExportRatePolicy::RequestedRate;
+    // Analyze the selected compensated source without a private or published delivery.
+    bool analysisOnly = false;
+    Tail tail{};
+    bool renderAsLoop = false;
+    // Reserved for the continuous region renderer (EX-12).
+    bool gaplessBatch = false;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -95,6 +131,7 @@ struct RenderSnapshot {
     double sampleRate = 0;
     std::optional<std::int64_t> regionId{};
     NameContext names; // the values used to resolve this output's name
+    double graphSampleRate = 0;
 };
 struct MediaReference {
     std::int64_t clipId = 0, mediaId = 0;
@@ -117,6 +154,7 @@ struct MediaVerification {
     std::vector<MediaIdentity> identities;
     bool startComplete = false;
     bool publicationVerified = false;
+    bool analysisVerified = false;
 };
 struct ReplacementBinding {
     std::filesystem::path target;
@@ -127,6 +165,13 @@ struct ReplacementBinding {
 // Pure job-input validation shared by the queue and its JSON codec. Does not
 // open the project, resolve its revision/names, enqueue or render anything.
 void validateJob(const Job&);
+struct DeliveryResult {
+    std::filesystem::path output;
+    JobState state = JobState::Pending;
+    std::optional<PublicationReport> publication{};
+    std::string error;
+    std::optional<std::string> deliveryBlake3{};
+};
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -151,8 +196,23 @@ struct Result {
     // Present only for explicit Replace, including an absent preflight target.
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
+    std::vector<DeliveryResult> deliveries{};
+    std::optional<std::string> deliveryBlake3{};
+    std::uint64_t framesAnalyzed = 0;
+    std::optional<ExportStatistics> analysis{};
 };
-struct Entry { JobId id = 0; Job job; Result result; };
+struct Entry { JobId id = 0; Job job; Result result; JobId stemBatch = 0; };
+struct RenderCell {
+    Source source;
+    std::optional<std::int64_t> regionId{}; // null uses the job's literal range
+};
+struct StemPreview {
+    JobId ordinal = 0;
+    Source source;
+    std::filesystem::path output;
+    std::optional<std::int64_t> regionId{};
+    std::int64_t beginSample = 0, endSample = 0;
+};
 struct RunMember {
     JobId id = 0;
     bool started = false;
@@ -196,7 +256,30 @@ struct Control {
     // WAV work fraction, including preroll and normalization. 1.0 means the
     // delivery has been published. The written-frame callback above is separate.
     std::function<void(JobId, double)> wavProgress{};
+    bool fingerprintDelivery = false; // requested for a later After Export action
 };
+struct FileConversion {
+    std::filesystem::path source;
+    std::filesystem::path directory;
+    std::string name; // empty uses the source stem; the writer adds the selected format suffix
+    Encoding encoding;
+    Normalization normalization{};
+    Collision collision = Collision::Fail;
+    std::uint32_t outputSampleRate = 0; // zero preserves the source, lower rates use SoXR
+};
+/// Owner-worker conversion uses the project's normal export delivery pipeline.
+/// Source clock and channel layout are preserved by default. No project opens.
+[[nodiscard]] Result convertAudioFile(FileConversion, Control = {});
+
+// Runs in request order with one result slot per input. Cancellation leaves
+// remaining slots Pending. Progress uses one-based request IDs in this call.
+[[nodiscard]] std::vector<Result> convertAudioFiles(std::span<const FileConversion>, Control = {});
+
+// Validates the configured format, delivery clock/layout and naming options.
+// Throws the same profile error as enqueue or render. Leaves the project,
+// sources and output directory unopened and does not resolve a selection.
+void validateDeliveryProfile(const Job&);
+
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
                                     std::uint64_t counter = 1);
@@ -207,12 +290,27 @@ struct Control {
 [[nodiscard]] Result renderNiStems(Job, engine::DeviceLoader, Control = {},
                                     JobId = 0, std::uint64_t counter = 1);
 void validateNiStems(const Job&);
+
+struct GaplessResult {
+    JobState state = JobState::Pending;
+    std::string error;
+    std::vector<Result> regions; // chronological order; already published files retain their receipts
+    std::optional<NormalizationReport> normalization{}; // whole continuous program
+    std::optional<StageCleanupFailure> stageCleanup{};
+};
+/// Render adjacent cycle markers in one session and slice the quantized WAV.
+/// Files share one revision and continuous effect and dither state.
+[[nodiscard]] GaplessResult renderGaplessWav(Job, std::span<const std::int64_t> regionIds,
+    engine::DeviceLoader = {}, Control = {});
+
 namespace detail {
 struct Cancelled {};
 // NI binds its final delivery after Main metadata/name resolution, before any
 // Main audio is processed. Ordinary callers use renderWav without this hook.
+using PlanRange = std::function<void(Job&, const rows::Model&, const engine::TempoMap&,
+                                     const NameContext&, std::int64_t journalHead)>;
 Result renderWavPrepared(Job, engine::DeviceLoader, Control, JobId, std::uint64_t,
-                        const std::function<void(const Result&)>&);
+                        const std::function<void(const Result&)>&, const PlanRange& = {});
 // Resolve the final NI delivery from Main's captured metadata. Intermediate WAV
 // format/names stay separate; no AAC encoder or audio work is performed here.
 void prepareNiOutput(Result&, const Result& main, const Job& delivery);
@@ -252,6 +350,15 @@ struct QueueObserver {
 class Queue {
 public:
     JobId add(Job);
+    // Preview an explicit list against the current project and destination.
+    // Each actual render still resolves its own revision and names at start.
+    [[nodiscard]] std::vector<StemPreview> previewStemBatch(const Job&, std::span<const Source>) const;
+    // Revalidate before adding the entire list. Refusal adds no queue entries.
+    std::vector<JobId> addStemBatch(const Job&, std::span<const Source>);
+    // Sparse matrix in caller order. Every selected track/tap and cycle
+    // marker becomes an ordinary job under the same batch collision rules.
+    [[nodiscard]] std::vector<StemPreview> previewRenderMatrix(const Job&, std::span<const RenderCell>) const;
+    std::vector<JobId> addRenderMatrix(const Job&, std::span<const RenderCell>);
     bool update(JobId, Job);
     bool remove(JobId);
     bool retry(JobId); // only Failed/Cancelled, never silently rerender completed files

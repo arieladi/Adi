@@ -1,5 +1,41 @@
 # Render publication and run reports
 
+## Signal path
+
+An ordinary export pins the project revision and resolves its source and range
+before capture. The engine processes preroll, selects the compensated frames,
+and applies the requested loop or tail window. Render as Loop writes the second
+lap. A tail stops new timeline input at the end of the range and continues the
+same graph. Until Silent measures the consecutive quiet span on the graph clock.
+
+With Project Then Downsample, effects run at the project rate and SoXR converts
+the selected stream to the delivery rate. Stereo averaging follows conversion.
+The optional analysis or normalization then measures that delivery signal.
+Normalization applies a common gain to the channels, can run the true-peak
+brickwall, and verifies the decoded ceiling. Conditional loudness requires the
+caller to choose whether a skipped target still enforces the ceiling. The
+report distinguishes a skipped target, a ceiling reduction and brickwall
+activity. Peak mode targets the sample peak and keeps its existing ratio path.
+
+After this stage, integer PCM uses the seeded quantizer once per encoding pass.
+WAV, AIFF and FLAC verify the complete PCM frame count, sample rate and channels.
+MP3, Vorbis and Opus verify the actual decoded length, including codec trim as
+applicable. All files in a multi-format job share one graph, rate, channel
+layout and source window. This profile supports Normalize Off. Normalization
+is available for single WAV, AIFF and FLAC deliveries. The existing NI Stems
+normalization guard stays in force. Source verification and any requested
+delivery digest precede publication.
+
+Analyze Only reports the final requested clock and layout as measured PCM and
+does not create an output file. Continuous cycle WAVs resample and quantize
+one capture and slice it at the exact rounded boundaries, retaining the
+speaker mask and individual file receipts. Independent loops and tails are
+unavailable for that profile. A batch file conversion reads source streams
+directly and uses the same rate conversion, channel conversion and encoders.
+After Export starts a separate undoable import using the chosen verified file.
+
+## Publication
+
 `render::Result::publication` is present only after successful publication.
 `durabilityConfirmed` says whether the publisher confirmed directory durability;
 `usedFallback` retains its fallback-path decision. A nonempty warning is compatible
@@ -7,14 +43,13 @@ with `JobState::Completed`. It must not cause automatic retry or removal of an
 already published file. An absent publication report means this attempt did not
 publish successfully, even when `output` names its intended destination.
 
-WAV and NI Stems use the same commit helper. It allocates warning storage before
-publication and performs only nonthrowing state/move operations afterward. If the
-publisher cannot confirm durability but returns no warning text, the result uses
-an explicit generic warning. Per-call `Control::publicationHooks` are diagnostic
-injection only; NI's private intermediate WAVs use normal publisher behavior.
-Authoritative WAV/NI publication uses `PublishPolicy::AtomicOnly`: a rename
-refusal fails without publishing a copy. Successful outputs therefore report
-`usedFallback=false`; retaining the publisher flag does not opt into fallback.
+The file writers and NI Stems share the commit helper. It allocates warning
+storage before publication and uses nonthrowing state and move operations
+afterward. If the publisher cannot confirm durability and supplies no warning
+text, the result uses a generic warning. Per-call `Control::publicationHooks`
+inject diagnostic faults. NI's intermediate WAVs use normal publisher behavior.
+Authoritative publication uses `PublishPolicy::AtomicOnly`. A rename refusal
+fails without publishing a copy. Successful outputs report `usedFallback=false`.
 
 `Result::stageCleanup` records the directory and native error when private
 staging cannot be completely removed. WAV and NI check cleanup on every exit
@@ -27,8 +62,8 @@ even if a private staging directory needs attention.
 WAV or NI delivery. The original complete filename is tried first. If occupied,
 Increment selects `name (2).wav`, `name (3).wav`, and so on, or
 `name (2).stem.mp4` for NI. Files, directories and dangling symlinks all occupy
-a name. Complete filenames are compared with the same pinned utf8proc policy as
-the library: `STABLE | COMPOSE | CASEFOLD`. Canonically equivalent spellings and
+a name. Complete filenames use the library's pinned
+`STABLE | COMPOSE | CASEFOLD` utf8proc policy. Canonically equivalent spellings and
 full Unicode expansions such as `Straße`/`STRASSE` therefore collide even when
 the destination filesystem distinguishes them. Comparison does not rewrite the
 chosen filename. Native lookup additionally catches aliases such as Windows
@@ -55,10 +90,11 @@ The folded recheck is not an atomic cross-process name reservation. An arrival
 after it is covered by the OS's native no-clobber semantics: an exact/native
 alias cannot be overwritten, but a fold-only equivalent that the OS regards as
 distinct may coexist. Tests inject both kinds at the native rename boundary and
-make this limit explicit. A stronger cross-process folded reservation remains
-separate work. There is no multi-format/group renumbering, save-dialog
-confirmation or batch policy selection. Replace remains unavailable pending a
-separate explicit opt-in and destination-identity contract inside `replaceFile`.
+make this limit explicit. A multi-format Increment job chooses one number for
+the whole set at preflight. Explicit Replace binds the destination identity,
+including an absent destination, and fails if that binding changes. The
+existing destination survives such a refusal. Each successful file keeps its
+receipt if a later file fails or cancellation stops the batch.
 
 The comparison dependency is the existing utf8proc v2.11.3, pinned at
 `e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78` (MIT) in `tools/fetch_external.sh`.
@@ -95,15 +131,21 @@ Version 1 records:
 - Requested project/output directory/template, source track/tap, sample range
   and optional cycle-region ID; format, precision, rate, channels, block size,
   compensation, optional external tempo, dither/seed, normalization and NI
-  stem metadata. These are explicitly **requested** values. For example, NI
+  stem metadata. The `effective_dither` field reports which destination
+  quantizer the requested profile selects. Shaped 1, 2 and 3 use Lipshitz,
+  improved E-weighted and Shibata. Unsupported shaping rates select triangular
+  dither, and Float32 and NI select none. Other profile values are **requested**.
+  For example, NI
   uses Float32 intermediate WAVs, while its requested profile may still contain
   the ordinary job's WAV encoding. Float32 ignores requested dither.
-- The requested `job.collision` (`fail` or `increment`); `result.output` is the
-  actual selected path, including any preflight increment. A failed preflight
-  can retain its rejected candidate path without having published it.
-- Actual output path, written-frame count, error, publication flags/warning,
-  and available normalization measurements. The stable job ID is also the
-  runner's dither-seed mixing ordinal.
+- The requested `job.collision` (`fail`, `increment` or `replace`). A single
+  file records its resolved path in `result.output`. Multi-format jobs use
+  `result.deliveries` for each selected path, state and receipt. A failed
+  preflight can retain its rejected candidate path without publication.
+- Written-frame count, error, publication flags and warning, and available
+  normalization statistics for captured PCM and the decoded delivery. Analyze
+  Only records `frames_analyzed`, `analysis` and `analysis_verified`. The
+  stable job ID is the runner's dither-seed mixing ordinal.
 - `result.resolved_snapshot` and the member's `journal_head`: the current journal
   branch head, resolved source ID/tap, sample rate, output-range bounds, region ID
   and name-expansion values. The read occurs inside the same SQLite transaction

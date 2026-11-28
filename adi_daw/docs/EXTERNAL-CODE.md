@@ -10,6 +10,12 @@ Both are gitignored — each clone is its own git repo, same arrangement as
 
 Refresh everything with `tools/fetch_external.sh`.
 
+The committed export dithering tables in `src/adi/audio/sox_dither_coefficients.inc`
+come from [SoX 14.4.2](https://github.com/chirlu/sox/blob/45b161d73ec087a8e003747b1aed07cd33589bca/src/dither.c),
+`45b161d73ec087a8e003747b1aed07cd33589bca`, with the original LGPL-2.1-or-later notice.
+ADI supplies the quantizer and headroom calculation. The licence and changes
+are in [third_party_notices/sox_dither](../third_party_notices/sox_dither/NOTICE.md).
+
 ---
 
 ## `third_party/` — we link against these and ship them
