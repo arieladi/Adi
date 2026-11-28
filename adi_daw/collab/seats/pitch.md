@@ -140,3 +140,9 @@ The 30 installed Cubase comparisons await the Windows reference installation. Th
 - `seats/pitch-chain` is at `34e21e163684e556f25f5b9496d78afcb3b1285a`, with `origin/main` at `ed3da057` and the Windows checker patch `d090b47b` in its history.
 - GCC 14.2 Debug headless built with `ADI_WERROR=ON` and `ADI_ACCEPTANCE=ON`. All 299 non-performance CTest suites passed in 112.34 s. The separately run performance suite passed its 72 checks in 63.53 s, for 300 passing suites total. The focused gate passed all 25 suites. All five validators and the compiled SPEC layout check passed.
 - The Windows checker reports 54 successful MIDI checks after its fixture fix. Its latest report still names the earlier pitch build. The current continuation head remains queued for its native retest. [Windows checker](https://github.com/arieladi/Adi/blob/basics/wincheck-log/adi_daw/collab/basics/wincheck.md)
+
+## 28 November continuation
+
+| Item | Change | Proof | State |
+| --- | --- | --- | --- |
+| Tenth bundle integration and checker fixes | Merged `origin/main` at `6aeeed1b`, Windows checker `b2f4c500` and libc++ checker `0ef9c557`. Integrated the landed raw reverse, unwarped transpose and playback diagnostics with pitch playback, comparison and material history. Flatten keeps the native Reverse flag, Transpose and Warp markers. | The merged head built with `ADI_WERROR=ON` and `ADI_ACCEPTANCE=ON`. `ctest -LE performance` passed all 301 headless suites in 114.54 s. In a reversed +12-semitone clip, original comparison was 440.000 Hz and corrected comparison and paged audio were both 466.164 Hz. Reversed Warp comparison and flattened playback retained exact PCM in the fixtures. | Pushed `f73837f8`. The two checker results predate this combined head. |
