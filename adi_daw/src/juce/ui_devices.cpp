@@ -2512,7 +2512,8 @@ void DevicePanelView::changeParameterPanel(const DevicePanelData &current, std::
         return;
     }
     const auto before = panelParameterIds(current.resolved);
-    if (params ? *params == before : !current.resolved.configured)
+    // An explicit empty panel persists even when the automatic panel is already empty.
+    if (params ? current.resolved.configured && *params == before : !current.resolved.configured)
         return;
     const auto after = params ? *params : panelParameterIds(panel::resolve({}, current.id, current.declarations()));
     const auto snapshot = strip.root.current();
