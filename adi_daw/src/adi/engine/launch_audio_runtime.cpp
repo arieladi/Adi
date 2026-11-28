@@ -543,7 +543,7 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
     for (auto skip = std::int32_t{0}; skip < section.frames && ranges.size < ranges.items.size();) {
         const bool beforeGain = skip < gain.beforeFrames;
         const bool beforeReplacement = skip < replacement.beforeFrames;
-        const auto end = std::min(beforeGain ? gain.beforeFrames : section.frames,
+        const auto rangeEnd = std::min(beforeGain ? gain.beforeFrames : section.frames,
             beforeReplacement ? replacement.beforeFrames : section.frames);
         const auto multiplier = beforeGain ? gain.before : gain.after;
         const auto* current = beforeReplacement ? pcm : replacement.replacement;
@@ -551,14 +551,14 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
             std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
         const auto elapsed = fade < 0 ? -1 : fade + std::min<std::int64_t>(skip,
             std::numeric_limits<std::int64_t>::max() - fade);
-        ranges.items.data()[ranges.size++] = {base + section.offset + skip, end - skip, current, advanced,
+        ranges.items.data()[ranges.size++] = {base + section.offset + skip, rangeEnd - skip, current, advanced,
             section.velocity * multiplier, !section.regionIsLiveEdit, elapsed};
         if (tapePcm && beforeReplacement) {
             const auto first = block.sample + section.offset;
-            (void)capture->appendPcmRange({section.track, section.clip, section.run, first + skip, first + end, advanced,
+            (void)capture->appendPcmRange({section.track, section.clip, section.run, first + skip, first + rangeEnd, advanced,
                 section.regionIsLiveEdit, multiplier});
         }
-        skip = end;
+        skip = rangeEnd;
     }
 }
 
