@@ -32,6 +32,31 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **He tested a newer build:** hosted VST3 and CLAP plug-ins work, automation records, a held drag bends a segment, the dial follows the automation. One new finding, a folded device that does not unfold by a double-click (SC-485). He tests instruments and MIDI recording next.
 
+**Twelve streams of win's own, started the same afternoon.** The director had most of a week's allowance unused and a day to use it: "i want to grind what we can to advance adi daw as match as we can". His answers: win starts the sessions itself as a workflow ("J a"), the devices' breadth is in ("K a"), and "choose model accordantly don't use fable max for no reason". Each stream is a session of the how-to: its own chain, its own log, tests first, no pull request. They build on the second PC, each in a build place of its own, at most four building at once.
+
+| Stream | Chain | Log | What |
+|---|---|---|---|
+| browser, midi, automation, clips, export, project | `basics/<name>-chain` | `basics/<name>-log` | the open rows of those queues, grade A first; midi also turns his instrument test list into tests; export writes SC-479's proofs |
+| shaper | `basics/shaper-chain` | `basics/shaper-log` | SC-481. First a survey: the clones seat already built much of what the list calls missing, on about fifty branches that never landed (most marked for after 3 December). The stream gathers them, proves the chain and scores the list again before it builds anything. That chain lands only on the director's word |
+| sampler, oneshot | `basics/sampler-chain`, `basics/oneshot-chain` | `basics/<name>-log` | SC-483 and SC-482: sound, controls and tests, no look |
+| review-recording, review-undo, review-saving | `basics/review-<area>-chain` | `basics/review-<area>-log` | a review of what landed since 26 November; a finding counts only with a failing test, and is fixed |
+
+No stream takes a number by itself: a schema minor, an op name or a register id is asked for in its log ("Reserve: ...") and win writes it in `collab/RESERVATIONS.md`. No stream changes a look. The integrator takes the chains whose logs ask for it; win lands the bundles.
+
+**The eleventh bundle landed** (#838, `bac01d4e8`): the integrator's third chain with the review's findings, the agent chain, ADR-0266 and the first devices' sheets. Win's fixes on it were for other compilers and systems: a path taken whole as a clip's name on Windows, a drop that left the grid on macOS because Cmd is also the grid's bypass there, a header macOS needs, and two that GCC's hardened build refuses. **85 rows are marked on main** by the ids in the subjects of the code commits that landed (#822, #830, #838); a row that a retest shows only half done is opened again.
+
+**A second wave, nine more streams, the same afternoon.** The director asked for more than the basics: "audiogridder in adi and server, AI integrations.. phase 1,2,3,4", "the abltone live view", and "i want more sessions to open for opus". Win counted 536 branches of finished work that never merged, because landing was held to 3 December while the seats kept building. Five streams each gather one seat's branches into one proved chain; four advance plan rows. All are on `held/<name>-chain` with a log on `held/<name>-log`, and **none of it lands before he says so**.
+
+| Stream | What |
+|---|---|
+| held-mixview, held-devices, held-engine, held-engine-win, held-window | the seat's unmerged branches: a survey, one chain, a full check, and an account of what it adds |
+| session-window | Session View's window side under the look: the model, Live's commands and keys, tests |
+| server | DEV-27, plug-ins on another computer, from where the server seat's log stops |
+| agent | the agent's safety and the tools it lacks, from where the control seat's log stops |
+| suite-s2 | Track S, wave S2: the engine and device parts (DEV-33, MX-38, MX-39, MX-40, AU-10) |
+
+**The Session View's sheet 1** (`win/session-sheet-1`, `proposals/session-1`): his word, "session view looking good as far as i can tell from picture". Open: where the switch between Session and Arrangement sits (drawn as Live's, at the top right of the tracks, with Tab).
+
 **Next free:** ADR-0269; schema minor 1.29; DF-W67, DF-R4, DF-C10, DF-E93; SC-486.
 
 ---
