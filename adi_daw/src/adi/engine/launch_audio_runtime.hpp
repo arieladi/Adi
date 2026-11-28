@@ -19,9 +19,9 @@ class LaunchFollowPlayer;
 class LaunchCaptureBuffer;
 class LaunchAudioRuntime;
 
-inline constexpr std::size_t kMaximumTimedRawSceneTracks = 3;
+inline constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
 [[nodiscard]] constexpr bool supportsTimedRawSceneTrackCount(std::size_t tracks) noexcept {
-    return tracks >= 2 && tracks <= kMaximumTimedRawSceneTracks;
+    return tracks >= 2 && tracks <= kMaximumStoredLaunchTracks;
 }
 
 struct LaunchSceneClock {
@@ -169,7 +169,7 @@ public:
                        std::int32_t maxFrames,
                        std::shared_ptr<const LaunchAudioProject> beforeClock = {},
                        std::int64_t clockSample = 0, std::uint64_t compatibleGainRevision = 0,
-                       LaunchAudioDriver* owner = nullptr);
+                       LaunchAudioDriver* owner = nullptr, bool timedRawScene = false);
 
     void startIfQueued(LaunchAudioDriver&, LaunchBlock, Transport&) const noexcept;
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
@@ -254,6 +254,9 @@ private:
     std::int32_t maxFrames_;
     bool active_ = false;
     std::uint64_t compatibleGainRevision_;
+    // Sized once from the rendered track catalog on the owner. Ordinary
+    // generations do not need a timed plan buffer.
+    std::vector<TimedSceneAction> timedRawPlan_;
 };
 
 } // namespace adi::engine

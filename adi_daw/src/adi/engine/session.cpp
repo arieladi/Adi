@@ -47,7 +47,6 @@ namespace {
 
 // Preserve playback with Monitor Off until the overlap behavior is measured (R45).
 constexpr bool kMonitorOffMutesPreviousTake = false;
-constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
 std::atomic<std::uint64_t> nextLaunchIncarnation{1};
 
 bool pinnedLegatoTarget(const LaunchSlot& slot, std::int64_t scene) noexcept {
@@ -80,7 +79,8 @@ bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot&
 }
 
 // Admit raw, non-looping audio tracks with long disk targets that need
-// exact cue-page leases. One of three tracks may explicitly stop or continue.
+// exact cue-page leases. Only the existing three-track shape may include
+// a saved Stop or No Stop; a larger scene must start on every track.
 bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcept {
     const auto view = before.view();
     if (!before.stored() || !supportsTimedRawSceneTrackCount(view.tracks.size()) ||
@@ -90,7 +90,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
     for (const auto& slot : view.slots) {
         if (slot.clip == 0) {
             if (slot.scene == scene) {
-                ++other;
+                if (view.tracks.size() != 3 || ++other > 1) return false;
                 if (!slot.hasStop && std::ranges::none_of(view.slots,[&](const LaunchSlot& source) {
                     const auto* pcm = source.track == slot.track ? before.clip(source.clip) : nullptr;
                     return pcm && pcm->pageReader();
@@ -107,7 +107,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
             return false;
         ++targets;
     }
-    return targets + other == view.tracks.size() && targets >= 2 && other <= 1;
+    return targets + other == view.tracks.size() && targets >= 2;
 }
 
 bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
@@ -1273,7 +1273,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             gainRevision = prior->launchAudio->gainRevision();
     }
     timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,
-                                                            clockSample, gainRevision, launchAudioDriver_.get());
+                                                            clockSample, gainRevision, launchAudioDriver_.get(), timedRaw);
     if (timedScenePending) {
         if (!timing.launchAudio->hasScene(preparedScene_->scene))
             throw std::runtime_error("a committed Session scene must remain available until launch");
@@ -1282,7 +1282,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             DriverClock clock;
             if (!readDriverClock(clock) || !supportsTimedRawSceneTrackCount(tracks.size()) ||
                 timing.settings.punchIn || timing.settings.punchOut)
-                throw std::runtime_error("a timed raw Scene needs an unpunched clock with two or three audio tracks");
+                throw std::runtime_error("a timed raw Scene needs a current unpunched clock and a bounded audio track catalog");
             timing.timedCutSample = clockSample;
             timing.timedCutRevision = clock.revision;
             timing.timedCutPreviousGeneration = timedRawPreviousGeneration;

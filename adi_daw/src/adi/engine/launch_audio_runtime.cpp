@@ -323,10 +323,10 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
                                        std::vector<std::int64_t> tracks, std::int32_t maxFrames,
                                        std::shared_ptr<const LaunchAudioProject> beforeClock,
                                        std::int64_t clockSample, std::uint64_t compatibleGainRevision,
-                                       LaunchAudioDriver* owner)
+                                       LaunchAudioDriver* owner, bool timedRawScene)
     : project_(std::move(project)), beforeClock_(std::move(beforeClock)), clockSample_(clockSample),
       tracks_(std::move(tracks)), ranges_(tracks_.size()), maxFrames_(maxFrames),
-      compatibleGainRevision_(compatibleGainRevision) {
+      compatibleGainRevision_(compatibleGainRevision), timedRawPlan_(timedRawScene ? tracks_.size() : 0) {
     if (!project_ || maxFrames <= 0)
         throw std::invalid_argument("invalid Session launch audio runtime format");
     if (beforeClock_ && (beforeClock_->incarnation() != project_->incarnation() || clockSample_ <= 0))
@@ -649,7 +649,7 @@ LaunchAudioRuntime::TrackRanges* LaunchAudioRuntime::trackRanges(std::int64_t tr
 bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const LaunchAudioRuntime& outgoing,
         LaunchBlock previous, LaunchBlock candidate, const Transport& transport) noexcept {
     if (active_ || outgoing.active_ || !beforeClock_ || !project_->stored() ||
-        !supportsTimedRawSceneTrackCount(tracks_.size()) ||
+        !supportsTimedRawSceneTrackCount(timedRawPlan_.size()) ||
         candidate.frames <= 0 || candidate.frames > maxFrames_ ||
         clockSample_ > std::numeric_limits<std::int64_t>::max() - candidate.frames ||
         !candidate.preparedScene || !transport.playing() || transport.looping() ||
@@ -664,10 +664,9 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     auto candidateView = project_->view();
     candidateView.tracks = tracks_;
     if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
-    std::array<TimedSceneAction,kMaximumTimedRawSceneTracks> plan{};
-    const auto count = driver.launcher_.planTimedSceneActions(candidate,candidateView,*candidate.preparedScene,plan);
-    if (!count || *count != tracks_.size()) return false;
-    const auto actions = std::span(plan).first(*count);
+    const std::span actions(timedRawPlan_.data(),timedRawPlan_.size());
+    const auto count = driver.launcher_.planTimedSceneActions(candidate,candidateView,*candidate.preparedScene,actions);
+    if (!count || *count != actions.size()) return false;
     const auto startCount = std::ranges::count(actions,TimedSceneActionKind::Start,&TimedSceneAction::kind);
     const auto inherited = std::ranges::count_if(actions,[](const auto& action) {
         return action.kind == TimedSceneActionKind::Start && action.outgoingRun != 0;
@@ -676,11 +675,13 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
                           (actions.size() != 3 || startCount != 2 || inherited != 2)))
         return false;
 
-    for (const auto& action : actions) {
+    // The complete plan has one action per catalog track in the same order.
+    for (std::size_t index = 0; index < actions.size(); ++index) {
+        const auto& action = actions[index];
         if (action.kind == TimedSceneActionKind::Stop) continue;
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
-        auto* ranges = trackRanges(action.track);
+        auto& ranges = ranges_.data()[index];
         if (action.kind == TimedSceneActionKind::Continue) {
             const auto* before = outgoing.pinnedCandidate(clockSample_-1,action.track,action.clip);
             const auto* after = pinnedCandidate(clockSample_,action.track,action.clip);
@@ -699,14 +700,14 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
             finish();
             return false;
         }
-        if (!reader || !ranges || ranges->cuePages || action.cue.physicalFrame < 0 ||
+        if (!reader || ranges.cuePages || action.cue.physicalFrame < 0 ||
             !reader->reserveCue(action.clip,action.cue.physicalFrame,candidate.frames,false,false)) {
             finish();
             return false;
         }
-        ranges->cuePages = reader;
-        ranges->cueClip = action.clip;
-        if (action.kind == TimedSceneActionKind::Start) ranges->timedCueFrame = action.cue.physicalFrame;
+        ranges.cuePages = reader;
+        ranges.cueClip = action.clip;
+        if (action.kind == TimedSceneActionKind::Start) ranges.timedCueFrame = action.cue.physicalFrame;
     }
     return true;
 }

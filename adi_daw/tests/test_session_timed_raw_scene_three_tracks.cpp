@@ -122,7 +122,7 @@ std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCe
 struct Playback {
     Session& session;
     std::span<float> pcm;
-    std::array<LaunchTransition,9> edges{};
+    std::array<LaunchTransition,12> edges{};
     LaunchSceneTransition scene{};
     std::size_t edgeCount = 0, sceneCount = 0;
     std::int64_t cursor = 0;
@@ -295,10 +295,162 @@ void exercise(Outcome outcome) {
     std::printf("Three-track raw Scene %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
                 mode,playback.edgeCount,playback.sceneCount);
 }
+constexpr std::int64_t manyClip(std::size_t track, bool target) {
+    if (track < 3) return clips[track + (target ? 3 : 0)];
+    return (target ? 400 : 300) + static_cast<std::int64_t>(track);
+}
+
+std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder, std::size_t count) {
+    auto store = prepareProject(folder,ThirdCell::Start,false);
+    auto& db = store->db();
+    {
+        SQLite::Statement order(db,"UPDATE tracks SET index_in_parent=? WHERE id=9");
+        order.bind(1,static_cast<std::int64_t>(count));
+        order.exec();
+    }
+    for (std::size_t index = 3; index < count; ++index) {
+        const auto track = static_cast<std::int64_t>(index + 1);
+        SQLite::Statement addTrack(db,"INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(?,'audio',?,?)");
+        addTrack.bind(1,track); addTrack.bind(2,"Additional raw track");
+        addTrack.bind(3,static_cast<std::int64_t>(index)); addTrack.exec();
+        for (const bool target : {false,true}) {
+            const auto prototype = clips[index % 3 + (target ? 3 : 0)];
+            const auto id = manyClip(index,target);
+            SQLite::Statement clip(db,"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled)"
+                                      " SELECT ?,?,kind,time_base,pos_ns,length_ns,loop_enabled FROM clips WHERE id=?");
+            clip.bind(1,id); clip.bind(2,track); clip.bind(3,prototype); clip.exec();
+            SQLite::Statement raw(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled)"
+                                     " SELECT ?,media_id,src_len_frames,warp_enabled FROM audio_clips WHERE clip_id=?");
+            raw.bind(1,id); raw.bind(2,prototype); raw.exec();
+            SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns)"
+                                      " SELECT ?,content_offset_ns,source_end_ns FROM clip_playback_details WHERE clip_id=?");
+            pins.bind(1,id); pins.bind(2,prototype); pins.exec();
+            SQLite::Statement slot(db,"INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(?,?,?)");
+            slot.bind(1,track); slot.bind(2,target ? 20 : 10); slot.bind(3,id); slot.exec();
+            SQLite::Statement launch(db,"INSERT INTO clip_launch(clip_id,legato,ram_mode,clip_fade,launch_quant)"
+                                        " SELECT ?,legato,ram_mode,clip_fade,launch_quant FROM clip_launch WHERE clip_id=?");
+            launch.bind(1,id); launch.bind(2,prototype); launch.exec();
+        }
+    }
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path() / "scene.adi",error);
+    require(static_cast<bool>(store),"reopen every added raw Scene track");
+    return store;
+}
+
+void exerciseManyTracks(std::size_t count, Outcome outcome) {
+    const bool warm = outcome == Outcome::Warm;
+    const bool coldLast = outcome == Outcome::ColdThird;
+    const bool stop = outcome == Outcome::StopTrack;
+    constexpr auto end = cut + 3 * blockFrames;
+    constexpr std::size_t stopped = 1;
+    test::TempDirectory folder{"many_raw_timed_scene",warm ? "warm" : coldLast ? "cold-last" : "stop"};
+    auto store = prepareManyTrackProject(folder,count);
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(),"load every prepared raw track");
+    session.transport().play();
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session,pcm};
+    const auto initialAllocations = test::sceneClockCallbackAllocations();
+    const auto initialFileIo = audio::callbackFileIo.load();
+
+    std::vector<std::int64_t> startedAt(count);
+    const auto start = [&](std::size_t index, std::int64_t sample) {
+        startedAt[index] = sample;
+        playback.through(sample);
+        LaunchRequest request;
+        request.kind = LaunchRequestKind::SlotPress;
+        request.incarnation = session.launchIncarnation();
+        request.track = static_cast<std::int64_t>(index + 1);
+        request.scene = 10;
+        request.clip = manyClip(index,false);
+        require(session.postLaunchGesture({&request,1}),"start each saved outgoing raw slot");
+    };
+    if (coldLast) {
+        // The final target has never been read and its inherited frame is
+        // far outside its initial raw page window.
+        const auto finalTarget = (count - 1) % 3 + 3;
+        require(starts[finalTarget] + cut - blockFrames > 3 * ClipPlayback::readAheadFrames(rate),
+                "the only cold target lies beyond initial worker read-ahead");
+        start(count - 1,blockFrames);
+    }
+    for (std::size_t index = 0; index < count - (coldLast ? 1u : 0u); ++index)
+        start(index,cut - 8000 + 1000 * static_cast<std::int64_t>(index));
+    playback.through(prepareAt);
+    const auto read = [&] {
+        std::vector<LaunchTrackStatus> rows(count);
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(rows,header) && header.trackCount == count,"read all saved raw tracks");
+        return rows;
+    };
+    const auto old = read();
+    require(playback.edgeCount == count && playback.sceneCount == 0,"all outgoing clips start before staging");
+    for (std::size_t index = 0; index < count; ++index)
+        require(old[index].clip == manyClip(index,false) && old[index].run != 0,"each old raw run is continuously active");
+
+    if (!session.prepareSceneLaunch(*store,20,bar)) throw std::runtime_error(session.error());
+    if (stop) {
+        playback.through(cut);
+        OpRequest command;
+        command.opType = "session.stopTrack";
+        command.payload = {{"track",stopped + 1},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(command).ok,"queue audited StopTrack at the old cut opening");
+    }
+    playback.through(end);
+
+    const auto after = read();
+    require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
+            playback.sceneCount == (warm ? 1u : 0u) &&
+            playback.edgeCount == count + (warm ? count : stop ? 1u : 0u),
+            "the clock, receipt and complete raw track group resolve together");
+    if (warm) {
+        require(playback.scene.sample == cut && playback.scene.tick == bar && playback.scene.tempoBpm == 140,
+                "one receipt carries the adopted 140 BPM clock at the exact cut");
+    } else if (stop) {
+        const auto& edge = playback.edges[count];
+        require(edge.track == static_cast<std::int64_t>(stopped + 1) && edge.oldRun == old[stopped].run &&
+                edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
+                "the independent StopTrack alone takes effect on the old Bar");
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (warm) {
+            const auto& edge = playback.edges[count + index];
+            require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut &&
+                    edge.oldRun == old[index].run && edge.newClip == manyClip(index,true) &&
+                    after[index].clip == edge.newClip && after[index].run != old[index].run,
+                    "every warm target starts at the cut with a new run");
+        } else if (stop && index == stopped) {
+            require(after[index].clip == 0,"the manually stopped track stays stopped");
+        } else {
+            require(after[index].clip == old[index].clip && after[index].run == old[index].run,
+                    "every untouched track keeps its exact outgoing run");
+        }
+    }
+    for (auto sample = std::int64_t{0}; sample < end; ++sample) {
+        auto expected = 0.f;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (sample < startedAt[index] || (stop && index == stopped && sample >= cut)) continue;
+            const auto prototype = index % 3 + (warm && sample >= cut ? 3 : 0);
+            expected += signal(prototype,sample - startedAt[index] + starts[prototype]);
+        }
+        require(pcm[static_cast<std::size_t>(sample)] == expected,"exact full-buffer stereo PCM across the group cut");
+    }
+    require(test::sceneClockCallbackAllocations() == initialAllocations && audio::callbackFileIo.load() == initialFileIo,
+            "the bounded larger group performs no driver allocation or file reads");
+    std::printf("%zu-track raw Scene %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
+                count,warm ? "warm" : coldLast ? "cold-last" : "stop",playback.edgeCount,playback.sceneCount);
+}
+
 } // namespace
 
 namespace adi::test {
 void runThreeTrackTimedRawSceneTests() {
+    for (const auto tracks : {std::size_t{4},std::size_t{6}})
+        for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack})
+            exerciseManyTracks(tracks,outcome);
     for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack,Outcome::SavedStop,
                                Outcome::ColdSavedStop,Outcome::CompetingSavedStop,Outcome::ResidentNoStop,Outcome::Continues,
                                Outcome::ColdContinue,Outcome::CompetingStopContinue,Outcome::CompetingBackContinue})
