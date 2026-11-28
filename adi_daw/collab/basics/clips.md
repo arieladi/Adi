@@ -2,9 +2,17 @@
 
 SC-191 is first per the round 2 ordering. Each item has its own verified branch. Win can merge the newest verified head from [basics/clips-chain](https://github.com/arieladi/Adi/tree/basics/clips-chain).
 
-## Where the queue stands (28 November, stream round 1)
+## Round 2 of the stream (28 November, restart)
 
-Read this first if you continue the queue.
+Read this first, then round 1 below.
+
+- **Nothing new to build.** I reread the register on main (`629a48341`). Every clips row is either landed or in "Not now" below. `git branch -r --no-merged origin/main --list 'origin/basics/sc-*'` prints nothing: every item branch of this queue is on main. No director answer and no reservation for SC-196, SC-210, SC-211, SC-213, SC-216, SC-217 or SC-219 has appeared since round 1 (I searched `docs/DECISIONS.md`, `docs/DEFERRED.md` and `collab/RESERVATIONS.md` for their ids). They stay blocked.
+- **The register still lags.** Win's mark of 85 rows (#845) did not reach SC-11, SC-30 to SC-33, SC-35, SC-36, SC-39, SC-81, SC-191 to SC-193, SC-197 to SC-200, SC-202, SC-204, SC-207, SC-208, SC-210, SC-212 or SC-215. All of them landed through #822 or #830, as round 1 says.
+- **SC-448 and SC-476** (the director's-test session's) are on `land/basics-1128d`, not yet on main.
+- **The chain.** basics/clips-chain is a fast-forward of origin/main at `629a48341` (land/basics-1128c is on main, so BASE is main). No clips commit sits beyond BASE.
+- **Next session:** start only when an answer or a reservation for one of the blocked rows exists. Then take that row from "Not now" and its "For the director" line.
+
+## Where the queue stands (28 November, stream round 1)
 
 - **Every buildable clips row is on main.** Each item branch in the table below is an ancestor of origin/main. SC-11, SC-30, SC-31, SC-32 and SC-191 landed through #822 (land/basics-1127k). SC-33, SC-35, SC-36, SC-39, SC-81, SC-192 to SC-195, SC-197 to SC-210, SC-212, SC-213, SC-215, SC-216 and SC-218 landed through #830 (land/basics-1128b). The worker part of SC-194 landed earlier, through #817. I checked this with `git merge-base --is-ancestor` for each branch against those merges.
 - **The register lags behind.** `docs/SANITY-CHECK.md` marks only SC-201 and SC-203 of these as "on main (#830)". Win keeps the register, so I did not edit it. Each landed row above can take "on main" with the PR number given here.
@@ -69,7 +77,8 @@ Read this first if you continue the queue.
 | SC-217 | — | Audited clip Gain, Transpose and Sample Offset against the existing absolute overlays. | AU-06 and ADR-0230 call for relative modulation streams with distinct clocks. The director note proposes the first routes. | blocked — reserved modulation format and Warp/envelope clock decisions |
 | SC-218 | [basics/sc-218-sample-replacement](https://github.com/arieladi/Adi/tree/basics/sc-218-sample-replacement) `a4375146f` | Dropping on the Sample Editor replaces the clip's source in one Undo and keeps its settings and compatible Warp markers. A shorter unwarped file must have playable audio after the clip's retained Start. | Linux test-only `97fd1f945` reproduced the missing replacement. Focused red `4fb60a46b` reproduced an accepted replacement with no audio after Start. Linux JUCE Debug passed the affected suites, all 18 headless window suites, all three acceptance tests and Xvfb app smoke. The window regression checks the committed Gain, Pitch and replacement-specific Undo. The final head integrates Win's latest landing stack and verifies its MIDI, project, media, render and parameter suites. Clip Source Tempo uses the shared portable decimal parser. | PR requested |
 | SC-219 | — | Identified the clip-owned persistence and worker preparation needed for RAM mode. | The current audio clip format has no RAM flag. TM-SV-02 plans a launch-side field. | blocked — format location shared by Arrangement and Session playback |
-| (chain) | [basics/clips-chain](https://github.com/arieladi/Adi/tree/basics/clips-chain) `16064c0a6` | Fast-forwarded the chain to land/basics-1128c. No clips code is beyond BASE. | Full slot check (core and ui, MSVC Debug, warnings as errors): pending | in progress |
+| (chain) | [basics/clips-chain](https://github.com/arieladi/Adi/tree/basics/clips-chain) `16064c0a6` | Fast-forwarded the chain to land/basics-1128c. No clips code is beyond BASE. | Full slot check started; superseded by the row below | done |
+| (chain, round 2) | [basics/clips-chain](https://github.com/arieladi/Adi/tree/basics/clips-chain) `629a48341` | Fast-forwarded the chain to origin/main. No clips code is beyond BASE. | Full slot check (core and ui, MSVC Debug, warnings as errors): pending | in progress |
 
 ## For the director
 
