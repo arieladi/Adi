@@ -49,6 +49,7 @@ Session engine seat taken on 27 November 2026.
 | Session slot record crash journal | Refused an explicit audio slot recovery request before arming either writer because the current recovery record has no scene or performed-clock fields (`a1f29d0b6`). | The test checks idle state and an empty work folder after refusal, then arms and cancels an ordinary private mixed take. | Pushed. Full headless rerun pending. |
 | Session slot record stale publication | Kept a staged slot destination through the owner refresh check and rolled back stale publication into a retryable private take (`ca9ae057f`). | The native regression covers a current preparation, a stale audio-only take after a track rename, and retry into the original slot. | Pushed. Full headless rerun pending. |
 | TM-SV-04 Float64 raw gain | Admitted the exact native-rate raw Float64 path with matching widened samples, unity authored gain and a dB value that rounds to the performed multiplier (`65e2643d1`). | The native graph test compares 1,000 samples at two callback widths and through Undo, Redo and reopen. Multichannel Fold with different rounding is refused. | Pushed. Full headless rerun pending. |
+| TM-SV-03 immediate paged Legato | Retained the reachable phase window before publication when it fits the source cache of eight pages (`e5ad57203`). | The native fixture holds the page worker through a same-callback takeover at frame 45,232 and compares every stereo sample. Longer cold sources still need a queued read-ahead window. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
