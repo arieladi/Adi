@@ -215,6 +215,78 @@ void midiOnly() {
             "attach native MIDI without an audio file or media row");
 }
 
+void routedMidiSlots() {
+    Project project;
+    project.db().exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Pads'),(24,'midi','Foot controller')");
+    constexpr auto keys = midiInputKey("keyboard");
+    constexpr auto pads = midiInputKey("pad-device");
+    constexpr auto unused = midiInputKey("another-device");
+    std::array targets{SlotRecordingTarget{{22, 11}, {}, {keys, 3}},
+        SlotRecordingTarget{{23, 11}, {}, {pads, 3}}, SlotRecordingTarget{{24, 11}, {}, {pads, 5}}};
+    AudioRecordingSpec format;
+    format.sourceProject = project.db().execAndGet("SELECT file FROM pragma_database_list WHERE name='main'").getString();
+    format.sampleRate = 48000;
+    format.maxFrames = 64;
+    SlotInputRecorder recorder;
+    std::string error;
+    require(recorder.start(format, targets, error), "arm three MIDI slots with independent port/channel input");
+    targets.front().midiInput = {}; // control changes after arm do not broaden the frozen filter
+
+    AudioIo io;
+    io.frames = 64;
+    io.streamTimeSamples = 100;
+    const auto note = [&](std::int32_t frame, EventType type, std::uint8_t channel, std::uint16_t key,
+                          std::uint64_t id, std::uint64_t port) {
+        return SlotMidiInput{io.streamTimeSamples + frame, io.streamTimeSamples + frame,
+            {frame, type, channel, key, id, 0, 67.0 / 127}, port};
+    };
+    const std::array events{
+        note(5, EventType::NoteOn, 2, 60, 51, keys),
+        note(6, EventType::NoteOn, 2, 64, 52, pads),
+        note(7, EventType::NoteOn, 4, 68, 53, pads),
+        note(8, EventType::NoteOn, 4, 72, 54, keys),
+        note(9, EventType::NoteOn, 2, 76, 55, unused),
+        SlotMidiInput{110, 110, {10, EventType::NoteExpression, 2, 0, 52, 0, 1.25}, pads},
+        SlotMidiInput{111, 111, {11, EventType::Controller, 4, 0, 0, 74, 0.75}, pads},
+        note(15, EventType::NoteOff, 2, 60, 51, keys),
+        note(16, EventType::NoteOff, 2, 64, 52, pads),
+        note(17, EventType::NoteOff, 4, 68, 53, pads)};
+    recorder.process(io, SlotRecordingWindow{103, 142}, events, 1);
+    const auto take = recorder.poll(true);
+    require(take && take->state == SlotRecordingState::Complete && take->frames == 39 &&
+            take->targets.front().midiInput == MidiInputFilter{keys, 3} &&
+            std::count_if(take->midi.begin(), take->midi.end(), [&](const auto& packet) {
+                return packet.kind == MidiCapturePacket::Kind::Event && packet.port == pads;
+            }) == 6, "the take freezes input filters and records every physical packet port");
+    constexpr std::array<std::int64_t, 3> clips{61, 62, 63};
+    const std::array clipIds{recording::ClipIds{clips[0], 0, "Keyboard"},
+        recording::ClipIds{clips[1], 0, "Pads"}, recording::ClipIds{clips[2], 0, "Foot controller"}};
+    auto edit = recording::prepareSlotCommit(*project.store, *take, clipIds, captureClock);
+    if (!edit.ok) throw std::runtime_error(edit.error);
+    const auto committed = recording::commit(*project.store, edit);
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    constexpr std::array<std::uint8_t, 3> keysBySlot{60, 64, 68};
+    for (std::size_t index = 0; index < clips.size(); ++index) {
+        const auto notes = stream<NoteRecord>(project, "SELECT data FROM event_streams WHERE stream_kind='notes' AND clip_id=" +
+            std::to_string(clips[index]), FourCC::Notes);
+        require(notes.size() == 1 && notes.front().key == keysBySlot[index] &&
+                sampleAt(notes.front().start_ticks) == 2 + static_cast<std::int64_t>(index) &&
+                sampleAt(notes.front().start_ticks + notes.front().dur_ticks) == 12 + static_cast<std::int64_t>(index),
+                "each slot receives only its own input, at the original quantized capture offset");
+    }
+    require(project.scalar("SELECT count(*) FROM note_expression WHERE clip_id=62") == 1 &&
+            project.scalar("SELECT count(*) FROM note_expression") == 1 &&
+            project.scalar("SELECT count(*) FROM event_streams WHERE clip_id=63 AND stream_kind='cc' AND channel=4 AND controller=74") == 1 &&
+            project.scalar("SELECT count(*) FROM event_streams WHERE stream_kind='cc'") == 1,
+            "expression and controller ownership follow the same frozen MIDI input");
+    require(History(*project.store).undo().ok &&
+            project.scalar("SELECT count(*) FROM clip_slots") == 0 &&
+            project.scalar("SELECT count(*) FROM clips WHERE id IN (31,32)") == 2 &&
+            History(*project.store).redo().ok &&
+            project.scalar("SELECT count(*) FROM clip_slots WHERE scene_id=11 AND clip_id IN (61,62,63)") == 3,
+            "one Undo and Redo cover all routed slots and leave Arrangement alone");
+}
+
 } // namespace
 
 int main() {
@@ -222,6 +294,7 @@ int main() {
         mixedCommit();
         staleStage();
         midiOnly();
+        routedMidiSlots();
         std::printf("Session slot commit preserves 80 PCM frames, exact MIDI and one Undo.\n");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

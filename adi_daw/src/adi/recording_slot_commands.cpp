@@ -35,7 +35,7 @@ int capturedVelocity(double value, bool onset) {
 
 template<class SampleToTick>
 SlotMidiContent readSlotMidi(const engine::launch::SlotRecordingResult& capture,
-                            std::int64_t length, SampleToTick tickAt) {
+                            engine::MidiInputFilter route, std::int64_t length, SampleToTick tickAt) {
     SlotMidiContent content;
     std::map<std::uint64_t, std::size_t> held;
     std::int64_t spanBegin = 0, spanEnd = 0, previous = 0;
@@ -58,6 +58,7 @@ SlotMidiContent readSlotMidi(const engine::launch::SlotRecordingResult& capture,
             event.frame != sample - spanBegin || !std::isfinite(event.value) || event.channel > 15)
             throw std::runtime_error("invalid slot MIDI event or sample order");
         previous = sample;
+        if (!route.matches(packet.port, event.channel)) continue;
         const auto tick = tickAt(sample);
         if (event.type == engine::EventType::Controller) {
             if (event.paramId > 127 || event.value < 0 || event.value > 1)
@@ -164,6 +165,8 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
             if (target.audioChannels.empty()) {
                 if ((kind != "instrument" && kind != "midi") || id.media != 0)
                     throw std::runtime_error("MIDI slot recording needs a MIDI target without a media identity");
+                if (target.midiInput.channel < 0 || target.midiInput.channel > 16)
+                    throw std::runtime_error("slot recording has an invalid frozen MIDI input channel");
                 midi = true;
             } else {
                 if (!capture.audio || audioIds.size() >= capture.audio->tracks.size())
@@ -177,8 +180,10 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
         }
         if (midi ? capture.midiState != engine::MidiCaptureState::Complete : !capture.midi.empty())
             throw std::runtime_error("slot commit needs a complete MIDI capture matching its targets");
-        const auto midiContent = midi ? readSlotMidi(capture, length, tickAt) : SlotMidiContent{};
-        const auto expression = expressionLanes(midiContent);
+        std::map<std::int64_t, SlotMidiContent> midiContents;
+        for (const auto& target : capture.targets)
+            if (target.audioChannels.empty())
+                midiContents.emplace(target.slot.trackId, readSlotMidi(capture, target.midiInput, length, tickAt));
 
         constexpr auto label = "Record Session";
         if (capture.audio) {
@@ -200,6 +205,8 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
             const auto track = target.slot.trackId;
             Payload image;
             if (target.audioChannels.empty()) {
+                const auto& midiContent = midiContents.at(track);
+                const auto expression = expressionLanes(midiContent);
                 image = RecordingEdit::slotMidiImage(store,
                     {track, id.clip, 0, length, id.name, midiContent.notes, expression}, allocated);
                 for (const auto& [key, points] : midiContent.controllers) {

@@ -3,6 +3,7 @@
 
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/launch_data.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 
 #include <atomic>
@@ -19,6 +20,7 @@ struct SlotRecordingTarget {
     // Empty selects the common typed Track MIDI input. An audio target
     // lists physical input channels in the order they will be written.
     std::vector<std::uint32_t> audioChannels;
+    MidiInputFilter midiInput{}; // frozen at arm time; used only by MIDI targets
 };
 
 struct SlotRecordingWindow {
@@ -32,6 +34,7 @@ struct SlotMidiInput {
     std::int64_t scheduledSample;
     std::int64_t inputSample;
     Event event; // frame relative to this callback, in scheduled order
+    std::uint64_t port = 0; // stable physical endpoint, or zero for a virtual input
 };
 
 enum class SlotRecordingState : std::uint8_t {

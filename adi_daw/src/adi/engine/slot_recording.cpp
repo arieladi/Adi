@@ -34,9 +34,13 @@ bool SlotInputRecorder::start(AudioRecordingSpec format, std::span<const SlotRec
             error = "Slot recording needs one valid destination per track";
             return false;
         }
-        if (target.audioChannels.empty())
+        if (target.audioChannels.empty()) {
+            if (target.midiInput.channel < 0 || target.midiInput.channel > 16) {
+                error = "Invalid slot recording MIDI input channel";
+                return false;
+            }
             midiTracks.push_back(target.slot.trackId);
-        else
+        } else
             format.targets.push_back({target.slot.trackId, target.audioChannels});
     }
 
@@ -138,7 +142,7 @@ void SlotInputRecorder::process(const AudioIo& io, std::optional<SlotRecordingWi
                     !isNoteStream(event.event.type)) continue;
                 auto local = event.event;
                 local.frame -= offset;
-                midi_.record(event.scheduledSample, event.inputSample, local, 0);
+                midi_.record(event.scheduledSample, event.inputSample, local, event.port);
             }
             if (midi_.state() != MidiCaptureState::Recording) {
                 finish(SlotRecordingState::InputFailure);
