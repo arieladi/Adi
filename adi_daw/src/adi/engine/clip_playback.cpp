@@ -852,8 +852,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
             const bool nativeWarp = warpMode && a->formantShift == 0 &&
-                (*warpMode == audio::WarpMode::RePitch ||
-                 (!a->reverse && (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture)));
+                (*warpMode == audio::WarpMode::RePitch || *warpMode == audio::WarpMode::Beats ||
+                 (*warpMode == audio::WarpMode::Texture && !a->reverse));
             const bool r3Mode = warpMode && !a->reverse &&
                 (*warpMode==audio::WarpMode::Tones || *warpMode==audio::WarpMode::Complex ||
                  *warpMode==audio::WarpMode::ComplexPro);
@@ -986,6 +986,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
                 supportsR3Ratios(map.markers,warpClock,static_cast<double>(sourceOrigin),r3EndTick);
             const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
+            const bool reverseSynthesis = stream && clip->reverse && spec.mode == audio::WarpMode::Beats;
+            // Traverse the forward Beats slices backward. Its worker supplies
+            // original PCM and the onset analysis stays in the forward source.
+            if (reverseSynthesis) clip->reverse = false;
             if (stream && !r3)
                 clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));
             auto sourceDuration=[&](std::int64_t ticks) {
@@ -1125,7 +1129,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 } else {
                     clip->streamingWarp=std::make_unique<WarpClipPlayer>(warpClock,std::move(spec),
                         std::move(map.markers),clip->sourceRate,clip->channels,warpSourceOrigin,
-                        static_cast<double>(end),loopStart,loopLength);
+                        static_cast<double>(end),loopStart,loopLength,reverseSynthesis);
                 }
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain");
