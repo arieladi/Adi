@@ -146,8 +146,8 @@ StereoPcm renderClip(const Store& store, std::int64_t start = 0) {
     engine::Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(store, {}, {2, graphRate, block})) throw std::runtime_error(session.error());
-    for (const auto& problem : session.clips()->problems())
-        throw std::runtime_error(problem);
+    if (const auto& problems = session.clips()->problems(); !problems.empty())
+        throw std::runtime_error(problems.front());
     session.transport().locate(start);
     session.transport().play();
     StereoPcm pcm;
