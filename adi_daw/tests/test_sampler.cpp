@@ -597,9 +597,9 @@ void slotRoundRobin() {
             }
             return std::array{repeats, ones};
         };
-        const auto other = drawn(3), random = drawn(2);
+        const auto other = drawn(3), any = drawn(2);
         check(other[0] == 0 && other[1] == 20, "Other: forty notes on two layers never repeat a layer");
-        check(random[0] > 0 && random[1] > 0 && random[1] < 40, "Random: both layers play, and a layer may play twice running");
+        check(any[0] > 0 && any[1] > 0 && any[1] < 40, "Random: both layers play, and a layer may play twice running");
     }
 }
 // The declaration text the host reads agrees with the core it hosts.
