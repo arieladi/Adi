@@ -2346,7 +2346,7 @@ foreach(suite IN ITEMS sample_classification short_sample_warp library_analysis_
     add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
 endforeach()
 add_executable(adi_sample_swap_tests tests/test_sample_swap.cpp)
-target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings)
+target_link_libraries(adi_sample_swap_tests PRIVATE adi_settings adi_warnings Threads::Threads)
 add_test(NAME adi_sample_swap_tests COMMAND adi_sample_swap_tests)
 # RUN_SERIAL for the reason adi_library_tests has it: the fixture scans and
 # hashes through the same background-priority index worker, which a parallel

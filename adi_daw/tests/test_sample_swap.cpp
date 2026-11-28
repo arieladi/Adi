@@ -10,10 +10,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <numbers>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 using namespace adi;
@@ -25,13 +30,43 @@ void check(bool pass, const char *description) {
     if (!pass) {
         ++failures;
         std::printf("FAIL %s\n", description);
+        std::fflush(stdout);
     }
 }
 
 // Flushed stage lines: a ctest timeout keeps them, so a hang names its step.
+// The watchdog bounds every wait in this fixture, including unwinding and
+// process exit: a stage that does not advance within kStageLimit ends the
+// process with the stage named, instead of running into ctest's timeout.
+constexpr auto kStageLimit = std::chrono::seconds(90);
+std::atomic<const char *> currentStage{"start"};
+std::atomic<std::int64_t> stageStarted{0};
+
+std::int64_t nowTicks() {
+    return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
 void stage(const char *name) {
+    currentStage.store(name);
+    stageStarted.store(nowTicks());
     std::printf("stage: %s\n", name);
     std::fflush(stdout);
+}
+
+void startWatchdog() {
+    stageStarted.store(nowTicks());
+    std::thread([] {
+        const auto limit = std::chrono::duration_cast<std::chrono::steady_clock::duration>(kStageLimit).count();
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (nowTicks() - stageStarted.load() > limit) {
+                std::printf("FAIL stage '%s' did not finish within %lld s\n", currentStage.load(),
+                            static_cast<long long>(kStageLimit.count()));
+                std::fflush(stdout);
+                std::_Exit(3);
+            }
+        }
+    }).detach();
 }
 
 #if ADI_WITH_PD
@@ -75,10 +110,12 @@ void swapInPlayingProject() {
             throw std::runtime_error("sample index scan failed");
         stage("library hashing");
         index->waitIdle();
-        stage("library ranked");
+        stage("library entries");
+        const auto entries = index->entries();
+        stage("library ranking");
         std::vector<SimilarSampleCandidate> candidates;
         std::vector<const SampleAnalysis *> measurements;
-        for (const auto &entry : index->entries()) {
+        for (const auto &entry : entries) {
             const auto name = std::ranges::find(names, entry.relativePath);
             if (entry.present && name != names.end()) {
                 candidates.push_back({root / *name, entry.hash});
@@ -93,11 +130,15 @@ void swapInPlayingProject() {
         std::vector<SimilarSampleCandidate> ranked;
         for (const auto &match : matches)
             ranked.push_back(candidates[match.row]);
+        std::printf("ranked %zu of %zu indexed samples\n", ranked.size(), entries.size());
+        stage("library ranked");
         return ranked;
     };
     const auto initialRank = rescanAndRank();
-    if (initialRank.size() != 2 || initialRank.front().file.filename() != names[1])
+    if (initialRank.size() != 2 || initialRank.front().file.filename() != names[1]) {
+        stage("unwinding after a ranking mismatch");
         throw std::runtime_error("fixture did not rank the two similar files");
+    }
 
     stage("open the playing project");
     auto document = ui::ProjectDocument::open(temp.path() / "swap.adi", true, device::withBuiltinDevices(), error);
@@ -204,6 +245,7 @@ void swapInPlayingProject() {
                 static_cast<double>(swappedPeak), static_cast<double>(restoredPeak));
     stage("release");
     document->release();
+    stage("teardown");
 }
 #endif
 
@@ -222,6 +264,7 @@ void callbackRefusal() {
 } // namespace
 
 int main() {
+    startWatchdog();
     try {
         stage("callback refusal");
         callbackRefusal();
@@ -233,5 +276,6 @@ int main() {
     } catch (const std::exception &error) {
         check(false, error.what());
     }
+    stage("process exit");
     return failures == 0 ? 0 : 1;
 }
