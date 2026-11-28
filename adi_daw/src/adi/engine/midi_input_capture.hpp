@@ -31,6 +31,7 @@ struct MidiCapturePacket {
     std::int64_t inputSample = 0;    ///< the producer's sample, for an Event (may arrive late)
     std::int32_t frames = 0;         ///< Span's half-open length
     Event event;                    ///< typed input, frame relative to preceding Span
+    std::uint64_t port = 0;         ///< stable identifier of the input endpoint
 };
 
 /// One recording at a time. The audio driver publishes packets, in order,
@@ -54,7 +55,7 @@ private:
     void deviceStopped() noexcept; ///< owner, with the driver already quiescent
     void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch, RecordingPunch,
                     const RecordingPunchWindow&) noexcept;
-    void record(std::int64_t scheduledSample, std::int64_t inputSample, const Event&) noexcept;
+    void record(std::int64_t scheduledSample, std::int64_t inputSample, const Event&, std::uint64_t port) noexcept;
     void endSlice() noexcept;
     [[nodiscard]] bool overdubs(std::int64_t track) const noexcept; // driver, within a slice
 

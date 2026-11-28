@@ -330,6 +330,11 @@ std::optional<WarpMode> parseWarpMode(std::string_view name)noexcept {
         if(name==warpModeName(mode))return mode;
     return std::nullopt;
 }
+double pitchedSampleRate(double sampleRate,double semitones)noexcept {
+    if (!(sampleRate>0.) || !(std::abs(semitones)<=48.)) return 0.;
+    if (semitones==0.) return sampleRate;
+    return std::max(1.,std::round(sampleRate*std::exp2(semitones/12)));
+}
 
 PreparedWarp::PreparedWarp(std::filesystem::path directory,std::uint32_t sampleRate,std::uint16_t channelCount,std::uint64_t frameCount)
     :file(directory/"prepared.wav"),rate(sampleRate),channels(channelCount),frames(frameCount),directory_(std::move(directory)){}

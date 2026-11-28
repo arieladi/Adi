@@ -35,7 +35,9 @@
 #include <optional>
 #include <string_view>
 #include <span>
+#include <utility>
 namespace adi::recording { struct RecordingEdit; }
+namespace adi::engine::recording_recovery { struct LaunchTake; }
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -85,10 +87,23 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     static std::unique_ptr<OpenJob> startOpen(const std::filesystem::path &, bool create, engine::DeviceLoader,
                                               const RecordingDefaults *defaults = nullptr);
+    struct HistoryReload {
+        std::unique_ptr<ProjectDocument> document;
+        std::string error;
+        bool replayBaseChanged = false;
+    };
+    // The caller must stop audio before calling and replace this document if the replay base changes.
+    // If the target cannot be opened, try to restore and open the previous head.
+    HistoryReload reopenAtStoredHistory(HistoryRestoreTarget, std::int64_t nowUtc);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
                                          int utcOffsetMinutes);
+    // The app supplies local civil time alongside UTC microseconds. The
+    // document updates the daily version after committed history changes.
+    using DailyHistoryClock = std::function<std::pair<std::int64_t, int>()>;
+    void setDailyHistoryClock(DailyHistoryClock clock) { dailyHistoryClock_ = std::move(clock); }
+    void flushDailyHistory() { updateDailyHistory(true); }
     // What the Take Snapshot prompt is pre-filled with: the project's name and the time.
     std::string snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const;
     const std::string &name() const noexcept { return name_; }
@@ -104,7 +119,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
     // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused.
-    bool saveCopy(const std::filesystem::path &);
+    bool saveCopy(const std::filesystem::path &, bool keepUndoHistory = false);
     enum class SaveKind { as, copy, firstSave };
     struct SaveProgress {
         enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
@@ -115,7 +130,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     // File-menu saves progress between owner turns. Only Save As switches the live document.
     bool startSave(const std::filesystem::path &, SaveKind, StoreFileCollision = StoreFileCollision::Fail,
-                   const media::FileIdentity *expectedTarget = nullptr);
+                   const media::FileIdentity *expectedTarget = nullptr, bool keepUndoHistory = false);
     std::optional<SaveProgress> saveProgress() const;
     void advanceSave();
     void cancelSave();
@@ -134,8 +149,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     struct ExportJob {
         std::filesystem::path project, zip;
         std::string stateWarning;
+        bool keepUndoHistory = false;
     };
-    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory = false);
     static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     // Finish pending device edits and capture even plug-ins that never report changed state.
     // Call before closing the document or reading the file for an offline render.
@@ -234,6 +250,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
                         std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {},
                         audio::WavFormat format = audio::WavFormat::Float32, bool overdub = false);
+    // The application owns launch discovery. Headless and transient document
+    // hosts do not create entries in the application's recording registry.
+    void enableRecordingRecovery() noexcept { recordingRecoveryEnabled_ = true; }
+    bool startTakeRecovery(const engine::recording_recovery::LaunchTake &);
     // The application replaces these routes when the device or its channel config changes.
     // An empty list means the device has no enabled inputs. The view lasts until the next set.
     void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
@@ -251,7 +271,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // the file switches. False when the recorder's worker did not finish in ten seconds.
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
-    bool capturingAudioTake() const noexcept { return recordingAudio_; }
+    bool capturingAudioTake() const noexcept { return recording_ && recordingAudio_; }
     bool landingTake() const noexcept { return landing_; }
     std::span<const LiveMidiTake> liveMidiTakes() const noexcept;
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
@@ -325,6 +345,9 @@ class ProjectDocument final : public engine::BlockProcessor {
                     const RecordingDefaults *defaults = nullptr, bool exclusiveArm = false);
     bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
                           const std::string &name, std::filesystem::path &saved);
+    bool saveDefaultDevicePreset(const DevicePanelData &, const std::filesystem::path &library);
+    // The current User Library, read when a new device is loaded. An empty path has no defaults.
+    std::function<std::filesystem::path()> devicePresetLibrary;
     std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
                                   const std::optional<rows::PluginRef> &installed = {});
     struct HotSwapTargetInfo {
@@ -373,7 +396,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
-    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                       const std::filesystem::path &defaultsIndex = {});
+    // An explicit Library write, available even for a read-only project.
+    bool saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex);
     struct ClipRelinkTarget {
         std::int64_t clipId{}, mediaId{};
         std::string hash, originalName;
@@ -381,6 +407,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::optional<ClipRelinkTarget> clipRelinkTarget(std::int64_t clip);
     bool relinkClipMedia(const ClipRelinkTarget &, const std::filesystem::path &);
     bool relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, std::string_view expectedHash, const std::filesystem::path &);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
@@ -390,17 +417,29 @@ class ProjectDocument final : public engine::BlockProcessor {
     // stale when the project changed meanwhile, leaving nothing behind.
     struct MaterialJob {
         std::filesystem::path project, source;
+        std::filesystem::path defaultsIndex;
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
         // Capture the application's sample policy before dispatching the job.
         std::optional<library::SampleWarpPolicy> shortSamplePolicy;
+        edit_plan::EditPolicy placementPolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
-                            const ImportChoices &, std::int64_t nowUtc) const;
+                            const ImportChoices &, std::int64_t nowUtc, edit_plan::EditPolicy = {}) const;
     static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
     // The new clip's id when it landed; 0 with `error()` saying why when it did not.
     std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
+    struct MaterialBatchJob {
+        std::filesystem::path project, defaultsIndex;
+        clip_edit::ImportBatch batch;
+        double rate = 48000.0;
+    };
+    MaterialBatchJob materialBatchJob(const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t atTicks, bool separate, const ImportChoices &,
+                                      const RecordingDefaults &, std::int64_t nowUtc) const;
+    static clip_edit::MaterialEdit prepareMaterialBatch(MaterialBatchJob, std::stop_token = {});
+    bool commitMaterialBatch(clip_edit::MaterialEdit &, const MaterialBatchJob &);
     // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
     // project through its own read-only store (`Store::open(path, error, true)`), never this one.
     WaveformCache &waveforms() noexcept { return waveforms_; }
@@ -414,8 +453,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startTrackRender(TrackRenderKind, std::int64_t track);
     void pollTrackRender();
     void stopTrackRender();
-    bool finishInsert(PreparedBuiltinInsert);
-    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    enum class PresetLoad { Insert, InPlace, Default };
+    std::optional<preset::Preset> captureDevicePreset(const DevicePanelData &);
+    bool finishInsert(PreparedBuiltinInsert, const preset::Identity &);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, PresetLoad = PresetLoad::Insert);
+    void publishDeviceEdit(std::optional<std::int64_t> newTrack);
     std::optional<HotSwapTargetInfo> hotSwapTargetAfterCapture(const DevicePanelData &);
     std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
     bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
@@ -480,10 +522,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
+    void updateDailyHistory(bool closing = false);
     bool followSaveAs(const StoreFileResult &, bool keptTake);
     struct SaveJob;
     std::unique_ptr<Store> store_;
     std::string name_;
+    DailyHistorySnapshots dailyHistory_;
+    AppliedSource dailyHistorySource_;
+    std::uint64_t dailyHistorySequence_ = 0;
+    DailyHistoryClock dailyHistoryClock_;
     engine::ProjectView view_;
     OpSubmitter ops_;
     ViewStateStore views_;
@@ -506,6 +553,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): capture, staged audio files, then one owner commit.
     struct TakePublication;
+    struct RecoveryWork;
     struct MidiRecording;
     void pollRecording(bool deviceStopped);
     void landTake();
@@ -516,6 +564,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    bool recordingRecoveryEnabled_ = false;
+    std::unique_ptr<RecoveryWork> recoveryWork_;
     std::unique_ptr<MidiRecording> midiRecording_;
     std::optional<engine::AudioRecordingResult> audioTake_;
     bool recordingAudio_ = false;

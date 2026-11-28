@@ -114,6 +114,15 @@ void throughProducers() {
           store->db().execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=9").getInt() == 0,
           "the import worker honors the short-sample setting captured in the document's job");
 
+    auto manual = reenable;
+    manual.analysis.sourceBpm = 90;
+    const auto corrected = clip_edit::prepareSetWarp(*store, 9, manual, rate);
+    check(clip_edit::commitPrepared(*store, corrected).ok &&
+          store->db().execAndGet("SELECT src_start_frames FROM audio_clips WHERE clip_id=9").getInt64() == 0 &&
+          store->db().execAndGet("SELECT length_ticks FROM clips WHERE id=9").getInt64() == 3 * textproj::kPPQ &&
+          store->db().execAndGet("SELECT loop_enabled FROM clips WHERE id=9").getInt() == 0,
+          "manual source BPM overrides the automatic policy and pins the original source start");
+
     options.shortSamplePolicy = library::sampleWarpPolicyFromSettings({{"record.shortSampleMode", "warpedOneShot"}}, &analysis);
     options.clipId = 5;
     auto forced = clip_edit::prepareImportAudio(*store, options, rate);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
-#include "adi/clip_commands.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/short_sample_warp.hpp"
 #include "adi/audio/warp.hpp"
@@ -11,7 +11,8 @@ namespace adi::clip_edit {
 struct MaterialFiles;
 struct MaterialEdit {
     PreparedEdit edit;
-    std::shared_ptr<MaterialFiles> files;
+    std::vector<std::shared_ptr<MaterialFiles>> files;
+    std::optional<std::size_t> refusedImport;
 };
 struct ImportOptions {
     std::filesystem::path source;
@@ -21,6 +22,7 @@ struct ImportOptions {
     audio::WarpMode warpMode=audio::WarpMode::Beats;
     audio::AutoWarpOptions warpAnalysis;
     std::stop_token stop;
+    std::optional<edit_plan::EditPolicy> arrangementPlacement; // the Arrangement drop owns overlap policy
     std::optional<audio::ShortSampleWarpInput> shortSample = {};
     std::optional<library::SampleWarpPolicy> shortSamplePolicy = {};
 };
@@ -31,6 +33,17 @@ struct ImportOptions {
 // defaults use normal import; unsupported/mismatched authored data refuse. The
 // captured native request owns all values; no library survives into commit/play.
 [[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,const library::Index*);
+struct ImportBatch {
+    std::vector<ImportOptions> imports;
+    std::vector<OpRequest> createTracks;
+    std::optional<std::int64_t> expectedHead;
+    bool consecutive = false;
+    std::optional<edit_plan::EditPolicy> placementPolicy;
+};
+/// Prepare all destinations from one store snapshot. Clip positions are taken from each input
+/// unless consecutive is true, when the previous clip's authored end is used.
+[[nodiscard]] MaterialEdit prepareImportAudioBatch(Store&, const ImportBatch&, double referenceRate,
+                                                   const library::Index* sampleDefaults = nullptr);
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;

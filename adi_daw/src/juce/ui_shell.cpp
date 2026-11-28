@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/engine/midi_input_route.hpp"
+#include "adi/engine/plan.hpp"
+#include "adi/ui/playback_problems.hpp"
 #include "adi/automation_splice_store.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
 #include "adi/track_image.hpp"
 #include "adi/media/media_ops.hpp"
 #include "ui_computer_midi_keys.hpp"
-#include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -12,7 +15,6 @@
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
 #include "adi/clip_image.hpp"
-#include "adi/media/media_ops.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/cue_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -25,14 +27,18 @@
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
+#include "adi/controller_lanes.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
-#include <limits>
 #include <iterator>
+#include <limits>
+#include <sqlite3.h>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -47,6 +53,24 @@ constexpr int kRecentProjectLimit = 12;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
+bool audioDestination(const rows::Track &track, const rows::Track &target) {
+    if (track.id == target.id || track.kind == "master" || track.kind == "vca")
+        return false;
+    if (track.kind == "return" && track.parentId)
+        return *track.parentId == target.id && target.kind == "group";
+    return target.kind == "master" || target.kind == "audio" || target.kind == "instrument" ||
+           target.kind == "group" || target.kind == "return";
+}
+
+std::int64_t defaultAudioDestination(const rows::Model &model, const rows::Track &track) {
+    if (track.parentId)
+        return *track.parentId;
+    std::int64_t main = 0;
+    for (const auto &target : model.tracks)
+        if (target.kind == "master" && (main == 0 || target.id < main))
+            main = target.id;
+    return main;
+}
 bool flag(const settings::AppSettings &s, const char *key, bool fallback) {
     const auto v = s.get(key);
     return v.is_boolean() ? v.get<bool>() : fallback;
@@ -97,6 +121,7 @@ void AppCommands::clearRecentProjects(bool onlyUnavailable) {
 void AppCommands::reload() {
     live_ = settings_.get("shortcuts.preset") == "live";
     infoView_ = flag(settings_, "lookfeel.showInfoView", true);
+    browserPreviewEnabled_ = flag(settings_, settings::kBrowserPreviewEnabledKey, settings::kBrowserPreviewStartsEnabled);
     tooltips_ = flag(settings_, "lookfeel.showTooltips", true);
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
@@ -107,6 +132,7 @@ void AppCommands::reload() {
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
+    envelopesLocked_ = !flag(settings_, "editing.automationFollowsClips", true);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
@@ -374,6 +400,21 @@ const StableEntry *stableEntry(int id) noexcept {
         {"file.export-midi-clip", "File"}, // ExportMidiClip
         {"help.about", "Help"}, // About
         {"create.import-audio-file", "Create"}, // ImportAudioFile
+        {"browser.toggle-preview", "Browser"}, // ToggleBrowserPreview
+        {"browser.preview-selected", "Browser"}, // PreviewSelected
+        {"browser.hot-swap", "Browser"}, // HotSwap
+        {"file.manage-project-files", "File"}, // ManageProjectFiles
+        {"browser.toggle-favorite", "Browser"},
+        {"browser.toggle-collection-red", "Browser"},
+        {"browser.toggle-collection-orange", "Browser"},
+        {"browser.toggle-collection-yellow", "Browser"},
+        {"browser.toggle-collection-green", "Browser"},
+        {"browser.toggle-collection-blue", "Browser"},
+        {"browser.toggle-collection-purple", "Browser"},
+        {"browser.toggle-collection-gray", "Browser"},
+        {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
+        {"options.lock-envelopes", "Options"}, // LockEnvelopes
+        {"file.open-backup", "File"}, // OpenBackup
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -470,6 +511,12 @@ bool AppCommands::setInfoView(bool on, std::string &why) {
     infoView_ = on;
     return true;
 }
+bool AppCommands::setBrowserPreviewEnabled(bool on, std::string &why) {
+    if (!settings_.set(settings::kBrowserPreviewEnabledKey, on, {}, why) || !settings_.save(why))
+        return false;
+    browserPreviewEnabled_ = on;
+    return true;
+}
 std::optional<float> AppCommands::keptZoom(const std::string &window, const std::string &display) const {
     const auto kept = settings::windowZoom(settings_, window, display);
     if (!kept)
@@ -490,6 +537,16 @@ bool AppCommands::setDelayCompensation(bool on, std::string &why) {
         return false;
     delayCompensation_ = on; // in force from here, as every Settings change is
     return settings_.save(why);
+}
+bool AppCommands::setEnvelopesLocked(bool locked, std::string &why) {
+    if (!settings_.set("editing.automationFollowsClips", !locked, {}, why))
+        return false;
+    envelopesLocked_ = locked;
+    const bool saved = settings_.save(why);
+    manager.commandStatusChanged();
+    if (onEnvelopeLockChanged)
+        onEnvelopeLockChanged();
+    return saved;
 }
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
@@ -602,9 +659,20 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
                                   "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
                                   "Arrangement Record (Alternate Start)", "Computer MIDI Keyboard",
-                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File..."};
+                                  "Import MIDI File...", "Export MIDI Clip...", "About ADI", "Import Audio File...",
+                                  "Browser Preview", "Preview Selected", "Hot-Swap", "Manage Project Files...",
+                                  "Toggle Favorite", "Toggle Red Collection",
+                                  "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
+                                  "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup..."};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
+    if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
+        if (id != ToggleFavorite)
+            info.addDefaultKeypress('1' + id - ToggleCollectionRed, 0);
+        info.setActive(active_ && active_->browser.canMarkSelection());
+        return;
+    }
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
         info.setInfo("Save Project...", "Name this project", category(id), 0);
     if (id == Undo || id == Redo) {
@@ -904,6 +972,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('e', cmd);
         info.setActive(active_ != nullptr);
         break;
+    case ReverseAudio:
+        info.addDefaultKeypress('r', 0);
+        info.setActive(active_ != nullptr && !active_->noteEditorHasContext() && active_->canReverseAudio());
+        break;
     case TogglePluginWindows: // manual 23.3, 41.4: View > Show/Hide Plug-In Windows, Ctrl/Cmd+Alt+P
         info.addDefaultKeypress('p', cmd | alt);
         info.shortName = active_ != nullptr && active_->pluginWindowsShown() ? "Hide Plug-In Windows"
@@ -955,6 +1027,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setTicked(active_ != nullptr && active_->automationMode());
         info.setActive(active_ != nullptr);
         break;
+    case LockEnvelopes:
+        info.setTicked(envelopesLocked());
+        info.setActive(active_ != nullptr);
+        break;
     case DeleteAutomation:
         info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd);
         info.setActive(active_ != nullptr && active_->canDeleteShownAutomation());
@@ -997,6 +1073,18 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case SearchBrowser: // §41.4.1.6, §42.22
         info.addDefaultKeypress('f', cmd);
+        break;
+    case ToggleBrowserPreview:
+        info.setTicked(browserPreviewEnabled_);
+        break;
+    case PreviewSelected:
+        info.addDefaultKeypress(juce::KeyPress::returnKey, shift);
+        info.addDefaultKeypress(juce::KeyPress::rightKey, 0);
+        info.setActive(active_ && active_->browser.selectedSample() && active_->playSamplePreview);
+        break;
+    case HotSwap:
+        info.addDefaultKeypress('q', 0);
+        info.setActive(active_ && active_->devices.hasHotSwapContext());
         break;
     case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
         info.setTicked(tabMovesFocus_);
@@ -1095,7 +1183,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case Quantize:
         info.addDefaultKeypress('u', cmd);
-        info.setActive(false);
+        info.setActive(active_ && active_->state().clipView && active_->clipView.audio() &&
+                       active_->clipView.sample.hasKeyboardFocus(true) && active_->clipView.sample.canQuantize());
         break;
     case QuantizeSettings:
         info.addDefaultKeypress('u', cmd | shift);
@@ -1199,10 +1288,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 }
 bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, bool allowComputerMidi) {
     activate(root);
+    const auto *mappings = manager.getKeyMappings();
+    if (root.browser.list.hasKeyboardFocus(true)) {
+        const auto direct = mappings->findCommandForKeyPress(pressed);
+        if (direct >= ToggleFavorite && direct <= ToggleCollectionGray)
+            return root.command(direct);
+    }
     if (allowComputerMidi && root.playComputerMidiKey(pressed))
         return true;
     const auto key = allowComputerMidi ? root.computerMidiShortcut(pressed) : pressed;
-    const auto *mappings = manager.getKeyMappings();
     auto id = mappings->findCommandForKeyPress(key);
     const int physical = computerMidiKeyCode(pressed);
     if (allowComputerMidi && id == 0 && (physical == 'm' || physical == 'M') &&
@@ -1210,6 +1304,13 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         id = ComputerMidiKeyboard;
     if (id == ComputerMidiKeyboard)
         return allowComputerMidi && root.pressComputerMidiToggle(physical);
+    if (id == PreviewSelected)
+        return root.browser.list.hasKeyboardFocus(true) && root.browser.previewKey(key);
+    if (id == HotSwap && (!root.devices.hasHotSwapContext() ||
+                         (root.transport.keyboard.getToggleState() && key == juce::KeyPress('q'))))
+        return false;
+    if (id >= ToggleFavorite && id <= ToggleCollectionGray)
+        return false;
     if ((id == Undo || id == Redo) && root.recordingHoldsHistory()) {
         // JUCE skips inactive commands. A mapped Undo or Redo key can still say why it is held.
         root.command(id);
@@ -1229,7 +1330,7 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
         if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
             return false;
         if (root.transport.keyboard.getToggleState() &&
-            key == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
+            pressed == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
             return false;
     }
     // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
@@ -1265,6 +1366,7 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     for (juce::TextButton *b : std::initializer_list<juce::TextButton *>{&infoToggle, &detailToggle}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        b->getProperties().set(controls::iconTooltip, true);
     }
     infoToggle.setTitle("Info View");
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
@@ -1291,16 +1393,69 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
         root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
     };
     addChildComponent(audioSettings);
+    audioSettings.setTitle("Audio Settings");
     audioSettings.onClick = [this] {
         if (root_.openAudioSettings)
             root_.openAudioSettings();
+    };
+    addChildComponent(playbackIssues);
+    playbackIssues.setColour(juce::TextButton::textColourOffId, look::error);
+    playbackIssues.setTooltip("Shows what cannot play in this project.");
+    playbackIssues.onClick = [this] {
+        if (playbackProblems_.empty())
+            return;
+        if (onPlaybackProblems)
+            onPlaybackProblems(playbackProblems_);
+        else
+            root_.showPlaybackProblems();
     };
 }
 void StatusBar::setAudioDeviceProblem(juce::String problem) {
     audioDeviceProblem_ = std::move(problem);
     audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
     audioSettings.setTooltip(audioDeviceProblem_);
+    resized();
     repaint();
+}
+bool StatusBar::setPlaybackProblems(const std::vector<std::string> &problems) {
+    if (playbackProblems_ == problems)
+        return false;
+    auto projected = projectPlaybackProblems(problems);
+    playbackProblems_ = std::move(projected.reasons);
+    root_.arrangement.canvas.setPlaybackProblemIds(std::move(projected.clipIds));
+    root_.devices.setPlaybackProblemIds(std::move(projected.deviceIds));
+    root_.mixViewPanel.repaint();
+    root_.refreshPlaybackProblemList();
+    playbackIssues.setVisible(!problems.empty());
+    playbackIssueLabel_ = juce::String(problems.size()) + (problems.size() == 1 ? " playback issue" : " playback issues");
+    playbackIssues.setTitle(playbackIssueLabel_);
+    resized();
+    repaint();
+    return true;
+}
+void StatusBar::setMissingCueOutput(std::optional<int> firstChannel) {
+    if (firstChannel == missingCueOutput_)
+        return;
+    missingCueOutput_ = firstChannel;
+    cueOutputProblem_ = firstChannel ? "Cue Out " + juce::String(*firstChannel + 1) + "/" +
+                                           juce::String(*firstChannel + 2) + " unavailable. Metronome and sample preview are silent."
+                                     : juce::String{};
+    setTooltip(cueOutputProblem_);
+    repaint();
+}
+juce::String StatusBar::messageText() const {
+    auto text = audioDeviceProblem_;
+    if (!root_.error().empty()) {
+        if (text.isNotEmpty())
+            text << "  ";
+        text << juce::String(root_.error());
+    }
+    if (cueOutputProblem_.isNotEmpty()) {
+        if (text.isNotEmpty())
+            text << "  ";
+        text << cueOutputProblem_;
+    }
+    return text.isNotEmpty() ? text : root_.selectionText();
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -1311,9 +1466,18 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
-    const int messageWidth = std::max(0, w - 419);
-    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
-    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
+    auto actions = messageField().withY(11).withHeight(16).reduced(4, 0);
+    const bool showAudio = audioSettings.isVisible(), showIssues = playbackIssues.isVisible();
+    if (showAudio) {
+        const int availableWidth = showIssues ? actions.getWidth() / 2 : actions.getWidth();
+        audioSettings.setBounds(actions.removeFromRight(std::min(98, availableWidth)));
+        audioSettings.setButtonText(audioSettings.getWidth() >= 85 ? "Audio Settings" : "Audio");
+        actions.removeFromRight(4);
+    }
+    if (showIssues) {
+        playbackIssues.setBounds(actions.removeFromRight(125));
+        playbackIssues.setButtonText(playbackIssues.getWidth() >= 110 ? playbackIssueLabel_ : juce::String("Issues"));
+    }
 }
 void StatusBar::DetailButton::clicked(const juce::ModifierKeys &mods) {
     // Letting go after a drag in the Clip View selector only finishes the drag.
@@ -1366,7 +1530,7 @@ void StatusBar::setExportProgress(std::optional<int> percent) {
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
-    const juce::Rectangle<int> message(35, 8, std::max(0, w - 419), 22);
+    const auto message = messageField();
     const juce::Rectangle<int> second = secondField(), track(w - 162, 8, 124, 22);
     for (auto r : {message, second, track}) {
         g.setColour(look::band);
@@ -1424,18 +1588,14 @@ void StatusBar::paint(juce::Graphics &g) {
         controls::roundButton(g, c, state);
         look::triangle(g, c.reduced(5.f), -juce::MathConstants<float>::halfPi, controls::labelColour(state));
     }
-    const bool error = !root_.error().empty();
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
-    const bool audioProblem = audioDeviceProblem_.isNotEmpty();
-    auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
-    if (audioProblem && error)
-        text << "  " << juce::String(root_.error());
-    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    const auto actionWidth = (audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0) +
+                             (playbackIssues.isVisible() ? playbackIssues.getWidth() + 4 : 0);
     auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
     if (exportProgressText_.isNotEmpty())
         g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);
-    g.drawText(text, textArea, juce::Justification::centredLeft);
+    g.drawText(messageText(), textArea, juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
@@ -1475,9 +1635,40 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     // Live's look for everything this window holds (ui_look.hpp).
     setLookAndFeel(&look::liveLook());
+    browser.syncPreviewToggle();
     undoHistory.setLookAndFeel(&look::liveLook());
+    auto& store = submitter_.store();
+    const auto opening = store.openingHistory();
+    undoHistory.openingHead = opening ? opening->seq : OpJournal(store).headSeq();
+    if (!opening && !store.readOnly())
+        store.retainOpeningHistory(undoHistory.openingHead);
+    undoHistory.openedUtc = juce::Time::currentTimeMillis() * 1000;
     undoHistory.read = [this] { return submitter_.timeline(); };
     undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
+    undoHistory.restoreOpening = [this] {
+        return restoreHistory([this] {
+            return submitter_.restoreOpening(undoHistory.openingHead, juce::Time::currentTimeMillis() * 1000);
+        }, [this] {
+            return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{undoHistory.openingHead});
+        });
+    };
+    if (!submitter_.store().readOnly()) {
+        undoHistory.revertSnapshot = [this](std::int64_t id) {
+            return restoreHistory([this, id] {
+                return submitter_.revertSnapshot(id, juce::Time::currentTimeMillis() * 1000);
+            }, [this, id] {
+                return restoreStoredHistory && restoreStoredHistory(HistorySnapshotTarget{id});
+            });
+        };
+        undoHistory.renameSnapshot = [this](std::int64_t id, const std::string &name) {
+            const auto result = History(submitter_.store()).renameSnapshot(id, name);
+            return result.ok || fail(result.error);
+        };
+        undoHistory.removeSnapshot = [this](std::int64_t id) {
+            const auto result = History(submitter_.store()).removeSnapshot(id);
+            return result.ok || fail(result.error);
+        };
+    }
     setOpaque(true);
     setWantsKeyboardFocus(true);
     // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
@@ -1499,8 +1690,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(namesBar);
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
     // The bar over the track names (the Arrangement sheet): Flip Sides; the track row's sections, which
-    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; and the two that
-    // wait for the engine's automation.
+    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; Automation Mode
+    // and Lock Envelopes.
     namesBar.flip.onClick = [this] { command(AppCommands::SwapPanels); };
     namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
     namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
@@ -1510,7 +1701,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
     namesBar.automation.onClick = [this] { setAutomationMode(!automationMode_); };
-    namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
+    namesBar.lock.onClick = [this] { command(AppCommands::LockEnvelopes); };
+    namesBar.lock.setToggleState(commands_.envelopesLocked(), juce::dontSendNotification);
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -1532,12 +1724,46 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    playbackProblemsWindow_.reset();
     juce::Desktop::getInstance().removeFocusChangeListener(this);
     releaseComputerMidiKeys();
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
+}
+void AdiRootComponent::refreshPlaybackProblemList() {
+    if (!playbackProblemsWindow_)
+        return;
+    auto *list = static_cast<juce::TextEditor *>(playbackProblemsWindow_->getContentComponent());
+    juce::StringArray reasons;
+    for (const auto &reason : status.playbackProblems_)
+        reasons.add(juce::String(reason));
+    list->setText(reasons.isEmpty() ? juce::String("No playback problems.") : reasons.joinIntoString("\n\n"), false);
+}
+void AdiRootComponent::showPlaybackProblems() {
+    if (!playbackProblemsWindow_) {
+        auto list = std::make_unique<juce::TextEditor>();
+        list->setTitle("Playback problem details");
+        list->setMultiLine(true, true);
+        list->setReadOnly(true);
+        list->setCaretVisible(false);
+        list->setScrollbarsShown(true);
+        list->setSize(540, 260);
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Playback issues";
+        options.content.setOwned(list.release());
+        options.componentToCentreAround = getTopLevelComponent();
+        options.associatedComponent = getTopLevelComponent();
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        playbackProblemsWindow_.reset(options.create());
+        playbackProblemsWindow_->setLookAndFeel(&look::liveLook());
+        refreshPlaybackProblemList();
+    }
+    playbackProblemsWindow_->setVisible(true);
+    playbackProblemsWindow_->toFront(true);
 }
 bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
     const auto *info = findBuiltin(uid);
@@ -1679,9 +1905,18 @@ void AdiRootComponent::vblankFrame() noexcept {
     vblankFrame_ = false;
 }
 void AdiRootComponent::frame() noexcept {
+    browser.syncPreviewToggle();
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
+    const auto outputs = physicalOutputChannels ? physicalOutputChannels() : std::nullopt;
+    std::optional<int> missingCue;
+    if (const auto *snapshot = reader_->get(); snapshot != nullptr && outputs &&
+                                              outputs->packedPair(snapshot->cue.firstOutputChannel) < 0)
+        missingCue = snapshot->cue.firstOutputChannel;
+    status.setMissingCueOutput(missingCue);
+    if (automationMode_)
+        refreshAdditionalAutomationLanes();
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
@@ -1724,6 +1959,9 @@ void AdiRootComponent::frame() noexcept {
         arrangement.geometry.selection = session_.selection();
         dirty_.mark(DirtySet::Layout);
     }
+    const bool envelopesLocked = commands_.envelopesLocked();
+    if (namesBar.lock.getToggleState() != envelopesLocked)
+        namesBar.lock.setToggleState(envelopesLocked, juce::dontSendNotification);
     // The Info View and density are app-scoped and can change in another window.
     if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
         infoShown_ = commands_.infoView();
@@ -2247,7 +2485,7 @@ void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
-bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && clipView.details() != nullptr; }
+bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && !clipView.envelopesShown() && clipView.details() != nullptr; }
 bool AdiRootComponent::noteEditorHasContext() const { return noteEditorShown() && clipView.notes.hasContext(); }
 void AdiRootComponent::toggleClipViewFull() {
     if (!state_.clipView)
@@ -2519,6 +2757,29 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
 }
+bool AdiRootComponent::writeControllerPoint(const controllers::Address &address, const controllers::Point &point,
+                                            const std::optional<std::int64_t> &expectedHead) {
+    const std::array points{point};
+    auto prepared = controllers::prepareWrite(editStore(), address.clipId, address.channel, address.controller,
+                                              points);
+    if (!prepared.ok)
+        return fail(prepared.error);
+    if ((address.id != 0 && prepared.address.id != address.id) || prepared.expectedHead != expectedHead)
+        return fail("The MIDI controller envelope changed during the edit.");
+    std::vector requests{std::move(prepared.request)};
+    requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(requests, [&](Store &store, Actor) {
+        prepared.request = std::move(requests.front());
+        return controllers::commitPrepared(store, prepared);
+    }));
+}
+bool AdiRootComponent::deleteControllerPoints(const controllers::Lane &lane, std::span<const std::uint64_t> points) {
+    if (!lane.channel || !lane.controller || points.empty())
+        return false;
+    const controllers::Address address{lane.id, lane.clipId, static_cast<int>(*lane.channel),
+                                       static_cast<int>(*lane.controller)};
+    return submitEdits({controllers::deleteRequest(address, points)});
+}
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
 }
@@ -2612,14 +2873,43 @@ ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
                     return {t.get(), c.get()};
     return {};
 }
-bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
+struct ReverseTargets {
+    std::vector<std::int64_t> clips;
+    std::optional<std::pair<std::int64_t, std::int64_t>> range;
+};
+ReverseTargets reverseTargets(const engine::Snapshot &current, const ArrangementGeometry &geometry,
+                              const SnapshotReader &reader) {
+    ReverseTargets result;
+    const auto &sel = geometry.selection;
+    const auto [from, to] = std::minmax(sel.start, sel.end);
+    if (from != to && !chosenClip(current, sel).clip && sel.pickedClips.empty())
+        result.range.emplace(from, to);
+    for (const auto &track : current.tracks) {
+        if (!track || (result.range && !geometry.inSelection(reader, track->id)))
+            continue;
+        for (const auto &clip : track->clips) {
+            if (!clip)
+                continue;
+            const bool chosen = result.range ? clip->posTicks < to && clip->posTicks + clip->lengthTicks > from
+                                             : geometry.clipSelected(clip->id);
+            if (!chosen)
+                continue;
+            if (!clip->audio)
+                return {};
+            result.clips.push_back(clip->id);
+        }
+    }
+    return result;
+}
+bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || isMidiTrack(t); }
+std::string_view clipTrackKind(const engine::TrackNode &t) { return isMidiTrack(t) ? "midi" : std::string_view(t.kind); }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
 std::string imageKind(const Payload &image) {
     if (image.contains("row") && image["row"].contains("kind") && image["row"]["kind"].is_string())
         return image["row"]["kind"].get<std::string>();
     return {};
 }
-std::string kindWord(const std::string &kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
+std::string kindWord(std::string_view kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
 } // namespace
 bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
     // The device chain's when a device has the keyboard focus (Live's focus is where the command
@@ -2677,7 +2967,7 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (trackClipboardContext())
         if (const auto *track = current->findTrack(sel.track); track != nullptr && track->kind != "master")
             return true;
-    if (chosenClip(*current, sel).clip != nullptr)
+    if (!sel.pickedClips.empty() || chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
         return false;
@@ -2880,7 +3170,8 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                                               return t == nullptr || !arrangement.geometry.shown(id) || !holdsClips(*t);
                                           }),
                            selection.tracks.end());
-    if (command != ClipCommand::Paste && chosen.clip == nullptr && (!range || selection.tracks.empty()))
+    if (command != ClipCommand::Paste && sel.pickedClips.empty() && chosen.clip == nullptr &&
+        (!range || selection.tracks.empty()))
         return fail("Select a device, a clip, or a time selection on tracks with clips, first.");
     // A clip chosen after an edit: the new one, at its span in the refreshed snapshot.
     const auto chooseClip = [&](std::int64_t id) {
@@ -2898,6 +3189,11 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                             sel.marked = true;
                         }
     };
+    const auto chooseClips = [&](const std::vector<std::int64_t> &ids) {
+        chooseClip(ids.front());
+        sel.picked.clear();
+        sel.pickedClips.assign(std::next(ids.begin()), ids.end());
+    };
     const auto timeSelection = [&](std::int64_t first, std::int64_t last, std::int64_t a, std::int64_t b) {
         sel.track = first;
         sel.toTrack = last == first ? 0 : last;
@@ -2914,6 +3210,66 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         dirty_.mark(DirtySet::Status);
         arrangement.changed();
     };
+    if (command != ClipCommand::Paste && !sel.pickedClips.empty()) {
+        const auto ids = arrangement.geometry.selectedClips();
+        std::vector<std::int64_t> lanes;
+        std::vector<ClipPlace> places;
+        std::size_t firstLane = 0, lastLane = 0;
+        auto begin = std::numeric_limits<std::int64_t>::max();
+        std::int64_t end = 0;
+        for (const auto &row : arrangement.geometry.rows(reader())) {
+            const auto *track = row.track;
+            if (!arrangement.geometry.shown(track->id) || !holdsClips(*track))
+                continue;
+            const auto lane = lanes.size();
+            lanes.push_back(track->id);
+            for (const auto &clip : track->clips) {
+                if (!clip || !arrangement.geometry.clipSelected(clip->id))
+                    continue;
+                if (places.empty())
+                    firstLane = lane;
+                lastLane = lane;
+                begin = std::min(begin, clip->posTicks);
+                end = std::max(end, clip->posTicks + clip->lengthTicks);
+                places.push_back({clip->id, track->id, clip->posTicks});
+            }
+        }
+        if (places.size() != ids.size() || end <= begin)
+            return fail("The selected clips are no longer in the Arrangement.");
+
+        if (command == ClipCommand::Duplicate) {
+            const auto span = end - begin;
+            if (end > std::numeric_limits<std::int64_t>::max() - span)
+                return fail("The duplicates would extend past the end of the timeline.");
+            for (auto &place : places)
+                place.position += span;
+            const auto copies = copyClips(places, "Duplicate Clips");
+            if (copies.empty())
+                return false;
+            chooseClips(copies);
+        } else {
+            clip_edit::RangeSelection group{{}, {0, begin}, {0, end}};
+            for (auto lane = firstLane; lane <= lastLane; ++lane)
+                group.tracks.push_back(lanes[lane]);
+            if (command == ClipCommand::Cut) {
+                auto cut = clip_edit::prepareCutClips(store, group, ids, options);
+                if (!cut.copy.ok)
+                    return fail(cut.copy.error);
+                if (!commitEdit(std::move(cut.edit)))
+                    return false;
+                board.held = std::move(cut.copy);
+                timeSelection(group.tracks.front(), group.tracks.front(), begin, begin);
+            } else {
+                auto copy = clip_edit::copySelectedClips(store, group, ids, options);
+                if (!copy.ok)
+                    return fail(copy.error);
+                board.held = std::move(copy);
+            }
+            commands_.manager.commandStatusChanged();
+        }
+        succeeded();
+        return true;
+    }
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
@@ -2972,9 +3328,9 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             return fail("Select an audio or MIDI track to paste on.");
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
             // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
-            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
+            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != clipTrackKind(*track))
                 return fail("The copied clip goes on " + kindWord(kind) + " track: " + shownName(arrangement.geometry, reader(), track->id) + " is " +
-                            kindWord(track->kind) + " track.");
+                            kindWord(clipTrackKind(*track)) + " track.");
             // A new identity, never the copied clip's own: after a Cut of the newest clip, the
             // project's next free id is the one the copy still carries.
             auto id = audio_drop_detail::newClipId(*current);
@@ -3014,22 +3370,42 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             // Each source track's material onto a track of its kind: the source's kind from the
             // project, else from its copied clips.
             for (std::size_t i = 0; i < wanted; ++i) {
+                if (!rangeCopy.clearsRange &&
+                    std::none_of(rangeCopy.images.begin(), rangeCopy.images.end(), [i, wanted](const auto &image) {
+                        return image.value("trackIndex", wanted) == i;
+                    }))
+                    continue;
                 const auto source = rangeCopy.selection.tracks[i];
                 std::string kind;
                 if (const auto *t = reader().findTrack(source))
-                    kind = t->kind;
+                    kind = clipTrackKind(*t);
                 for (const auto &image : rangeCopy.images)
                     if (kind.empty() && image.contains("row") && image["row"].value("track_id", std::int64_t{0}) == source)
                         kind = imageKind(image);
                 const auto *target = reader().findTrack(targets[i]);
-                if (!kind.empty() && target != nullptr && target->kind != kind)
+                if (!kind.empty() && target != nullptr && clipTrackKind(*target) != kind)
                     return fail("The copy's track " + std::to_string(i + 1) + " goes on " + kindWord(kind) +
-                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " + kindWord(target->kind) + " track.");
+                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " +
+                                kindWord(clipTrackKind(*target)) + " track.");
             }
-            if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
+            auto paste = clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options);
+            std::vector<std::int64_t> pastedClips;
+            if (paste.ok && !rangeCopy.clearsRange) {
+                for (const auto &effect : edit_plan::describe(paste).effects)
+                    if (effect.kind == edit_plan::EffectKind::Created)
+                        for (const auto &clip : effect.after)
+                            pastedClips.push_back(clip.id);
+                if (pastedClips.empty() || pastedClips.size() != rangeCopy.images.size())
+                    return fail("The paste did not identify every copied clip.");
+            }
+            if (!commitEdit(std::move(paste)))
                 return false;
-            const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
-            timeSelection(targets.front(), targets.back(), at, at + length);
+            if (rangeCopy.clearsRange) {
+                const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
+                timeSelection(targets.front(), targets.back(), at, at + length);
+            } else {
+                chooseClips(pastedClips);
+            }
         }
         succeeded();
         return true;
@@ -3115,7 +3491,8 @@ bool AdiRootComponent::canTimeCommand(int id) const {
     const auto &sel = arrangement.geometry.selection;
     if (id == AppCommands::PasteTime) {
         const auto &held = commands_.clipClipboard().held;
-        return (std::holds_alternative<clip_edit::TimeCopy>(held) || std::holds_alternative<clip_edit::RangeCopy>(held)) &&
+        const auto *range = std::get_if<clip_edit::RangeCopy>(&held);
+        return (std::holds_alternative<clip_edit::TimeCopy>(held) || (range && range->clearsRange)) &&
                (sel.marked || sel.start != sel.end);
     }
     return sel.start != sel.end;
@@ -3182,8 +3559,8 @@ bool AdiRootComponent::timeCommand(int id) {
             select(at, at + time->ticks);
             return done();
         }
-        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held)) {
-            // A plain copy's material, with its length of time inserted across the whole Set first
+        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held); range && range->clearsRange) {
+            // A time range's material, with its length of time inserted across the whole Set first
             // (every track, the locators, the loop); the material lands on the tracks it came from.
             if (!commitEdit(clip_edit::preparePasteRange(store, *range, range->selection.tracks, {0, at}, rate, true)))
                 return false;
@@ -3215,6 +3592,17 @@ bool AdiRootComponent::timeCommand(int id) {
         return false;
     }
 }
+bool AdiRootComponent::canReverseAudio() const {
+    const auto current = view_.current();
+    return current && !reverseTargets(*current, arrangement.geometry, reader()).clips.empty();
+}
+bool AdiRootComponent::reverseAudio() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Reverse needs an open project.");
+    const auto targets = reverseTargets(*current, arrangement.geometry, reader());
+    return commitEdit(clip_edit::prepareReverse(submitter_.store(), targets.clips, targets.range, editRate()));
+}
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
     if (!current)
@@ -3223,13 +3611,7 @@ bool AdiRootComponent::splitAtMarker() {
     const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
     // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
     // selection, and Split cuts it at the marker.
-    const engine::ClipNode *chosen = nullptr;
-    if (sel.clip != 0)
-        for (const auto &t : current->tracks)
-            if (t)
-                for (const auto &c : t->clips)
-                    if (c && c->id == sel.clip && from == c->posTicks && to == c->posTicks + c->lengthTicks)
-                        chosen = c.get();
+    const auto *chosen = chosenClip(*current, sel).clip;
     const bool timeSelection = from != to && chosen == nullptr;
     if (!timeSelection && !sel.marked)
         return fail("Place the insert marker inside a clip to split it.");
@@ -3238,12 +3620,8 @@ bool AdiRootComponent::splitAtMarker() {
     // selection lies inside it (the two-point split); else the marker cuts the chosen clip, or with
     // no clip chosen the clips under it on the selected tracks, or on every track when
     // `editing.splitAllWithNoSelection` is on.
-    struct Cut {
-        std::int64_t clip = 0;
-        std::vector<std::int64_t> at;
-        std::string track; // its track's name, for the Status Bar
-    };
-    std::vector<Cut> cuts;
+    std::vector<clip_edit::ClipSplit> cuts;
+    std::vector<std::string> cutTracks;
     const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
         return at > c.posTicks && at < c.posTicks + c.lengthTicks;
     };
@@ -3261,71 +3639,63 @@ bool AdiRootComponent::splitAtMarker() {
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
-            Cut cut{c->id, {}, trackName};
-            if (timeSelection) {
-                if (!onTrack)
+            if (timeSelection && onTrack) {
+                const bool cutStart = inside(*c, from);
+                const bool cutEnd = inside(*c, to);
+                if (!cutStart && !cutEnd)
                     continue;
-                for (const auto at : {from, to})
-                    if (inside(*c, at))
-                        cut.at.push_back(at);
-            } else if ((chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
-                cut.at.push_back(sel.insert);
+                cuts.push_back({c->id, {0, cutStart ? from : to}, {}});
+                if (cutStart && cutEnd)
+                    cuts.back().second = clip_edit::TimePoint{0, to};
+            } else if (!timeSelection && (chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
+                cuts.push_back({c->id, {0, sel.insert}, {}});
+            } else {
+                continue;
             }
-            if (!cut.at.empty())
-                cuts.push_back(std::move(cut));
+            cutTracks.push_back(trackName);
         }
     }
     if (cuts.empty())
         return fail(timeSelection ? "No clip crosses the time selection's edges: there is nothing to split."
                                   : "Place the insert marker inside a clip to split it.");
-    // One clip is one undo step: each clip's split is prepared on the project as the last one left
-    // it, so their new pieces' identities cannot collide. A refused clip is reported, and the rest
-    // still split.
-    std::size_t done = 0, refused = 0;
-    std::string firstRefusal, refusedOn;
-    for (const auto &cut : cuts) {
-        const auto now = view_.current();
-        if (!now)
-            break;
-        const auto middle = audio_drop_detail::newClipId(*now);
-        auto prepared = cut.at.size() == 2
-                            ? clip_edit::prepareSplit(submitter_.store(), cut.clip, middle, middle + 1,
-                                                      clip_edit::TimePoint{0, cut.at[0]},
-                                                      clip_edit::TimePoint{0, cut.at[1]}, editRate())
-                            : clip_edit::prepareSplit(submitter_.store(), cut.clip, middle,
-                                                      clip_edit::TimePoint{0, cut.at[0]}, editRate());
-        if (commitEdit(std::move(prepared))) {
-            ++done;
-            // The chosen clip keeps its identity as the left piece, and stays chosen as that.
-            if (chosen != nullptr && cut.clip == sel.clip) {
-                sel.start = std::min(sel.start, sel.end);
-                sel.end = cut.at[0];
-            }
-            // A time selection in one track, now exactly one clip's span, selects that clip, as
-            // Live leaves the part split out selected: the arrow keys and Delete then act on it.
-            if (timeSelection && sel.toTrack == 0)
-                if (const auto after = view_.current())
-                    if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
-                        for (const auto &c : t->clips)
-                            if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
-                                sel.clip = c->id;
-        } else if (refused++ == 0) {
-            firstRefusal = error_;
-            refusedOn = cut.track;
-        }
+    auto prepared = clip_edit::prepareSplits(submitter_.store(), cuts, editRate());
+    const auto done = prepared.edit.requests.size();
+    const auto &refused = prepared.refused;
+    std::string refusal;
+    if (!refused.empty()) {
+        const auto first = std::find_if(cuts.begin(), cuts.end(), [&](const auto &cut) {
+            return cut.clipId == refused.front().clipId;
+        });
+        const auto index = static_cast<std::size_t>(std::distance(cuts.begin(), first));
+        refusal = "The clip on " + cutTracks.at(index) + " could not be split. " + refused.front().error;
+        if (refused.size() > 1)
+            refusal += " Other clips skipped: " + std::to_string(refused.size() - 1) + ".";
     }
-    if (refused > 0) {
-        const auto clipsWord = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " clip" : " clips"); };
-        // The first refused clip's track and the engine's reason (an alias clip: "split needs alias
-        // resolution").
-        const auto why = "the clip on " + refusedOn + " is not split: " + firstRefusal +
-                         (refused > 1 ? " (and " + clipsWord(refused - 1) + " more)" : std::string{});
-        fail(done > 0 ? clipsWord(done) + " split, one undo step each; " + why : "Split: " + why);
-        return done > 0;
+    if (!prepared.edit.ok && done == 0 && !refusal.empty())
+        return fail(std::move(refusal));
+    if (!commitEdit(std::move(prepared.edit)))
+        return false;
+
+    // The chosen clip keeps its identity as the left piece. A time selection
+    // in one track selects the piece cut out when both edges were inside it.
+    if (chosen != nullptr) {
+        sel.start = from;
+        sel.end = cuts.front().first.value;
+    } else if (timeSelection && sel.toTrack == 0) {
+        if (const auto after = view_.current())
+            if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
+                for (const auto &c : t->clips)
+                    if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
+                        sel.clip = c->id;
     }
+
     arrangement.changed();
-    if (done > 1)
-        say(std::to_string(done) + " clips split, one undo step each.");
+    if (!refusal.empty() || done > 1) {
+        auto message = std::to_string(done) + (done == 1 ? " clip split" : " clips split") + " in one undo step.";
+        if (!refusal.empty())
+            message += " " + refusal;
+        say(std::move(message));
+    }
     return true;
 }
 bool AdiRootComponent::edited(const SubmitResult &result) {
@@ -3856,7 +4226,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 if (!kept) {
                     const auto warning = "The import's choices were used but not saved: " + why;
                     if (importing_)
-                        importing_->warning = warning;
+                        *importing_ = warning;
                     else
                         say(warning);
                 }
@@ -3875,33 +4245,24 @@ bool AdiRootComponent::dropWithChoices(const std::vector<std::pair<std::string, 
         return dropPlain(files, track, pos, separate);
     if (files.empty())
         return fail("Drop an audio file.");
-    // One file at a time, each one undo step: the engine imports one file into one clip.
-    importing_ = PendingImport{files, track, std::max<std::int64_t>(0, pos), separate, choices, 0, 0, 0, 0, 0, 0, {}};
-    importNext();
+    importing_.emplace();
+    say(files.size() == 1 ? "Importing " + files.front().second + "..."
+                          : "Importing " + std::to_string(files.size()) + " audio files...");
+    const bool started = importMaterial(files, track, pos, separate, choices, [this](std::int64_t clip,
+                                                                                      std::int64_t on,
+                                                                                      const std::string &why) {
+        finishImport(clip, on, clip == 0 && why.empty() ? "The files were not imported." : why);
+    });
+    if (!started && importing_)
+        finishImport(0, 0, "The last import is still being prepared. Drop the files again when it ends.");
     return true;
 }
-void AdiRootComponent::finishImport(const std::string &why) {
+void AdiRootComponent::finishImport(std::int64_t first, std::int64_t onTrack, const std::string &why) {
     if (!importing_)
         return;
-    // A refused file leaves nothing: the track this queue made for it goes, while its step is still
-    // the latest.
     std::string message = why;
-    if (!why.empty() && importing_->madeStep != 0)
-        if (const auto step = submitter_.nextUndo(); step && step->txnId == importing_->madeStep) {
-            if (submitter_.undo().ok && afterEdit)
-                afterEdit();
-        }
-    // Stopped part-way through several files: what landed, and what was not tried.
-    if (!why.empty() && importing_->files.size() > 1) {
-        const auto &pending = *importing_;
-        const auto untried = pending.files.size() - pending.next - 1;
-        if (pending.landed > 0 || untried > 0)
-            message += " (" + std::to_string(pending.landed) + (pending.landed == 1 ? " file" : " files") +
-                       " imported; " + std::to_string(untried) + " not tried.)";
-    }
-    if (!importing_->warning.empty())
-        message += (message.empty() ? "" : " ") + importing_->warning;
-    const auto first = importing_->firstClip, onTrack = importing_->firstTrack;
+    if (!importing_->empty())
+        message += (message.empty() ? "" : " ") + *importing_;
     importing_.reset();
     if (first != 0) {
         // The first clip selected, as a click on it selects it.
@@ -3925,58 +4286,6 @@ void AdiRootComponent::finishImport(const std::string &why) {
     else
         error_.clear();
     dirty_.mark(DirtySet::Status);
-}
-void AdiRootComponent::importNext() {
-    if (!importing_)
-        return;
-    auto &job = *importing_;
-    if (job.next >= job.files.size())
-        return finishImport({});
-    const auto current = view_.current();
-    if (!current)
-        return finishImport("The project closed during the import.");
-    // A new audio track first when the drop asks for one: below the tracks, or each file after the
-    // first with Ctrl/Cmd held. Its own undo step.
-    std::int64_t on = job.track;
-    job.madeTrack = job.madeStep = 0;
-    if (on == 0 || (job.separate && job.next > 0)) {
-        auto made = newAudioTrack(*current, &commands_.recordingDefaults());
-        if (!submitEdits(std::move(made.ops)))
-            return finishImport(error_);
-        on = made.select;
-        job.madeTrack = on;
-        if (const auto step = submitter_.nextUndo())
-            job.madeStep = step->txnId;
-        if (job.track == 0)
-            job.track = on;
-    }
-    const auto at = job.pos;
-    const auto &[path, name] = job.files[job.next];
-    say("Importing " + name + "...");
-    const bool started = importMaterial(path, on, at, job.choices, [this, on](std::int64_t clip, const std::string &why) {
-        if (!importing_)
-            return;
-        if (clip == 0)
-            return finishImport(why.empty() ? std::string("The file was not imported.") : why);
-        auto &pending = *importing_;
-        ++pending.landed;
-        pending.madeTrack = pending.madeStep = 0;
-        if (pending.firstClip == 0) {
-            pending.firstClip = clip;
-            pending.firstTrack = on;
-        }
-        // The next file after this one on the same track; on its own track it starts where the drop did.
-        if (!pending.separate)
-            if (const auto now = view_.current())
-                if (const auto *t = now->findTrack(on))
-                    for (const auto &c : t->clips)
-                        if (c->id == clip)
-                            pending.pos = c->posTicks + c->lengthTicks;
-        ++pending.next;
-        importNext();
-    });
-    if (!started && importing_)
-        finishImport("The last import is still being prepared: drop " + name + " again when it ends.");
 }
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {
@@ -4007,11 +4316,28 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
         dropped.push_back(std::move(file));
     }
     auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
-                                   &commands_.recordingDefaults());
+                                   &commands_.recordingDefaults(), &submitter_.store(), editRate());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
-    if (!submitEdits(std::move(edit.ops)))
+    if (track != 0) {
+        const edit_plan::Options options{editRate(), edit_plan::capturePolicy(commandSettings())};
+        auto cleared = clip_edit::prepareAudioDropReplacement(submitter_.store(), track,
+            {0, std::max<std::int64_t>(0, pos)}, {0, edit.endOnTarget}, options, edit.lastClip);
+        if (!cleared.ok)
+            return fail(std::move(cleared.error));
+        if (!cleared.requests.empty()) {
+            for (auto &request : cleared.requests)
+                request.label = edit.ops.front().label;
+            cleared.requests.insert(cleared.requests.end(), std::make_move_iterator(edit.ops.begin()),
+                                    std::make_move_iterator(edit.ops.end()));
+            if (!commitEdit(std::move(cleared)))
+                return false;
+        } else if (!submitEdits(std::move(edit.ops))) {
+            return false;
+        }
+    } else if (!submitEdits(std::move(edit.ops))) {
         return false;
+    }
     // The first clip selected, as a click on it selects it: its track, and its time.
     auto &sel = arrangement.geometry.selection;
     sel.track = edit.select;
@@ -4148,7 +4474,7 @@ bool AdiRootComponent::toggleArm(std::optional<std::int64_t> clicked, bool add) 
     }
     return true;
 }
-bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+bool AdiRootComponent::setMonitor(std::int64_t id, std::optional<Monitor> mode) {
     const auto current = view_.current();
     if (!current)
         return fail("Monitoring needs an open project.");
@@ -4157,17 +4483,169 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
-bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+std::vector<std::int64_t> AdiRootComponent::audioOutputChoices(std::int64_t id) const {
+    const auto model = rows::readModel(submitter_.store());
+    const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+    if (source == model.tracks.end())
+        return {};
+    const auto plan = engine::planGraph(model);
+    const auto start = plan.indexOf(id);
+    if (!start)
+        return {};
+    // A destination already feeding this source would close a loop. A return
+    // may have a feedback send to itself, which is outside the graph order.
+    std::vector<std::vector<std::size_t>> upstream(plan.nodes.size());
+    for (const auto &edge : plan.edges)
+        if (!edge.feedback && edge.keyDevice == 0)
+            upstream[edge.to].push_back(edge.from);
+    std::vector<bool> feedsSource(plan.nodes.size(), false);
+    std::vector<std::size_t> visit{*start};
+    feedsSource[*start] = true;
+    while (!visit.empty()) {
+        const auto node = visit.back();
+        visit.pop_back();
+        for (const auto upstreamNode : upstream[node])
+            if (!feedsSource[upstreamNode]) {
+                feedsSource[upstreamNode] = true;
+                visit.push_back(upstreamNode);
+            }
+    }
+    std::vector<std::int64_t> choices;
+    for (const auto &target : model.tracks) {
+        const auto index = plan.indexOf(target.id);
+        if (index && !feedsSource[*index] && audioDestination(*source, target))
+            choices.push_back(target.id);
+    }
+    std::ranges::sort(choices);
+    return choices;
+}
+
+bool AdiRootComponent::setTrackMidiOutput(std::int64_t id, std::optional<rows::MidiOutput> output) {
+    if (output) {
+        const auto ports = midiTrackOutputs ? midiTrackOutputs() : std::vector<MidiPortListing>{};
+        if (std::ranges::find(ports, output->port, &MidiPortListing::id) == ports.end())
+            return fail("That MIDI output is unavailable. Enable its Track switch in Tempo & MIDI Settings.");
+    }
+    auto& store = submitter_.store();
+    struct Prepared {
+        std::vector<OpRequest> requests;
+        CommitOptions options;
+    } prepared;
+    try {
+        SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+        prepared.options.expectHead.emplace(OpJournal(store).headSeq());
+        const auto model = rows::readModel(store);
+        const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+        if (source == model.tracks.end() || (source->kind != "midi" && source->kind != "instrument"))
+            return fail("Choose a MIDI track to route to hardware.");
+        for (const auto& route : model.routing) {
+            if (!route.enabled || route.srcId != id || !route.midiOutput) continue;
+            if (route.midiOutput == output) return true;
+            prepared.requests.push_back(track_edits_detail::op("routing.disconnect", {{"id", route.id}}, "MIDI To"));
+        }
+        if (output) {
+            RowIds ids(store.db());
+            prepared.requests.push_back(track_edits_detail::op("routing.connect",
+                {{"id", ids.next("routing")}, {"srcKind", "track"}, {"src", id},
+                 {"dstKind", "hw_out"}, {"dst", 0}, {"kind", "main"},
+                 {"midiPort", output->port}, {"midiChannel", output->channel}}, "MIDI To"));
+        }
+        read.commit();
+    } catch (const std::exception& error) {
+        return fail(error.what());
+    }
+    if (prepared.requests.empty()) return true;
+    prepared.requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(std::move(prepared), [](Store& target, Prepared& edit, Actor) {
+        return OpJournal(target).commit(edit.requests, edit.options);
+    }));
+}
+
+bool AdiRootComponent::setTrackAudioOutput(std::int64_t id, std::int64_t destination) {
+    struct Prepared {
+        std::vector<OpRequest> requests;
+        CommitOptions options;
+    } prepared;
+    auto &store = submitter_.store();
+    try {
+        const auto baseline = [&] {
+            SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
+            prepared.options.expectHead.emplace(OpJournal(store).headSeq());
+            const auto model = rows::readModel(store);
+            const auto source = std::ranges::find(model.tracks, id, &rows::Track::id);
+            const auto target = std::ranges::find(model.tracks, destination, &rows::Track::id);
+            if (source == model.tracks.end() || target == model.tracks.end() || !audioDestination(*source, *target))
+                throw std::runtime_error("That Audio To destination is unavailable.");
+            const auto defaultDestination = defaultAudioDestination(model, *source);
+            std::vector<const rows::Routing *> previous;
+            for (const auto &route : model.routing)
+                if (route.enabled && route.kind == "main" && route.srcKind == "track" &&
+                    route.srcId == id && route.dstKind == "track")
+                    previous.push_back(&route);
+
+            const bool unchanged = previous.empty() ? destination == defaultDestination
+                : previous.size() == 1 && previous.front()->dstId == destination;
+            if (unchanged)
+                return engine::planGraph(model);
+            for (const auto *route : previous)
+                prepared.requests.push_back(track_edits_detail::op("routing.disconnect", {{"id", route->id}}, "Audio To"));
+            if (destination != defaultDestination) {
+                RowIds ids(store.db());
+                prepared.requests.push_back(track_edits_detail::op("routing.connect",
+                    {{"id", ids.next("routing")}, {"srcKind", "track"}, {"src", id}, {"dstKind", "track"},
+                     {"dst", destination}, {"kind", "main"}}, "Audio To"));
+            }
+            return engine::planGraph(model);
+        }();
+        if (prepared.requests.empty())
+            return true;
+        prepared.requests.front().selBefore = session_.advisory();
+        prepared.options.beforeCommit = [&](SQLite::Database &, std::int64_t, std::string &error) {
+            const auto candidate = rows::readModel(store);
+            const auto plan = engine::planGraph(candidate);
+            if (plan.cycle) {
+                error = "That Audio To destination would create a routing loop.";
+                return false;
+            }
+            for (const auto &problem : plan.problems)
+                if (std::ranges::find(baseline.problems, problem) == baseline.problems.end()) {
+                    error = problem;
+                    return false;
+                }
+            return !validateAudioRouting || validateAudioRouting(candidate, error);
+        };
+        return edited(submitter_.commitPrepared(std::move(prepared), [](Store &target, Prepared &edit, Actor) {
+            return OpJournal(target).commit(edit.requests, edit.options);
+        }));
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+}
+
+bool AdiRootComponent::setAudioInput(std::int64_t id, std::string_view ref) {
     const auto current = view_.current();
     const auto *track = current ? current->findTrack(id) : nullptr;
     if (!track || track->kind != "audio")
-        return fail("External audio inputs are available on audio tracks.");
+        return fail("Audio inputs are available on audio tracks.");
     const auto choices = audioInputs();
-    if (std::none_of(choices.begin(), choices.end(), [&](const auto &choice) { return choice.ref == ref; }))
+    if (ref != kResamplingInput &&
+        std::none_of(choices.begin(), choices.end(), [&](const auto &choice) { return choice.ref == ref; }))
         return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
     if (track->inputRef && *track->inputRef == ref)
         return true;
     return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
+bool AdiRootComponent::setMidiInput(std::int64_t id, std::string_view port, int channel) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || !isMidiTrack(*track) || channel < 0 || channel > 16)
+        return fail("Choose a valid input on a MIDI track.");
+    const auto previous = engine::midiInputChoice(track->inputRef ? std::string_view(*track->inputRef) : std::string_view{});
+    if (previous.port == port && previous.channel == channel)
+        return true;
+    if (!port.empty() && port != previous.port && std::ranges::find(midiInputPorts, port, &MidiPortListing::id) == midiInputPorts.end())
+        return fail("That MIDI input is unavailable. Check the port's Track switch in MIDI Settings.");
+    return submitEdit("track.setInput", {{"id", id}, {"input", engine::midiInputRef({port, channel})}}, "MIDI From");
 }
 void AdiRootComponent::setRecordPending(bool pending) {
     if (recordPending_ == pending)
@@ -4219,8 +4697,7 @@ bool AdiRootComponent::beginArrangementRecording(std::int64_t takeStart, bool ro
     return true;
 }
 ExportChoices AdiRootComponent::exportDefaults() const {
-    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
-    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    // R36: without a time selection or an active loop, export covers the Arrangement.
     ExportChoices c;
     const auto &sel = arrangement.geometry.selection;
     const auto current = view_.current();
@@ -4228,8 +4705,8 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         // A selection made right to left is the same range.
         c.startTicks = std::min(sel.start, sel.end);
         c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
-    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
-        // The loop brace, whether the loop is switched on or not, as Live's.
+    } else if (current && current->transport.loopEnabled &&
+               current->transport.loopEndTicks > current->transport.loopStartTicks) {
         c.startTicks = current->transport.loopStartTicks;
         c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
     } else {
@@ -4246,9 +4723,10 @@ void AdiRootComponent::setAutomationMode(bool on) {
         arrangement.canvas.clearAutomationSelection();
         arrangement.canvas.resetAutomationValueInput();
     }
+    refreshAdditionalAutomationLanes();
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
-    say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
-             "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
+    say(on ? "Choose an automation device and parameter on the track header, or click the control itself. "
+             "Click the line to add a breakpoint. Click a breakpoint to delete it, or drag it to move it."
            : "");
     arrangement.repaint();
 }
@@ -4261,14 +4739,18 @@ std::vector<AutomationTarget> AdiRootComponent::automationChoices(std::int64_t t
     return ::adi::ui::automationChoices(*current, track, published.get());
 }
 AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
-    const auto selection = automationTargets_.find(track);
-    if (selection == automationTargets_.end())
+    const auto selection = state_.automationChoices.find(track);
+    if (selection == state_.automationChoices.end())
         return volumeTarget(track);
     const auto current = view_.current();
     const auto *node = current ? current->findTrack(track) : nullptr;
     if (!node)
         return volumeTarget(track);
     const auto &chosen = selection->second;
+    const auto matches = [&](const AutomationTarget &target) {
+        return target.ownerKind == chosen.ownerKind && target.ownerId == chosen.ownerId &&
+               target.paramRef == chosen.paramRef;
+    };
     if (chosen.ownerKind == "track" && chosen.ownerId == track) {
         if (chosen.paramRef == "pan")
             return panTarget(track);
@@ -4277,7 +4759,7 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
     }
     if (chosen.ownerKind == "routing") {
         for (const auto &target : ::adi::ui::automationChoices(*current, track, nullptr))
-            if (target == chosen)
+            if (matches(target))
                 return target;
     }
     if (chosen.ownerKind == "device")
@@ -4285,32 +4767,401 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
             for (const auto &device : *published) {
                 if (device.id != chosen.ownerId || device.track != track)
                     continue;
-                // A visible panel may already know about descriptor changes.
-                // Hidden devices keep their selected metadata without a scan.
-                if (device.metadata || !device.declarations().empty()) {
-                    const auto& declared = device.declarations();
-                    const auto parameter = std::find_if(declared.begin(), declared.end(),
-                        [&](const auto& entry) { return entry.id == chosen.nativeParamId; });
-                    if (parameter != declared.end())
-                        if (auto target = deviceTarget(device, *parameter); target && *target == chosen)
-                            return std::move(*target);
+                if (chosen.paramRef == kDeviceActivatorParamRef) {
+                    auto target = deviceActivatorTarget(device);
+                    if (device.activatorAvailable || envelopeOf(*current, target).lane)
+                        return target;
                     break;
                 }
-                auto target = chosen;
-                target.device = device.name;
-                return target;
+                const auto cached = automationTargets_.find(track);
+                if (device.metadata || !device.declarations().empty()) {
+                    for (const auto &parameter : device.declarations()) {
+                        if (cached != automationTargets_.end() && matches(cached->second) &&
+                            !cached->second.nativeParamId.empty() && parameter.id != cached->second.nativeParamId)
+                            continue;
+                        if (auto target = deviceTarget(device, parameter); target && matches(*target))
+                            return std::move(*target);
+                    }
+                    break;
+                }
+                if (cached != automationTargets_.end() && matches(cached->second)) {
+                    auto target = cached->second;
+                    target.device = device.name;
+                    return target;
+                }
+                // A reopened project has the address but has yet to resolve the hidden device's
+                // descriptor. Keep the result for subsequent frames without a new catalog read.
+                for (auto &target : automationChoices(track))
+                    if (matches(target)) {
+                        automationTargets_.insert_or_assign(track, target);
+                        return std::move(target);
+                    }
+                break;
             }
     return volumeTarget(track);
 }
 void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
-    if(automationTarget(track)!=target)
-        arrangement.canvas.resetAutomationValueInput();
-    automationTargets_[track] = target;
+    const auto current = view_.current();
+    if (!current || !current->findTrack(track))
+        return;
+    auto selected = target;
+    if (target.ownerKind == "routing") {
+        const auto mixerChoices = ::adi::ui::automationChoices(*current, track, nullptr);
+        const auto found = std::find(mixerChoices.begin(), mixerChoices.end(), target);
+        if (found == mixerChoices.end())
+            return;
+        selected = *found;
+    }
+    if (selected.ownerKind == "device")
+        automationTargets_.insert_or_assign(track, selected);
+    else
+        automationTargets_.erase(track);
     if (!automationMode_)
         setAutomationMode(true);
-    say("Automation Mode shows " + (target.device == "Mixer" ? std::string() : target.device + ": ") + target.paramName + ".");
+
+    bool changed = state_.hiddenAutomationOverlays.erase(track) != 0;
+    auto &saved = state_.automationChoices;
+    if (selected == volumeTarget(track))
+        changed = saved.erase(track) != 0 || changed;
+    else {
+        const WindowState::AutomationChoice choice{selected.ownerKind, selected.ownerId, selected.paramRef};
+        const auto before = saved.find(track);
+        if (before == saved.end() || before->second != choice) {
+            saved.insert_or_assign(track, choice);
+            changed = true;
+        }
+    }
+    if (changed) {
+        arrangement.canvas.resetAutomationValueInput();
+        if (!persist()) {
+            say("Automation choice could not be saved. " + error_);
+            arrangement.repaint();
+            return;
+        }
+    }
+    say("Automation Mode shows " + (selected.ownerKind == "device" ? selected.device + ": " : std::string()) +
+        selected.paramName + ".");
     arrangement.repaint();
 }
+namespace {
+bool sameAutomationLaneStructure(const engine::Snapshot *a, const engine::Snapshot *b) {
+    if (a == b)
+        return true;
+    if (!a || !b)
+        return false;
+    const auto sameTrack = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id);
+    };
+    const auto sameSend = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id && left->sourceKind == right->sourceKind &&
+                                 left->sourceId == right->sourceId);
+    };
+    const auto sameLane = [](const auto &left, const auto &right) {
+        return left == right || (left && right && left->id == right->id && left->ownerKind == right->ownerKind &&
+            left->ownerId == right->ownerId && left->paramRef == right->paramRef && left->paramName == right->paramName &&
+            left->visible == right->visible && left->height == right->height && left->valueDomain == right->valueDomain &&
+            left->unit == right->unit && left->minValue == right->minValue && left->maxValue == right->maxValue &&
+            left->defaultValue == right->defaultValue);
+    };
+    return std::equal(a->tracks.begin(), a->tracks.end(), b->tracks.begin(), b->tracks.end(), sameTrack) &&
+           std::equal(a->sends.begin(), a->sends.end(), b->sends.begin(), b->sends.end(), sameSend) &&
+           std::equal(a->automationLanes.begin(), a->automationLanes.end(), b->automationLanes.begin(),
+                      b->automationLanes.end(), sameLane);
+}
+
+bool sameAutomationLaneOwners(const ParameterPublication *a, const ParameterPublication *b) {
+    if (a == b)
+        return true;
+    return a && b && std::equal(a->begin(), a->end(), b->begin(), b->end(), [](const auto &left, const auto &right) {
+        return left.id == right.id && left.track == right.track && left.instance == right.instance &&
+               left.name == right.name && left.available == right.available && left.metadata == right.metadata;
+    });
+}
+
+using AutomationCatalog = std::function<const ParameterPublication *(std::int64_t)>;
+std::optional<std::pair<std::int64_t, AutomationTarget>> additionalLaneTarget(
+    const engine::Snapshot &snapshot, const ParameterPublication *devices, const engine::AutomationLaneNode &lane,
+    const AutomationCatalog &catalogForTrack = {}) {
+    auto track = lane.ownerId;
+    AutomationTarget target;
+    if (lane.ownerKind == "track") {
+        if (lane.paramRef == "volume")
+            return std::pair{track, volumeTarget(track)};
+        if (lane.paramRef == "pan")
+            return std::pair{track, panTarget(track)};
+        if (lane.paramRef == "mute")
+            return std::pair{track, activatorTarget(track)};
+    } else if (lane.ownerKind == "routing") {
+        const auto send = std::find_if(snapshot.sends.begin(), snapshot.sends.end(), [&](const auto &entry) {
+            return entry && entry->id == lane.ownerId && entry->sourceKind == "track";
+        });
+        if (send == snapshot.sends.end())
+            return std::nullopt;
+        track = (*send)->sourceId;
+        if (lane.paramRef == "gain_db")
+            return std::pair{track, sendTarget(lane.ownerId, lane.paramName.empty() ? "Send" : lane.paramName)};
+    } else if (lane.ownerKind == "device" && devices) {
+        const auto dev = std::find_if(devices->begin(), devices->end(), [&](const auto &entry) {
+            return entry.id == lane.ownerId;
+        });
+        if (dev == devices->end())
+            return std::nullopt;
+        track = dev->track;
+        if (lane.paramRef == kDeviceActivatorParamRef)
+            return std::pair{track, deviceActivatorTarget(*dev)};
+        const auto findParameter = [&](const DevicePanelData &description) -> std::optional<AutomationTarget> {
+            for (const auto &parameter : description.declarations())
+                if (auto candidate = deviceTarget(description, parameter); candidate &&
+                    candidate->valueDomain == lane.valueDomain &&
+                    automation_override_detail::sameParam(lane.ownerKind, lane.paramRef, candidate->paramRef))
+                    return candidate;
+            return std::nullopt;
+        };
+        if (auto candidate = findParameter(*dev))
+            return std::pair{track, std::move(*candidate)};
+        if (dev->available && !dev->metadata && dev->declarations().empty() && catalogForTrack)
+            if (const auto *catalog = catalogForTrack(track))
+                for (const auto &description : *catalog)
+                    if (description.id == dev->id && description.track == track) {
+                        if (auto candidate = findParameter(description))
+                            return std::pair{track, std::move(*candidate)};
+                        break;
+                    }
+        target.device = dev->name;
+    } else
+        return std::nullopt;
+    target.ownerKind = lane.ownerKind;
+    target.ownerId = lane.ownerId;
+    target.paramRef = lane.paramRef;
+    if (lane.ownerKind == "device") {
+        std::uint32_t parameter = 0;
+        if (parseDeviceParamRef(lane.paramRef, parameter))
+            target.paramRef = std::to_string(parameter);
+    }
+    target.paramName = lane.paramName.empty() ? lane.paramRef : lane.paramName;
+    target.valueDomain = lane.valueDomain;
+    target.stepped = lane.valueDomain == "enum";
+    target.unit = lane.unit;
+    target.defaultValue = lane.defaultValue;
+    target.minimum = lane.minValue.value_or(0.);
+    target.maximum = lane.maxValue.value_or(1.);
+    if (target.maximum <= target.minimum) {
+        target.minimum = 0.;
+        target.maximum = 1.;
+    }
+    target.footIsSilence = false;
+    return std::pair{track, std::move(target)};
+}
+} // namespace
+
+void AdiRootComponent::refreshAdditionalAutomationLanes() {
+    const auto snapshot = automationMode_ ? view_.current() : nullptr;
+    const auto published = snapshot && devices.publication ? devices.publication() : nullptr;
+    if (sameAutomationLaneStructure(automationLaneSnapshot_.get(), snapshot.get()) &&
+        sameAutomationLaneOwners(automationLanePublication_.get(), published.get())) {
+        automationLaneSnapshot_ = snapshot;
+        automationLanePublication_ = published;
+        return;
+    }
+    automationLaneSnapshot_ = snapshot;
+    automationLanePublication_ = published;
+    additionalAutomationLanes_.clear();
+    std::map<std::int64_t, std::shared_ptr<const ParameterPublication>> catalogs;
+    const AutomationCatalog catalogForTrack = [&](std::int64_t track) -> const ParameterPublication * {
+        if (!automationParameters)
+            return nullptr;
+        const auto [entry, inserted] = catalogs.try_emplace(track);
+        if (inserted)
+            entry->second = automationParameters(track);
+        return entry->second.get();
+    };
+    if (snapshot)
+        for (const auto &lane : snapshot->automationLanes) {
+            if (!lane || !lane->visible)
+                continue;
+            auto entry = additionalLaneTarget(*snapshot, published.get(), *lane, catalogForTrack);
+            if (!entry || !snapshot->findTrack(entry->first))
+                continue;
+            auto &trackLanes = additionalAutomationLanes_[entry->first];
+            if (std::any_of(trackLanes.begin(), trackLanes.end(), [&](const auto &existing) {
+                    return existing.target == entry->second;
+                }))
+                continue;
+            const auto height = lane->height == 0 ? 42 : static_cast<int>(std::clamp<std::int64_t>(lane->height, 24, 512));
+            trackLanes.push_back({std::move(entry->second), height});
+        }
+    layoutAdditionalAutomationLanes();
+}
+
+void AdiRootComponent::layoutAdditionalAutomationLanes() {
+    decltype(arrangement.geometry.automationLaneHeights) heights;
+    for (const auto &[track, lanes] : additionalAutomationLanes_)
+        if (automationLanesExpanded(track)) {
+            int height = 0;
+            for (const auto &lane : lanes) {
+                if (height > std::numeric_limits<int>::max() - ArrangementGeometry::kMaxTrackHeight - lane.height)
+                    break;
+                height += lane.height;
+            }
+            heights.emplace(track, height);
+        }
+    if (arrangement.geometry.automationLaneHeights != heights)
+        arrangement.geometry.automationLaneHeights = std::move(heights);
+    dirty_.mark(DirtySet::All);
+}
+
+const std::vector<AdditionalAutomationLane> &AdiRootComponent::additionalAutomationLanes(std::int64_t track) const {
+    static const std::vector<AdditionalAutomationLane> empty;
+    const auto found = additionalAutomationLanes_.find(track);
+    return found == additionalAutomationLanes_.end() ? empty : found->second;
+}
+
+bool AdiRootComponent::automationLanesExpanded(std::int64_t track) const {
+    return automationMode_ && !state_.collapsedAutomationLanes.contains(track);
+}
+
+bool AdiRootComponent::automationOverlayShown(std::int64_t track) const {
+    if (!automationMode_ || state_.hiddenAutomationOverlays.contains(track))
+        return false;
+    const auto &lanes = additionalAutomationLanes(track);
+    if (lanes.empty() || !automationLanesExpanded(track) || arrangement.geometry.foldedTracks.contains(track))
+        return true;
+    const auto selected = automationTarget(track);
+    return std::none_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == selected; });
+}
+
+bool AdiRootComponent::automationTargetShown(std::int64_t track, const AutomationTarget &target) const {
+    if (!automationMode_ || !arrangement.geometry.shown(track) || arrangement.geometry.foldedTracks.contains(track))
+        return false;
+    if (automationOverlayShown(track) && target == automationTarget(track))
+        return true;
+    const auto &lanes = additionalAutomationLanes(track);
+    return automationLanesExpanded(track) &&
+           std::any_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; });
+}
+
+bool AdiRootComponent::addAutomationLane(std::int64_t track, const AutomationTarget &target) {
+    const auto snapshot = view_.current();
+    if (!snapshot || !snapshot->findTrack(track))
+        return fail("That track is gone.");
+    auto chosen = automationTarget(track);
+    if (chosen != target) {
+        const auto choices = automationChoices(track);
+        const auto found = std::find(choices.begin(), choices.end(), target);
+        if (found == choices.end())
+            return fail("That control is no longer available.");
+        chosen = *found;
+    }
+    const auto envelope = envelopeOf(*snapshot, chosen);
+    if (!envelope.lane || !envelope.lane->visible) {
+        OpRequest request;
+        if (envelope.lane)
+            request = automation::setLaneVisible(envelope.lane->id, true);
+        else {
+            RowIds rows(submitter_.store().db());
+            auto lane = automationLaneSpec(chosen, automationCurrent(chosen), rows.next("automation_lanes"), true);
+            lane.visible = true;
+            request = automation::createLane(lane);
+        }
+        request.label = "Add Automation Lane";
+        if (!submitEdits({std::move(request)}))
+            return false;
+    }
+    if (!automationMode_)
+        setAutomationMode(true);
+    const bool wasCollapsed = state_.collapsedAutomationLanes.erase(track) != 0;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    if (wasCollapsed) {
+        layoutAdditionalAutomationLanes();
+        if (!persist())
+            say("Automation lane view could not be saved. " + error_);
+    }
+    return true;
+}
+
+bool AdiRootComponent::addAutomatedLanes(std::int64_t track) {
+    const auto snapshot = view_.current();
+    if (!snapshot || !snapshot->findTrack(track))
+        return fail("That track is gone.");
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    std::vector<OpRequest> requests;
+    for (const auto &lane : snapshot->automationLanes) {
+        if (!lane || lane->visible || std::none_of(lane->envelopes.begin(), lane->envelopes.end(), [](const auto &data) {
+                return data && !data->clipId && !data->points.empty();
+            }))
+            continue;
+        const auto target = additionalLaneTarget(*snapshot, published.get(), *lane);
+        if (target && target->first == track && envelopeOf(*snapshot, target->second).lane == lane.get()) {
+            auto request = automation::setLaneVisible(lane->id, true);
+            request.label = "Add Automated Lanes";
+            requests.push_back(std::move(request));
+        }
+    }
+    if (!submitEdits(std::move(requests)))
+        return false;
+    if (!automationMode_)
+        setAutomationMode(true);
+    const bool wasCollapsed = state_.collapsedAutomationLanes.erase(track) != 0;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    if (wasCollapsed) {
+        layoutAdditionalAutomationLanes();
+        if (!persist())
+            say("Automation lane view could not be saved. " + error_);
+    }
+    return true;
+}
+
+bool AdiRootComponent::removeAutomationLane(std::int64_t track, const AutomationTarget &target) {
+    const auto snapshot = view_.current();
+    const auto &lanes = additionalAutomationLanes(track);
+    if (!snapshot || std::none_of(lanes.begin(), lanes.end(), [&](const auto &lane) { return lane.target == target; }))
+        return fail("That automation lane is no longer visible.");
+    const auto envelope = envelopeOf(*snapshot, target);
+    if (!envelope.lane || !envelope.lane->visible)
+        return fail("That automation lane is no longer visible.");
+    auto request = automation::setLaneVisible(envelope.lane->id, false);
+    request.label = "Remove Automation Lane";
+    if (!submitEdits({std::move(request)}))
+        return false;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    refreshAdditionalAutomationLanes();
+    return true;
+}
+
+void AdiRootComponent::toggleAutomationLanes(std::int64_t track) {
+    const auto &lanes = additionalAutomationLanes(track);
+    if (lanes.empty())
+        return;
+    const bool collapsing = state_.collapsedAutomationLanes.erase(track) == 0;
+    if (collapsing)
+        state_.collapsedAutomationLanes.insert(track);
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    layoutAdditionalAutomationLanes();
+    if (collapsing && state_.hiddenAutomationOverlays.contains(track)) {
+        showAutomation(track, lanes.front().target);
+        if (!state_.hiddenAutomationOverlays.contains(track))
+            return;
+    }
+    if (!persist())
+        say("Automation lane view could not be saved. " + error_);
+}
+
+void AdiRootComponent::hideAutomationOverlay(std::int64_t track) {
+    if (!state_.hiddenAutomationOverlays.insert(track).second)
+        return;
+    arrangement.canvas.clearAutomationSelection();
+    arrangement.canvas.resetAutomationValueInput();
+    if (!persist())
+        say("Automation lane view could not be saved. " + error_);
+    arrangement.repaint();
+}
+
 std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(
     std::int64_t device, const std::string &parameter) const {
     const auto published = devices.publication ? devices.publication() : nullptr;
@@ -4329,6 +5180,11 @@ std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::devic
     for (const auto &entry : *published) {
         if (entry.id != device || !current->findTrack(entry.track))
             continue;
+        if (parameter == kDeviceActivatorParamRef) {
+            if (entry.activatorAvailable)
+                return std::pair{entry.track, deviceActivatorTarget(entry)};
+            break;
+        }
         if (entry.metadata || !entry.declarations().empty() || !automationParameters)
             return find(entry);
         if (const auto declarations = automationParameters(entry.track))
@@ -4369,6 +5225,8 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
     if (const auto published = devices.publication ? devices.publication() : nullptr)
         for (const auto &d : *published)
             if (d.id == target.ownerId) {
+                if (target.paramRef == kDeviceActivatorParamRef)
+                    return d.enabled ? 1.0 : 0.0;
                 for (const auto &r : d.parameters())
                     if (r.id == target.nativeParamId)
                         return r.playing;
@@ -4377,10 +5235,15 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
     return target.defaultValue;
 }
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue) {
+    return addAutomationPoint(track, automationTarget(track), tick, value, exactValue);
+}
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, const AutomationTarget &target, std::int64_t tick,
+                                          double value, bool exactValue) {
     const auto current = view_.current();
     if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
-    const auto target = automationTarget(track);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
     const auto envelope = envelopeOf(*current, target);
     if (exactValue) {
         if (!editableEnvelope(envelope))
@@ -4398,10 +5261,15 @@ bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick,
 }
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value,
                                           bool exactValue) {
+    return moveAutomationPoint(track, automationTarget(track), point, tick, value, exactValue);
+}
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, const AutomationTarget &target, std::uint64_t point,
+                                          std::int64_t tick, double value, bool exactValue) {
     const auto current = view_.current();
     if (!current)
         return false;
-    const auto target = automationTarget(track);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
     const auto envelope = envelopeOf(*current, target);
     if (exactValue) {
         if (!envelope.lane || !envelope.data)
@@ -4414,26 +5282,110 @@ bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t poi
             return fail("That breakpoint has changed. Open Edit Value again.");
         if (!validExactAutomationValue(envelope, target, value))
             return fail("Enter a finite value in the envelope's range.");
-        return found->value == value || submitEdits({editAutomationPointValue(envelope, *found, value)});
+        const auto written = steppedAutomationValue(automationRange(target), value);
+        return found->value == value || found->value == written ||
+               submitEdits({editAutomationPointValue(envelope, *found, written)});
     }
     auto ops = ::adi::ui::moveAutomationPoint(envelope, target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
+    return deleteAutomationPoint(track, automationTarget(track), point);
+}
+bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, const AutomationTarget &target, std::uint64_t point) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, automationTarget(track)), point);
+    if (automationMode_ && !automationTargetShown(track, target))
+        return fail("That automation lane is no longer visible.");
+    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, target), point);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 
+bool AdiRootComponent::submitAutomationMove(std::vector<OpRequest> requests,
+                                          std::span<const TrackEnvelope> envelopes) {
+    if (requests.empty())
+        return false;
+    auto &store = submitter_.store();
+    auto &db = store.db();
+    try {
+        {
+            std::optional<SQLite::Transaction> read;
+            if (sqlite3_get_autocommit(db.getHandle()) != 0)
+                read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+            const auto head = OpJournal(store).headSeq();
+            OpTransactionInputs inputs;
+            for (const auto &envelope : envelopes) {
+                const auto &lane = *envelope.lane;
+                const auto &data = *envelope.data;
+                const Payload laneKey{{"id", lane.id}};
+                const Payload dataKey{{"lane_id", lane.id}, {"clip_id", nullptr}};
+                auto laneRows = adi::detail::captureGuardRows(store, "automation_lanes", laneKey, 2);
+                auto dataRows = adi::detail::captureGuardRows(store, "automation_data", dataKey, 2);
+                if (laneRows.size() != 1 || dataRows.size() != 1)
+                    return fail("That automation envelope changed during the drag.");
+                const auto &row = laneRows.front();
+                const auto &stored = dataRows.front();
+                const auto &bytes = stored.at("data").get_binary();
+                if (row.at("owner_kind") != lane.ownerKind || row.at("owner_id") != lane.ownerId ||
+                    row.at("param_ref") != lane.paramRef || row.at("time_base") != lane.timeBase ||
+                    row.at("min_value") != (lane.minValue ? Payload(*lane.minValue) : Payload(nullptr)) ||
+                    row.at("max_value") != (lane.maxValue ? Payload(*lane.maxValue) : Payload(nullptr)) ||
+                    stored.at("id") != data.id ||
+                    !std::equal(bytes.begin(), bytes.end(), data.encoded.begin(), data.encoded.end(),
+                                [](std::uint8_t storedByte, std::byte source) {
+                                    return storedByte == std::to_integer<std::uint8_t>(source);
+                                }))
+                    return fail("That automation envelope changed during the drag.");
+                inputs.rowGuards.push_back({"automation_lanes", laneKey, std::move(laneRows.front())});
+                inputs.rowSetGuards.push_back({"automation_data", dataKey, std::move(dataRows)});
+                const Payload rangesKey{{"data_id", data.id}};
+                auto ranges = adi::detail::captureGuardRows(store, "automation_segment_ranges", rangesKey);
+                inputs.rowSetGuards.push_back({"automation_segment_ranges", rangesKey, std::move(ranges)});
+            }
+            requests.front().selBefore = session_.advisory();
+            const auto captured = CapturedTransactionAccess::seal(appliedSource(store), head, requests,
+                                                                   std::move(inputs));
+            for (auto &request : requests)
+                request.capturedTransaction = captured;
+        }
+        return edited(submitter_.submit(std::move(requests)));
+    } catch (const std::exception &error) {
+        return fail(error.what());
+    }
+}
+
+bool AdiRootComponent::replaceAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
+                                              std::span<const automation::NativeSpliceKnot> knots, const char *label) {
+    auto edit = automation::prepareEnvelopeSplice(submitter_.store(), lane, begin, end, knots, editRate(),
+                                                  automation::kSplicePointBudget, label, session_.advisory());
+    if (!edit.ok)
+        return fail(std::move(edit.error));
+    return edited(submitter_.submit(std::move(edit.requests)));
+}
+bool AdiRootComponent::simplifyAutomationRange(std::int64_t lane, std::int64_t begin, std::int64_t end,
+                                               double tolerance) {
+    auto edit = automation::prepareSimplifyEnvelope(submitter_.store(), lane, begin, end, editRate(),
+                                                    tolerance, session_.advisory());
+    if (!edit.ok)
+        return fail(std::move(edit.error));
+    return edit.requests.empty() || edited(submitter_.submit(std::move(edit.requests)));
+}
+bool AdiRootComponent::transformAutomationRange(std::int64_t lane, const edit::AutomationTransform &transform,
+                                                const char *label) {
+    auto prepared = edit::prepareAutomationTransform(submitter_.store(), lane, transform, editRate(), label,
+                                                     session_.advisory());
+    if (!prepared.ok)
+        return fail(std::move(prepared.error));
+    return !prepared.requests.empty() && edited(submitter_.submit(std::move(prepared.requests)));
+}
 bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
                                            std::int64_t begin, std::int64_t end,
                                            const std::map<std::int64_t, double> &points, bool stepped,
                                            std::uint64_t generation) {
     const auto current = view_.committed();
     if (!automationMode_ || !current || !current->tempo || !current->findTrack(track) ||
-        generation != view_.committedGeneration() || automationTarget(track) != target)
+        generation != view_.committedGeneration() || !automationTargetShown(track, target))
         return fail("The automation target changed during the stroke.");
     if (points.empty() || begin < 0 || points.begin()->first != begin || points.rbegin()->first >= end)
         return false;
@@ -4458,11 +5410,7 @@ bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const Automation
         for (const auto &[tick, value] : points)
             knots.push_back({{tick, valueAt(value), 0.f, curve, 0, 0, 0}, {}});
         knots.push_back({{end, knots.back().point.value, 0.f, curve, 0, 0, 0}, {}});
-        auto edit = automation::prepareEnvelopeSplice(submitter_.store(), env.lane->id, begin, end, knots, rate,
-                                                       automation::kSplicePointBudget, label, session_.advisory());
-        if (!edit.ok)
-            return fail(edit.error);
-        return edited(submitter_.submit(std::move(edit.requests)));
+        return replaceAutomationRange(env.lane->id, begin, end, knots, label);
     }
 
     RowIds rows(submitter_.store().db());
@@ -4500,12 +5448,10 @@ std::vector<std::int64_t> matchingAutomation(const engine::Snapshot &snapshot, s
 
 bool AdiRootComponent::canDeleteShownAutomation() const {
     const auto current = view_.current();
-    const auto track = arrangement.geometry.selection.track;
-    if (!automationMode_ || !current || !current->findTrack(track) || clipView.notes.hasContext() ||
-        submitter_.store().readOnly())
+    if (!current || clipView.notes.hasContext() || submitter_.store().readOnly())
         return false;
-    const auto target = automationTarget(track);
-    return !matchingAutomation(*current, target.ownerKind, target.ownerId, target.paramRef).empty();
+    const auto target = arrangement.canvas.automationCommandTarget();
+    return target && !matchingAutomation(*current, target->ownerKind, target->ownerId, target->paramRef).empty();
 }
 
 bool AdiRootComponent::deleteAutomationLanes(const std::vector<std::int64_t> &ids, const char *label) {
@@ -4513,8 +5459,10 @@ bool AdiRootComponent::deleteAutomationLanes(const std::vector<std::int64_t> &id
         return false;
     std::vector<OpRequest> requests;
     requests.reserve(ids.size());
+    const auto current = view_.current();
     for (const auto id : ids) {
-        auto op = automation::deleteLane(id);
+        const auto *lane = current ? current->findAutomationLane(id) : nullptr;
+        auto op = lane && lane->visible ? automation::clearLane(id) : automation::deleteLane(id);
         op.label = label;
         requests.push_back(std::move(op));
     }
@@ -4631,16 +5579,34 @@ bool AdiRootComponent::setCueVolume(double db) {
     const auto current = view_.current();
     return submitCue(current ? cueVolumeEdit(*current, db) : TrackEdit{}, "Cue Volume needs an open project.");
 }
+bool AdiRootComponent::setMainOutput(int firstChannel) {
+    const auto current = view_.current();
+    return submitCue(current ? mainOutputEdit(*current, firstChannel) : TrackEdit{}, "Main Out needs an open project.");
+}
 bool AdiRootComponent::setCueOutput(int firstChannel) {
     const auto current = view_.current();
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    return restoreHistory([this, txnId] { return submitter_.restore(txnId); }, [this, txnId] {
+        if (!restoreStoredHistory)
+            return false;
+        const auto timeline = submitter_.timeline();
+        const auto step = std::find_if(timeline.steps.begin(), timeline.steps.end(), [txnId](const auto &entry) {
+            return entry.step.txnId == txnId;
+        });
+        return step != timeline.steps.end() && restoreStoredHistory(HistoryHeadTarget{step->step.lastSeq});
+    });
+}
+bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &restore,
+                                     const std::function<bool()> &reload) {
     if (recordingHoldsHistory())
         return fail(kRecordingHistoryMessage);
     if (settleEdits && !settleEdits())
         return false;
-    const auto result = submitter_.restore(txnId);
+    const auto result = restore();
+    if (result.sessionReloadRequired && reload())
+        return true;
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
     arrangement.followPaused = true; // as an undo pauses it
@@ -5098,6 +6064,36 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::nudgeSelectedTracks(bool down) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Moving tracks needs an open project.");
+    auto ids = arrangement.geometry.selectedTracks(reader());
+    auto edit = ::adi::ui::nudgeTracks(current->tracks, ids, down);
+    if (edit.ops.empty())
+        return true;
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+
+    auto &selection = arrangement.geometry.selection;
+    if (selection.toTrack != 0) {
+        const SnapshotReader updated(view_.current());
+        std::vector<TrackRow> rows;
+        rowsFromSnapshot(updated, rows);
+        ArrangementGeometry check;
+        check.selection = selection;
+        check.order.build(updated, rows);
+        const auto ranged = check.selectedTracks(updated);
+        if (!std::is_permutation(ids.begin(), ids.end(), ranged.begin(), ranged.end())) {
+            // When a range would reach different tracks after the move, keep the original IDs.
+            selection.toTrack = 0;
+            std::erase(ids, selection.track);
+            selection.picked = std::move(ids);
+            publishSelection(SelectionOrigin::Arrangement);
+        }
+    }
+    return true;
+}
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }
 bool AdiRootComponent::setDetailViews(bool showClip, bool showDevices) {
@@ -5136,7 +6132,8 @@ bool AdiRootComponent::focusView(int id) {
         if (clipView.details() == nullptr)
             focusIfShowing(clipView);
         else if (clipView.midi())
-            focusIfShowing(clipView.notes);
+            focusIfShowing(clipView.envelopesShown() ? static_cast<juce::Component &>(clipView.envelopes)
+                                                     : static_cast<juce::Component &>(clipView.notes));
         else
             focusIfShowing(clipView.sample);
         return true;
@@ -5157,7 +6154,8 @@ bool AdiRootComponent::focusView(int id) {
             focusIfShowing(browser);
             return true;
         }
-        // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
+        // Ctrl/Cmd+F always searches All, with the library search text ready to type over.
+        browser.searchAll();
         focusIfShowing(browser.search);
         browser.search.selectAll();
         return true;
@@ -5227,6 +6225,14 @@ bool AdiRootComponent::command(int id) {
         if (id == AppCommands::RenameTrack)
             return clipView.chooseTitleItem(1);
     }
+    if (state_.clipView && clipView.audio() && clipView.sample.hasKeyboardFocus(true)) {
+        if (id == AppCommands::PlayStop && !mailbox_.desiredPlaying() && clipView.sample.insert()) {
+            clipView.sample.playFromInsert();
+            return true;
+        }
+        if (clipView.sample.command(id))
+            return true;
+    }
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
     if (id >= AppCommands::FoldToNotes && id <= AppCommands::HighlightScales) {
@@ -5257,7 +6263,8 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
-        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About)
+        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About ||
+        id == AppCommands::ManageProjectFiles || id == AppCommands::OpenBackup)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -5331,12 +6338,22 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::AutomationMode:
         setAutomationMode(!automationMode_);
         return true;
+    case AppCommands::LockEnvelopes: {
+        std::string why;
+        const bool saved = commands_.setEnvelopesLocked(!commands_.envelopesLocked(), why);
+        namesBar.lock.setToggleState(commands_.envelopesLocked(), juce::dontSendNotification);
+        if (!saved)
+            return fail(why.empty() ? "Lock Envelopes could not be saved." : why);
+        say({});
+        return true;
+    }
     case AppCommands::DeleteAutomation: {
         if (!canDeleteShownAutomation())
             return false;
-        const auto target = automationTarget(arrangement.geometry.selection.track);
-        return deleteAutomationLanes(matchingAutomation(*view_.current(), target.ownerKind, target.ownerId,
-                                                        target.paramRef), "Delete Automation");
+        const auto target = arrangement.canvas.automationCommandTarget();
+        return target && deleteAutomationLanes(matchingAutomation(*view_.current(), target->ownerKind,
+                                                                  target->ownerId, target->paramRef),
+                                               "Delete Automation");
     }
     case AppCommands::DrawMode:
         clipView.notes.setDrawMode(!drawMode());
@@ -5500,12 +6517,44 @@ bool AdiRootComponent::command(int id) {
         break;
     }
     case AppCommands::ToggleInfoView: {
+        const bool reopening = state_.panels.find(Panel::Browser)->collapsed;
+        if (reopening && !toggle(Panel::Browser))
+            return false;
+        const bool shown = commands_.infoView();
+        const bool showInfo = reopening || !shown;
         std::string why;
-        if (!commands_.setInfoView(!commands_.infoView(), why))
+        if (showInfo != shown && !commands_.setInfoView(showInfo, why)) {
+            if (reopening)
+                resized();
             return fail(why);
+        }
         infoShown_ = commands_.infoView();
         break;
     }
+    case AppCommands::ToggleBrowserPreview: {
+        const bool enable = !commands_.browserPreviewEnabled();
+        std::string why;
+        if (!commands_.setBrowserPreviewEnabled(enable, why))
+            return fail(why);
+        if (!enable && stopSamplePreview)
+            stopSamplePreview();
+        browser.syncPreviewToggle();
+        commands_.manager.commandStatusChanged();
+        return true;
+    }
+    case AppCommands::PreviewSelected:
+        return browser.previewSelected();
+    case AppCommands::HotSwap:
+        return devices.hotSwapFocused();
+    case AppCommands::ToggleFavorite:
+    case AppCommands::ToggleCollectionRed:
+    case AppCommands::ToggleCollectionOrange:
+    case AppCommands::ToggleCollectionYellow:
+    case AppCommands::ToggleCollectionGreen:
+    case AppCommands::ToggleCollectionBlue:
+    case AppCommands::ToggleCollectionPurple:
+    case AppCommands::ToggleCollectionGray:
+        return browser.toggleSelectionMark(static_cast<unsigned>(id - AppCommands::ToggleFavorite));
     case AppCommands::TabMovesFocus: {
         std::string why;
         if (!commands_.setTabMovesFocus(!commands_.tabMovesFocus(), why))
@@ -5646,6 +6695,8 @@ bool AdiRootComponent::command(int id) {
         return deleteFades();
     case AppCommands::Split:
         return splitAtMarker();
+    case AppCommands::ReverseAudio:
+        return reverseAudio();
     case AppCommands::CutTime:
     case AppCommands::CopyTime:
     case AppCommands::PasteTime:
@@ -5774,11 +6825,11 @@ const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip}},
+        {"File", {C::NewProject, C::OpenProject, C::OpenBackup, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+                  C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip}},
 #else
-        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
+        {"File", {C::NewProject, C::OpenProject, C::OpenBackup, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+                  C::CollectAndExport, C::ManageProjectFiles, 0, C::ExportAudio, C::ExportMidiClip, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
@@ -5817,11 +6868,13 @@ const std::vector<MenuEntries> &menuBar() {
         // other Options entries is to be read on Live 12 (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
-         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
+          C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
-         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, C::LockEnvelopes, 0,
+          C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
@@ -5873,9 +6926,9 @@ class ShellMenu final : public juce::MenuBarModel {
             commands.clearRecentProjects(id == kRemoveUnavailableProjects);
             menuItemsChanged();
         } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);
-                   index < recentItems_.size() && root.openRecentProject) {
+                   index < recentItems_.size() && root.openProjectFile) {
             // Opening a project replaces the root and its menu. Keep a local copy of the action and path.
-            auto open = root.openRecentProject;
+            auto open = root.openProjectFile;
             const auto file = recentItems_[index];
             open(file);
         }
@@ -6095,6 +7148,21 @@ AdiWindow::~AdiWindow() {
 }
 juce::MenuBarModel *AdiWindow::menu() noexcept { return menu_.get(); }
 void AdiWindow::followSettings() { followTooltips(*this, commands_, tips_, tipDelayMs_); }
+juce::String windowTooltipLabel(const juce::Component &component) {
+    return static_cast<bool>(component.getProperties()[controls::iconTooltip]) ? component.getTitle() : juce::String{};
+}
+namespace {
+class IconTooltipWindow final : public juce::TooltipWindow {
+  public:
+    using juce::TooltipWindow::TooltipWindow;
+  private:
+    juce::String getTipFor(juce::Component &component) override {
+        const auto label = windowTooltipLabel(component);
+        // JUCE still owns foreground, modal and button-down suppression.
+        return label.isNotEmpty() && juce::TooltipWindow::getTipFor(component).isNotEmpty() ? label : juce::String{};
+    }
+};
+} // namespace
 void followTooltips(juce::Component &window, const AppCommands &commands,
                     std::unique_ptr<juce::TooltipWindow> &tips, int &delayMs) {
     if (!commands.tooltips()) {
@@ -6103,7 +7171,7 @@ void followTooltips(juce::Component &window, const AppCommands &commands,
     }
     if (tips == nullptr) {
         delayMs = commands.tooltipDelayMs();
-        tips = std::make_unique<juce::TooltipWindow>(&window, delayMs);
+        tips = std::make_unique<IconTooltipWindow>(&window, delayMs);
     } else if (delayMs != commands.tooltipDelayMs()) {
         delayMs = commands.tooltipDelayMs();
         tips->setMillisecondsBeforeTipAppears(delayMs);
@@ -6136,11 +7204,9 @@ AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoi
     copy.setToggleState(choices.copyIn, juce::dontSendNotification);
     // Live's Warp modes, in Live's order (manual 9.2.1); ADI's stretch is its own (ADR-0061).
     int item = 1;
-    for (const auto m : {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture, audio::WarpMode::RePitch,
-                         audio::WarpMode::Complex, audio::WarpMode::ComplexPro}) {
-        static const char *names[] = {"Beats", "Tones", "Texture", "Re-Pitch", "Complex", "Complex Pro"};
-        mode.addItem(names[item - 1], item);
-        if (m == choices.mode)
+    for (const auto &choice : kWarpModeChoices) {
+        mode.addItem(choice.name, item);
+        if (choice.mode == choices.mode)
             mode.setSelectedId(item, juce::dontSendNotification);
         ++item;
     }
@@ -6158,10 +7224,8 @@ ImportChoices AdiRootComponent::ImportPrompt::choices() const {
     out.warp = warp.getToggleState();
     out.edgeFades = fades.getToggleState();
     out.copyIn = copy.getToggleState();
-    static constexpr audio::WarpMode modes[] = {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture,
-                                                audio::WarpMode::RePitch, audio::WarpMode::Complex, audio::WarpMode::ComplexPro};
-    if (const auto id = mode.getSelectedId(); id >= 1 && id <= 6)
-        out.mode = modes[id - 1];
+    if (const auto id = mode.getSelectedId(); id >= 1 && id <= static_cast<int>(kWarpModeChoices.size()))
+        out.mode = kWarpModeChoices[static_cast<std::size_t>(id - 1)].mode;
     return out;
 }
 void AdiRootComponent::ImportPrompt::answer(bool importing) {

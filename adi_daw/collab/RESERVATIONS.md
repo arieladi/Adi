@@ -39,7 +39,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0264**.
+Next free: **ADR-0266**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -47,7 +47,7 @@ Next free: **ADR-0264**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C9 | DF-C10 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M79 | DF-M80 |
-| DF-W | Window | the window lane and win | DF-W61 | DF-W62 |
+| DF-W | Window | the window lane and win | DF-W65 | DF-W66 |
 | DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E92 | DF-E93 |
 | DF-R | Repository | win | DF-R3 | DF-R4 |
 
@@ -64,6 +64,7 @@ Claimed by open pull requests, or reserved for a named PLAN row before its pull 
 | `lane.restore` | #662 (landed) | engine-win |
 | `noteExpression.write` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the `note_expression` AEXP rows; DF-W12's gain (3) and pan (4) are existing dimensions | engine |
 | `scene.create`, `scene.delete`, `scene.reorder`, `scene.rename`, `scene.setTempo`, `session.setSlotClip`, `session.clearSlot`, `session.setLaunchMode`, `session.setLaunchQuant`, `session.setFollowAction` (edits); `session.launchClip`, `session.launchScene`, `session.stopTrack`, `session.stopAll` (ephemeral); `transport.setLaunchQuantization` (TM-SV-01) and `capture.sessionPerformance` (TM-SV-04) | none yet: `seats/session-chain`. Further names (a scene's signature and enable, the Stop button, clip settings, a scene's cancel, slot record) keep the `scene.` and `session.` prefixes and are listed in the seat's report as they are added | the session seat |
+| `view.applyFilter`, `view.clearFilter` | none yet: `control/agent-chain`. The agent's view operations of ADR-0257 d6, through one `view_filter` tool at Propose or Apply: they change what the session shows (track order, clip highlighting), are written to the agent's log with actor and source, and touch neither the Store, routing, Undo nor the user's saved filters; no schema minor. The plan rows for ADR-0257 d4 to d6 are owed under DF-R2 | the agent seat |
 | `clip.setPitchEdits` | none yet: `seats/pitch-chain`; one batch replaces a clip's edit rows and captures the previous rows for Undo | the pitch seat |
 | `clip.splitPitchSegment`, `clip.mergePitchSegments` | none yet: `seats/pitch-chain`; each carries the resolved source-bound edit image, so Undo, Redo and replay use captured bytes | the pitch seat |
 | `scene.setSignature`, `scene.setEnabled`, `session.setStopButton`, `session.setLaunchSettings`, `session.cancelSceneLaunch`, `session.backToArrangement`, `session.setFollowActionsEnabled` | none yet: `seats/session-chain` | the session seat |

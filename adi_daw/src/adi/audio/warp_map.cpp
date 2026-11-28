@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/textproj.hpp"
+#include <cmath>
 #include <limits>
 namespace adi::audio {
 namespace {
@@ -16,6 +18,12 @@ WarpMapError validate(std::span<const WarpMarker> markers,std::uint64_t frames) 
     if(markers.front()!=WarpMarker{0,0} || static_cast<std::uint64_t>(markers.back().sourceFrame)!=frames)return WarpMapError::Coverage;
     return WarpMapError::None;
 }
+}
+double sourceTempoBpm(std::span<const WarpMarker> markers,double rate) noexcept {
+    if(markers.size()<2 || !std::isfinite(rate) || rate<=0 ||
+       markers.back().sourceFrame<=0 || markers.back().tick<=0)return 0;
+    return 60.0 * rate * static_cast<double>(markers.back().tick) /
+           (static_cast<double>(textproj::kPPQ) * static_cast<double>(markers.back().sourceFrame));
 }
 WarpMapRead readWarpMap(std::span<const std::byte> bytes,std::uint64_t frames) {
     WarpMapRead result;
