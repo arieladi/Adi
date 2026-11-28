@@ -12,6 +12,15 @@
 
 ## State (newest first)
 
+- 2026-11-28, round 3: **all 18 taken stacks are on the chain** (17 merged + project-snapshot-backup taken by
+  another route). (13) export-profile-validation `abad9cd1` (decisions in its commit message and the chain
+  table), (14) source-hash-flac-proof `a43678f6` (no conflicts). BASE unchanged (origin/main `629a4834`).
+  Validators pass at `abad9cd1`.
+  **Round 1's check reported** (on `c8a41862`, merges 1-5): `CORE CONFIGURE FAILED`:
+  `cmake/sqlite_recover.cmake:13 Missing pinned sqlite-recover; run tools/fetch_external.sh --build-only`.
+  project-salvage (5) added a pinned sparse clone of `sqlite/sqlite` (three `ext/recover` files) to
+  `fetch_external.sh`; the build PC's third-party step did not produce it. See Proof for what was done next.
+
 - 2026-11-28, round 2, end: **BASE is now origin/main** (land/basics-1128c merged in #838). Chain
   `held/engine-win-chain` at `77224fc8` holds 16 of the 18 taken stacks. Round 2 merged, in order: BASE
   (origin/main at `629a4834`) `5579e020`, (9) ffmpeg-pcm-stream `7f9328ab`, (11)
@@ -244,8 +253,8 @@ project-sync-folder (PD-08).
 | 15 | comp-take-splice (CT-04) | 2d911206 | 2968450d | `edit_plan.cpp` BASE's `prepareDelete(clips)` and the seat's `prepareCompTake` both; test both includes |
 | 16c | scanner-clean-mode (DEV-25) | 9a1928bb | f0a41333 | loader: the seat's Clean cache mode with BASE's SC-319 block lifting, Clean lifts as Refresh does; `test_scan_cache` both tests |
 | 17b | project-sync-folder (PD-08) | 2a2d0f96 | 77224fc8 | one include line each side; read against BASE's `synchronizedProject`: no shared code, but two detectors (see For the director) |
-| 13 | export-profile-validation | 2b3b7e5c | (not merged) | attempted, aborted; see State for the decisions made |
-| 14 | source-hash-flac-proof | ab4fab82 | (not merged) | after 13 (it carries two of 13's branches) |
+| 13 | export-profile-validation (EX-02..EX-12, 31 commits) | 2b3b7e5c | abad9cd1 | nine files. `wav_file` main's BWF v2 + the seat's quantizer/speaker mask (WavDither now in `quantizer.hpp`); `normalization` `finish(..., service, advanceFrames, speakerMask)`; `queue.hpp` every hunk both; `queue.cpp` the seat's `validate(job, plannedRange)` + `validateDeliveryProfile`, main's public `validateJob` calls it; main's AIFF/literal-name rules moved into `validateDeliveryProfile` (an AIFF or literal-name job is one WAV-encoded PCM delivery; gapless refuses it); `{format}` = the job's container, per delivery for the seat's multi-delivery; `renderWavPrepared` carries main's `onHost` session, `prime(10 s, stop)`, AIFF-from-staged-WAV and `wavProgress` onto the seat's rate/tail/loop/multi-delivery runner; the seat's new `serviceHost` calls go through the host owner; `Queue::run` main's start token + the seat's stem-batch reservation; `job_json` v2 refuses the seat's new options (and the shaped dithers it would have written as "rectangular"); tests: all of both, the seat's `aiffExports` renamed `aiffDeliveryExports`, and its `explicitDirectTaps`/`directStemBatch` (defined, never called on its branch) now run |
+| 14 | source-hash-flac-proof (TM-MD-03) | ab4fab82 | a43678f6 | none |
 
 All five validators pass at `7bc8ed71`. No merge dropped a test.
 
@@ -258,6 +267,9 @@ All five validators pass at `7bc8ed71`. No merge dropped a test.
   The places most likely to break on the first build, to read first: `queue.cpp` `validateJob` /
   `formatToken` (merge 11), `project_files.cpp` `publishCollectedMedia`'s new parameters (11),
   `project_document` overloads (11b), `ui_main.cpp` `refreshCacheLimits` (9).
+- Round 3: round 1's check on `c8a41862` reported at 17:12: **core configure failed**, sqlite-recover missing
+  (see State). A core check on `abad9cd1` (merges 1-13) was started at once to see whether the build PC's
+  third-party fetch picks the pin up on a second run.
 
 ## Account (so far)
 
