@@ -29,6 +29,7 @@ inline bool settingAvailable(std::string_view key) noexcept {
         "editing.arrowKeysMoveClips",
         "editing.automationFollowsClips",
         "editing.deleteOverlaps",
+        "editing.emptyArrangementTrack",
         "editing.importOptions",
         "editing.linkLoopToSelection",
         "editing.mutedClipsAsDeleted",

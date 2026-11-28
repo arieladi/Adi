@@ -3946,7 +3946,7 @@ bool AdiRootComponent::toggle(Panel p) {
     }
     return true;
 }
-bool AdiRootComponent::insertTrack(bool midi) {
+bool AdiRootComponent::insertTrack(bool midi, std::optional<std::int64_t> after) {
     // Live inserts after the selected track and selects the new one. The id is the
     // payload's, never SQLite's (ADR-0021), and it comes from the CURRENT cell: an
     // action lands on the project as it is now, not on this window's last frame. In the selected
@@ -3956,7 +3956,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
         return fail("Inserting a track needs an open project.");
     // The new id from one `RowIds` (DF-E16): past every track and every id a remark still holds.
     RowIds ids(submitter_.store().db());
-    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
+    auto edit = ::adi::ui::insertTrack(current->tracks, after.value_or(arrangement.geometry.selection.track), midi,
                                        &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
@@ -3974,6 +3974,10 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.geometry.selection.clearMaterial();
     publishSelection();
     focusIfShowing(arrangement.headers);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    resized();
     return true;
 }
 bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
@@ -6732,9 +6736,7 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
-        if (!insertTrack(id == AppCommands::InsertMidiTrack))
-            return false;
-        break;
+        return insertTrack(id == AppCommands::InsertMidiTrack);
     case AppCommands::DeleteTrack:
         if (devices.focusedDevice())
             return devices.deleteDevices();

@@ -488,6 +488,7 @@ class AdiRootComponent final : public juce::Component,
     // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
     // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
     // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
+    bool insertTrack(bool midi, std::optional<std::int64_t> after = std::nullopt);
     bool insertReturnTrack(std::int64_t group = 0);
     void attachTrackRendering(ProjectDocument &document) noexcept { trackRenderDocument_ = &document; }
     void addTrackRenderItems(juce::PopupMenu &, std::int64_t track);
@@ -1131,7 +1132,6 @@ class AdiRootComponent final : public juce::Component,
     ProjectDocument *trackRenderDocument_ = nullptr;
     bool beginArrangementRecording(std::int64_t takeStart, bool rolling);
     void setRecordPending(bool pending);
-    bool insertTrack(bool midi);
     bool deleteTrack();
     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the
     // session re-reads the project after it (afterEdit), so the engine clicks and loops as it says.

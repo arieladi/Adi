@@ -42,6 +42,11 @@ saved name when the identifier changes.
 `record.autoArmOnSelect` defaults to `none`. Saved choices still apply when a
 user has selected `instrumentAndMidi` or `all`.
 
+`editing.emptyArrangementTrack` is **Double-click below tracks** on the Editing
+page (DF-W64). It starts at **Ask**. Choosing MIDI Track, Audio Track or FX
+Channel adds the track and remembers that choice. Set it back to Ask to choose
+again on the next double-click below the Arrangement tracks.
+
 ### Graph worker admission (DEV-23)
 
 `audio.graphWorkers` is an internal app preference. Its `auto` value

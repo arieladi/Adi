@@ -5907,6 +5907,14 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     focusIfShowing(*this);
+    if (e.getNumberOfClicks() == 1)
+        emptyTrackDoubleClicked_ = false;
+    emptyTrackPress_ = e.mods == juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier) &&
+                       !(view.root.automationMode() && view.root.drawMode()) && inEmptyTrackArea(e.getPosition());
+    emptyTrackClick_ = emptyTrackPress_ && (e.getNumberOfClicks() == 1 || emptyTrackClick_);
+    // An extra press in the same click series can now land on the track just added.
+    if (emptyTrackPress_ || emptyTrackDoubleClicked_)
+        return;
     if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false; // a click in the lanes lets the brace and a locator go
         view.selectedLocator = 0;
@@ -6248,7 +6256,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
                                                              : juce::MouseCursor::NormalCursor);
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
-    if (contextMenuPress_ || ignoringAutomationClick_ || e.mods.isPopupMenu())
+    if (emptyTrackPress_ || emptyTrackDoubleClicked_ || contextMenuPress_ || ignoringAutomationClick_ || e.mods.isPopupMenu())
         return;
     if (draggingTakeSelection_) {
         if (view.takeSelection && e.mouseWasDraggedSinceMouseDown()) {
@@ -6433,6 +6441,12 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(emptyTrackPress_, false)) {
+        emptyTrackClick_ = emptyTrackClick_ && !e.mouseWasDraggedSinceMouseDown() && inEmptyTrackArea(e.getPosition());
+        return;
+    }
+    if (emptyTrackDoubleClicked_)
+        return;
     clipTimeBounds_.reset();
     if (std::exchange(draggingTakeSelection_, false))
         return;
@@ -6860,9 +6874,58 @@ bool ArrangementCanvas::editMaterialSelection(bool deactivate) {
     }
     return true;
 }
+bool ArrangementCanvas::inEmptyTrackArea(juce::Point<int> point) const {
+    if (!getLocalBounds().contains(point))
+        return false;
+    const auto &geometry = view.geometry;
+    const auto &reader = view.reader();
+    const auto rows = geometry.rows(reader);
+    const int bottom = geometry.footStart(rows) < rows.size() ? geometry.footTop(reader) - 2 : getHeight();
+    return point.y >= geometry.tracksHeight(reader) - geometry.scrollY && point.y < bottom;
+}
+void ArrangementCanvas::addTrackInEmptyArea(juce::Point<int> where) {
+    if (view.root.editStore().readOnly()) {
+        view.root.say("The project is read-only.");
+        return;
+    }
+    const auto add = [safe = SafePointer<ArrangementCanvas>(this)](const std::string &type, bool remember) {
+        if (!safe)
+            return;
+        auto &root = safe->view.root;
+        const bool inserted = type == "FX Channel" ? root.command(AppCommands::InsertReturnTrack)
+                                                    : root.insertTrack(type == "MIDI Track", 0);
+        if (inserted && remember && safe) {
+            auto &preferences = root.commands().writableSettings();
+            std::string why;
+            if (!preferences.set(settings::kEmptyArrangementTrackKey, type, {}, why) || !preferences.save(why))
+                root.say("The track type could not be remembered: " + why);
+        }
+    };
+    const auto choice = view.root.commandSettings().get(settings::kEmptyArrangementTrackKey).get<std::string>();
+    if (choice != "Ask") {
+        add(choice, false);
+        return;
+    }
+    juce::PopupMenu menu;
+    for (const auto *type : {"MIDI Track", "Audio Track", "FX Channel"})
+        menu.addItem(type, [add, type] { add(type, true); });
+    view.presentContextMenu(where, false, nullptr, std::move(menu));
+}
 void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (emptyTrackDoubleClicked_)
+        return;
     if (const auto bounds = automationTransformBounds(); bounds && automationTransformHandleAt(*bounds, e.position))
         return;
+    const bool releasedInEmpty = inEmptyTrackArea(e.getPosition());
+    const bool pressedInEmpty = inEmptyTrackArea(e.getMouseDownPosition());
+    if (releasedInEmpty || pressedInEmpty) {
+        if (std::exchange(emptyTrackClick_, false) && releasedInEmpty && pressedInEmpty &&
+            e.mods == juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier)) {
+            emptyTrackDoubleClicked_ = true;
+            addTrackInEmptyArea(e.getScreenPosition());
+        }
+        return;
+    }
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
     if (e.mods.isPopupMenu() || view.geometry.takeLaneAt(view.reader(), e.y))
         return;

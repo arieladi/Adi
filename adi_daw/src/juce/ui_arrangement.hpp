@@ -600,6 +600,10 @@ class ArrangementCanvas final : public juce::Component,
     // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
     bool copying_ = false;
     bool contextMenuPress_ = false;
+    bool emptyTrackPress_ = false, emptyTrackClick_ = false;
+    bool emptyTrackDoubleClicked_ = false;
+    bool inEmptyTrackArea(juce::Point<int>) const;
+    void addTrackInEmptyArea(juce::Point<int>);
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }

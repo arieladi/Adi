@@ -71,6 +71,7 @@ inline constexpr int kGraphWorkersMinimumFrames = 1024;
 [[nodiscard]] bool graphWorkersEnabled(const Value& setting, int grantedFrames) noexcept;
 
 inline constexpr char kNewMidiInputTrackKey[] = "midi.trackOnForNewInputs";
+inline constexpr char kEmptyArrangementTrackKey[] = "editing.emptyArrangementTrack";
 inline constexpr char kBrowserFavoriteMarksKey[] = "browser.favoriteMarks";
 inline constexpr char kBrowserPreviewEnabledKey[] = "browser.previewEnabled";
 inline constexpr bool kBrowserPreviewStartsEnabled = false;
