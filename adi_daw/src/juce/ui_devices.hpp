@@ -226,6 +226,9 @@ class DevicePanelView final : public juce::Component,
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
     juce::TextButton parameterList{"Parameter List"};
+    // Optional presenters for Configure's parameter list and its removal confirmation.
+    std::function<void(juce::PopupMenu, std::function<void(int)>)> onParameterListMenu;
+    std::function<void(juce::MessageBoxOptions, std::function<void(bool)>)> onPanelRemovalWarning;
     ActivatorButton enabled;
     WrenchButton wrench;
     HotSwapButton hotSwapButton;
@@ -274,6 +277,8 @@ class DevicePanelView final : public juce::Component,
     SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
     void showParameterList();
+    void changeParameterPanel(const DevicePanelData &, std::uint64_t menuEpoch,
+                              std::optional<std::vector<std::string>> params);
     void closeConfigure();
     void queueConfigureTouch(const DevicePanelData &);
     void applyConfigureTouches();
@@ -302,6 +307,7 @@ class DevicePanelView final : public juce::Component,
     bool playbackProblemPresented_ = false;
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
+    juce::ScopedMessageBox panelRemovalWarning_;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     struct ConfigureSession {
