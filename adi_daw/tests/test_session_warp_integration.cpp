@@ -295,6 +295,10 @@ void preparedTempoScene(bool paged) {
     const auto last = frameAfterTempoScene(paged ? 1 : 3) + 1024;
     std::vector<float> pcm(static_cast<std::size_t>(last));
     Playback playback{session, pcm};
+    // Pace the paged variant like every other paged fixture here: unpaced,
+    // the loop renders far faster than real time and outruns the page
+    // worker, which a slow (Windows Debug) build hears as a missing pulse.
+    playback.paged = paged;
     scene(*store, session, 10);
     playback.through(blockFrames);
     scene(*store, session, 20);
