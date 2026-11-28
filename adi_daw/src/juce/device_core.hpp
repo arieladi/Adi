@@ -107,7 +107,8 @@ public:
     /// writing past it is the overrun ADR-0049 exists to prevent. The refusal
     /// outputs silence and counts, because a callback that returns without
     /// touching the buffer hands the driver's uninitialised memory to somebody's
-    /// monitors.
+    /// monitors. Its frames still pass on the stream clock: input was lost, and
+    /// whatever records from the stream must see the gap.
     void process(float* const* out, std::int32_t numOut,
                  const float* const* in, std::int32_t numIn,
                  std::int32_t frames, engine::OutputChannelMap outputs = {}) noexcept;

@@ -126,6 +126,10 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
     if (frames > granted_) {
         ++oversize_;
         silence();
+        // The driver's frames went by, unprocessed. The clock shows it, so a
+        // running take sees the gap and stops there instead of going on with
+        // that input cut out of it.
+        streamTime_ += frames;
         return;
     }
 

@@ -146,7 +146,8 @@ void testOversizeIsRefused() {
     eq(static_cast<long>(sp.callbacks()), 0, "the processor is not asked to overrun");
     eq(static_cast<long>(core.oversizeRefusals()), 1, "the refusal is counted, not silent");
     check(b.allZero(1024), "and silence is written across the WHOLE block");
-    eq(static_cast<long>(core.streamTime()), 0, "a refused callback does not advance the clock");
+    // The driver's frames went by. A recorder reading the clock must see the gap.
+    eq(static_cast<long>(core.streamTime()), 1024, "a refused callback's frames still pass on the stream clock");
 }
 
 // --- ADR-0042 decision 5 ----------------------------------------------------
