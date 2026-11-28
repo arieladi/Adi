@@ -68,11 +68,11 @@ std::unique_ptr<Store> project(const std::filesystem::path& path, const std::str
     if (!store) throw std::runtime_error("cannot create admission test project");
     store->db().exec("INSERT INTO remote_hosts(id,name,host,port,enabled)"
                     " VALUES(7,'Room','127.0.0.1',55056,1);");
-    if (!uuid.empty()) {
-        SQLite::Statement identity(store->db(), "UPDATE adi_meta SET value=? WHERE key='project_uuid'");
-        identity.bind(1, uuid);
-        identity.exec();
-    }
+    // The Store writes a UUID when it creates a file (AGT-02). An empty one
+    // stands for a legacy file opened read-only, which has none.
+    SQLite::Statement identity(store->db(), "UPDATE adi_meta SET value=? WHERE key='project_uuid'");
+    identity.bind(1, uuid);
+    identity.exec();
     return store;
 }
 
