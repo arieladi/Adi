@@ -794,9 +794,9 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 else if (frame >= frames->endFrame)
                     frame = frames->startFrame;
                 const auto extent = physicalExtent(*preparedSlot);
-                const auto sourceTick = extent.tickAt(frame - extent.startFrame);
+                const auto editedSourceTick = extent.tickAt(frame - extent.startFrame);
                 track.run.physicalCueFrame = frame;
-                track.run.sourceTick = track.run.anchorSourceTick = track.run.pcmAnchorTick = sourceTick;
+                track.run.sourceTick = track.run.anchorSourceTick = track.run.pcmAnchorTick = editedSourceTick;
                 track.run.anchorTick = edgeTick;
                 track.run.pcmAnchorFrame = track.run.frames;
                 phaseChangedAtCursor = true;
