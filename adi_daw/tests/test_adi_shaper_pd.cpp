@@ -2005,14 +2005,14 @@ int main() try {
     {
         auto recalled = open();
         set(*recalled, 905, 1);  // Earlier session with a full-stage middle-band detector.
-        auto earlier = adi::Payload::from_cbor(recalled->saveState("state"));
+        auto olderSession = adi::Payload::from_cbor(recalled->saveState("state"));
         std::array<double, 6> physical{};
         for (int n = 0; n < 6; ++n) {
             const auto id = std::to_string(907 + n);
             const auto* descriptor = recalled->paramAt(754 + n);
             check(descriptor && descriptor->id == id && recalled->getParam(id).real == (n < 3 ? 0 : 100),
                   "each new detector edge defaults to open");
-            for (const auto* group : {"params", "real"}) earlier.at(group).erase(id);
+            for (const auto* group : {"params", "real"}) olderSession.at(group).erase(id);
             set(*recalled, 907 + n, .12 + .123 * n);
             physical[static_cast<std::size_t>(n)] = recalled->getParam(id).real;
         }
@@ -2021,7 +2021,7 @@ int main() try {
         for (int n = 0; n < 6; ++n)
             check(std::abs(restored->getParam(std::to_string(907 + n)).real - physical[static_cast<std::size_t>(n)]) < 1e-5,
                   "the physical cutoff survives recall");
-        check(restored->loadState("state", adi::Payload::to_cbor(earlier)) && restored->getParam("905").real == 1,
+        check(restored->loadState("state", adi::Payload::to_cbor(olderSession)) && restored->getParam("905").real == 1,
               "the earlier full-stage detector still reads the same source");
         for (int n = 0; n < 6; ++n)
             check(restored->getParam(std::to_string(907 + n)).real == (n < 3 ? 0 : 100),
