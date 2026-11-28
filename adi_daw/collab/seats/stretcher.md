@@ -3,7 +3,7 @@ Codex took the stretcher seat on 27 November 2026.
 ## Still unbuilt
 
 - Production R3 handover for a continuing Session run under arbitrary tempo, or a Legato target outside the primed worker window. The short, non-looping splice and exact driver cut are in a separate scratch experiment.
-- Arrangement streaming for reversed R3. The reversed Complex prototype exceeded the steady prepared PCM tolerance.
+- Arrangement streaming for reversed R3. Native reversed Complex exceeds the prepared PCM tolerance even at steady unity. A bounded historical offline-unity worker has a scratch proof and is under review.
 - Long paged Legato remains open for unquantized held Repeat and deliberate tempo scenes. Mixed tempo scenes still need a phase policy when the prepared outgoing source changes latency or geometry.
 - Paused clock handover with changed physical loop or source bounds, launch mode, fade, or device format still needs an explicit phase policy.
 
@@ -83,6 +83,7 @@ Live 12.4 reference measurements are tracked under Readings owed.
 | TM-WT-04 long paged Repeat with quantized Legato | Reserve the first inherited cue of a held press, including any physical wrap. Subsequent presses from the held Repeat restart at the saved physical Start. | The focused one-shot and loop enter at 144,000 with source cue 201,343. Both restart at 168,000 and 192,000 with exact PCM across the saved Start page boundary. Release leaves the one-shot to end at 370,657 or the loop to wrap at 336,037. A cold cue keeps the old .55 FS run and creates no Repeat after two later grids. Zero target underruns, callback allocations or file I/O. | `6aa92c4c8` on the companion. The whole headless gate is queued after `a1c21ed5c`. |
 | TM-WT-04 eleventh bundle integration | Merge `origin/main` at `629a48341` into both chains. The companion resolves one Store open conflict by retaining both the writable project UUID stamp and the Session essential-extension check. | Both chain heads are pushed, each with its own full headless gate queued. | Primary `f84569123` and companion `fd88e2226`. |
 | TM-WT-04 immediate manual long paged Legato | Admit an exact cue only when its initial callback and any physical wrap are already readable. Refusal leaves the current run intact and does not ask the worker for that cue. | The focused persisted fixtures warm both targets through ordinary prior playback. A later immediate press at 240,010 hears −.6 FS, and the loop reaches the −.5 FS head 37 samples later. New-cold targets keep the outgoing +.55 FS. An explicit retry in the same still-cold page also keeps the old run. | `8fe10f943` on the companion. Full gate pending. |
+| TM-WT-04 saved absolute Session sources without pins | Derive physical Start and End for a whole, unpitched Flatten source from its validated saved duration and attachment at runtime. | In the focused reopened RAM and paged fixtures, a saved ramp dropped the raw PCM and late external tempo stopped early at 94,714 before the fix. All six steady, ramp, and external cases now render exact PCM, including attacks at 3,000 and 87,000, and stop at 96,000. No pin rows are written. Zero callback allocation or file I/O. | `315ef389a` on the companion. Whole headless gate queued. |
 
 The real two-peer Link probe passed all 165 checks at both `3f2c79f1a` and the latest primary `7f4b86a67`. The 120→140 BPM update left Re-Pitch and the dry track exact. Complex had a maximum 37-frame error. Strict syntax checks covered the new Warp and Play Quantize code with 53-bit `long double` and shadow warnings.
 
@@ -118,6 +119,8 @@ The two-tile worker held sustained RMS at unity at 44.1, 48, and 96 kHz. With an
 A bounded stereo PCM remap reduced late landmarks from 13 of 63 to one and kept stereo peak skew within one sample. It left the known split attack with two crests. On a simultaneous 440 Hz sustain, the same windows bent pitch by as much as 1,152 cents and raised adjacent sample steps by 1.65 times. Even the entire gap between the adjacent landmarks in one 48 kHz fixture would require at least 148 cents of pitch excursion to reach the timing tolerance. The remap remains an experiment.
 
 B. Which physical phase and bounds should a paused run use if the driver adopts a different clock after a saved trim edit or device format change? The current handover preserves the cue and reader when the physical shape and driver format agree.
+
+C. Long paged Legato in a tempo scene needs a cut that admits all targets before publishing the new clock. In the launcher probe, a receipt fired at 96,000 before either target checked pages. One warm track switched even as a second refused. A prefix press changed the latter cue from frame 104,191 to 20,191. The existing owner rollback needs a full callback of lead. I recommend keeping the current bank, clock, and every track if any cut-time reservation fails. Session can stage the new clock and share its final adoption with the driver rendezvous.
 
 ## Readings owed
 
