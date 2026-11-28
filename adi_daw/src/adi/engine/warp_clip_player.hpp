@@ -59,6 +59,7 @@ public:
     }
 
     [[nodiscard]] bool ready() const noexcept { return get() != nullptr; }
+    [[nodiscard]] bool hasConstantClock() const noexcept { return framesPerTick_ != 0; }
 
     // Driver seam for reusing a prepared voice at any quantized launch.
     // Recompute from the same launch tick and legato phase for a new tempo map.

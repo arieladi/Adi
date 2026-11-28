@@ -40,8 +40,27 @@ bool nativeCueClockStable(const LaunchBlock& block, const LaunchFollowPlayer* fo
         (!block.followActionsEnabled || !follow || !follow->hasClipOrSceneActions(clip));
 }
 
-bool nativeLinkedTarget(const LaunchSlot& slot) noexcept {
-    return slot.mode != LaunchMode::Repeat && (slot.loopEndTick <= slot.loopStartTick || !slot.fade);
+bool nativeLinkedTarget(const LaunchSlot& slot, const LaunchWarpSource& pages,
+                        LaunchCueAdmission admission) noexcept {
+    if (slot.mode == LaunchMode::Repeat) return false;
+    const auto looping = slot.loopEndTick > slot.loopStartTick;
+    if (admission == LaunchCueAdmission::Linked) return !looping || !slot.fade;
+    return admission == LaunchCueAdmission::MusicalLinked && !looping && pages.player().hasConstantClock();
+}
+
+bool needsNativeMusicalCueLease(const LaunchAudioClip& clip, LaunchView view,
+                                const LaunchRequest& request) noexcept {
+    const auto* pages = clip.warpPageReader();
+    if (!pages || pages->wholeSourceFitsPageCache() || !request.track || !request.scene || view.slots.empty())
+        return false;
+    const auto key = std::pair{*request.track,*request.scene};
+    const auto* first = view.slots.data();
+    const auto* end = first + view.slots.size();
+    const auto* slot = std::lower_bound(first,end,key,[](const LaunchSlot& item,const auto& address) noexcept {
+        return std::pair{item.track,item.scene} < address;
+    });
+    return slot != end && std::pair{slot->track,slot->scene} == key && slot->clip == clip.clip() &&
+        nativeLinkedTarget(*slot,*pages,LaunchCueAdmission::MusicalLinked);
 }
 
 struct NativeCueWraps {
@@ -730,7 +749,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             // original path when a prepared clock pair or Arrangement wrap
             // can rebase the pending deadline.
             if (!call.runtime.beforeClock_ && !call.arrangementLoop && source &&
-                (source->followsTempo() || source->latencySamples() > 0) && target && needsWorkerCueLease(*target)) {
+                (source->followsTempo() || source->latencySamples() > 0) && target &&
+                (needsWorkerCueLease(*target) || (needsNativeMusicalCueLease(*target,call.view,next->request) &&
+                    nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target->clip())))) {
                 // Shorter laps can put two adjacent wraps on one sample.
                 // The shared forecast and transition then keep the old path.
                 const auto ticksPerSample = static_cast<long double>(call.media->bpm()) * textproj::kPPQ /
@@ -806,10 +827,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
         const auto nativeRepeat = cueAdmission == LaunchCueAdmission::HeldRepeat ||
             (target.mode == LaunchMode::Repeat && scheduled && cue.repeat);
-        const auto nativeLinked = linked && !call.runtime.beforeClock_ && !call.arrangementLoop && nativeLinkedTarget(target);
-        auto* nativePages = (scheduled || nativeImmediate || nativeRepeat || nativeLinked) && pcm
-            ? pcm->warpPageReader() : nullptr;
-        if (nativePages && (nativeRepeat ? target.mode == LaunchMode::Repeat
+        auto* nativePages = pcm ? pcm->warpPageReader() : nullptr;
+        const auto nativeLinked = nativePages && !call.runtime.beforeClock_ && !call.arrangementLoop &&
+            nativeLinkedTarget(target,*nativePages,cueAdmission);
+        if (nativePages && (scheduled || nativeImmediate || nativeRepeat || nativeLinked) &&
+            (nativeRepeat ? target.mode == LaunchMode::Repeat
             : target.mode != LaunchMode::Repeat && (nativeImmediate || !nativePages->wholeSourceFitsPageCache()))) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
@@ -895,8 +917,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto* clip = call.media->clip(target.clip);
         if (!clip) return;
         if (const auto* native = clip->warpPageReader()) {
-            if (forecast.admission == LaunchCueAdmission::Linked && !call.runtime.beforeClock_ &&
-                !call.arrangementLoop && nativeLinkedTarget(target) && !native->wholeSourceFitsPageCache() &&
+            if (!call.runtime.beforeClock_ && !call.arrangementLoop &&
+                nativeLinkedTarget(target,*native,forecast.admission) && !native->wholeSourceFitsPageCache() &&
                 nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip)) {
                 const LaunchWarpPosition position{forecast.sample,forecast.tick,forecast.cue.tick};
                 const auto wraps = nativeCueWraps(call.block,target,position,call.runtime.maxFrames_);
