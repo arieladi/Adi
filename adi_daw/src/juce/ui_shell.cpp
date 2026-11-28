@@ -4254,9 +4254,13 @@ bool AdiRootComponent::dropAudioPaths(const juce::StringArray &paths, std::int64
     if (paths.isEmpty())
         return false;
     std::vector<std::pair<std::string, std::string>> files;
-    for (const auto &path : paths)
-        files.emplace_back(path.toStdString(),
-                           juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
+    // The clip's name is the file's name without its ending. Read through std::filesystem: a path
+    // can arrive written with forward slashes (ADI's own Browser hands them so), and on Windows an
+    // unchecked juce::File takes such a path whole for the name.
+    for (const auto &path : paths) {
+        const auto utf8 = path.toStdString();
+        files.emplace_back(utf8, media::pathUtf8(media::pathFromUtf8(utf8).stem()));
+    }
     return dropAudioFiles(files, track, pos, separate);
 }
 bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
