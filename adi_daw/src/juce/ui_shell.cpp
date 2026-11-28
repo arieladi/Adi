@@ -6340,7 +6340,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::PlayStop:
     case AppCommands::Stop:
     case AppCommands::ContinuePlay: {
-        // Space plays from the insert marker, Shift+Space from where it stopped.
+        // Space starts at the selection's left edge or at the insert marker. Shift+Space continues from the stop point.
         const bool wasPlaying = mailbox_.desiredPlaying();
         const bool rewind = id == AppCommands::Stop && !wasPlaying;
         const bool play = id != AppCommands::Stop && !wasPlaying;
@@ -6371,8 +6371,11 @@ bool AdiRootComponent::command(int id) {
             recordStartRefused = true;
             setRecordPending(false);
         }
-        if (fromMarker)
-            locate(arrangement.geometry.selection.insert);
+        if (fromMarker) {
+            const auto &sel = arrangement.geometry.selection;
+            const bool timeSelection = sel.clip == 0 && sel.pickedClips.empty() && sel.start != sel.end;
+            locate(timeSelection ? std::min(sel.start, sel.end) : sel.insert);
+        }
         using Command = TransportMailbox::Command;
         mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
         if (rewind)
