@@ -1,0 +1,28 @@
+{
+  "name": "adi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "adi-agent": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.7.0",
+    "@earendil-works/pi-ai": "1.7.0",
+    "@earendil-works/pi-mcp": "1.7.0",
+    "@napi-rs/keyring": "2.1.2",
+    "undici": "7.30.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.4",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
+  }
+}

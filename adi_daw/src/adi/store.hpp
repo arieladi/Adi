@@ -36,6 +36,7 @@ class Database;
 namespace adi {
 namespace media { struct FileIdentity; class ProjectFileLease; }
 class Store;
+namespace control { [[nodiscard]] std::string projectFileConsentBinding(const Store&); }
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
 namespace gesture::detail {struct Domain; struct DomainAccess; class NavigationPermit;}
@@ -51,6 +52,7 @@ enum class StoreError {
     AlreadyExists,   // create() on a path that exists -- never silently truncate
     CannotCreate,
     CannotOpen,
+    ExclusiveAccessRequired,
     NotAnAdiFile,    // wrong application_id: a SQLite file, but not ours
     SchemaTooNew,    // major > ours; opened read-only instead (SPEC §11)
     SchemaCorrupt,
@@ -87,7 +89,7 @@ StoreFileResult prepare(Store&, std::int64_t, Job&);
 StoreFileResult recover(const std::filesystem::path&, const std::filesystem::path&, std::stop_token);
 }
 
-enum class StoreSaveKind { copy, saveAs, firstSave };
+enum class StoreSaveKind { copy, saveAs, firstSave, sessionCopy };
 /// Backups and relocation preserve identity. Shared copies always remove private audit data.
 enum class StoreCopyPolicy { share, shareWithUndo, preserve };
 enum class StoreSavePhase { copying, relocating, publishing };
@@ -172,6 +174,8 @@ public:
     /// table on this connection, so every reader sees "no rows".
     static std::unique_ptr<Store> open(const std::filesystem::path&, StoreError&,
                                        bool readOnly = false);
+    /// The headless changeset writer must be the only holder of this project.
+    static std::unique_ptr<Store> openForHeadlessApply(const std::filesystem::path&, StoreError&);
 
     /// SPEC §3.3. Checkpoints the WAL and returns the journal to DELETE mode, so
     /// what is left on disk is exactly one self-contained file. Idempotent; the
@@ -186,6 +190,9 @@ public:
     [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail,
                                           StoreCopyPolicy=StoreCopyPolicy::share,
                                           std::stop_token={}) const;
+    /// A session works on its own project. Give the staged copy a fresh
+    /// identity before publishing it and refuse an existing destination.
+    [[nodiscard]] StoreFileResult saveSessionCopy(const std::filesystem::path&) const;
     /// File-worker operations use their own read connection. The active
     /// project and the recovery source are kept in place.
     [[nodiscard]] static StoreFileResult writeProjectBackup(const std::filesystem::path& project,
@@ -229,6 +236,9 @@ public:
     [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&, bool keepUndoHistory = false) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
+    /// Stable across Save As and copies using the preserve policy. Empty on
+    /// an unassigned read-only legacy project or a schema without an identity.
+    [[nodiscard]] std::string projectUuid() const;
     [[nodiscard]] bool synchronizedLocation() const noexcept { return synchronizedLocation_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
@@ -299,6 +309,7 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend std::string control::projectFileConsentBinding(const Store&);
     friend struct gesture::detail::DomainAccess;
     std::shared_ptr<gesture::detail::Domain> gestureDomain_;
     friend struct detail::AppliedSourceAccess;
@@ -310,13 +321,17 @@ private:
 
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
+    static std::unique_ptr<Store> openWithLease(const std::filesystem::path&, StoreError&,
+                                               bool readOnly, bool exclusive);
     struct CopyState;
     static std::filesystem::path copyBeforeMigration(SQLite::Database&, int fromMinor, std::int64_t now,
                                                       const std::shared_ptr<media::ProjectFileLease>&);
     friend class StoreFileSave;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,StoreCopyPolicy,std::stop_token) const;
+    CopyState saveCopyImpl(const std::filesystem::path&, StoreFileCollision, StoreCopyPolicy,
+                           std::stop_token, StoreSaveKind = StoreSaveKind::copy) const;
+    static void renewProjectUuid(SQLite::Database&);
     static CopyState writeFileCopy(const std::filesystem::path&, const std::filesystem::path&,
-        const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision,
+        const std::shared_ptr<media::ProjectFileLease>&, int, StoreFileCollision, StoreSaveKind,
         const std::function<void(SQLite::Database&)>&, std::stop_token = {}, const StoreFileSave::Progress& = {},
         const StoreFileSave* pending = nullptr, StoreCopyPolicy = StoreCopyPolicy::preserve);
     StoreFileResult switchToCopy(const std::filesystem::path&, const CopyState&, gesture::detail::NavigationPermit&,

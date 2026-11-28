@@ -10,9 +10,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -128,11 +130,16 @@ void native(const std::filesystem::path &folder) {
           "SC-431: preview for missing 1/2 cannot leak into the physical 7/8 buffers");
     check(await([&] {
         block.render(preview, 48000., 1., 6);
-        return block.pcm[0][0] != 0.f;
-    }) && block.pcm[0][0] == .25f && block.pcm[1][0] == -.125f,
+        return preview.status().phase == Phase::Playing && block.pcm[0].back() == .25f;
+    }) && block.pcm[1].back() == -.125f,
           "SC-431: preview named for physical 7/8 uses the granted packed pair");
     block.io.outputChannels = {};
 
+    preview.stop();
+    check(await([&] {
+        block.render(preview);
+        return !preview.active();
+    }), "stop releases the earlier preview before testing an independent seek");
     preview.play(shortFile, .5);
     std::size_t heard = 0;
     bool allNew = true;
@@ -142,7 +149,8 @@ void native(const std::filesystem::path &folder) {
             if (block.pcm[0][i] == 0.f && block.pcm[1][i] == 0.f)
                 continue;
             ++heard;
-            allNew = allNew && block.pcm[0][i] == .25f && block.pcm[1][i] == -.375f;
+            allNew = allNew && block.pcm[0][i] > 0.f && block.pcm[0][i] <= .25f &&
+                     std::abs(block.pcm[0][i] * 1.5f + block.pcm[1][i]) < 1e-6f;
         }
         return preview.status().phase == Phase::Finished;
     }) && heard == 64 && allNew && preview.status().position == 1.,
@@ -158,6 +166,99 @@ void native(const std::filesystem::path &folder) {
     preview.play(folder / "missing.wav");
     check(await([&] { return preview.status().phase == Phase::Failed; }) && !preview.status().error.empty(),
           "unreadable audio reports failure on the owner thread");
+}
+
+void transitions(const std::filesystem::path &folder) {
+    const auto source = folder / "transition-a.wav", replacement = folder / "transition-b.wav";
+    wav(source, .5f, -.75f, 32768);
+    wav(replacement, -.25f, .5f, 32768);
+    SamplePreview preview;
+    Block block;
+    const auto render = [&](float destinationLeft, float destinationRight, float initialLeft, float initialRight) {
+        float left = initialLeft, right = initialRight;
+        float step = 0.f;
+        const auto reached = await([&] {
+            block.render(preview);
+            for (std::size_t i = 0; i < block.pcm[0].size(); ++i) {
+                step = std::max({step, std::abs(block.pcm[0][i] - left), std::abs(block.pcm[1][i] - right)});
+                left = block.pcm[0][i];
+                right = block.pcm[1][i];
+            }
+            return left == destinationLeft && right == destinationRight;
+        });
+        return reached && step < .012f;
+    };
+    preview.play(source);
+    check(await([&] {
+        block.render(preview);
+        return block.pcm[0].back() == .5f && block.pcm[1].back() == -.75f;
+    }), "the first preview reaches its source level before a transition");
+    preview.play(replacement);
+    check(render(-.25f, .5f, .5f, -.75f), "retrigger blends the audible and replacement previews without a step");
+    preview.stop();
+    check(preview.active() && preview.status().phase == Phase::Idle && render(0.f, 0.f, -.25f, .5f) && !preview.active(),
+          "Stop leaves the Cue tail audible until its short fade reaches zero");
+    preview.play(source, .5);
+    check(render(.5f, -.75f, 0.f, 0.f) && preview.status().position > .5,
+          "starting at a non-zero seek fades in from silence while advancing from the chosen source position");
+}
+
+void downsampling(const std::filesystem::path &folder) {
+    const auto source = folder / "downsample.wav";
+    constexpr std::uint32_t sourceRate = 96000, frames = 8192;
+    std::array<float, frames * 2> pcm{};
+    for (std::uint32_t i = 0; i < frames; ++i) {
+        const auto t = static_cast<double>(i) * 2. * std::numbers::pi / sourceRate;
+        pcm[i * 2] = static_cast<float>(.5 * std::sin(3000. * t));
+        pcm[i * 2 + 1] = static_cast<float>(.5 * std::sin(30000. * t));
+    }
+    audio::WavWriter writer(source, sourceRate, 2, audio::WavFormat::Float32);
+    writer.write(pcm.data(), frames);
+    writer.close();
+
+    for (const auto deviceRate : {48000., 44100.}) {
+        SamplePreview preview;
+        Block block;
+        int blocks = 0;
+        double passband = 0., stopband = 0.;
+        preview.play(source);
+        const bool rendered = await([&] {
+            const auto before = preview.status().position;
+            block.render(preview, deviceRate);
+            if (preview.status().position <= before)
+                return false;
+            ++blocks;
+            if (blocks > 4) { // Leave the filter's start-up transient out of the steady-state measurement.
+                for (std::size_t i = 0; i < block.pcm[0].size(); ++i) {
+                    passband += block.pcm[0][i] * static_cast<double>(block.pcm[0][i]);
+                    stopband += block.pcm[1][i] * static_cast<double>(block.pcm[1][i]);
+                }
+            }
+            return blocks == 32;
+        });
+        const auto count = 28. * static_cast<double>(block.pcm[0].size());
+        check(rendered && std::sqrt(passband / count) > .33 && std::sqrt(passband / count) < .37 &&
+                  std::sqrt(stopband / count) < .005,
+              "downsampling keeps the 3 kHz tone and suppresses the alias of the 30 kHz tone");
+    }
+}
+
+void suspended(const std::filesystem::path &folder) {
+    const auto source = folder / "while-suspended.wav", replacement = folder / "after-suspend.wav";
+    wav(source, .25f, -.125f, 262144); // More than the playback queue can hold without a callback.
+    wav(replacement, -.5f, .75f, 8192);
+    SamplePreview preview;
+    preview.play(source);
+    check(await([&] { return static_cast<bool>(preview.status().waveform); }) && preview.status().phase == Phase::Loading,
+          "waveform finishes while playback waits for output space");
+    preview.stop();
+    preview.play(replacement);
+    Block block;
+    check(await([&] {
+        block.render(preview);
+        return block.pcm[0].front() != 0.f;
+    }) && block.pcm[0].front() == -.5f && block.pcm[1].front() == .75f,
+          "Stop and a new preview release the suspended request and play only replacement PCM");
 }
 
 void compressed() {
@@ -213,6 +314,9 @@ int main() {
 #endif
             throw std::runtime_error("set isolated preview app data");
         native(folder);
+        transitions(folder);
+        downsampling(folder);
+        suspended(folder);
         compressed();
         check(allocations == 0 && frees == 0 && audio::callbackFileIo == 0,
               "preview callback allocates, frees and reads files zero times");

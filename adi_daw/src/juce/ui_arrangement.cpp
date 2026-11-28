@@ -657,17 +657,41 @@ juce::PopupMenu ScrubArea::menu(std::int64_t at) {
         out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         out.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
     }
-    // On a fragmentary bar, Live's two ways to make it whole (manual 6.5, its figure). Both delete or
-    // insert time across every track, which waits for the time ops (the …Time commands' kind, N17);
-    // the Status Bar says so.
     if (at >= 0 && fragmentAt(at, view.reader().meters()).first >= 0) {
         out.addSeparator();
-        out.addItem(juce::PopupMenu::Item("Delete Fragmentary Bar Time").setEnabled(false));
-        out.addItem(juce::PopupMenu::Item("Complete Fragmentary Bar (Insert Time)").setEnabled(false));
-        view.root.say("Deleting or completing a fragmentary bar inserts or deletes time across the tracks, "
-                      "which waits for the time ops.");
+        const juce::Component::SafePointer<ScrubArea> safe(this);
+        out.addItem("Delete Fragmentary Bar Time", [safe, at] {
+            if (safe != nullptr)
+                safe->repairFragmentaryBar(at, false);
+        });
+        out.addItem("Complete Fragmentary Bar (Insert Time)", [safe, at] {
+            if (safe != nullptr)
+                safe->repairFragmentaryBar(at, true);
+        });
     }
     return out;
+}
+void ScrubArea::repairFragmentaryBar(std::int64_t at, bool complete) {
+    const auto current = view.root.current();
+    if (!current)
+        return;
+    const auto [start, end] = fragmentAt(at, current->meters);
+    if (start < 0) {
+        view.root.say("The fragmentary bar is no longer there.");
+        return;
+    }
+    // Completion inserts the missing portion at the beginning of the fragment (Live 12 manual 6.5).
+    const auto missing = meterAt(start, current->meters).barTicks() - (end - start);
+    auto &store = view.root.editStore();
+    const auto rate = view.root.editRate();
+    auto edit = complete ? clip_edit::prepareCompleteFragmentaryBar(store, start, missing, rate)
+                         : clip_edit::prepareDeleteTime(store, start, end, rate);
+    if (!edit.requests.empty())
+        edit.requests.front().label = complete ? "Complete Fragmentary Bar" : "Delete Fragmentary Bar Time";
+    if (view.root.commitEdit(std::move(edit))) {
+        view.selectedMeter = -1;
+        view.changed();
+    }
 }
 bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
     if (pos < 0)
@@ -1406,7 +1430,7 @@ juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcep
 void ArrangementView::mouseDown(const juce::MouseEvent &e) {
     // The window's rule for a control that cannot act yet: a click says what it waits for.
     using B = TopButton;
-    // Live's Set Locator, which reads Del on a selected locator, and Previous and Next (manual 6.4).
+    // Live's locator controls (manual 6.4).
     if (topButton(B::Set).expanded(1.f).contains(e.position)) {
         root.setLocator();
         return;
@@ -1423,7 +1447,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     // Under the bar over the headers: Live's locator buttons ("Set", previous, next).
     // The shared button (language.png part B); none of these tracks the pointer, so each is at rest.
     const auto set = topButton(TopButton::Set);
-    controls::button(g, set, controls::ButtonState::Rest, selectedLocator != 0 ? "Del" : "Set", look::fontLabel);
+    controls::button(g, set, controls::ButtonState::Rest, root.setLocatorDeletes() ? "Del" : "Set", look::fontLabel);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
         // Live's round locator buttons, in the shared button's colours at rest.
@@ -1804,8 +1828,13 @@ bool supportsTakeLanes(const engine::TrackNode *track) {
 }
 }
 bool ArrangementView::toggleTakeLanes(std::int64_t track) {
-    if (!supportsTakeLanes(reader().findTrack(track)))
+    const auto *target = reader().findTrack(track);
+    if (!supportsTakeLanes(target))
         return false;
+    if (target->takeLanes.empty() && !geometry.shownTakeLanes.contains(track)) {
+        root.say("This track has no take lanes yet. Insert Take Lane adds one.");
+        return false;
+    }
     if (geometry.shownTakeLanes.erase(track) == 0) {
         geometry.shownTakeLanes.insert(track);
         geometry.foldedTracks.erase(track);
@@ -1930,7 +1959,8 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     root.addTrackAutomationDeleteItem(menu, track);
     root.addTrackRenderItems(menu, track);
     if (const auto *target = reader().findTrack(track); supportsTakeLanes(target)) {
-        menu.addItem(geometry.shownTakeLanes.contains(track) ? "Hide Take Lanes" : "Show Take Lanes",
+        const bool lanesShown = geometry.shownTakeLanes.contains(track);
+        menu.addItem(lanesShown ? "Hide Take Lanes" : "Show Take Lanes", lanesShown || !target->takeLanes.empty(), false,
                      [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->toggleTakeLanes(track); });
         menu.addItem("Insert Take Lane", !target->frozen, false,
                      [safe = SafePointer<ArrangementView>(this), track] { if (safe) safe->insertTakeLane(track); });
@@ -2121,6 +2151,7 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
                     addActive(Command::CreateFade);
                 }
             }
+            addActive(Command::ConsolidateMidi);
             addActive(Command::LoopSelection);
             addActive(Command::ReverseAudio);
             menu.addSeparator();
@@ -3480,6 +3511,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     for (const auto &c : other->clips)
                         if (movingTargetOf(c->id) == t->id)
                             drawClip(*c, y, h, selected);
+        if (selected && rangeDrag_ && !rangeDrag_->cancelled) {
+            const auto [start, end] = std::minmax(rangeDrag_->from.start, rangeDrag_->from.end);
+            const auto length = end - start;
+            if (const auto to = rangeDrag_->to; to != start && to <= std::numeric_limits<std::int64_t>::max() - length) {
+                const auto left = static_cast<float>(geo.x(to));
+                const auto right = static_cast<float>(geo.x(to + length));
+                g.setColour(look::selection);
+                g.drawRect(left, static_cast<float>(y + 1), right - left, static_cast<float>(h - 4), 1.f);
+            }
+        }
         // Draw the captured audio over the lane from its actual first sample. The preview can lag
         // the playhead while the writer drains, and the playhead can keep rolling after Record stops.
         if (const auto &live = view.liveTake();
@@ -4428,6 +4469,7 @@ void ArrangementCanvas::resetAutomationValueInput() {
     keyboardAutomationLane_.reset();
     keyboardAutomationFocus_.reset();
     keyboardAutomationDraft_.reset();
+    cancelAutomationAddDrag();
     clearAutomationValueReadout();
 }
 
@@ -5318,9 +5360,18 @@ bool ArrangementCanvas::automationAddDragIsCurrent() const {
            automationAddDrag_->generation == view.root.committedGeneration() &&
            view.root.automationTargetShown(automationAddDrag_->track, automationAddDrag_->target);
 }
-void ArrangementCanvas::updateAutomationAddDrag(const juce::MouseEvent &e) {
-    if (!automationAddDragIsCurrent())
+void ArrangementCanvas::cancelAutomationAddDrag() {
+    if (!automationAddDrag_ || automationAddDrag_->cancelled)
         return;
+    automationAddDrag_->cancelled = true;
+    clearAutomationValueReadout();
+    repaint();
+}
+void ArrangementCanvas::updateAutomationAddDrag(const juce::MouseEvent &e) {
+    if (!automationAddDragIsCurrent()) {
+        cancelAutomationAddDrag();
+        return;
+    }
     auto &drag = *automationAddDrag_;
     for (const auto &body : laneBodies())
         if (body.track->id == drag.track && body.target == drag.target) {
@@ -5658,18 +5709,17 @@ void ArrangementCanvas::endClipRename() {
     repaint();
 }
 void ArrangementCanvas::focusLost(FocusChangeType) {
-    // F released where the canvas cannot hear it: the handles go back.
+    cancelAutomationAddDrag();
+    clearReleasedFadeHandles();
+}
+void ArrangementCanvas::clearReleasedFadeHandles() {
     if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }
 }
 bool ArrangementCanvas::keyStateChanged(bool) {
-    // F up: the handles go back to the clip under the mouse and the selected ones.
-    if (showFades && !view.root.input.down('f')) {
-        showFades = false;
-        repaint();
-    }
+    clearReleasedFadeHandles();
     return false;
 }
 void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
@@ -5869,12 +5919,13 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     }
     last = e.position;
     moving_ = resizing_ = 0;
+    rangeDrag_.reset();
     copying_ = false;
     draggingTimeRange_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     clipTimeBounds_.reset();
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
-    focusLost(focusChangedDirectly);
+    clearReleasedFadeHandles();
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     automationStroke_.reset();
     automationDrag_.reset();
@@ -6083,6 +6134,19 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             return;
         }
         const auto *bar = barAt(e.x, e.y, track, edge);
+        const auto &sel = view.geometry.selection;
+        const auto [start, end] = std::minmax(sel.start, sel.end);
+        const auto at = view.geometry.tick(e.x);
+        // A clip title inside a time selection moves the selected material on its existing tracks.
+        // A click without a drag still selects the single clip, and modified presses work as before.
+        if (bar != nullptr && !e.mods.isAnyModifierKeyDown() && !hasAutomationSelection() &&
+            sel.clip == 0 && sel.pickedClips.empty() &&
+            at >= start && at < end && view.geometry.inSelection(view.reader(), track)) {
+            rangeDrag_ = RangeDrag{sel, start};
+            grabTicks_ = at - start;
+            pressedAt_ = e.getPosition();
+            return;
+        }
         using Purpose = ArrangementView::SelectionPurpose;
         const auto purpose = bar != nullptr ? Purpose::Edit : Purpose::InsertMarker;
         view.select(e.x, e.y, view.snaps(e.mods), purpose);
@@ -6172,7 +6236,7 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
     if(const auto point=automationValueAt(e.position,false,false))
         showAutomationValue(point->target,point->value,e.position);
     else clearAutomationValueReadout();
-    focusLost(focusChangedDirectly);
+    clearReleasedFadeHandles();
     if (view.root.automationMode() && view.root.drawMode()) {
         setMouseCursor(juce::MouseCursor::CrosshairCursor);
         return;
@@ -6289,6 +6353,18 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         if (scrolled)
             view.frame(true);
         repaint();
+        return;
+    }
+    if (rangeDrag_) {
+        if (!rangeDrag_->cancelled && draggingTimeRange_) {
+            const bool scrolled = view.edgeScroll(e.x, e.y, true, false);
+            const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
+            const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+            rangeDrag_->to = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+            if (scrolled)
+                view.frame(true);
+            repaint();
+        }
         return;
     }
     if (moving_ != 0) {
@@ -6500,6 +6576,24 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
                 sel.end = *tick;
         }
         repaint();
+    }
+    if (const auto drag = std::exchange(rangeDrag_, std::nullopt)) {
+        if (drag->cancelled)
+            return;
+        bool landed = false;
+        if (view.geometry.selection == drag->from) {
+            if (!draggingTimeRange_) {
+                view.select(pressedAt_.x, pressedAt_.y, view.snaps(e.mods));
+                return;
+            }
+            landed = drag->to != std::min(drag->from.start, drag->from.end) && moveTimeSelection(drag->to);
+            if (landed)
+                view.locate();
+        }
+        view.changed(); // Clear the destination outline even if the range stayed where it was.
+        if (landed)
+            view.root.linkLoopToSelection();
+        return;
     }
     if (moving_ != 0 && !view.geometry.selection.pickedClips.empty()) {
         // Several selected clips: one drag moves them all by the same offset, one undo step; a
@@ -7196,10 +7290,14 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
     const auto k = view.root.computerMidiShortcut(pressed);
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
-    if (automationAddDrag_ && code == juce::KeyPress::escapeKey) {
-        automationAddDrag_->cancelled = true;
-        clearAutomationValueReadout();
+    if (rangeDrag_ && code == juce::KeyPress::escapeKey) {
+        // Keep consuming this gesture until the held button is released.
+        rangeDrag_->cancelled = true;
         repaint();
+        return true;
+    }
+    if (automationAddDrag_ && code == juce::KeyPress::escapeKey) {
+        cancelAutomationAddDrag();
         return true;
     }
     if (automationTransformDrag_ && code == juce::KeyPress::escapeKey) {
@@ -7509,6 +7607,51 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         announce(view.root.selectionText());
         return true;
     }
+    if (!sel.pickedClips.empty()) {
+        std::vector<AdiRootComponent::ClipPlace> clips;
+        constexpr auto maxTick = std::numeric_limits<std::int64_t>::max();
+        auto first = maxTick;
+        std::int64_t latestEnd = 0;
+        if (const auto current = view.root.current())
+            for (const auto &row : current->tracks)
+                if (row)
+                    for (const auto &clip : row->clips)
+                        if (clip && geo.clipSelected(clip->id)) {
+                            if (clip->posTicks < 0 || clip->lengthTicks < 0 ||
+                                clip->lengthTicks > maxTick - clip->posTicks) {
+                                view.root.say("A selected clip has an invalid timeline span.");
+                                return true;
+                            }
+                            first = std::min(first, clip->posTicks);
+                            latestEnd = std::max(latestEnd, clip->posTicks + clip->lengthTicks);
+                            clips.push_back({clip->id, row->id, clip->posTicks});
+                        }
+        if (clips.size() != geo.selectedClips().size() || clips.empty()) {
+            view.root.say("A selected clip is no longer in the Arrangement.");
+            return true;
+        }
+        if (forward && first == maxTick) {
+            view.root.say("The clips would move past the end of the timeline.");
+            return true;
+        }
+        const auto delta = geo.nextGridLine(first, forward) - first;
+        if (delta == 0)
+            return true;
+        if (delta > 0 && std::max({latestEnd, sel.start, sel.end}) > maxTick - delta) {
+            view.root.say("The clips would move past the end of the timeline.");
+            return true;
+        }
+        for (auto &clip : clips)
+            clip.position += delta;
+        if (view.root.placeClips(clips, "Move Clips")) {
+            sel.start += delta;
+            sel.end += delta;
+            sel.insert = sel.start;
+            view.changed();
+            announce(view.root.selectionText());
+        }
+        return true;
+    }
     if (sel.clip != 0) {
         // Move Clips with Arrow Keys, on by default in Live (§41.1.1): the selected clip moves
         // to the next or previous grid line, one undo step a press.
@@ -7528,30 +7671,11 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (sel.start != sel.end) {
-        // A time selection moves by the grid when it holds no clip. Part of a clip moves once Split
-        // has cut it there (which selects the part inside); a whole clip moves once selected.
-        const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
-        if (track != nullptr) {
-            bool crosses = false, holds = false;
-            for (const auto &c : track->clips) {
-                const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
-                if (a < hi && b > lo)
-                    (a < lo || b > hi ? crosses : holds) = true;
-            }
-            if (crosses || holds) {
-                view.root.say(crosses ? "The arrow keys move whole clips: split the clip at the selection first "
-                                        "(Ctrl/Cmd+E), which selects the part inside."
-                                      : "The arrow keys move a selected clip: click the clip to move it.");
-                return true;
-            }
+        if (moveTimeSelection(geo.nextGridLine(std::min(sel.start, sel.end), forward))) {
+            view.locate();
+            view.changed();
+            announce(view.root.selectionText());
         }
-        const auto delta = geo.nextGridLine(lo, forward) - lo;
-        sel.start += delta;
-        sel.end += delta;
-        sel.insert = lo + delta;
-        view.locate();
-        view.changed();
-        announce(view.root.selectionText());
         return true;
     }
     // The insert marker moves by the grid.
@@ -7560,6 +7684,35 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
     view.locate();
     view.changed();
     announce(view.root.selectionText());
+    return true;
+}
+bool ArrangementCanvas::moveTimeSelection(std::int64_t target) {
+    auto &geo = view.geometry;
+    auto &sel = geo.selection;
+    const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
+    const auto delta = target - lo;
+    if (delta > 0 && hi > std::numeric_limits<std::int64_t>::max() - delta) {
+        view.root.say("The selection would move past the end of the timeline.");
+        return false;
+    }
+    if (delta != 0)
+        if (const auto current = view.root.current()) {
+            auto selected = geo.selectedTracks(view.reader());
+            std::erase_if(selected, [&](const auto id) {
+                const auto *row = view.reader().findTrack(id);
+                return row == nullptr || !geo.shown(id) || (row->kind != "audio" && !isMidiTrack(*row));
+            });
+            const auto content = rangeContent(current->tracks, selected, lo, hi);
+            if (!content.inside.empty() || content.crossing != 0) {
+                const clip_edit::RangeSelection range{std::move(selected), {0, lo}, {0, hi}};
+                const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+                if (!view.root.commitEdit(clip_edit::prepareMoveRange(view.root.editStore(), range, {0, target}, options)))
+                    return false;
+            }
+        }
+    sel.start += delta;
+    sel.end += delta;
+    sel.insert = target;
     return true;
 }
 std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const {

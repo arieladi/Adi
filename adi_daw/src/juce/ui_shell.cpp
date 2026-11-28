@@ -10,7 +10,6 @@
 #include "ui_computer_midi_keys.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
-#include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
@@ -37,6 +36,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <sqlite3.h>
 #include <string_view>
 #include <vector>
@@ -415,6 +415,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
         {"options.lock-envelopes", "Options"}, // LockEnvelopes
         {"file.open-backup", "File"}, // OpenBackup
+        {"edit.consolidate", "Edit"}, // ConsolidateMidi
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -664,7 +665,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Toggle Favorite", "Toggle Red Collection",
                                   "Toggle Orange Collection", "Toggle Yellow Collection", "Toggle Green Collection",
                                   "Toggle Blue Collection", "Toggle Purple Collection", "Toggle Gray Collection",
-                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup..."};
+                                  "Reverse Clip(s)", "Lock Envelopes", "Open Backup...", "Consolidate"};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id >= ToggleFavorite && id <= ToggleCollectionGray) {
@@ -697,6 +698,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     switch (id) {
     case PlayStop:
         info.addDefaultKeypress(juce::KeyPress::spaceKey, 0);
+        break;
+    case ConsolidateMidi:
+        info.addDefaultKeypress('j', cmd);
+        info.setActive(active_ != nullptr && active_->canConsolidateMidi());
         break;
     case Undo:
         info.addDefaultKeypress('z', cmd);
@@ -1644,14 +1649,10 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
         store.retainOpeningHistory(undoHistory.openingHead);
     undoHistory.openedUtc = juce::Time::currentTimeMillis() * 1000;
     undoHistory.read = [this] { return submitter_.timeline(); };
-    undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
-    undoHistory.restoreOpening = [this] {
-        return restoreHistory([this] {
-            return submitter_.restoreOpening(undoHistory.openingHead, juce::Time::currentTimeMillis() * 1000);
-        }, [this] {
-            return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{undoHistory.openingHead});
-        });
+    undoHistory.restore = [this](std::int64_t txn) {
+        return txn == 0 ? restoreHistoryHead(std::nullopt) : restoreStep(txn);
     };
+    undoHistory.restoreOpening = [this] { return restoreHistoryHead(undoHistory.openingHead); };
     if (!submitter_.store().readOnly()) {
         undoHistory.revertSnapshot = [this](std::int64_t id) {
             return restoreHistory([this, id] {
@@ -1947,6 +1948,8 @@ void AdiRootComponent::frame() noexcept {
         // Follow starts again whenever playback starts or stops (§6.2).
         if (playing != playing_)
             arrangement.followPaused = false;
+        if (arrangement.selectedLocator != 0 && (playing != playing_ || !playing))
+            arrangement.repaint(arrangement.topButton(ArrangementView::TopButton::Set).getSmallestIntegerContainer());
         sampleRate_ = rate;
         playing_ = playing;
         position_ = position;
@@ -1963,8 +1966,12 @@ void AdiRootComponent::frame() noexcept {
     if (namesBar.lock.getToggleState() != envelopesLocked)
         namesBar.lock.setToggleState(envelopesLocked, juce::dontSendNotification);
     // The Info View and density are app-scoped and can change in another window.
-    if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
-        infoShown_ = commands_.infoView();
+    const bool showInfo = commands_.infoView();
+    if (infoShown_ != showInfo || appliedDensity_ != look::densityId()) {
+        const bool openingInfo = showInfo && !infoShown_;
+        infoShown_ = showInfo;
+        if (openingInfo && state_.panels.find(Panel::Browser)->collapsed)
+            (void)toggle(Panel::Browser);
         resized();
     }
     if (!infoArea_.isEmpty())
@@ -2963,6 +2970,51 @@ std::int64_t AdiRootComponent::pasteOrigin() const {
             return id;
     return 0;
 }
+clip_edit::MidiConsolidation AdiRootComponent::prepareMidiConsolidation() const {
+    clip_edit::MidiConsolidation unavailable;
+    unavailable.edit.error = "Select at least two whole MIDI clips on the same Arrangement track.";
+    const auto current = view_.current();
+    const auto &geo = arrangement.geometry;
+    const auto &sel = geo.selection;
+    if (!current || !arrangement.isVisible() || arrangement.canvas.hasAutomationSelection() ||
+        noteEditorHasContext() || sel.track == 0)
+        return unavailable;
+    if (submitter_.store().readOnly()) {
+        unavailable.edit.error = "This project is read-only.";
+        return unavailable;
+    }
+    auto tracks = geo.selectedTracks(reader());
+    if (tracks.size() != 1 || !geo.shown(tracks.front()))
+        return unavailable;
+    const auto *track = current->findTrack(tracks.front());
+    if (track == nullptr || (track->kind != "midi" && track->kind != "instrument"))
+        return unavailable;
+    auto begin = std::min(sel.start, sel.end), end = std::max(sel.start, sel.end);
+    std::vector<std::int64_t> picked;
+    if (sel.clip != 0) {
+        picked = geo.selectedClips();
+        if (picked.size() < 2)
+            return unavailable;
+        begin = std::numeric_limits<std::int64_t>::max();
+        end = 0;
+        std::size_t found = 0;
+        for (const auto &clip : track->clips)
+            if (geo.clipSelected(clip->id)) {
+                begin = std::min(begin, clip->posTicks);
+                end = std::max(end, clip->posTicks + clip->lengthTicks);
+                ++found;
+            }
+        if (found != picked.size())
+            return unavailable;
+    }
+    if (begin >= end)
+        return unavailable;
+    const edit_plan::Options options{editRate(), edit_plan::capturePolicy(commands_.settings())};
+    return clip_edit::prepareMidiConsolidation(submitter_.store(), {std::move(tracks), {0, begin}, {0, end}}, picked, options);
+}
+bool AdiRootComponent::canConsolidateMidi() const {
+    return prepareMidiConsolidation().edit.ok;
+}
 bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     const auto current = view_.current();
     if (!current)
@@ -3508,7 +3560,26 @@ bool AdiRootComponent::canTimeCommand(int id) const {
         return (std::holds_alternative<clip_edit::TimeCopy>(held) || (range && range->clearsRange)) &&
                (sel.marked || sel.start != sel.end);
     }
+    if (id == AppCommands::InsertSilence && sel.marked && promptInsertSilence)
+        return true;
     return sel.start != sel.end;
+}
+bool AdiRootComponent::insertSilence(std::int64_t at, std::int64_t length) {
+    if (at < 0 || length <= 0 || at > std::numeric_limits<std::int64_t>::max() - length)
+        return fail("Enter a positive time in bars, beats and sixteenths.");
+    if (!commitEdit(clip_edit::prepareInsertSilence(submitter_.store(), at, length, editRate())))
+        return false;
+    auto &sel = arrangement.geometry.selection;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.insert = sel.start = at;
+    sel.end = at + length;
+    sel.marked = true;
+    error_.clear();
+    dirty_.mark(DirtySet::Status);
+    commands_.manager.commandStatusChanged();
+    arrangement.changed();
+    return true;
 }
 bool AdiRootComponent::timeCommand(int id) {
     const auto current = view_.current();
@@ -3520,6 +3591,22 @@ bool AdiRootComponent::timeCommand(int id) {
     const auto rate = editRate();
     const auto from = std::max<std::int64_t>(0, std::min(sel.start, sel.end)), to = std::max(sel.start, sel.end);
     const auto length = to - from;
+    if (id == AppCommands::InsertSilence && length == 0 && sel.marked && promptInsertSilence) {
+        promptInsertSilence([self = SafePointer<AdiRootComponent>(this), at = sel.insert](auto answer) {
+            if (self == nullptr || !answer)
+                return;
+            const auto snapshot = self->current();
+            if (!snapshot)
+                return;
+            const auto duration = parseLength(*answer);
+            if (!duration) {
+                self->fail("Enter a positive time in bars, beats and sixteenths, such as 1.0.0.");
+                return;
+            }
+            self->insertSilence(at, lengthTicks(at, *duration, snapshot->meters));
+        });
+        return true;
+    }
     if (id != AppCommands::PasteTime && length <= 0)
         return fail("Select the time to act on first: drag across the lanes.");
     // The selection after an edit: a span of time on the tracks it was on, or the marker.
@@ -3594,13 +3681,9 @@ bool AdiRootComponent::timeCommand(int id) {
         select(from, from);
         return done();
     }
-    case AppCommands::InsertSilence: {
+    case AppCommands::InsertSilence:
         // The selection's length at its start (manual 6.11); the silence stays selected.
-        if (!commitEdit(clip_edit::prepareInsertSilence(store, from, length, rate)))
-            return false;
-        select(from, to);
-        return done();
-    }
+        return insertSilence(from, length);
     default:
         return false;
     }
@@ -3620,35 +3703,35 @@ bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
     if (!current)
         return fail("Splitting needs an open project.");
+    const auto &geometry = arrangement.geometry;
     auto &sel = arrangement.geometry.selection;
-    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
-    // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
-    // selection, and Split cuts it at the marker.
-    const auto *chosen = chosenClip(*current, sel).clip;
-    const bool timeSelection = from != to && chosen == nullptr;
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end), marker = sel.insert;
+    // Clicked clips are cut at the marker. The anchor carries its own span as the selection.
+    const bool clipsChosen = !sel.pickedClips.empty() || chosenClip(*current, sel).clip != nullptr;
+    const bool timeSelection = from != to && !clipsChosen;
     if (!timeSelection && !sel.marked)
         return fail("Place the insert marker inside a clip to split it.");
     // Each clip and the points it is cut at, strictly inside it (Live 12 manual 6.9): a time
     // selection cuts every clip on its tracks at its edges, one clip at both of them when the
-    // selection lies inside it (the two-point split); else the marker cuts the chosen clip, or with
-    // no clip chosen the clips under it on the selected tracks, or on every track when
+    // selection lies inside it (the two-point split); else the marker cuts the chosen clips, or with
+    // no clips chosen the clips under it on the selected tracks, or on every track when
     // `editing.splitAllWithNoSelection` is on.
     std::vector<clip_edit::ClipSplit> cuts;
     std::vector<std::string> cutTracks;
     const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
         return at > c.posTicks && at < c.posTicks + c.lengthTicks;
     };
-    const auto selected = arrangement.geometry.selectedTracks(reader());
-    const bool everyTrack = !timeSelection && chosen == nullptr && commands_.splitAllWithNoSelection();
+    const auto selected = geometry.selectedTracks(reader());
+    const bool everyTrack = !timeSelection && !clipsChosen && commands_.splitAllWithNoSelection();
     for (const auto &t : current->tracks) {
         if (!t)
             continue;
         // Every track the lanes show: not a track the project view leaves out, the returns while
         // hidden, or the Reference track while hidden (a folded group's tracks are its own, and split
         // with it).
-        const bool onTrack = everyTrack ? arrangement.geometry.inView(t->id)
+        const bool onTrack = everyTrack ? geometry.inView(t->id)
                                         : std::find(selected.begin(), selected.end(), t->id) != selected.end();
-        const auto trackName = shownName(arrangement.geometry, reader(), t->id); // as its header (B13)
+        const auto trackName = shownName(geometry, reader(), t->id); // as its header (B13)
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
@@ -3660,8 +3743,8 @@ bool AdiRootComponent::splitAtMarker() {
                 cuts.push_back({c->id, {0, cutStart ? from : to}, {}});
                 if (cutStart && cutEnd)
                     cuts.back().second = clip_edit::TimePoint{0, to};
-            } else if (!timeSelection && (chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
-                cuts.push_back({c->id, {0, sel.insert}, {}});
+            } else if (!timeSelection && (clipsChosen ? geometry.clipSelected(c->id) : onTrack) && inside(*c, marker)) {
+                cuts.push_back({c->id, {0, marker}, {}});
             } else {
                 continue;
             }
@@ -3673,6 +3756,9 @@ bool AdiRootComponent::splitAtMarker() {
                                   : "Place the insert marker inside a clip to split it.");
     auto prepared = clip_edit::prepareSplits(submitter_.store(), cuts, editRate());
     const auto done = prepared.edit.requests.size();
+    const bool anchorSplit = clipsChosen && std::ranges::any_of(prepared.edit.requests, [&](const auto &request) {
+        return request.targetId == sel.clip;
+    });
     const auto &refused = prepared.refused;
     std::string refusal;
     if (!refused.empty()) {
@@ -3689,17 +3775,19 @@ bool AdiRootComponent::splitAtMarker() {
     if (!commitEdit(std::move(prepared.edit)))
         return false;
 
-    // The chosen clip keeps its identity as the left piece. A time selection
+    // Chosen clips keep their identities as the left pieces. A time selection
     // in one track selects the piece cut out when both edges were inside it.
-    if (chosen != nullptr) {
+    if (anchorSplit) {
         sel.start = from;
-        sel.end = cuts.front().first.value;
-    } else if (timeSelection && sel.toTrack == 0) {
-        if (const auto after = view_.current())
-            if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
-                for (const auto &c : t->clips)
-                    if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
-                        sel.clip = c->id;
+        sel.end = marker;
+    } else if (timeSelection) {
+        sel.clip = 0;
+        if (selected.size() == 1 && selected.front() == sel.track)
+            if (const auto after = view_.current())
+                if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
+                    for (const auto &c : t->clips)
+                        if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
+                            sel.clip = c->id;
     }
 
     arrangement.changed();
@@ -4305,9 +4393,9 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     // The batch is built from the CURRENT cell.
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
-    // Each file captured before the batch lands: a new pool row takes an id past the ones the files
-    // before it took, and a file dropped twice is captured once.
+    // Capture each path once. Uncommitted pool rows are shared by content across the batch.
     std::vector<DroppedAudio> dropped;
+    std::map<std::string, std::int64_t> pendingMedia;
     std::int64_t nextId = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
         const auto &[path, name] = files[i];
@@ -4323,6 +4411,14 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
             std::string why;
             if (!importAudio(path, file.import, why))
                 return fail(why.empty() ? "The file could not be imported." : why);
+            if (file.import.media.opType == "media.import") {
+                const auto &hash = file.import.media.payload.at("row").at("hash_blake3").get_ref<const std::string &>();
+                const auto [entry, inserted] = pendingMedia.try_emplace(hash, file.import.mediaId);
+                if (!inserted) {
+                    file.import.mediaId = entry->second;
+                    file.import.media = {};
+                }
+            }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
         }
@@ -5600,6 +5696,13 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {
     const auto current = view_.current();
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
+bool AdiRootComponent::restoreHistoryHead(std::optional<std::int64_t> head) {
+    return restoreHistory([this, head] {
+        return submitter_.restoreHistoryHead(head, juce::Time::currentTimeMillis() * 1000);
+    }, [this, head] {
+        return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{head});
+    });
+}
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
     return restoreHistory([this, txnId] { return submitter_.restore(txnId); }, [this, txnId] {
         if (!restoreStoredHistory)
@@ -5775,7 +5878,7 @@ bool AdiRootComponent::jumpTo(std::int64_t tick) {
     arrangement.placeInsertMarker(tick, true);
     return true;
 }
-bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
+bool AdiRootComponent::addLocatorAt(std::int64_t pos, bool select) {
     const auto current = view_.current();
     if (!current)
         return fail("Locators need an open project.");
@@ -5784,21 +5887,33 @@ bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
         return false;
-    arrangement.selectedLocator = edit.id;
-    arrangement.selectedMeter = -1;
-    arrangement.loopSelected = false; // the new locator is the selection; the arrows go to it
+    if (select) {
+        arrangement.selectedLocator = edit.id;
+        arrangement.selectedMeter = -1;
+        arrangement.loopSelected = false;
+    }
     arrangement.scrub.repaint();
     return true;
 }
-bool AdiRootComponent::setLocator() {
-    // Set Locator (manual 6.4): "the Set Locator button becomes the Delete Locator button for any
-    // selected locators". Live quantizes it to the global launch quantization, which arrives with
-    // the Session View's launch settings (ADR-0203 d10): unquantized here.
-    if (arrangement.selectedLocator != 0)
-        return deleteLocator(arrangement.selectedLocator);
+std::int64_t AdiRootComponent::stoppedSetLocatorTick() const noexcept {
     const auto &sel = arrangement.geometry.selection;
-    const auto at = playing_ ? timelineTick() : sel.start != sel.end ? std::min(sel.start, sel.end) : sel.insert;
-    return addLocatorAt(at);
+    return sel.start != sel.end ? std::min(sel.start, sel.end) : sel.insert;
+}
+bool AdiRootComponent::setLocatorDeletes() const noexcept {
+    if (playing_ || arrangement.selectedLocator == 0)
+        return false;
+    const auto *snapshot = reader_->get();
+    const auto *marker = snapshot != nullptr ? snapshot->findMarker(arrangement.selectedLocator) : nullptr;
+    // A locator selected at a former play position can stay highlighted after Stop.
+    return marker != nullptr && marker->kind == "position" && marker->timeBase == 0 && marker->posTicks &&
+           (*marker->posTicks == stoppedSetLocatorTick() || *marker->posTicks == timelineTick());
+}
+bool AdiRootComponent::setLocator() {
+    if (setLocatorDeletes())
+        return deleteLocator(arrangement.selectedLocator);
+    // The running button marks the playhead and keeps the current selection. Global launch
+    // quantization arrives with the Session View's launch settings (ADR-0203 d10).
+    return playing_ ? addLocatorAt(timelineTick(), false) : addLocatorAt(stoppedSetLocatorTick());
 }
 bool AdiRootComponent::jumpLocator(bool forward) {
     const auto current = view_.current();
@@ -6304,7 +6419,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::PlayStop:
     case AppCommands::Stop:
     case AppCommands::ContinuePlay: {
-        // Space plays from the insert marker, Shift+Space from where it stopped.
+        // Space starts at the selection's left edge or at the insert marker. Shift+Space continues from the stop point.
         const bool wasPlaying = mailbox_.desiredPlaying();
         const bool rewind = id == AppCommands::Stop && !wasPlaying;
         const bool play = id != AppCommands::Stop && !wasPlaying;
@@ -6335,8 +6450,11 @@ bool AdiRootComponent::command(int id) {
             recordStartRefused = true;
             setRecordPending(false);
         }
-        if (fromMarker)
-            locate(arrangement.geometry.selection.insert);
+        if (fromMarker) {
+            const auto &sel = arrangement.geometry.selection;
+            const bool timeSelection = sel.clip == 0 && sel.pickedClips.empty() && sel.start != sel.end;
+            locate(timeSelection ? std::min(sel.start, sel.end) : sel.insert);
+        }
         using Command = TransportMailbox::Command;
         mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
         if (rewind)
@@ -6656,6 +6774,13 @@ bool AdiRootComponent::command(int id) {
         arrangement.selectedMeter = markerAt(current->meters, pos) != 0 ? pos : -1;
         return arrangement.scrub.beginMeterEdit(pos, true);
     }
+    case AppCommands::ConsolidateMidi: {
+        auto prepared = prepareMidiConsolidation();
+        if (!commitEdit(std::move(prepared.edit)))
+            return false;
+        selectClip(prepared.clip);
+        return true;
+    }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
         if (!trackGroupingContext() || !groupTracks(id == AppCommands::UngroupTracks))
@@ -6742,7 +6867,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::SelectLoop:
         return arrangement.selectLoop();
     case AppCommands::AddLocator:
-        return setLocator(); // the Create menu's Add Locator, at the play position as Set
+        return addLocatorAt(timelineTick());
     case AppCommands::DeleteLocator:
         return deleteLocator(arrangement.selectedLocator);
     case AppCommands::EditInfoText:
@@ -6850,13 +6975,14 @@ const std::vector<MenuEntries> &menuBar() {
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
-        // clipboard's and the selection's, with Crop Clip (10.7.1); Consolidate will join them.
+        // clipboard's and the selection's, with Crop Clip (10.7.1) and Consolidate.
         // Invert Selection follows Select All, as measured on Live 12; Quantize and its settings
         // (10.5.8) have a group of their own, with Fit to Time Range (10.5.5); the group's place in
         // Live's menu is to be read on Live.
         {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::DeleteAutomation, 0, C::CutTime, C::CopyTime,
                   C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll,
-                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
+                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, C::ConsolidateMidi, 0,
+                  C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
