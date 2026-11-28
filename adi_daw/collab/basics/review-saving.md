@@ -7,7 +7,7 @@ an older version. A finding counts only when a headless test reproduces it.
 - Code: branch `basics/review-saving-chain` (one chain, no pull request).
 - This log: branch `basics/review-saving-log`, file `adi_daw/collab/basics/review-saving.md`.
 - Checks run on the build PC (MSVC Debug, warnings as errors). Linux and macOS run later in CI.
-- The findings carry no register id: none was taken. They are numbered here only (finding 1, 2).
+- The findings carry no register id: none was taken. They are numbered here only (finding 1, 2, 3).
 
 ## Round 1 (28 November 2026)
 
@@ -18,6 +18,15 @@ into the chain (`8e68fa122`).
 |---|---|---|---|---|
 | 1. A project file the system protects from writing cannot be opened: "Cannot open project: sql error" | `basics/review-saving-chain`: test `6b4ec213c`, fix `da8dfc619` | `src/adi/store.cpp` (engine seat's file): SQLite opens such a file for reading even when asked to write, and entering WAL mode then failed the whole open. The store now opens it read-only, as it does a project of an unsupported major; an exclusive open for writing still refuses. `src/adi/ui/project_document.cpp` (window seat's file): the open notice says "This project's file is write-protected, so it opened read-only. Use Save As to keep your changes." Save As from it gives an editable project. | Tests `writeProtectedSource` in `tests/test_project_files.cpp` (core) and `writeProtectedProject` in `tests/test_ui_document.cpp` (window suites). **Slot check: see "State of the proof" below.** | see below |
 | 2. Save As and the first save fail when anything is written to the project while the worker copies it: a click that moves the selection, Play or Stop, an edit. The message was "Save As failed: copy saved but the original project changed before switching", a stale copy stayed at the destination, and trying again met "already exists". The window stays in use during a save (the progress window is not modal), so on a large project this is easy to do. | `basics/review-saving-chain`: test `6b4ec213c`, fix `e0fb0f7d6` | `src/adi/ui/project_document.cpp`: when the adoption is refused for that one reason, the document makes the copy again over exactly the stale copy (by its file identity), at most twice more (`SaveJob::repeatsAllowed`), so the save carries what was done while it ran. Past the bound it fails as before. `src/adi/project_files.cpp`, `src/adi/store.hpp` (engine seat's files): `StoreFileSave::takeStaleCopy()` says whether the refusal was that reason, hands over the copy's identity, and takes back the media a first save published, so the song's folder holds each file once. The store's own refusal is unchanged (`stagedFileSaves` still proves it). | Test `saveWhileTheWindowIsUsed` in `tests/test_ui_document.cpp`: a first save with a selection change, then a Save As with Play and a rename, each before the owner can adopt. Also changed: the last part of `largeProjectSaveResponse` (it expected the failure); that function runs only by hand (`--large-project-save-only`), no check runs it. **Slot check: see below.** | see below |
+
+## Round 2 (28 November 2026, a second session from about 17:30)
+
+The chain is checked out under a local name in this session's own worktree (the first session's
+worktree still holds `basics/review-saving-chain`); pushes go to `origin/basics/review-saving-chain`.
+
+| Finding | Branch and head | What changed | How it was proved | State |
+|---|---|---|---|---|
+| 3. A clock set back sends the newest backup to the Recycle Bin. The ten kept are chosen by the UTC time stored in each copy (ADR-0213 d4), so a backup written after the clock went back carries the earliest time, is the eleventh, and was offered for the bin the moment it was written. A dual-boot PC whose two systems disagree about the hardware clock does this at every boot. | `basics/review-saving-chain`: test `0cbf0d5ae`, fix `ff10e56e1` | `src/adi/project_files.cpp`, `src/adi/project_backup.hpp` (engine seat's files): `backup::expiredBackups(project, writtenUtc)` takes the stamp just written; that backup counts as one of the ten and is never offered. `backup::write` passes it; `src/juce/ui_main.cpp` (window seat's file) passes it on the synced-project path. The order (d4) is unchanged. Limit: while the clock stays behind, the backup written one turn before is the one binned next; the real cure is under "For the director" 3. | Test `backupsAfterTheClockGoesBack` in `tests/test_project_files.cpp` (core): ten backups an hour apart, then one an hour before the first; then one more through `Store::writeProjectBackup`. **Slot check: owed, see "State of the proof".** | not proved yet |
 
 ### State of the proof
 
@@ -41,9 +50,15 @@ line was written. What is owed, in this order:
 
 Until step 1 passes the two rows are **not proved**; they were written from a careful reading only.
 
+**Round 2.** At 17:03 the first session started step 2 on `origin/basics/review-saving-proof` (=
+`6b4ec213c`); at 17:47 it was still "waiting for a build place". Finding 3's test commit alone is pushed
+as `origin/basics/review-saving-proof3` (= `0cbf0d5ae`): a core check filtered to `adi_project_files`
+must fail exactly "clock set back: the backup just written is not offered to the Recycle Bin" and "clock
+set back: the oldest of the other backups is offered instead". Step 1 now covers finding 3 too.
+
 ## Suspected, not proved
 
-- **A clock set back sends the newest backup to the Recycle Bin.** `backup::expiredBackups` keeps the ten
+- (Round 2: this one now has a test and a fix, finding 3.) **A clock set back sends the newest backup to the Recycle Bin.** `backup::expiredBackups` keeps the ten
   with the latest stored UTC time (ADR-0213 d4: "ordered by a UTC time stored in each copy, so a clock
   that goes back an hour overwrites nothing"). Nothing is overwritten, but a backup written after the
   clock went back carries the earliest time, so it is the eleventh and is binned at once, and so is each
@@ -75,6 +90,10 @@ Until step 1 passes the two rows are **not proved**; they were written from a ca
    time. Choices: **(a)** leave it; **(b)** never bin the backup just written; **(c)** order backups by
    the project's own edit count stored in each copy, time second. Recommendation: (c), after a test
    proves the fault; it needs a ruling because d4 names the order.
+   **Round 2:** (b) is built as finding 3, because it keeps d4's order and only stops the newest backup
+   being binned. It leaves this: while the clock stays behind, each new backup is kept and the one written
+   just before it is binned next, so the ten kept are the nine from the "future" plus the newest. (c)
+   would fix that and still needs the ruling. Reply: "3c" to build it, "3b" to keep only what is built.
 
 ## For the next session
 
