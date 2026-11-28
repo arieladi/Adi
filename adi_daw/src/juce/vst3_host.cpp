@@ -328,6 +328,7 @@ engine::ExpressionCaps probeExpressionCaps(juce::AudioPluginInstance& inst) {
 Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceIdentity id)
     : inst_(std::move(inst)), id_(std::move(id)) {
     if (inst_ != nullptr) {
+        markHostedInstantiation();
         inst_->addListener(this);
         // Here and only here: the description allocates, and eventFlow() is
         // on the audio thread (ADR-0091).
@@ -1033,6 +1034,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
 
         copyOut(io, n, ch);
         continuousTime_ += n;
+        markHostedProcess();
         return;
     }
 

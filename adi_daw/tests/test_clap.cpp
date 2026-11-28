@@ -950,6 +950,12 @@ void testProcessErrorSilencesRatherThanLeaking() {
     engine::NodeIo io;
     io.in = inp; io.out = outp; io.channels = 1; io.frames = 64; io.sampleRate = 48000.0;
 
+    check(d.hostedReadiness() == HostedReadiness{true, false, false},
+          "activation alone publishes only instantiation");
+    f.failNext = true;
+    d.process(io);
+    check(!d.hostedReadiness().firstProcessed, "an error on the first process cannot establish readiness");
+
     // ONE GOOD BLOCK FIRST, and it is the whole point of the test. The output
     // scratch is zero-filled at prepare, so on a first block "we silenced it"
     // and "we copied out a buffer the plugin never wrote" produce the same
@@ -957,6 +963,7 @@ void testProcessErrorSilencesRatherThanLeaking() {
     // holds 0.75, and only then fail.
     d.process(io);
     check(std::abs(ol[0] - 0.75f) < 1e-6f, "a good block first, so the scratch is not zero");
+    check(d.hostedReadiness().firstProcessed, "a succeeding block establishes readiness");
 
     f.failNext = true;
     d.process(io);

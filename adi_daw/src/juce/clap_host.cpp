@@ -415,6 +415,7 @@ bool everyPortTakes64(const clap_plugin_t* plugin) {
 ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
     : plugin_(plugin), id_(std::move(id)) {
     if (plugin_ == nullptr) return;
+    markHostedInstantiation();
     // Not active yet: the one moment before `prepare` the layout may be read,
     // and the graph asks `processesDouble` before it prepares its nodes.
     double64_ = everyPortTakes64(plugin_);
@@ -769,7 +770,10 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     // that answer is not the user's boundary. Both calls are main-thread.
     if (glue_ != nullptr) glue_->muteStateSignals();
     const bool ok = stateExt_->load(plugin_, &src.is);
-    if (ok) pendingRead_.store(pendingWrite_.load(std::memory_order_relaxed),std::memory_order_release);
+    if (ok) {
+        pendingRead_.store(pendingWrite_.load(std::memory_order_relaxed),std::memory_order_release);
+        markHostedStateAccepted();
+    }
     if (glue_ != nullptr) glue_->unmuteStateSignals();
     return ok;
 }
@@ -1542,6 +1546,9 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         return;
     }
     pendingRead_.store(read,std::memory_order_release);
+    if (st == CLAP_PROCESS_CONTINUE || st == CLAP_PROCESS_CONTINUE_IF_NOT_QUIET ||
+        st == CLAP_PROCESS_TAIL || st == CLAP_PROCESS_SLEEP)
+        markHostedProcess();
 
     if (wideIo) {
         for (std::int32_t c = 0; c < io.channels; ++c) {

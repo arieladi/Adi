@@ -223,6 +223,16 @@ struct DeviceCaptureBinding {
     std::shared_ptr<gesture::detail::StateProducerFence> stateFence;
 };
 
+/// Sticky evidence for a native hosted instance. Acceptance and processing
+/// are independent because a plug-in can process before any explicit load.
+struct HostedReadiness {
+    bool instantiated = false;
+    bool stateAccepted = false;
+    bool firstProcessed = false;
+
+    bool operator==(const HostedReadiness&) const noexcept = default;
+};
+
 class DeviceInstance {
 public:
     virtual ~DeviceInstance() = default;
@@ -235,6 +245,10 @@ public:
     /// STILL a device and still in the chain — ADR-0011 — it simply passes
     /// audio through and holds its bytes.
     [[nodiscard]] virtual bool loaded() const noexcept = 0;
+    [[nodiscard]] HostedReadiness hostedReadiness() const noexcept {
+        const auto bits = hostedEvidence_.load(std::memory_order_acquire);
+        return {(bits & kInstantiated) != 0, (bits & kStateAccepted) != 0, (bits & kFirstProcessed) != 0};
+    }
 
     /// A nonfatal processing/configuration issue for presentation on Main only.
     /// Empty during ordinary pending work. Read already-published status without
@@ -524,10 +538,22 @@ protected:
     std::array<std::atomic<std::uint64_t>, kAutomatedWords> automated_{};
     std::atomic<std::uint64_t> echoesFiltered_{0};
 
+    void markHostedInstantiation() noexcept { publishHostedEvidence(kInstantiated); }
+    void markHostedStateAccepted() noexcept { publishHostedEvidence(kStateAccepted); }
+    void markHostedProcess() noexcept { publishHostedEvidence(kFirstProcessed); }
     void broadcastParam(std::int32_t index, engine::ParamEventKind kind,
                         double normalized) noexcept;
 
 private:
+    static constexpr std::uint8_t kInstantiated = 1;
+    static constexpr std::uint8_t kStateAccepted = 2;
+    static constexpr std::uint8_t kFirstProcessed = 4;
+    static_assert(std::atomic<std::uint8_t>::is_always_lock_free);
+    std::atomic<std::uint8_t> hostedEvidence_{0};
+    void publishHostedEvidence(std::uint8_t bit) noexcept {
+        if ((hostedEvidence_.load(std::memory_order_relaxed) & bit) == 0)
+            hostedEvidence_.fetch_or(bit, std::memory_order_release);
+    }
     std::atomic<engine::ParamEditCapture*> sink_{nullptr};
     std::atomic<std::int64_t> sinkDevice_{0};
     const DeviceCaptureBinding* acquireCaptureBinding(bool& admitted) noexcept;
