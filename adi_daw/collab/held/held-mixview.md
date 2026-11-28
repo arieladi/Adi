@@ -179,8 +179,19 @@ No branch is "abandoned by its seat" or "unclear": the seat's log requests every
        stereo picture above).
      - **Channel browser.** The landed "name as the header shows it" (walk-B B3) is also what the seat's
        folded search matches.
-- 28 Nov, round 1: validators pass; chain pushed at the stack merge; check `all` started in slot 13
-  (cold build). Result below when it returns.
+- 28 Nov, round 1: validators pass; chain pushed at the stack merge (`d24d19bb`); check `all` in slot 13
+  failed to compile one file: `shared_analysis.cpp(914)`, MSVC C4458, the seat's strip code declared a
+  local `period` that now hides the landed period-scope member `Domain::period`. Renamed `stripPeriod`.
+- 28 Nov, round 1: reading the seat's tests showed the A2 resolution above would fail the whole of the
+  seat's pinned-spectrum suite in `test_ui_mix_functions.cpp` (about a hundred checks), because that page
+  no longer had its line traces. Changed the chain to **A1**: a page "Line Spectrum" appended after
+  Waveform carries the seat's six line traces and pins exactly as it built them; the Spectrum page is the
+  Filled Spectrum, unchanged. The one trace selector lists the page's own traces and each page keeps its
+  choice. The seat's tests now address `Page::LineSpectrum` (only that name changed in them), and the
+  landed page-count check counts the new page. Commit `held-mixview: the seat's line traces on a Line
+  Spectrum page beside the Filled Spectrum`.
+- 28 Nov, round 1: `origin/land/basics-1128c` landed on main (#838), so **BASE is now `origin/main`**;
+  merged it into the chain (documentation only). Second check `all` started in slot 13.
 
 ## For the director
 
@@ -192,5 +203,9 @@ traces). The Mix View seat, held since 22 November, had made the same page a lin
 - A2: the Filled Spectrum stays the page; the line traces stay out of the Analysers page (they remain in
   the Info box and the detached analyser).
 - A3: the seat's line traces become the page again, and the Filled Spectrum moves elsewhere.
-Recommendation: A1. It keeps your newer word and all of the seat's measured work; until you rule, the
-chain is A2 and the seat's page tests for the line traces fail. Reply "A1", "A2" or "A3".
+Recommendation: A1. It keeps your newer word and all of the seat's measured work. The chain is built as
+A1 now (page label "Line Spectrum", the last entry of the page list, today's look for its controls); its
+picture is owed to you before it lands (ADR-0243). A2 would leave about a hundred of the seat's checks
+failing. One check fails under every choice: the seat's "the All spectrum tile uses the selected layout"
+(DF-M55), because your All page now shows the Filled Spectrum tile, which has one fixed grid. Reply "A1",
+"A2" or "A3".
