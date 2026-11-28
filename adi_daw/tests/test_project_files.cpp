@@ -737,6 +737,7 @@ void stagedFileSaves() {
           "the completed copy can be adopted once the competing writer releases without editing");
     const auto closed = std::async(std::launch::async, [&] { return busyTask.closeReplacedProject(); }).get();
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
+}
 void defensiveConnections() {
     Fixture f;
     const auto isDefensive=[](Store& store) {
