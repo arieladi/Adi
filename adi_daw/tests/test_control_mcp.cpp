@@ -1298,7 +1298,8 @@ void testAgentClipEnvelope() {
 
     History history(*store);
     check(history.undo().ok && textproj::projectStore(*store).text == before, "one Undo puts the point back exactly");
-    const Json* env3 = rowWith(streamsOf(), "id", data + 1);
+    const Json undone = streamsOf(); // kept: rowWith points into it
+    const Json* env3 = rowWith(undone, "id", data + 1);
     const Json* end3 = env3 ? rowWith(env3->at("points"), "id", 2) : nullptr;
     check(end3 && end3->value("time", 0) == 2 * W && end3->value("value", 1.0) == 0.0, "and the read agrees");
 
@@ -1441,7 +1442,8 @@ void testAgentDeviceWork() {
           "the space and its lane are gone together");
     History again(*store);
     check(again.undo().ok && textproj::projectStore(*store).text == withLane, "one Undo brings the space back exactly");
-    const Json* restored = rowWith(lanesOfBass(), "id", lane);
+    const Json lanesBack = lanesOfBass(); // kept: rowWith points into it
+    const Json* restored = rowWith(lanesBack, "id", lane);
     check(rowWith(devicesOf(), "id", 22) && restored && restored->at("owner") == Json({{"kind", "device"}, {"id", 22}}) &&
               restored->at("data").size() == 1 && restored->at("data").at(0).value("id", 0) == data &&
               restored->at("data").at(0).at("points").size() == 2,
