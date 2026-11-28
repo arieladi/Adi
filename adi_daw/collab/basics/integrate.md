@@ -52,10 +52,10 @@ Review head `83e1f7681a2ccfd938141747a1c3ad71b69422ae` passed the full Linux GCC
 | Owner tip | Integration merge | Composition |
 |---|---|---|
 | SC-182 `a0b29c68d4fe4464d90af38282e06c36b234d6f7` | `3fc7a301227f54b7bb2ffcbb44eed557540b12af` | Clean merge, including SC-181. Normal Play takes the earlier time-selection edge. Continue retains the stop point. Kept the range-drag checks and the independent keyboard movement coverage. |
-| SC-186 `fcae7a1bd2be51e619fae1d474e342757f6b61ed` | `a860ea05aaa4d13c3bf785857e157f245130d69d` | Clean merge. Fragmentary bars can be completed with silence or shortened at the next meter. The fixture covers both repairs and Undo around the meter boundary. |
+| SC-186 `fcae7a1bd2be51e619fae1d474e342757f6b61ed` | `a860ea05aaa4d13c3bf785857e157f245130d69d` | Clean merge. Complete a fragmentary bar with silence or delete its remaining time. The fixture covers both repairs and Undo around the meter boundary. |
 | SC-187 `0d906f69b68e89fbffd25a337da66570fc6c0e53` | `59e64f55ec16748da6974cb7f86bc45527e7a369` | Includes the exact SC-354 tip `0c186b7ecf7f63dc5f46f1ab4f6b08468c4cfa7c`. Resolved one shell header conflict by retaining both the opening-state history restore and the stopped locator position helper. Insert Silence uses the alert reply seam, with cancellation, invalid input, selected range and Undo covered. Set/Del and Add Locator keep their separate positions. Renamed a prompt-local variable to avoid shadowing the outer local. |
 
-The six validators and the landing-check tests passed. The all-target JUCE build and full CTest gate are running at `59e64f55ec16748da6974cb7f86bc45527e7a369`.
+The final fixture commit `269d4c147` applies the glyph mask to the Stack EQ and Focus comparisons. The all-target JUCE build, validators, landing-check tests and two focused window suites passed. The full CTest gate is running at `269d4c14767efb79b3e6a71cb83003cd2b28b9dd`.
 
 ## Tenth stack, first review bundle
 
