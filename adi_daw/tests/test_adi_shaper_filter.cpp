@@ -18,6 +18,31 @@ void check(bool passed, const char* message) {
     if (!passed) { std::printf("FAIL %s\n", message); ++failures; }
 }
 
+void movingStereoOffset() {
+    for (const auto mode : {Mode::LowPass6, Mode::LowPass12, Mode::HighPass6, Mode::HighPass12, Mode::BandPass12}) {
+        Filter stereo, left, right;
+        for (auto* filter : {&stereo, &left, &right}) filter->setMode(mode);
+        bool matches = true;
+        constexpr std::array offsets{0.f, .5f, -1.f, .875f, 0.f, -.25f};
+        for (int n = 0; n < 2048; ++n) {
+            const float offset = offsets[static_cast<std::size_t>(n / 83) % offsets.size()];
+            stereo.setStereoOffset(offset);
+            if (n % 67 == 0) stereo.setStereoOffset(std::numeric_limits<float>::quiet_NaN());
+            const float cutoff = static_cast<float>(n % 127) / 126.f;
+            const float q = static_cast<float>(n % 31) / 30.f;
+            float l = static_cast<float>(n % 29 - 14) / 32, r = static_cast<float>(n % 43 - 21) / 32;
+            float refL = l, refR = r, spare = 0;
+            const float shift = .5f * offset * std::abs(offset);
+            left.process(refL, spare, std::clamp(cutoff + shift, 0.f, 1.f), q);
+            spare = 0;
+            right.process(spare, refR, std::clamp(cutoff - shift, 0.f, 1.f), q);
+            stereo.process(l, r, cutoff, q);
+            matches &= l == refL && r == refR;
+        }
+        check(matches, "moving offset, cutoff and resonance preserve both filter histories and the centered path");
+    }
+}
+
 void bandwidth() {
     // Transform the unit impulse at two test frequencies. The reference
     // readings came from an independent stereo render at 48 kHz.
@@ -75,6 +100,57 @@ void heldOutResonantImpulses() {
     check(worst < 5e-5, "five small-signal filter responses agree within 0.005% of a unit impulse");
 }
 
+void peakImpulseResponse() {
+    struct Reading {
+        double rate;
+        float cutoff, resonance;
+        std::array<double, 6> taps;
+    };
+    constexpr std::array frames{0, 1, 3, 11, 63, 127};
+    constexpr std::array readings{
+        Reading{44100., .5f, 0.f, {1.06520438, .07391887, .04823056, -.00182336, -.00121960, -.00000661}},
+        Reading{48000., .845f, .91f, {1.61642444, .30349815, -.80005819, -.22326441, -.12978590, .01543924}},
+        Reading{96000., 1.f, 1.f, {1.80734241, -.18637720, -.26273555, -1.13907290, .79100227, .77836698}}
+    };
+    constexpr float impulse = 1.f / 256.f;
+    double worst = 0.;
+    for (const auto& reading : readings) {
+        Filter filter;
+        filter.prepare(reading.rate);
+        filter.setMode(Mode::Peak12);
+        std::size_t tap = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            float left = i == 0 ? impulse : 0.f;
+            float right = -left;
+            filter.process(left, right, reading.cutoff, reading.resonance);
+            if (i != frames[tap]) continue;
+            worst = std::max({worst, std::abs(left / impulse - reading.taps[tap]),
+                              std::abs(right / impulse + reading.taps[tap])});
+            ++tap;
+        }
+    }
+    std::printf("Signed peak impulse maximum error %.9g\n", worst);
+    check(worst < 5e-5, "peak impulses match the measured response at three sample rates");
+}
+
+void movingPeakResponse() {
+    Filter peak, pass;
+    peak.setMode(Mode::Peak12);
+    pass.setMode(Mode::BandPass12);
+    bool exact = true;
+    for (int frame = 0; frame < 24000; ++frame) {
+        const float cutoff = static_cast<float>(std::abs(frame % 4096 - 2048)) / 2048.f;
+        const float resonance = static_cast<float>(frame % 1021) / 1020.f;
+        const float dryL = static_cast<float>(frame % 173 - 86) / 128.f;
+        const float dryR = static_cast<float>(61 - frame % 127) / 97.f;
+        float left = dryL, right = dryR, bandL = dryL, bandR = dryR;
+        peak.process(left, right, cutoff, resonance);
+        pass.process(bandL, bandR, cutoff, resonance);
+        exact = exact && left == dryL + bandL && right == dryR + bandR;
+    }
+    check(exact, "moving peak adds each input sample to its own band-pass output");
+}
+
 void sampleRatesAndReset() {
     constexpr std::array rates{32000.,44100.,96000.};
     constexpr std::array first{1.43091667,1.30600560,.47358054};
@@ -120,6 +196,65 @@ void resonantLevel() {
     check(worst < 0.0002, "half-scale impulse excites the measured damped resonance");
 }
 
+void steepImpulseResponse() {
+    struct Reading {
+        Mode mode;
+        double rate;
+        float cutoff, resonance;
+        std::array<double, 6> taps;
+    };
+    constexpr std::array frames{0, 1, 4, 11, 37, 115};
+    constexpr std::array readings{
+        Reading{Mode::LowPass24, 44100., .5f, .75f,
+                {.000007344, .000057657, .001082071, .013522163, .066714846, .013291698}},
+        Reading{Mode::HighPass24, 48000., .625f, .84375f,
+                {.894808352, -.233009875, -.247777283, .068233803, -.023254154, -.012620030}},
+        Reading{Mode::LowPass24, 96000., .875f, .90625f,
+                {.008931626, .060447052, .469319373, -.506946385, .335888416, .039872151}},
+        Reading{Mode::HighPass24, 96000., .375f, .5f,
+                {.988622308, -.022923127, -.023579974, -.024577584, -.022560012, .005617304}}
+    };
+    double worst = 0.;
+    for (const auto& test : readings) {
+        Filter filter;
+        filter.prepare(test.rate);
+        filter.setMode(test.mode);
+        std::size_t tap = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            float left = i == 0 ? 1.f / 128.f : 0.f, right = -left;
+            filter.process(left, right, test.cutoff, test.resonance);
+            if (i != frames[tap]) continue;
+            worst = std::max({worst, std::abs(128. * left - test.taps[tap]),
+                              std::abs(128. * right + test.taps[tap])});
+            ++tap;
+        }
+    }
+    std::printf("Steep signed impulse maximum error %.9g\n", worst);
+    check(worst < 5e-5, "steep low-pass and high-pass impulses reproduce six measured taps");
+}
+
+void movingSteepResponse() {
+    for (Mode mode : {Mode::LowPass12, Mode::HighPass12}) {
+        Filter steep, first, second;
+        steep.setMode(mode == Mode::LowPass12 ? Mode::LowPass24 : Mode::HighPass24);
+        first.setMode(mode);
+        second.setMode(mode);
+        bool exact = true;
+        for (int frame = 0; frame < 32768; ++frame) {
+            const float cutoff = static_cast<float>(std::abs(frame % 8192 - 4096)) / 4096.f;
+            const float resonance = static_cast<float>(frame % 769) / 768.f;
+            const float dryL = static_cast<float>(frame % 227 - 113) / 123.f;
+            const float dryR = static_cast<float>(53 - frame % 107) / 72.f;
+            float left = dryL, right = dryR, expectedL = dryL, expectedR = dryR;
+            steep.process(left, right, cutoff, resonance);
+            first.process(expectedL, expectedR, cutoff, resonance);
+            second.process(expectedL, expectedR, cutoff, .2f);
+            exact = exact && left == expectedL && right == expectedR;
+        }
+        check(exact, "moving steep response runs the variable section before the fixed section on each ear");
+    }
+}
+
 void movingContours() {
     // Three seconds at 120 BPM. A stereo saw input, an ascending/descending
     // cutoff and an opposing resonance contour exercise both filter states.
@@ -157,9 +292,14 @@ void movingContours() {
 
 int main() {
     bandwidth();
+    movingStereoOffset();
     heldOutResonantImpulses();
+    peakImpulseResponse();
+    movingPeakResponse();
     sampleRatesAndReset();
     resonantLevel();
+    steepImpulseResponse();
+    movingSteepResponse();
     movingContours();
     return failures == 0 ? 0 : 1;
 }

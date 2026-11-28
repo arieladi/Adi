@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi_shaper_drive.hpp"
+#include "adi_shaper_fold_tables.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <numbers>
 #if defined(__SSE2__) || defined(_M_X64)
@@ -69,9 +71,36 @@ constexpr auto gainSegments(const std::array<double, 33>& values) noexcept {
 constexpr auto clipSegments = gainSegments(clipGain);
 constexpr auto rectSegments = gainSegments(rectGain);
 
-double compensation(const std::array<GainSegment, 32>& segments, float amount) noexcept {
-    const double pos = 32.0 * amount;
-    const auto i = static_cast<std::size_t>(std::min(31, static_cast<int>(pos)));
+// Five-point derivatives keep the rapidly changing compensation near zero smooth.
+constexpr double gainSlope(const std::array<double, 65>& v, std::size_t i) noexcept {
+    if (i == 0) return (-25*v[0] + 48*v[1] - 36*v[2] + 16*v[3] - 3*v[4]) / 12;
+    if (i == 1) return (-3*v[0] - 10*v[1] + 18*v[2] - 6*v[3] + v[4]) / 12;
+    if (i == 64) return (25*v[64] - 48*v[63] + 36*v[62] - 16*v[61] + 3*v[60]) / 12;
+    if (i == 63) return (3*v[64] + 10*v[63] - 18*v[62] + 6*v[61] - v[60]) / 12;
+    return (v[i-2] - 8*v[i-1] + 8*v[i+1] - v[i+2]) / 12;
+}
+
+constexpr auto shapingSegments(const std::array<double, 65>& values) noexcept {
+    std::array<GainSegment, 64> segments{};
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        const double a = gainSlope(values, i), b = gainSlope(values, i+1);
+        const double delta = values[i+1] - values[i];
+        segments[i] = {values[i], a, 3*delta - 2*a - b, a + b - 2*delta};
+    }
+    return segments;
+}
+
+constexpr auto sineSegments = shapingSegments(drive_detail::sineGain);
+constexpr auto triangleSegments = shapingSegments(drive_detail::triangleGain);
+constexpr auto sawSegments = shapingSegments(drive_detail::sawGain);
+
+constexpr auto roundedSegments = shapingSegments(drive_detail::roundedGain);
+constexpr auto powerSegments = shapingSegments(drive_detail::powerGain);
+
+template<std::size_t N>
+double compensation(const std::array<GainSegment, N>& segments, float amount) noexcept {
+    const double pos = static_cast<double>(N) * amount;
+    const auto i = std::min(N-1, static_cast<std::size_t>(pos));
     const double t = pos - static_cast<double>(i);
     const auto& s = segments[i];
     return s.value + t * (s.slope + t * (s.quadratic + t * s.cubic));
@@ -86,10 +115,138 @@ double besselI0(double x) noexcept {
     return sum;
 }
 
+double floorMagnitude(double x) noexcept {
+    // The ordinary audio range fits in a signed integer. Truncation is floor for magnitudes.
+    return x < 2147483647.0 ? static_cast<double>(static_cast<int>(x)) : std::floor(x);
+}
+
 double softNegative(double t) noexcept {
     if (t > 32.0) return 1.0;
     const double sum = 1.0+t*(1.0+t*(1.0+t*(1.0+t*(1.0+t))));
     return 1.0-1.0/sum;
+}
+
+using PowerFrame = std::array<double, 2>;
+using PowerPair = std::array<PowerFrame, 2>;
+
+double fourfoldPower(double input, double exponent) noexcept {
+    if (input == 0.0 || !std::isfinite(input)) return input;
+    int octave = 0;
+    const double m = 2.0 * std::frexp(std::abs(input), &octave);
+    const double log = 2.8883353978185062 + m * (-2.5209116522284445 + m *
+        (1.481314907244546 + m * (-.4657850221838716 + m * .05966033255383041)));
+    const double power = exponent * (static_cast<double>(octave - 1) + (m - 1.0) * log);
+    const int floorPower = static_cast<int>(std::floor(power));
+    const double f = power - static_cast<double>(floorPower);
+    const double exp = .99992521 + f * (.69583320 + f * (.22606810 + f * .07802395));
+    return std::copysign(std::ldexp(exp, floorPower), input);
+}
+
+// Each stereo pair shares its exponent.
+template<int Factor>
+PowerPair signedPowers(const PowerPair& z, double firstExponent, double secondExponent) noexcept {
+    PowerPair out{};
+#if defined(__SSE2__) || defined(_M_X64)
+    const auto a = _mm_loadu_pd(z[0].data());
+    const auto b = _mm_loadu_pd(z[1].data());
+    const auto input = _mm_movelh_ps(_mm_cvtpd_ps(a), _mm_cvtpd_ps(b));
+    const auto sign = _mm_set1_ps(-0.0f);
+    const auto magnitude = _mm_andnot_ps(sign, input);
+    const auto quiet = _mm_cmpeq_ps(magnitude, _mm_setzero_ps());
+    const auto one = _mm_set1_ps(1.0f);
+    const auto x = _mm_or_ps(magnitude, _mm_and_ps(quiet, one));
+    // The exponent is 1/(1+6*d*d), hence stays in [1/7, 1]. Keeping the fourfold
+    // input magnitude in [2^-120, 2^120] leaves a normal float scale at both ends.
+    // A three-band input reached 5.96044736e-8 at the upper edge of the old low-level fallback.
+    // Larger finite magnitudes (up to the double input limit), tiny nonzero values
+    // and nonfinite lanes go through the scalar path. Twofold keeps its original limits.
+    const auto range = _mm_and_ps(_mm_cmpge_ps(x, _mm_set1_ps(Factor == 4 ? 0x1p-120f : 0x1p-24f)),
+                                  _mm_cmple_ps(x, _mm_set1_ps(Factor == 4 ? 0x1p+120f : 0x1p+24f)));
+    // A nonzero double can round to zero on conversion to float. Preserve
+    // those inputs with scalar power, including when denormals are flushed.
+    const int quietMask = _mm_movemask_ps(quiet);
+    int fastMask = _mm_movemask_ps(range);
+    if (quietMask != 0) {
+        const int exactZero = _mm_movemask_pd(_mm_cmpeq_pd(a, _mm_setzero_pd())) |
+                              (_mm_movemask_pd(_mm_cmpeq_pd(b, _mm_setzero_pd())) << 2);
+        fastMask &= ~(quietMask & ~exactZero);
+    }
+    // Keep the healthy lanes on their usual numeric path when another lane
+    // needs scalar recovery. Give the vector polynomial a safe argument there.
+    const auto safe = _mm_or_ps(_mm_and_ps(range, x), _mm_andnot_ps(range, one));
+    const auto bits = _mm_castps_si128(safe);
+    __m128 powered;
+    if constexpr (Factor == 4) {
+        // Signed power at fourfold oversampling uses a binary mantissa in [1,2).
+        // Input coefficients come from fitting independent alternating signed plateaus.
+        // The output cubic uses the fractional part above floor(power), even for negative powers.
+        const auto mantissaBits = _mm_or_si128(_mm_and_si128(bits, _mm_set1_epi32(0x7fffff)),
+                                              _mm_set1_epi32(0x3f800000));
+        const auto mantissa = _mm_castsi128_ps(mantissaBits);
+        const auto integerLog = _mm_cvtepi32_ps(_mm_sub_epi32(_mm_srli_epi32(bits, 23), _mm_set1_epi32(127)));
+        auto log = _mm_set1_ps(.05966033255383041f);
+        log = _mm_add_ps(_mm_set1_ps(-.4657850221838716f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(1.481314907244546f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(-2.5209116522284445f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(2.8883353978185062f), _mm_mul_ps(mantissa, log));
+        const auto log2x = _mm_add_ps(integerLog, _mm_mul_ps(_mm_sub_ps(mantissa, one), log));
+        const auto power = _mm_mul_ps(_mm_set_ps(static_cast<float>(secondExponent), static_cast<float>(secondExponent),
+                                                 static_cast<float>(firstExponent), static_cast<float>(firstExponent)), log2x);
+        const auto truncated = _mm_cvttps_epi32(power);
+        const auto below = _mm_castps_si128(_mm_cmplt_ps(power, _mm_cvtepi32_ps(truncated)));
+        const auto floorPower = _mm_add_epi32(truncated, below);
+        const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(floorPower));
+        auto exp = _mm_set1_ps(.07802395f);
+        exp = _mm_add_ps(_mm_set1_ps(.22606810f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(.69583320f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(.99992521f), _mm_mul_ps(fraction, exp));
+        const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(floorPower, _mm_set1_epi32(127)), 23));
+        powered = _mm_mul_ps(exp, scale);
+    } else {
+        constexpr auto sqrtHalfBits = std::bit_cast<int>(std::numbers::sqrt2_v<float> * .5f);
+        const auto relative = _mm_sub_epi32(bits, _mm_set1_epi32(sqrtHalfBits));
+        const auto e = _mm_cvtepi32_ps(_mm_srai_epi32(relative, 23));
+        const auto mantissa = _mm_sub_epi32(bits, _mm_and_si128(relative, _mm_set1_epi32(~0x7fffff)));
+        const auto r = _mm_sub_ps(_mm_castsi128_ps(mantissa), one);
+        auto log = _mm_set1_ps(0.1681865911f);
+        log = _mm_add_ps(_mm_set1_ps(-0.2679638705f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.2961195572f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.3595244555f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.4806131255f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.7213601786f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(1.442696523f), _mm_mul_ps(r, log));
+        const auto log2x = _mm_add_ps(e, _mm_mul_ps(r, log));
+        const auto power = _mm_mul_ps(_mm_set_ps(static_cast<float>(secondExponent), static_cast<float>(secondExponent),
+                                                static_cast<float>(firstExponent), static_cast<float>(firstExponent)), log2x);
+        const auto half = _mm_or_ps(_mm_and_ps(power, sign), _mm_set1_ps(.5f));
+        const auto nearest = _mm_cvttps_epi32(_mm_add_ps(power, half));
+        const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(nearest));
+        auto exp = _mm_set1_ps(0.0001545316294f);
+        exp = _mm_add_ps(_mm_set1_ps(0.001339086336f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.009618082557f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.05550357114f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.2402265076f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.693147188f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(1.f), _mm_mul_ps(fraction, exp));
+        const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(nearest, _mm_set1_epi32(127)), 23));
+        powered = _mm_mul_ps(exp, scale);
+    }
+    const auto result = _mm_or_ps(_mm_and_ps(input, sign), _mm_andnot_ps(quiet, powered));
+    _mm_storeu_pd(out[0].data(), _mm_cvtps_pd(result));
+    _mm_storeu_pd(out[1].data(), _mm_cvtps_pd(_mm_movehl_ps(result, result)));
+    if (fastMask == 15) return out;
+#else
+    constexpr int fastMask = 0;
+#endif
+    for (std::size_t i = 0; i < z.size(); ++i) {
+        for (std::size_t c = 0; c < z[i].size(); ++c) {
+            if ((fastMask & (1 << (2*i+c))) != 0) continue;
+            const double exponent = i == 0 ? firstExponent : secondExponent;
+            if constexpr (Factor == 4) out[i][c] = fourfoldPower(z[i][c], exponent);
+            else out[i][c] = std::copysign(std::pow(std::abs(z[i][c]), exponent), z[i][c]);
+        }
+    }
+    return out;
 }
 
 double clipArea(double z) noexcept {
@@ -99,39 +256,57 @@ double clipArea(double z) noexcept {
 
 AdiShaperDrive::AdiShaperDrive() noexcept { prepare(48000.0); }
 
+void AdiShaperDrive::Filters::preparePhases(int factor, int taps) noexcept {
+    const auto count = static_cast<std::size_t>(factor);
+    up = {};
+    for (std::size_t i = 0; i < static_cast<std::size_t>(taps); ++i)
+        up[i % count][i / count] = static_cast<float>(factor) * down[i];
+    if (factor == 4) {
+        for (std::size_t j = 0; j < inputs / 2; ++j) {
+            const double a = up[1][j], b = up[3][j];
+            oddSum[j] = .5 * (a + b);
+            oddDifference[j] = .5 * (a - b);
+        }
+    }
+}
+
 void AdiShaperDrive::prepare(double sampleRate) noexcept {
     if (!(sampleRate > 0 && std::isfinite(sampleRate))) return;
     if (sampleRate_ != sampleRate) {
         sampleRate_ = sampleRate;
-        factor_ = sampleRate < 70000.0 ? 4 : 2;
-        taps_ = 16*factor_+1;
-        const double cutoff = factor_ == 4 ? .44 : .48;
-        constexpr double beta = 8.5;
-        const double windowScale = 1.0/besselI0(beta);
-        double sum = 0;
-        for (int i=0; i<taps_; ++i) {
-            const double offset = static_cast<double>(i-8*factor_)/factor_;
-            const double s = 2.0*std::numbers::pi*cutoff*offset;
-            const double t = offset/8;
-            const double h = (s == 0 ? 1.0 : std::sin(s)/s)
-                           * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
-            decimate_[static_cast<std::size_t>(i)] = static_cast<float>(h);
-            sum += h;
-        }
-        interpolate_ = {};
-        const auto factor = static_cast<std::size_t>(factor_), taps = static_cast<std::size_t>(taps_);
-        for (std::size_t i=0; i<taps; ++i) {
-            decimate_[i] = static_cast<float>(decimate_[i]/sum);
-            interpolate_[i%factor][i/factor] = static_cast<float>(factor_)*decimate_[i];
-        }
-        if (factor_ == 4) {
-            for (std::size_t j = 0; j < inputs / 2; ++j) {
-                const double a = interpolate_[1][j], b = interpolate_[3][j];
-                oddSum_[j] = .5 * (a + b);
-                oddDifference_[j] = .5 * (a - b);
+        factor_ = sampleRate >= 176400.0 ? 1 : (sampleRate >= 88200.0 ? 2 : 4);
+        previousDrive_ = -1.0f;
+        if (factor_ > 1) {
+            taps_ = 16*factor_+1;
+            const double cutoff = factor_ == 4 ? .44 : .48;
+            constexpr double beta = 8.5;
+            const double windowScale = 1.0/besselI0(beta);
+            double sum = 0;
+            for (int i=0; i<taps_; ++i) {
+                const double offset = static_cast<double>(i-8*factor_)/factor_;
+                const double s = 2.0*std::numbers::pi*cutoff*offset;
+                const double t = offset/8;
+                const double h = (s == 0 ? 1.0 : std::sin(s)/s)
+                               * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
+                legacyFilters_.down[static_cast<std::size_t>(i)] = static_cast<float>(h);
+                sum += h;
             }
+            const auto taps = static_cast<std::size_t>(taps_);
+            for (std::size_t i=0; i<taps; ++i) {
+                legacyFilters_.down[i] = static_cast<float>(legacyFilters_.down[i]/sum);
+                const auto edge = std::min(i, taps - 1 - i);
+                shapingFilters_.down[i] = static_cast<float>(factor_ == 4 ? drive_detail::fourfoldTaps[edge]
+                                                                       : drive_detail::twofoldTaps[edge]);
+            }
+            legacyFilters_.preparePhases(factor_, taps_);
+            shapingFilters_.preparePhases(factor_, taps_);
         }
-        dcRate_ = 1.0-std::exp(-2.0*std::numbers::pi*10.0/sampleRate);
+        if (factor_ == 1) {
+            const double warp = std::tan(std::numbers::pi * 10.0 / sampleRate);
+            dcRate_ = static_cast<float>(2.0 * warp / (1.0 + warp));
+        } else {
+            dcRate_ = 1.0-std::exp(-2.0*std::numbers::pi*10.0/sampleRate);
+        }
     }
     reset();
 }
@@ -141,12 +316,51 @@ void AdiShaperDrive::reset() noexcept {
     input_ = {};
     wet_ = {};
     inputHead_ = wetHead_ = 0;
+    strengthHead_ = controlDelay;
+}
+
+void AdiShaperDrive::updateResponse() noexcept {
+    Response next = Response::Saturate;
+    switch (fold_) {
+    case Fold::Sine: next = Response::Sine; break;
+    case Fold::Triangle: next = Response::Triangle; break;
+    case Fold::Saw: next = Response::Saw; break;
+    default:
+        switch (mode_) {
+        case Mode::HardClip: next = roundedClip_ ? Response::Rounded : Response::HardClip; break;
+        case Mode::Rectify: next = Response::Rectify; break;
+        default: next = powerSaturation_ ? Response::Power : Response::Saturate; break;
+        }
+    }
+    if (response_ != next) {
+        response_ = next;
+        strengthHead_ = controlDelay;
+        previousDrive_ = -1;
+    }
 }
 
 void AdiShaperDrive::setMode(Mode mode) noexcept {
     if (mode_ == mode) return;
     mode_ = mode;
-    previousDrive_ = -1;
+    updateResponse();
+}
+
+void AdiShaperDrive::setFold(Fold fold) noexcept {
+    if (fold_ == fold) return;
+    fold_ = fold;
+    updateResponse();
+}
+
+void AdiShaperDrive::setRoundedClip(bool enabled) noexcept {
+    if (roundedClip_ == enabled) return;
+    roundedClip_ = enabled;
+    updateResponse();
+}
+
+void AdiShaperDrive::setPowerSaturation(bool enabled) noexcept {
+    if (powerSaturation_ == enabled) return;
+    powerSaturation_ = enabled;
+    updateResponse();
 }
 
 void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noexcept {
@@ -164,10 +378,49 @@ void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noe
 
 void AdiShaperDrive::tune(float amount) noexcept {
     previousDrive_ = amount;
+    current_.active = amount != 0.0f;
+    const double d = amount;
+    if (response_ == Response::Rounded) {
+        const double octaves = 8.0 * d;
+        double gain = 1.0;
+        if (current_.active && factor_ == 4) {
+            const int whole = static_cast<int>(octaves);
+            const double f = octaves - whole;
+            const double mantissa = .99992521 + f * (.69583320 + f * (.22606810 + f * .07802395));
+            gain = static_cast<double>(1 << whole) * mantissa;
+        } else if (current_.active) {
+            gain = std::exp2(octaves);
+        }
+        current_.pre = inputGain_ * gain;
+        current_.post = outputGain_ * compensation(roundedSegments, amount);
+        current_.knee = .85 + .12 * d;
+        const double width = 1.0 - current_.knee;
+        current_.kneeSquared = width * width;
+        current_.kneeOffset = 1.0 - 2.0 * current_.knee;
+        return;
+    }
+    if (response_ == Response::Power) {
+        current_.exponent = 1.0 / (1.0 + 6.0 * d * d);
+        current_.pre = inputGain_;
+        current_.post = outputGain_ * compensation(powerSegments, amount);
+        return;
+    }
+    if (fold_ != Fold::Off) {
+        if (fold_ == Fold::Saw) {
+            current_.pre = inputGain_ * (1.0 + (16.0 * std::numbers::sqrt2 - 1.0) * d * d);
+            current_.post = outputGain_ * compensation(sawSegments, amount);
+        } else {
+            const double a = 1.0 + (fold_ == Fold::Sine ? 1.7987877 : 1.5) * d;
+            const double square = a * a;
+            current_.pre = inputGain_ * (square * square);
+            current_.post = outputGain_ * compensation(fold_ == Fold::Sine ? sineSegments : triangleSegments, amount);
+        }
+        return;
+    }
     const double a = 1.0+amount, square=a*a, fourth=square*square;
     const bool rect = mode_ == Mode::Rectify;
-    pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
-    post_ = outputGain_ * compensation(rect ? rectSegments : clipSegments, amount);
+    current_.pre = inputGain_ * (rect ? fourth : fourth*fourth);
+    current_.post = outputGain_ * compensation(rect ? rectSegments : clipSegments, amount);
     // Bring in the nonlinear transfer below the first nonzero compensation
     // knot. A smoothstep joins both existing paths with zero blend slope.
     constexpr double firstKnot = 1.0 / 32.0;
@@ -175,43 +428,46 @@ void AdiShaperDrive::tune(float amount) noexcept {
     driveFade_ = x * x * (3.0 - 2.0 * x);
 }
 
-double AdiShaperDrive::transfer(double z) const noexcept {
-    if (mode_ == Mode::HardClip) return std::clamp(z,-1.0,1.0);
-    if (mode_ == Mode::Rectify) return std::clamp(std::abs(z+1.0)-1.0,-1.0,1.0);
-    return z < 0 ? -softNegative(-z) : z/(1.0+(2.0/3.0)*z);
-}
-
+template<AdiShaperDrive::Response Style>
 double AdiShaperDrive::shape(double z, Channel& channel) const noexcept {
     const double previous = channel.lastZ;
     channel.lastZ = z;
     if (previousDrive_ == 0.0f) return z;
-    if (mode_ != Mode::HardClip) return transfer(z);
-    // Integrate the hard clip along the segment traversed in this substep.
-    if (z >= 1 && previous >= 1) return 1;
-    if (z <= -1 && previous <= -1) return -1;
-    if (std::abs(z) <= 1 && std::abs(previous) <= 1) return .5*(z+previous);
-    const double delta = z-previous;
-    return std::abs(delta) > 1.0e-7 ? (clipArea(z)-clipArea(previous))/delta
-                                    : std::clamp(.5*(z+previous),-1.0,1.0);
+    if constexpr (Style == Response::Rectify) {
+        return std::clamp(std::abs(z + 1.0) - 1.0, -1.0, 1.0);
+    } else if constexpr (Style == Response::Saturate) {
+        return z < 0 ? -softNegative(-z) : z / (1.0 + (2.0 / 3.0) * z);
+    } else {
+        // Integrate the hard clip along the segment traversed in this substep.
+        if (z >= 1 && previous >= 1) return 1;
+        if (z <= -1 && previous <= -1) return -1;
+        if (std::abs(z) <= 1 && std::abs(previous) <= 1) return .5*(z+previous);
+        const double delta = z-previous;
+        return std::abs(delta) > 1.0e-7 ? (clipArea(z)-clipArea(previous))/delta
+                                        : std::clamp(.5*(z+previous),-1.0,1.0);
+    }
 }
 
 // The center and half-rate phases are symmetric. In fourfold interpolation
 // the two odd phases are reversals of each other, sharing a sum and difference.
 template<int Factor>
-AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const noexcept {
+AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history, const Filters& filters) const noexcept {
+    // The signed power makes even sub-nanounit endpoint residue audible on isolated impulses.
+    // Its interpolator has an exact zero at the outer pair of the base-aligned phase.
+    const double outer = response_ == Response::Power ? 0.0 : filters.up[0][0];
     FilterPair center{}, half{}, oddSum{}, oddDifference{};
     for (std::size_t j = 0; j < inputs / 2; ++j) {
         const auto a = FilterPair::read(history[j]);
         const auto b = FilterPair::read(history[inputs - 2 - j]);
         const auto sum = a + b;
-        center = center + (a + FilterPair::read(history[inputs - 1 - j])) * interpolate_[0][j];
-        half = half + sum * interpolate_[Factor / 2][j];
+        center = center + (a + FilterPair::read(history[inputs - 1 - j])) * (j == 0 ? outer : filters.up[0][j]);
+        half = half + sum * filters.up[Factor / 2][j];
         if constexpr (Factor == 4) {
-            oddSum = oddSum + sum * oddSum_[j];
-            oddDifference = oddDifference + (a - b) * oddDifference_[j];
+            oddSum = oddSum + sum * filters.oddSum[j];
+            oddDifference = oddDifference + (a - b) * filters.oddDifference[j];
         }
     }
-    center = center + FilterPair::read(history[inputs / 2]) * interpolate_[0][inputs / 2];
+    center = center + FilterPair::read(history[inputs / 2]) * filters.up[0][inputs / 2];
     Phases out{};
     out[0] = center.result();
     out[Factor / 2] = half.result();
@@ -222,47 +478,195 @@ AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const 
     return out;
 }
 
-template<int Factor>
-AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory) noexcept {
-    constexpr std::size_t taps = 16 * Factor + 1;
-    const auto upsampled = interpolate<Factor>(inputHistory);
-    const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
-    FilterPair base{};
-    for (std::size_t p=0; p<Factor; ++p) {
-        wetHead_ = wetHead_ == 0 ? static_cast<int>(taps) - 1 : wetHead_ - 1;
-        const auto wetHead = static_cast<std::size_t>(wetHead_);
-        Stereo wet{};
-        for (std::size_t c=0; c<2; ++c) {
-            const double input = upsampled[p][c];
-            double shaped = shape(input * pre_, channels_[c]) * post_;
-            if (fading) {
-                const double zeroDrive = (input * inputGain_) * outputGain_;
-                shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+template<int Factor, AdiShaperDrive::Response Style>
+void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcept {
+    constexpr std::size_t ringSize = inputs * Factor;
+#if defined(__SSE2__) || defined(_M_X64)
+    if constexpr (Style == Response::Rounded || Style == Response::Triangle || Style == Response::Saw) {
+        const auto sign = _mm_set1_pd(-0.0);
+        const auto one = _mm_set1_pd(1.0);
+        for (std::size_t p = 0; p < Factor; ++p) {
+            const auto& t = Factor != 1 && p == 0 ? first_ : current_;
+            const auto z = _mm_mul_pd(_mm_loadu_pd(phases[p].data()), _mm_set1_pd(t.pre));
+            auto value = z;
+            if (p == Factor-1) {
+                _mm_store_sd(&channels_[0].lastZ, z);
+                _mm_storeh_pd(&channels_[1].lastZ, z);
             }
-            wet[c] = static_cast<float>(shaped);
+            if (t.active) {
+                const auto m = _mm_andnot_pd(sign, z);
+                __m128d mag;
+                if constexpr (Style == Response::Rounded) {
+                    const auto mask = _mm_cmpgt_pd(m, _mm_set1_pd(t.knee));
+                    mag = m;
+                    if (_mm_movemask_pd(mask) != 0) {
+                        const auto clipped = _mm_sub_pd(one, _mm_div_pd(_mm_set1_pd(t.kneeSquared),
+                            _mm_add_pd(_mm_max_pd(m, _mm_set1_pd(t.knee)), _mm_set1_pd(t.kneeOffset))));
+                        mag = _mm_or_pd(_mm_and_pd(mask, clipped), _mm_andnot_pd(mask, m));
+                    }
+                } else {
+                    const auto units = Style == Response::Triangle ? _mm_mul_pd(m, _mm_set1_pd(.5)) : m;
+                    // Conversion truncates nonnegative levels exactly. Keep the scalar reduction
+                    // for levels beyond the integer range and for nonfinite inputs.
+                    __m128d floor;
+                    if (_mm_movemask_pd(_mm_cmplt_pd(units, _mm_set1_pd(2147483647.0))) == 3)
+                        floor = _mm_cvtepi32_pd(_mm_cvttpd_epi32(units));
+                    else {
+                        std::array<double, 2> u;
+                        _mm_storeu_pd(u.data(), units);
+                        floor = _mm_set_pd(std::floor(u[1]), std::floor(u[0]));
+                    }
+                    if constexpr (Style == Response::Triangle) {
+                        auto phase = _mm_sub_pd(m, _mm_add_pd(floor,floor));
+                        mag = _mm_sub_pd(one, _mm_andnot_pd(sign, _mm_sub_pd(one,phase)));
+                    } else mag = _mm_sub_pd(m,floor);
+                }
+                value = _mm_or_pd(_mm_and_pd(sign,z),_mm_andnot_pd(sign,mag));
+            }
+            const auto y = _mm_cvtpd_ps(_mm_mul_pd(value, _mm_set1_pd(t.post)));
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(wet_[head-p].data()), _mm_castps_si128(y));
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(wet_[head-p+ringSize].data()), _mm_castps_si128(y));
         }
-        wet_[wetHead] = wet_[wetHead+taps] = wet;
-        if (p == 0) {
-            const Stereo* history = wet_.data() + wetHead_;
-            constexpr std::size_t middle = taps / 2;
-            for (std::size_t j = 0; j < middle; ++j) {
-                const auto pair = FilterPair::read(history[j]) + FilterPair::read(history[taps - 1 - j]);
-                base = base + pair * decimate_[j];
+    } else
+#endif
+    if constexpr (Style == Response::Power && Factor == 1) {
+        const PowerFrame z{phases[0][0] * current_.pre, phases[0][1] * current_.pre};
+        // The direct and twofold rates share the natural power law.
+        const auto result = current_.active ? signedPowers<2>({z, {}}, current_.exponent, 1.)[0] : z;
+        Stereo wet{};
+        for (std::size_t ch = 0; ch < wet.size(); ++ch) {
+            channels_[ch].lastZ = z[ch];
+            wet[ch] = static_cast<float>(result[ch] * current_.post);
+        }
+        wet_[head] = wet_[head + ringSize] = wet;
+    } else if constexpr (Style == Response::Power) {
+        for (std::size_t p = 0; p < Factor; p += 2) {
+            const Transfer& first = p == 0 ? first_ : current_;
+            const PowerPair z{{
+                {phases[p][0] * first.pre, phases[p][1] * first.pre},
+                {phases[p+1][0] * current_.pre, phases[p+1][1] * current_.pre}}};
+            const auto wet = first.active || current_.active ? signedPowers<Factor>(z, first.exponent, current_.exponent) : z;
+            Stereo a{}, b{};
+            for (std::size_t c = 0; c < 2; ++c) {
+                a[c] = static_cast<float>((first.active ? wet[0][c] : z[0][c]) * first.post);
+                b[c] = static_cast<float>((current_.active ? wet[1][c] : z[1][c]) * current_.post);
+                channels_[c].lastZ = z[1][c];
             }
-            base = base + FilterPair::read(history[middle]) * decimate_[middle];
+            wet_[head-p] = wet_[head-p+ringSize] = a;
+            wet_[head-p-1] = wet_[head-p-1+ringSize] = b;
+        }
+    } else {
+        const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
+        for (std::size_t p = 0; p < Factor; ++p) {
+            Stereo wet{};
+            for (std::size_t c = 0; c < 2; ++c) {
+                const double input = phases[p][c];
+                double shaped;
+                if constexpr (Style == Response::Saturate || Style == Response::Rectify || Style == Response::HardClip) {
+                    shaped = shape<Style>(input * current_.pre, channels_[c]) * current_.post;
+                    if (fading) {
+                        const double linear = (input * inputGain_) * outputGain_;
+                        shaped = linear + driveFade_ * (shaped - linear);
+                    }
+                } else {
+                    const Transfer& transfer = Factor != 1 && p == 0 ? first_ : current_;
+                    const double z = input * transfer.pre;
+                    channels_[c].lastZ = z;
+                    double magnitude = std::abs(z);
+                    if (transfer.active) {
+                        if constexpr (Style == Response::Rounded) {
+                            if (magnitude > transfer.knee)
+                                magnitude = 1.0 - transfer.kneeSquared / (magnitude + transfer.kneeOffset);
+                        } else if constexpr (Style == Response::Sine) {
+                            if (magnitude > .5) magnitude = .5 + .5 * std::sin(2*magnitude - 1);
+                        } else if constexpr (Style == Response::Triangle) {
+                            const double phase = magnitude - 2*floorMagnitude(.5*magnitude);
+                            magnitude = 1 - std::abs(1-phase);
+                        } else {
+                            magnitude -= floorMagnitude(magnitude);
+                        }
+                    }
+                    shaped = std::copysign(magnitude, z) * transfer.post;
+                }
+                wet[c] = static_cast<float>(shaped);
+            }
+            wet_[head-p] = wet_[head-p+ringSize] = wet;
         }
     }
-    return base.result();
+}
+
+template<int Factor>
+AdiShaperDrive::StereoSum AdiShaperDrive::decimate(const Stereo* history, const Filters& filters) const noexcept {
+    constexpr std::size_t taps = 16 * Factor + 1, middle = taps / 2;
+    FilterPair base{};
+    for (std::size_t j = 0; j < middle; ++j) {
+        const auto pair = FilterPair::read(history[j]) + FilterPair::read(history[taps - 1 - j]);
+        base = base + pair * filters.down[j];
+    }
+    return (base + FilterPair::read(history[middle]) * filters.down[middle]).result();
+}
+
+template<int Factor>
+AdiShaperDrive::StereoSum AdiShaperDrive::render(const Stereo* input) noexcept {
+    const auto& filters = usesDelayedControl() ? shapingFilters_ : legacyFilters_;
+    Phases phases{};
+    if constexpr (Factor == 1)
+        phases[0] = {(*input)[0], (*input)[1]};
+    else
+        phases = interpolate<Factor>(input, filters);
+    constexpr int ringSize = inputs * Factor;
+    wetHead_ = wetHead_ == 0 ? ringSize - Factor : wetHead_ - Factor;
+    const auto head = static_cast<std::size_t>(wetHead_) + Factor - 1;
+    switch (response_) {
+    case Response::HardClip: writePhases<Factor, Response::HardClip>(phases, head); break;
+    case Response::Rectify: writePhases<Factor, Response::Rectify>(phases, head); break;
+    case Response::Rounded: writePhases<Factor, Response::Rounded>(phases, head); break;
+    case Response::Power: writePhases<Factor, Response::Power>(phases, head); break;
+    case Response::Sine: writePhases<Factor, Response::Sine>(phases, head); break;
+    case Response::Triangle: writePhases<Factor, Response::Triangle>(phases, head); break;
+    case Response::Saw: writePhases<Factor, Response::Saw>(phases, head); break;
+    default: writePhases<Factor, Response::Saturate>(phases, head); break;
+    }
+    if constexpr (Factor == 1) {
+        const auto& delayed = wet_[head + latencySamples];
+        return {delayed[0], delayed[1]};
+    } else {
+        return decimate<Factor>(wet_.data() + head, filters);
+    }
 }
 
 void AdiShaperDrive::process(float& left, float& right, float driveNormalized) noexcept {
+    if (factor_ > 1 && usesDelayedControl()) {
+        if (!std::isfinite(driveNormalized))
+            driveNormalized = strengthHead_ < controlDelay ? strengthHistory_[(strengthHead_ + controlDelay-1) % controlDelay] : 0.0f;
+        driveNormalized = std::clamp(driveNormalized, 0.0f, 1.0f);
+        if (strengthHead_ == controlDelay) {
+            strengthHistory_.fill(driveNormalized);
+            strengthHead_ = 0;
+            lastDelayed_ = driveNormalized;
+        }
+        if (previousDrive_ != lastDelayed_) tune(lastDelayed_);
+        // The phase on the base-rate grid precedes the remaining phases by one control frame.
+        first_ = current_;
+        const float delayed = strengthHistory_[strengthHead_];
+        strengthHistory_[strengthHead_] = driveNormalized;
+        strengthHead_ = (strengthHead_ + 1) % controlDelay;
+        driveNormalized = delayed;
+        lastDelayed_ = delayed;
+    }
     if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
     if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
-    inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
-    const auto inputHead = static_cast<std::size_t>(inputHead_);
-    input_[inputHead] = input_[inputHead+inputs] = {left, right};
-    const Stereo* in = input_.data()+inputHead_;
-    auto base = factor_ == 4 ? oversample<4>(in) : oversample<2>(in);
+    StereoSum base;
+    if (factor_ == 1) {
+        const Stereo direct{left, right};
+        base = render<1>(&direct);
+    } else {
+        inputHead_ = inputHead_ == 0 ? inputs - 1 : inputHead_ - 1;
+        const auto head = static_cast<std::size_t>(inputHead_);
+        input_[head] = input_[head + inputs] = {left, right};
+        const Stereo* in = input_.data() + head;
+        base = factor_ == 4 ? render<4>(in) : render<2>(in);
+    }
     for (std::size_t c=0; c<channels_.size(); ++c) {
         auto& dc = channels_[c].dc;
         const double high=base[c]-dc;
@@ -284,6 +688,10 @@ bool AdiShaperDrive::finishBlock() noexcept {
         // base-rate sample. Check those too before moving to the next block.
         for (int phase = 1; phase < factor_; ++phase)
             bad |= !std::isfinite(wet_[head + static_cast<std::size_t>(phase - 1)][ch]);
+        if (factor_ == 1) {
+            for (std::size_t frame = 0; frame < latencySamples; ++frame)
+                bad |= !std::isfinite(wet_[head + frame][ch]);
+        }
         if (bad) {
             state = {};
             for (auto& sample : input_) sample[ch] = 0.0f;
