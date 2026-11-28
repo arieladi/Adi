@@ -304,6 +304,10 @@ struct ProjectDocument::SaveJob {
     bool keptTake = false;
     bool switched = false;
     bool readersSwitched = false;
+    // How many more times the copy is made when the project was written to while a worker copied it.
+    // The window stays in use during a save, so a click, Play or an edit can each do that.
+    static constexpr int repeatsAllowed = 2;
+    int repeats = 0;
     std::string adoptionWarning, stateWarning;
     std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::stop_source stop;
@@ -928,6 +932,32 @@ void ProjectDocument::advanceSave() {
         }
         finish();
     };
+    // Pins the project as it stands and hands the copy to a worker. Run again when the project was
+    // written to while the last copy was made.
+    const auto startCopy = [&] {
+        if (!capturePluginState()) {
+            fail(error_);
+            return;
+        }
+        job.stateWarning = pluginStateWarning_;
+        const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
+                        : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
+        const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
+                                                      job.expectedTarget ? &*job.expectedTarget : nullptr,
+                                                      job.keepUndoHistory ? StoreCopyPolicy::shareWithUndo
+                                                                          : StoreCopyPolicy::share);
+        if (!prepared.ok) {
+            fail(prepared.error, prepared.warning);
+            return;
+        }
+        job.copy = std::async(std::launch::async, [saving = &job] {
+            return saving->file.write(saving->stop.get_token(), [saving](StoreSaveProgress progress) {
+                std::lock_guard lock(saving->progressMutex);
+                saving->progress = progress;
+            });
+        });
+        job.phase = Phase::copying;
+    };
     try {
         // Like synchronous Save As, detach the render from this Store before
         // switching files. The next ticks service its host calls and cancellation.
@@ -947,28 +977,7 @@ void ProjectDocument::advanceSave() {
                 return;
             }
             job.keptTake = job.wasRecording && landed_ && landed_->ok;
-            if (!capturePluginState()) {
-                fail(error_);
-                return;
-            }
-            job.stateWarning = pluginStateWarning_;
-            const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
-                            : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
-            const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
-                                                          job.expectedTarget ? &*job.expectedTarget : nullptr,
-                                                          job.keepUndoHistory ? StoreCopyPolicy::shareWithUndo
-                                                                              : StoreCopyPolicy::share);
-            if (!prepared.ok) {
-                fail(prepared.error, prepared.warning);
-                return;
-            }
-            job.copy = std::async(std::launch::async, [job = &job] {
-                return job->file.write(job->stop.get_token(), [job](StoreSaveProgress progress) {
-                    std::lock_guard lock(job->progressMutex);
-                    job->progress = progress;
-                });
-            });
-            job.phase = Phase::copying;
+            startCopy();
             return;
         }
         if (job.phase == Phase::finishing) {
@@ -980,7 +989,8 @@ void ProjectDocument::advanceSave() {
         const auto result = job.copy.get();
         if (!result.ok) {
             if (job.file.cancelled()) {
-                warning_.clear();
+                // A copy made again was cancelled: the one it was replacing is still at the destination.
+                warning_ = job.repeats > 0 ? "A copy was saved. The original project remains active." : "";
                 error_.clear();
                 job.phase = Phase::cancelled;
             } else {
@@ -1007,6 +1017,24 @@ void ProjectDocument::advanceSave() {
         auto oldPath = store_->path();
         const auto adopted = store_->adoptFileSave(job.file);
         if (!adopted.ok) {
+            // The project was written to while the worker copied it: a click that moved the selection,
+            // Play, an edit. The published copy is whole but older than the project, and switching to it
+            // would drop what was done since. Make the copy again over exactly that file, a bounded
+            // number of times, so the save carries everything; past the bound it fails as before.
+            if (job.repeats < SaveJob::repeatsAllowed) {
+                if (const auto stale = job.file.takeStaleCopy()) {
+                    ++job.repeats;
+                    job.file = StoreFileSave{};
+                    job.collision = StoreFileCollision::ReplaceConfirmed;
+                    job.expectedTarget = *stale;
+                    {
+                        std::lock_guard lock(job.progressMutex);
+                        job.progress = {};
+                    }
+                    startCopy();
+                    return;
+                }
+            }
             fail(adopted.error, adopted.warning);
             return;
         }

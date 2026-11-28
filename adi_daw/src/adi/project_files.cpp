@@ -36,6 +36,8 @@ namespace adi {
 namespace {
 namespace fs=std::filesystem;
 struct SaveCancelled {};
+// The one refusal of an adoption after which the same save may simply be made again.
+constexpr const char* kSourceChangedBeforeSwitch = "copy saved but the original project changed before switching";
 
 void checkSaveCancellation(std::stop_token stop) {
     if (stop.stop_requested()) throw SaveCancelled{};
@@ -485,6 +487,9 @@ fs::path publishCollectedMedia(const fs::path& directory, const fs::path& stage,
 struct Store::CopyState : StoreFileResult {
     std::optional<media::FileIdentity> identity;
     std::map<fs::path,media::FileIdentity> originalMedia;
+    // What a first save published beside the project, for a save that is made again (takeStaleCopy).
+    std::vector<std::pair<fs::path,media::FileIdentity>> publishedMedia;
+    std::vector<fs::path> createdMediaFolders;
     bool durable=false;
     CopyState(bool value,std::string why={},std::string note={},std::optional<media::FileIdentity> file={})
         :StoreFileResult{value,std::move(why),std::move(note)},identity(file){}
@@ -551,6 +556,7 @@ struct StoreFileSave::Data {
     bool recoveringBackup = false;
     std::unique_ptr<Store> retired;
     bool cancelled = false;
+    bool sourceChanged = false;
 };
 
 StoreFileSave::StoreFileSave() = default;
@@ -681,6 +687,23 @@ StoreFileResult StoreFileSave::write(std::stop_token stop, const Progress& progr
 }
 
 bool StoreFileSave::cancelled() const noexcept { return data_ && data_->cancelled; }
+
+std::optional<media::FileIdentity> StoreFileSave::takeStaleCopy() {
+    if (audio::onAudioThread || !data_ || !data_->sourceChanged || !data_->copy || !data_->copy->ok ||
+        !data_->copy->identity)
+        return {};
+    data_->sourceChanged = false;
+    // The media a first save published go with the stale copy. The save made again publishes them
+    // again from the unnamed folder, which still holds them: its cleanup runs only after an adoption.
+    for (const auto& [path, identity] : data_->copy->publishedMedia)
+        (void)media::removePublishedFile(path, identity);
+    for (auto folder = data_->copy->createdMediaFolders.rbegin(); folder != data_->copy->createdMediaFolders.rend();
+         ++folder) {
+        std::error_code ignored;
+        fs::remove(*folder, ignored);
+    }
+    return data_->copy->identity;
+}
 
 std::string StoreFileSave::closeReplacedProject() {
     if (audio::onAudioThread || !data_ || !data_->retired) return {};
@@ -1235,6 +1258,11 @@ Store::CopyState Store::writeFileCopy(const fs::path& output, const fs::path& so
         if(mediaToMove && privateFolder)
             for(const auto& [relative,move]:mediaToMove->sources)
                 if(move.identity)copied.originalMedia.emplace(relative,*move.identity);
+        if(mediaToMove) {
+            for(const auto& file:mediaToMove->published)
+                if(file.identity)copied.publishedMedia.emplace_back(file.path,*file.identity);
+            copied.createdMediaFolders=mediaToMove->createdDirectories;
+        }
         return copied;
     } catch (const SaveCancelled&) { throw; }
     catch (const std::exception& e) {
@@ -1274,7 +1302,9 @@ StoreFileResult Store::adoptFileSave(StoreFileSave& job) {
         return {false, "copy saved but database transactions or statements are still open", job.data_->copy->warning};
     auto change = gesture::detail::beginSourceChange(*this);
     if (!change.status.ok()) return {false, change.status.message, "copy saved; original project remains active"};
-    return switchToCopy(job.data_->target, *job.data_->copy, change.permit, job.data_->retired, &job);
+    auto switched = switchToCopy(job.data_->target, *job.data_->copy, change.permit, job.data_->retired, &job);
+    job.data_->sourceChanged = !switched.ok && switched.error == kSourceChangedBeforeSwitch;
+    return switched;
 }
 
 StoreFileResult Store::switchToCopy(const fs::path& output, const CopyState& copied,
@@ -1304,7 +1334,7 @@ StoreFileResult Store::switchToCopy(const fs::path& output, const CopyState& cop
             if (!source.owner.sameConnection(applied) || source.sequence != applied.sequence() ||
                 !stamp || source.stamp != *stamp || !fileLease_ ||
                 fileLease_->identity() != source.sourceIdentity || !pathHasIdentity(source.sourcePath, source.sourceIdentity))
-                return {false, "copy saved but the original project changed before switching", copied.warning};
+                return {false, kSourceChangedBeforeSwitch, copied.warning};
             if (!pathHasIdentity(output, *copied.identity))
                 return {false, "copy saved but destination changed before switching", copied.warning};
         }

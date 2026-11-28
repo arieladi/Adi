@@ -114,6 +114,11 @@ public:
     [[nodiscard]] StoreFileResult write(std::stop_token = {}, const Progress& = {});
     /// Inspect after the file worker returns.
     [[nodiscard]] bool cancelled() const noexcept;
+    /// Owner, after a refused adoption. When the only reason was that the project was written to
+    /// after its snapshot was pinned, this returns the published copy's identity, once, and removes
+    /// the media a first save published beside it: the owner may then prepare the same save again
+    /// over exactly that copy (ReplaceConfirmed with this identity). Empty after any other refusal.
+    [[nodiscard]] std::optional<media::FileIdentity> takeStaleCopy();
     /// File worker, after adoption. Folds the detached source's WAL.
     [[nodiscard]] std::string closeReplacedProject();
 

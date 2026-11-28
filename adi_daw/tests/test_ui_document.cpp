@@ -3630,21 +3630,16 @@ void largeProjectSaveResponse(const std::filesystem::path &dir) {
     rename.payload = {{"id", 4}, {"name", laterName}};
     const bool edited = doc->ops().submit(rename).ok && doc->synchronise();
     const auto staleRun = settle(staleStart, {});
-    check(startedStale && edited && staleRun.phase == Phase::failed && !doc->saveProgress() &&
-              fs::equivalent(doc->store().path(), saved) && doc->deviceCopyIdentity() == savedIdentity &&
-              trackName(doc->store()) == laterName && OpJournal(doc->store()).count() == ops + 1,
-          "large project save: a stale Save As cannot adopt over a later source edit");
+    // The first copy is older than the project and is never adopted: the copy is made again, over it.
+    check(startedStale && edited && staleRun.phase == Phase::succeeded && !doc->saveProgress() &&
+              fs::equivalent(doc->store().path(), stale) && doc->deviceCopyIdentity() != savedIdentity &&
+              trackName(doc->store()) == laterName && OpJournal(doc->store()).count() == ops + 1 &&
+              verify(doc->store(), laterName),
+          "large project save: an edit made while Save As copies is saved with it, by a second copy");
     StoreError opened{};
-    auto coherent = Store::open(stale, opened, true);
-    bool validCopy = false;
-    if (coherent) {
-        const auto name = trackName(*coherent);
-        const auto count = OpJournal(*coherent).count();
-        // The worker may have pinned the source before or after the rename.
-        const bool frozenVersion = (name == sourceName && count == ops) || (name == laterName && count == ops + 1);
-        validCopy = frozenVersion && verify(*coherent, name);
-    }
-    check(validCopy, "large project save: stale adoption leaves a readable coherent copy at the destination");
+    auto left = Store::open(saved, opened, true);
+    check(left && trackName(*left) == laterName && OpJournal(*left).count() == ops + 1,
+          "large project save: the project left behind keeps the edit made while saving");
     for (const auto &path : {copy, saved, stale}) {
         const bool clean = std::none_of(fs::directory_iterator(path.parent_path()), fs::directory_iterator(),
                                        [](const auto &entry) { return entry.path().filename().string().starts_with(".adi-save-"); });
