@@ -435,8 +435,8 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;
             io.frames = frames;
-            if (auto error = session.renderOfflineBlock(io); !error.empty())
-                throw std::runtime_error(error);
+            if (auto blockError = session.renderOfflineBlock(io); !blockError.empty())
+                throw std::runtime_error(blockError);
             if (session.clips()->readErrors() || session.clips()->underrunSamples())
                 throw std::runtime_error("freeze clip read failed or underrun");
             for (auto &sink : sinks) {

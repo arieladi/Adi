@@ -649,8 +649,8 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             engine::AudioIo processIo;
             processIo.frames = frames;
             // The whole graph, including unexported sidechains and returns.
-            if (auto error = session.renderOfflineBlock(processIo); !error.empty())
-                throw std::runtime_error(error);
+            if (auto blockError = session.renderOfflineBlock(processIo); !blockError.empty())
+                throw std::runtime_error(blockError);
             if (!graph->copyNodeOutput(endpoint->node, io)) throw std::runtime_error("export source has no complete rendered block");
             if (session.clips()->readErrors() || session.clips()->underrunSamples()) throw std::runtime_error("export clip read failed or underrun");
             const auto first = (std::max)(at, rawBegin);

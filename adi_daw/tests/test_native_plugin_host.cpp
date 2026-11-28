@@ -293,8 +293,9 @@ int main(int argc, char** argv) {
             require(argc == 4 && std::string_view(argv[1]) == "client", "expected the test mode and CLAP path");
             const std::string_view token(argv[3]);
             std::uint16_t port = 0;
-            const auto parsed = std::from_chars(token.begin(), token.end(), port);
-            require(parsed.ec == std::errc{} && parsed.ptr == token.end() && port != 0,
+            const auto* const end = token.data() + token.size();
+            const auto parsed = std::from_chars(token.data(), end, port);
+            require(parsed.ec == std::errc{} && parsed.ptr == end && port != 0,
                     "invalid fixture TCP port");
             testRemote(argv[2], port);
         }

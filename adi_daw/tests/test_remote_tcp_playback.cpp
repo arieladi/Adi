@@ -62,8 +62,9 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const std::string_view portText(argv[1]);
     std::uint16_t port = 0;
-    const auto parsed = std::from_chars(portText.begin(), portText.end(), port);
-    if (parsed.ec != std::errc{} || parsed.ptr != portText.end() || port == 0) return 2;
+    const auto* const end = portText.data() + portText.size();
+    const auto parsed = std::from_chars(portText.data(), end, port);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0) return 2;
 
     auto processor = device::makeAudioGridderProcessor(
         {"127.0.0.1", port, 5s, 10s}, {"VST3-12ab", "Stereo"});
