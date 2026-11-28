@@ -128,6 +128,7 @@ struct Playback {
         while (first < target) {
             const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockFrames, target - first));
             AudioIo io{out, nullptr, 2, 0, frames, first};
+            const auto started = std::chrono::steady_clock::now();
             bool rendered;
             {
                 const audio::CallbackScope scope;
@@ -149,8 +150,23 @@ struct Playback {
             require(rendered, "render actual persisted launch graph");
             std::copy_n(left.begin(), frames, pcm.begin() + first);
             first += frames;
-            if (paged) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (paged) pace(started, frames);
         }
+    }
+
+    // Paged fixtures must not outrun the page worker, as a real device never
+    // does. This used to sleep 1 ms per block: about 5x real time on Linux and
+    // macOS, but Windows rounds that sleep up to its 15.6 ms timer tick, about
+    // a third of real time, so the paged cases together passed 600 s there.
+    // Hold the render to a fixed multiple of real time on the steady clock
+    // instead, yielding so the worker gets the core on a two-core runner.
+    // Each block is held from its own start, so owner work between calls
+    // never banks time for a later burst.
+    static constexpr std::int64_t kRealTimeMultiple = 4;
+    static void pace(std::chrono::steady_clock::time_point started, std::int32_t frames) {
+        const auto due = started + std::chrono::microseconds(
+            static_cast<std::int64_t>(frames) * 1'000'000 / (static_cast<std::int64_t>(rate) * kRealTimeMultiple));
+        while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
     }
 };
 
