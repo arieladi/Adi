@@ -142,25 +142,28 @@ void boundaries() {
             const auto first = sample + delta;
             f.session.transport().locate(first);
             const auto info = f.render(32);
-            const auto actualTicks = tempo.secondsToTicks(static_cast<double>(first) / 48000);
+            const auto inverseTick = tempo.secondsToTicks(static_cast<double>(first) / 48000);
+            // The scheduled tempo or meter takes effect on its rounded sample.
+            // Adjacent samples still use the continuous clock inverse.
+            const auto expectedTick = delta == 0 ? std::max(inverseTick,ticks) : inverseTick;
             long long bar = 0, beat = 0;
-            const auto position = textproj::renderPosition(actualTicks, meters);
+            const auto position = textproj::renderPosition(expectedTick, meters);
             check(parsePosition(position, bar, beat),
                   "projection oracle parses");
             check(info.bar == bar && info.beat == beat, "bar/beat agree with projection around every change");
             check(info.timelineSample == first && info.playing, "timeline is block start, independent of stream clock");
             // TM-TT-01: the authored linear ramp plays; BPM falls linearly in
             // ticks from 120 to 60 and holds 60 from the change on.
-            const double rampBpm = actualTicks < 4*ppq
-                ? 120.0 - 60.0 * static_cast<double>(actualTicks) / static_cast<double>(4*ppq) : 60.0;
+            const double rampBpm = expectedTick < 4*ppq
+                ? 120.0 - 60.0 * static_cast<double>(expectedTick) / static_cast<double>(4*ppq) : 60.0;
             check(std::abs(info.bpm - rampBpm) <= 1e-9 * rampBpm,
                   "stored linear ramp reports its instantaneous BPM including change boundary");
-            const auto active = std::find_if(meters.rbegin(), meters.rend(), [actualTicks](const auto& m) {
-                return m.start_ticks <= actualTicks;
+            const auto active = std::find_if(meters.rbegin(), meters.rend(), [expectedTick](const auto& m) {
+                return m.start_ticks <= expectedTick;
             });
             check(active != meters.rend() && info.timeSigNumerator == active->numerator &&
                   info.timeSigDenominator == active->denominator, "current meter at change boundary");
-            check(info.ticksInQuarter == actualTicks % ppq && info.ticksInQuarter >= 0 &&
+            check(info.ticksInQuarter == expectedTick % ppq && info.ticksInQuarter >= 0 &&
                   info.ticksInQuarter < ppq &&
                   static_cast<std::int64_t>(static_cast<float>(info.ticksInQuarter)) == info.ticksInQuarter,
                   "quarter remainder is bounded and exact as Pd float");
