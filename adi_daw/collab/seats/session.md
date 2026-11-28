@@ -57,6 +57,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-03 retained paged region edits | Admitted a live region edit when the prepared page bank covers the full authored window and let the scheduler own the edited loop phase (`3114192e4`). | The persisted test pauses the disk worker, compares stereo PCM across frame 48,000 and rejects cold or oversized ranges and a stale edit under a cold replacement bank. | Pushed. Full headless rerun pending. |
 | Session slot pitch-wheel recording | Used the existing pitch-wheel normalization and literal ACTL type for the matching frozen slot input (`c95d69c19`). | The route fixture checks two exact wheel events on the selected channel, a NULL controller field, and one Undo and Redo. | Pushed. Full headless rerun pending. |
 | TM-SV-04 seeks across one scene clock | Kept the consumed native frame of Warp-off clips and the musical source position of tempo-prepared clips across the retained bank boundary (`e90e29d9f`). | The persisted nonzero-start fixture compares source frames 240, 497 and 754 through forward and backward seeks. The runtime fixture covers a split callback, one active run and an outgoing Fade from the previous bank. | Pushed. Full headless rerun pending. |
+| Main follow-up | Merged the documentation-only PR #836 at `c0d22ae45` while the full code build ran (`8bcbb2ac3`). | The tree delta from the queued engine head is one entry in `docs/SANITY-CHECK.md`. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
