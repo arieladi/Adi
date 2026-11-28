@@ -160,11 +160,12 @@ void tempoSceneFromArrangementLoop(bool startsAtEnd) {
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*fixture.store, {}, {2, 48'000, blockSize})) throw std::runtime_error(session.error());
+    bool started;
     {
         auto block = session.beginRender();
-        require(block.startPlayback(startsAtEnd ? loopEnd : loopEnd - textproj::kPPQ, false),
-            "use the Arrangement playback entry point");
+        started = block.startPlayback(startsAtEnd ? loopEnd : loopEnd - textproj::kPPQ, false);
     }
+    require(started, "use the Arrangement playback entry point");
     Render render{session};
     render.block();
     require(session.transport().looping() != startsAtEnd, "observe the effective loop after starting playback");
@@ -172,14 +173,14 @@ void tempoSceneFromArrangementLoop(bool startsAtEnd) {
     require(OpJournal(*fixture.store).commit(launch).ok, "submit a saved tempo scene");
     const auto end = (startsAtEnd ? barFrames / 2 : barFrames) + 1024;
     while (render.stream < end) render.block();
+    const auto bpm = session.beginRender().bpmAtTick(4 * textproj::kPPQ);
     if (startsAtEnd) {
         require(render.size == 1 && render.edges[0].sample == barFrames && render.edges[0].newClip == 102 &&
             std::abs(render.left.back() + 0.25f) < 0.0005f,
             "bypassed Loop brace permits an audible tempo scene on the next bar");
-        require(session.beginRender().bpmAtTick(4 * textproj::kPPQ) == 140, "scene clock performs at the bar");
+        require(bpm == 140, "scene clock performs at the bar");
     } else {
-        require(render.size == 0 && session.transport().looping() &&
-            session.beginRender().bpmAtTick(4 * textproj::kPPQ) == 120,
+        require(render.size == 0 && session.transport().looping() && bpm == 120,
             "active Loop brace keeps its clock when the scene bar is unreachable");
     }
 }
