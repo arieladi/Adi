@@ -413,6 +413,9 @@ public:
     /// `getPluginDescription()` builds a description full of `String`s --
     /// answers once at construction and returns the cached value here.
     [[nodiscard]] virtual EventFlow eventFlow() const noexcept { return EventFlow::Through; }
+    /// Owner-side declaration, cached after prepare. A value above one keeps
+    /// interior node calls on that block-relative sample grid.
+    [[nodiscard]] virtual std::int32_t segmentQuantum() const noexcept { return 1; }
 
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
 
@@ -1284,6 +1287,7 @@ private:
         /// At 64, the node said `processesDouble()` at prepare.
         bool doubles = false;
         std::vector<Event> eventStore;
+        std::int32_t segmentQuantum = 1;
         EventList events;
         // Forwarding precedes event sorting, so these parallel origins can be
         // carried through further delayed hops without changing Event's ABI.
