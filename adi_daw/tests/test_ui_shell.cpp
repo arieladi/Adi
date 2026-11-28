@@ -14407,6 +14407,43 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     check(second.size() == 1 && second.front()->id == 12 && second.front()->posTicks == bar &&
               second.front()->lengthTicks == bar,
           "SC-177: Cut after releasing a track title leaves the clip intact");
+
+    const juce::KeyPress space(juce::KeyPress::spaceKey);
+    const auto stopPlayback = [&] {
+        check(canvas.keyPressed(space), "SC-182 fixture stops playback");
+        mailbox.drain(driver);
+        root.frame();
+        check(!driver.playing(), "SC-182 fixture is stopped before selecting");
+    };
+    mailbox.drain(driver);
+    stopPlayback();
+    const auto sampleAt = [&](std::int64_t tick) {
+        return static_cast<std::int64_t>(root.current()->tempo->ticksToSeconds(tick) * mailbox.sampleRate());
+    };
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    geo.grid.snap = true;
+    const juce::Point<float> right{x(2 * bar) + 1.f, lane(1)}, left{x(bar / 2) + 1.f, lane(1)};
+    canvas.mouseDown(pressAt(canvas, right));
+    canvas.mouseDrag(dragAt(canvas, right, left));
+    canvas.mouseUp(dragAt(canvas, right, left));
+    check(geo.selection.start == 2 * bar && geo.selection.end == bar / 2 && geo.selection.insert == 2 * bar &&
+              geo.selection.clip == 0,
+          "SC-182: a backwards drag keeps the insert marker where the press began");
+    check(canvas.keyPressed(space), "SC-182: Space starts playback after a backwards drag");
+    mailbox.drain(driver);
+    check(driver.playing() && driver.position() == sampleAt(bar / 2) && geo.selection.insert == 2 * bar,
+          "SC-182: playback starts at the left edge without moving the insert marker");
+    stopPlayback();
+
+    const juce::Point<float> point{x(3 * bar) + 1.f, lane(1)};
+    canvas.mouseDown(pressAt(canvas, point));
+    canvas.mouseUp(pressAt(canvas, point));
+    check(geo.selection.start == geo.selection.end && geo.selection.insert == 3 * bar,
+          "SC-182 fixture places only the insert marker");
+    check(canvas.keyPressed(space), "SC-182: Space starts playback from an insert marker alone");
+    mailbox.drain(driver);
+    check(driver.playing() && driver.position() == sampleAt(3 * bar), "SC-182: point playback uses the marker");
 }
 void dragTimeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
