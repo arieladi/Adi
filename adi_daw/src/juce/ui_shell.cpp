@@ -1346,8 +1346,9 @@ bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, boo
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
 void AppCommands::activate(AdiRootComponent &root) {
+    if (active_ == &root)
+        return; // Rebuilding a native menu already queries this root's command state.
     active_ = &root;
-    // Re-read the command infos so the Edit menu names the step it would undo.
     manager.commandStatusChanged();
 }
 void AppCommands::detach(AdiRootComponent &root) {
@@ -3704,6 +3705,7 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
     arrangement.followPaused = true; // an edit pauses Follow (§6.2)
     if (afterEdit)
         afterEdit();
+    commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
     return true;
@@ -5612,6 +5614,7 @@ bool AdiRootComponent::restoreHistory(const std::function<History::Result()> &re
     arrangement.followPaused = true; // as an undo pauses it
     if (afterEdit)
         afterEdit();
+    commands_.manager.commandStatusChanged();
     error_.clear();
     dirty_.mark(DirtySet::All);
     return true;
@@ -6395,6 +6398,7 @@ bool AdiRootComponent::command(int id) {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
+        commands_.manager.commandStatusChanged();
         arrangement.followPaused = true;
         // Undo puts back what was selected before the undone step (ADR-0021).
         if (id == AppCommands::Undo && result.selBefore) {
@@ -6891,7 +6895,11 @@ const std::vector<MenuEntries> &menuBar() {
 } // namespace
 class ShellMenu final : public juce::MenuBarModel {
   public:
-    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
+    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {
+        // AppKit validates key equivalents against the menu's captured enabled flags.
+        // Undo can make Redo available before the user opens Edit again.
+        setApplicationCommandManagerToWatch(&commands.manager);
+    }
     juce::StringArray getMenuBarNames() override {
         juce::StringArray names;
         for (const auto &m : menuBar())
@@ -6935,6 +6943,12 @@ class ShellMenu final : public juce::MenuBarModel {
     }
 
   private:
+    void applicationCommandInvoked(const juce::ApplicationCommandTarget::InvocationInfo &info) override {
+        // Watching state must not make the menu bar flash on every application shortcut.
+        auto notification = info;
+        notification.commandFlags |= juce::ApplicationCommandInfo::dontTriggerVisualFeedback;
+        juce::MenuBarModel::applicationCommandInvoked(notification);
+    }
     AdiRootComponent &root;
     AppCommands &commands;
     std::vector<juce::File> recentItems_;

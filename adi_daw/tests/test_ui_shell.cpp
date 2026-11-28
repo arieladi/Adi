@@ -27693,6 +27693,73 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
     check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
           "with no overrides Undo has the key map's keys again");
 }
+void redoShortcut(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "redo-shortcut.adi", true, {}, error);
+    check(document != nullptr, "SC-449: create an undoable project");
+    if (!document)
+        return;
+    settings::AppSettings prefs(appdata::App::Daw, dir / "redo-shortcut.json");
+    AppCommands commands(prefs);
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                    document->views(), document->sessionState(), "redo-shortcut");
+    AdiWindow window(std::move(root), commands, false);
+    auto &editor = window.root();
+
+    const auto command = juce::ModifierKeys::commandModifier;
+    const juce::KeyPress undo('Z', command, 0);
+    const juce::KeyPress shiftedRedo('Z', command | juce::ModifierKeys::shiftModifier, 0);
+#if JUCE_MAC
+    const auto liveRedo = shiftedRedo;
+#else
+    const juce::KeyPress liveRedo('Y', command, 0);
+#endif
+    const auto *keys = commands.manager.getKeyMappings();
+    check(keys->findCommandForKeyPress(undo) == AppCommands::Undo &&
+              keys->findCommandForKeyPress(liveRedo) == AppCommands::Redo,
+          "SC-449: Live's native Undo and Redo defaults resolve on this platform");
+
+    struct MenuObserver final : juce::MenuBarModel::Listener {
+        void menuBarItemsChanged(juce::MenuBarModel *) override {}
+        void menuCommandInvoked(juce::MenuBarModel *, const juce::ApplicationCommandTarget::InvocationInfo &info) override {
+            lastCommand = info.commandID;
+            quiet = (info.commandFlags & juce::ApplicationCommandInfo::dontTriggerVisualFeedback) != 0;
+            ++invoked;
+        }
+        int lastCommand = 0, invoked = 0;
+        bool quiet = false;
+    } observer;
+    window.menu()->addListener(&observer);
+    const auto redoItem = [&window] {
+        auto edit = window.menu()->getMenuForIndex(window.menu()->getMenuBarNames().indexOf("Edit"), "Edit");
+        for (juce::PopupMenu::MenuItemIterator item(edit); item.next();)
+            if (item.getItem().itemID == AppCommands::Redo)
+                return std::pair{item.getItem().text, item.getItem().isEnabled};
+        return std::pair{juce::String{}, false};
+    };
+    const auto trackName = [&] { return document->view().current()->findTrack(4)->name; };
+    const auto original = trackName();
+    check(redoItem() == std::pair{juce::String("Nothing to Redo"), false},
+          "SC-449: Redo is disabled at the history head");
+    check(editor.submitEdit("track.rename", {{"id", 4}, {"name", "Redo fixture"}}, "Rename Track") &&
+              editor.keyPressed(undo) && trackName() == original &&
+              redoItem() == std::pair{juce::String("Redo Rename Track"), true},
+          "SC-449: the Undo chord exposes the undone step to the Edit menu");
+    check(observer.invoked == 1 && observer.lastCommand == AppCommands::Undo,
+          "SC-449: the menu model is subscribed to command notifications");
+    check(editor.keyPressed(liveRedo) && trackName() == "Redo fixture" &&
+              redoItem() == std::pair{juce::String("Nothing to Redo"), false},
+          "SC-449: the Live Redo chord reapplies the edit and exhausts Redo");
+    check(observer.invoked == 2 && observer.lastCommand == AppCommands::Redo && observer.quiet,
+          "SC-449: the menu model follows Redo without flashing menu headings");
+
+    check(prefs.set("shortcuts.preset", "cubase", {}, error), "SC-449: select the other default layout");
+    commands.reload();
+    check(editor.keyPressed(undo) && trackName() == original && editor.keyPressed(shiftedRedo) &&
+              trackName() == "Redo fixture",
+          "SC-449: the shifted-Z command reapplies the edit with this platform's modifiers");
+    window.menu()->removeListener(&observer);
+}
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -32227,6 +32294,7 @@ int main(int argc, char **argv) {
     trace("insertMarkerRevealsPosition", [&] { insertMarkerRevealsPosition(commands, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
+    trace("redoShortcut", [&] { redoShortcut(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
