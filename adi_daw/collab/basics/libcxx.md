@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 14:32 IST — seats/pitch-chain `bbb4fc4aa28a10f0ab81804322a4cd299723ec04`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 301 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+The exact `pitch_midi.cpp` and `media/clip_pitch_render.cpp` files passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers. The full Linux run passed `adi_pitch_midi_tests` and `adi_pitch_compare_tests`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 14:17 IST — seats/session-chain `249b98ca717e92208bdb4982412dd30d3b930511`
 
 Headless Debug compiled with Clang 20, libc++, Pd and the strict warning flags. The first full `ctest -LE performance` run had three failures while the root filesystem was below ADI's decode free-space floor. A full rerun with the same binaries and a RAM-backed test scratch directory passed all 303 suites, including Clip Playback, Warp Playback and AAC Import.
