@@ -28,17 +28,23 @@ The follow-ups are local while Linux builds and runtime checks proceed. The exac
 
 ## Build storage
 
-The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (5,980,749,824 bytes at the latest measurement). The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (2,821,914,624 bytes). Both are standalone. I copied and byte-verified this session's dedicated `%TEMP%\adi-routing-linux\build-application.qcow2` on D: and confirmed this session was its sole user before removing the C: original.
+The active Linux root image is `D:\adi-routing-vm\linux-stable.qcow2` (5,980,749,824 bytes at the latest measurement). The active build volume is `D:\adi-routing-vm\build-routing-verified.qcow2` (3,035,365,376 bytes). Both are standalone. I copied and byte-verified this session's dedicated `%TEMP%\adi-routing-linux\build-application.qcow2` on D: and confirmed this session was its sole user before removing the C: original.
 
 The C: bootstrap image `%TEMP%\adi-routing-linux\ubuntu.img` (243,335,168 bytes) is retained because exclusive use could not be established. The D: copy was verified. The checkout and guest build and cache are on D:. New host downloads and temporary staging use `D:\adi-routing-vm\runtime\downloads` and `D:\adi-routing-vm\runtime\tmp`.
 
 The inactive C: image `%TEMP%\adi-routing-linux\build.qcow2` (197,120 bytes) and original read-only seed `%TEMP%\adi-routing-linux\seed.iso` (55,296 bytes) were also retained.
 
-C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 08:03 local time showed **18,111,610,880 bytes free (16.87 GiB)**.
+C: had **15,574,282,240 bytes free (14.50 GiB)** at the post-move measurement. The latest check on 28 November at 08:20 local time showed **18,104,492,032 bytes free (16.86 GiB)**.
 
 ## For the director
 
 For the SC-261 Linux gate, I recommend running the unchanged window suites on native Linux. The guest measured a 779.89 ms browser search against the 40 ms SC-421 bound and a 752.30 ms owner turn against the SC-415 relative bound. Isolated reruns with the same executables again failed both bounds. The browser median was 184.69 ms for the common prefix, and the slow-open fixture measured a 1,254.23 ms owner turn. Both fixtures and their feature paths match main. The upstream source equivalent to this item's base passed these suites in the [main Linux UI job](https://github.com/arieladi/Adi/actions/runs/46020442251/job/140578472188). The measurements above are from the item head in this session's guest.
+
+For SC-261, decide what plays when the saved physical Main pair is unavailable. The draft falls back to the first complete stereo pair. I recommend retaining the saved selection, keeping any surviving member on its own physical output, and keeping Main silent when both members disappear. An automatic fallback could send audio to an unexpected physical output. SC-431 sets Cue behavior. Win's parked review has a Main fixture for the silent case and the surviving left output. [Parked review](https://github.com/arieladi/Adi/commit/b33d59e000ae763769bbbd5b5b60989b63621789)
+
+For SC-253, I recommend disabling Show Take Lanes when the track has no takes and letting Insert Take Lane open the first lane. I also recommend matching Live's documented behavior of exiting Automation Mode when showing or inserting takes. The draft currently keeps automation lanes and takes visible together. Win's parked review covers the empty-track shortcut and menu. [Live take-lane controls](https://www.ableton.com/en/live-manual/12/comping/#inserting-and-managing-take-lanes)
+
+The parked review also identifies checked iterators in the Cue and live MIDI callbacks and a recording-owner lock that can obstruct take discard on Windows filesystems. These are Windows Debug and recorder follow-ups. They have no new local runtime result.
 
 SC-404 landed with the port and channel in the existing `routing.channel_map` CBOR map. The earlier dedicated table was staged for schema 1.28 in #823. Follow-up work should build on the routing row now used by saved projects.
 
