@@ -85,7 +85,10 @@ public:
         context.jobs = &jobs;
         context.agentWrites = &agentWrites;
         context.askConsent = [this](ConsentRequest question) { ask(std::move(question)); };
-        context.browserCatalogue = [this] { return catalogue.load(); };
+        context.browserCatalogue = [this] {
+            std::lock_guard lock(catalogueMutex);
+            return catalogue;
+        };
         publishCatalogue();
         registerControlMethods(service, context);
     }
@@ -96,7 +99,11 @@ public:
     }
 
     void publishCatalogue() {
-        catalogue.store(std::make_shared<const BrowserCatalogue>(plugins, presets));
+        auto next = std::make_shared<const BrowserCatalogue>(plugins, presets);
+        {
+            std::lock_guard lock(catalogueMutex);
+            catalogue.swap(next);
+        }
     }
 
     Outcome agentTool(const Principal& who, std::string_view method, const Json& args,
@@ -289,7 +296,9 @@ public:
     ui::PluginListing plugins;
     std::optional<std::uint64_t> pluginRevision;
     std::vector<preset::Entry> presets;
-    std::atomic<std::shared_ptr<const BrowserCatalogue>> catalogue;
+    // The owner publishes immutable snapshots for control workers to read.
+    std::mutex catalogueMutex;
+    std::shared_ptr<const BrowserCatalogue> catalogue;
     ControlContext context;
     AgentRuntime agent;
     McpEndpoint mcp;
