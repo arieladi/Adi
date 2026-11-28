@@ -753,7 +753,7 @@ private:
         [[nodiscard]] std::uint64_t restoredTimedGeneration() const noexcept override { return timedCutRollbackGeneration; }
         [[nodiscard]] std::int64_t timedAdoptionSample() const noexcept override { return timedCutSample; }
         [[nodiscard]] bool mayPublishTimedAdoption() const noexcept override;
-        [[nodiscard]] bool exactTimedCutClock(std::int64_t tick, std::int64_t sample) const noexcept;
+        [[nodiscard]] bool mapsTimedCut(std::int64_t tick, std::int64_t sample) const noexcept;
         [[nodiscard]] bool readyForTimedCut(const TimingView&) const noexcept;
         void collectRetiredSources() const noexcept override;
         [[nodiscard]] bool samePausedTempo(const TimingView&) const noexcept;

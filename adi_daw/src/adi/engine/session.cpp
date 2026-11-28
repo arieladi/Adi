@@ -1140,8 +1140,8 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             });
         timedRaw = pinnedLegato && canPrepareTimedRawScene(timing,model) &&
             preparedScene_->signatureNumerator == 0 && adoptedCompatible &&
-            adopted->exactTimedCutClock(preparedScene_->tick,clockSample) &&
-            timing.exactTimedCutClock(preparedScene_->tick,clockSample) &&
+            adopted->mapsTimedCut(preparedScene_->tick,clockSample) &&
+            timing.mapsTimedCut(preparedScene_->tick,clockSample) &&
             timedRawScene(*beforeClock,preparedScene_->scene);
         if (timedRaw) timedRawPreviousGeneration = adopted->gestureGeneration;
         // The driver may replace its outgoing run before the scene bar.
@@ -2896,7 +2896,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
             audible->sampleRate == timing->sampleRate && audible->spec.channels == timing->spec.channels &&
             audible->spec.maxFrames == timing->spec.maxFrames &&
             audible->launchAudio->incarnation() == timing->launchAudio->incarnation() &&
-            audible->tempo.events == timing->tempo.events && audible->exactTimedCutClock(tick,sample) &&
+            audible->tempo.events == timing->tempo.events && audible->mapsTimedCut(tick,sample) &&
             sameStoredLaunchSources(*audible->launchSource,*timing->launchSource) &&
             timedRawScene(*audible->launchAudio->mediaAt(sample - 1),scene))
             outgoing = audible;
@@ -2912,7 +2912,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
             } else {
                 const auto view = before->view();
                 const auto timedRaw = !signature && canPrepareTimedRawScene(*timing,model_) &&
-                    timing->exactTimedCutClock(tick,sample) && timedRawScene(*before,scene);
+                    timing->mapsTimedCut(tick,sample) && timedRawScene(*before,scene);
                 const auto continuesWarp = [&](std::int64_t id) {
                     const auto* source = before->clip(id);
                     if (!source || !source->followsTempo()) return false;
@@ -3564,7 +3564,11 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     info.playing = transport.playing();
     info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
-    const auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
+    auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
+    // The new timed Scene owns the rounded cut sample, even when its
+    // continuous musical boundary falls a fraction of a frame later.
+    if (preparedScene && timedCutSample > 0 && info.timelineSample == timedCutSample)
+        ticks = std::max(ticks,preparedScene->tick);
     info.bpm = tempoClock.bpmAt(ticks);
     constexpr auto ppq = textproj::kPPQ; // SPEC 4.2; exact as Pd float
     constexpr auto whole = textproj::kWhole;
@@ -3760,9 +3764,8 @@ bool Session::TimingView::mayPublishTimedAdoption() const noexcept {
     return driver && preparedScene && preparedScene->token > driver->performedSceneToken();
 }
 
-bool Session::TimingView::exactTimedCutClock(std::int64_t tick, std::int64_t sample) const noexcept {
-    return tick > 0 && sample > 0 && sampleForTick(tick) == sample &&
-        tempo.secondsToTicks(static_cast<double>(sample) / sampleRate) == tick;
+bool Session::TimingView::mapsTimedCut(std::int64_t tick, std::int64_t sample) const noexcept {
+    return tick > 0 && sample > 0 && sampleForTick(tick) == sample;
 }
 
 bool Session::TimingView::readyForTimedCut(const TimingView& previous) const noexcept {

@@ -74,27 +74,35 @@ float signal(std::size_t clip, std::int64_t frame) {
     return levels[clip] + (static_cast<float>(static_cast<std::size_t>(frame) % periods[clip]) - 128.f) / 8192.f;
 }
 
-void persistSlot(Store& store, const std::filesystem::path& directory, std::size_t index) {
+float rightSignal(std::size_t clip, std::int64_t frame) {
+    return -0.5f * signal(clip,frame) + 0.03125f;
+}
+
+void persistSlot(Store& store, const std::filesystem::path& directory, std::size_t index, bool stereo) {
     const auto id = clips[index];
     const bool legato = index >= 2;
     const auto track = static_cast<std::int64_t>(index % 2 + 1);
     const std::int64_t startNs = starts[index] * 1'000'000'000 / rate;
     const auto name = std::to_string(id) + ".wav";
     const auto path = directory / name;
-    std::vector<float> source(mediaFrames);
-    for (std::size_t frame = 0; frame < source.size(); ++frame)
-        source[frame] = signal(index,static_cast<std::int64_t>(frame));
+    const std::uint16_t channels = stereo ? 2 : 1;
+    std::vector<float> source(mediaFrames * channels);
+    for (std::size_t frame = 0; frame < mediaFrames; ++frame) {
+        source[frame * channels] = signal(index,static_cast<std::int64_t>(frame));
+        if (stereo) source[frame * channels + 1] = rightSignal(index,static_cast<std::int64_t>(frame));
+    }
     {
-        audio::WavWriter file(path,rate,1,audio::WavFormat::Float32);
-        file.write(source.data(),static_cast<std::uint32_t>(source.size()));
+        audio::WavWriter file(path,rate,channels,audio::WavFormat::Float32);
+        file.write(source.data(),static_cast<std::uint32_t>(mediaFrames));
         file.close();
     }
     const auto digest = media::blake3File(path);
     require(static_cast<bool>(digest),"hash the raw Session source");
     auto& db = store.db();
     SQLite::Statement media(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames)"
-                               " VALUES(?,?,?,'wav',48000,1,240000)");
-    media.bind(1,id); media.bind(2,digest.hex); media.bind(3,name); media.exec();
+                               " VALUES(?,?,?,'wav',48000,?,240000)");
+    media.bind(1,id); media.bind(2,digest.hex); media.bind(3,name);
+    media.bind(4,static_cast<int>(channels)); media.exec();
     SQLite::Statement where(db,"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled)"
                                " VALUES(?,?,'audio',1,0,?,0)");
     where.bind(1,id); where.bind(2,track); where.bind(3,durationNs); where.exec();
@@ -111,7 +119,7 @@ void persistSlot(Store& store, const std::filesystem::path& directory, std::size
     launch.bind(4,legato ? 8 : 1); launch.exec();
 }
 
-std::unique_ptr<Store> persistedProject(const test::TempDirectory& folder, Clock clock) {
+std::unique_ptr<Store> persistedProject(const test::TempDirectory& folder, Clock clock, bool stereo = false) {
     StoreError error{};
     const auto project = folder.path() / "song.adi";
     auto store = Store::createEmpty(project,error);
@@ -128,7 +136,7 @@ std::unique_ptr<Store> persistedProject(const test::TempDirectory& folder, Clock
         tempo.bind(1,clock.before); tempo.exec();
     }
     for (std::size_t index = 0; index < clips.size(); ++index)
-        persistSlot(*store,folder.path(),index);
+        persistSlot(*store,folder.path(),index,stereo);
     store.reset();
     store = Store::open(project,error);
     require(static_cast<bool>(store),"reopen the saved Session scenes and sources");
@@ -154,6 +162,7 @@ struct Playback {
     Session& session;
     std::span<float> pcm;
     Clock clock;
+    std::span<float> rightPcm{};
     std::array<LaunchTransition,8> transitions{};
     std::array<LaunchSceneTransition,4> scenes{};
     std::size_t transitionCount = 0, sceneCount = 0;
@@ -202,6 +211,7 @@ struct Playback {
             if (first <= clock.cut && first + frames > clock.cut)
                 crossed = first == clock.crossingStart() && frames == blockFrames;
             std::copy_n(left.begin(),frames,pcm.begin()+first);
+            if (!rightPcm.empty()) std::copy_n(right.begin(),frames,rightPcm.begin()+first);
             first += frames;
             if (first >= clock.prepareAt()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -293,17 +303,37 @@ void exerciseTicketBeforeReceipt() {
     std::printf("Native ticket fence: commit selected, cancel and both publications refused before receipt, one-shot reuse admitted\n");
 }
 
+void checkRoundedCallbackClock(Session& session, const Clock& clock, double expected) {
+    // Probe the same selected graph's native callback metadata, in a separate
+    // driver handle at the exact cut sample. This leaves the persisted raw
+    // graph free of test source nodes and avoids calling beginBlock twice in
+    // the Scene's rendering slice.
+    session.transport().locate(clock.cut);
+    const auto block = session.beginRender();
+    const auto* state = session.graph().renderedTransportState();
+    require(state != nullptr,"pin the real Session transport state at the rounded cut");
+    const auto* info = state->beginBlock();
+    const auto device = info->devicePosition(info->deviceClockContext,clock.cut);
+    std::printf("Rounded callback metadata at %lld: BPM %.0f, device BPM %.0f, expected %.0f\n",
+                static_cast<long long>(clock.cut),info->bpm,device.bpm,expected);
+    require(info->timelineSample == clock.cut && info->bpm == expected && device.bpm == expected,
+            "callback and device clocks agree on the actual rounded cut sample");
+}
+
 void exercise(std::string_view mode) {
     const auto initialAllocations = test::sceneClockCallbackAllocations();
     const auto initialFileIo = audio::callbackFileIo.load();
     const bool structural = mode == "structural";
     const bool reuse = mode == "reuse";
-    const bool warm = mode != "cold" && !structural;
+    const bool roundedUp = mode == "round-up" || mode == "cold-up";
+    const bool roundedDown = mode == "round-down" || mode == "cold-down";
+    const bool fractional = roundedUp || roundedDown;
+    const bool warm = mode != "cold" && mode != "cold-up" && mode != "cold-down" && !structural;
     const bool alternate = mode == "alternate";
-    const bool fractional = mode == "fractional";
-    const bool opening = mode == "opening";
+    const bool opening = mode == "opening" || roundedDown;
     const bool fadedTarget = mode == "fade";
-    auto clock = alternate ? Clock{115200,100,160} : fractional ? Clock{90709,127,143} : Clock{};
+    auto clock = alternate ? Clock{115200,100,160} : roundedUp ? Clock{90709,127,143} :
+        roundedDown ? Clock{89302,129,143} : Clock{};
     clock.opensAtCut = opening;
     const auto cut = clock.cut;
     const auto prepareAt = clock.prepareAt();
@@ -315,7 +345,7 @@ void exercise(std::string_view mode) {
     const auto b = warm ? bWarm : bCold;
     const auto renderEnd = warm ? cut + 3 * blockFrames : cut + rate/2;
     test::TempDirectory folder{"physical_legato_tempo_cut",warm ? "warm" : "cold"};
-    auto store = persistedProject(folder,clock);
+    auto store = persistedProject(folder,clock,fractional);
     if (fadedTarget) store->db().exec("UPDATE clip_launch SET clip_fade=1 WHERE clip_id=202");
     Session session;
     session.graph().setFadeFrames(0);
@@ -331,9 +361,11 @@ void exercise(std::string_view mode) {
     }
     session.transport().play();
     constexpr std::int64_t secondCut = 192000, secondEnd = secondCut + 3 * blockFrames;
-    const auto capacity = structural ? secondEnd : renderEnd + (reuse ? blockFrames : 0);
+    const bool reuseRounded = fractional && warm;
+    const auto capacity = structural ? secondEnd : renderEnd + (reuse || reuseRounded ? blockFrames : 0);
     std::vector<float> pcm(static_cast<std::size_t>(capacity));
-    Playback playback{session,pcm,clock};
+    std::vector<float> rightPcm(fractional ? static_cast<std::size_t>(capacity) : 0);
+    Playback playback{session,pcm,clock,rightPcm};
     playback.through(std::min(a,b));
     startSource(*store,session,warm ? 0u : 1u);
     playback.through(std::max(a,b));
@@ -347,9 +379,10 @@ void exercise(std::string_view mode) {
 
     {
         const auto projected = session.beginRender();
+        const auto inverse = projected.tickAtSample(cut);
         require(projected.sampleAtTick(bar) == cut &&
-                (projected.tickAtSample(cut) == bar) == !fractional,
-                "the selected fixture has the intended integer inverse at its canonical bar sample");
+                (roundedUp ? inverse > bar : roundedDown ? inverse < bar : inverse == bar),
+                "the selected fixture has the intended inverse rounding at its canonical bar sample");
     }
     const bool staged = session.prepareSceneLaunch(*store,20,bar);
     const auto stageError = session.error();
@@ -377,7 +410,7 @@ void exercise(std::string_view mode) {
         stop.payload = {{"track",2},{"incarnation",session.launchIncarnation()}};
         require(OpJournal(*store).commit(stop).ok,"queue a real StopTrack onto the old clock's Bar grid");
     }
-    const bool commits = mode == "warm" || alternate || reuse || opening;
+    const bool commits = mode == "warm" || alternate || reuse || mode == "opening" || reuseRounded;
     if (staged && supersede) {
         playback.through(clock.crossingStart());
         std::binary_semaphore pinned(0), released(0);
@@ -453,6 +486,13 @@ void exercise(std::string_view mode) {
         const auto right = frame >= b && (!competingStop || frame < cut) ? signal(commits && frame >= cut ? 3u : 1u,
             frame - b + starts[commits && frame >= cut ? 3u : 1u]) : 0.0f;
         if (pcm[static_cast<std::size_t>(frame)] != left + right) { mismatch = frame; break; }
+        if (fractional) {
+            const auto clipA = commits && frame >= cut ? 2u : 0u;
+            const auto clipB = clipA + 1;
+            const auto expectedA = frame >= a ? rightSignal(clipA,frame - a + starts[clipA]) : 0.0f;
+            const auto expectedB = frame >= b ? rightSignal(clipB,frame - b + starts[clipB]) : 0.0f;
+            if (rightPcm[static_cast<std::size_t>(frame)] != expectedA + expectedB) { mismatch = frame; break; }
+        }
     }
     std::printf("Persisted tempo cut %s: staged %d, %zu slot edges, %zu scene receipts, BPM %.0f,"
                 " expected cues %lld/%lld, first PCM mismatch %lld, allocs %u, file I/O %u\n",
@@ -463,7 +503,7 @@ void exercise(std::string_view mode) {
     if (!staged) std::printf("Owner admission: %s\n",stageError.c_str());
     require(playback.crossed && playback.openCrossingBpm == clock.before,
             "a complete callback starts on the old clock and includes the exact Scene boundary");
-    require(staged == (!fractional && !fadedTarget),"stage aligned raw targets only when the timed scope admits them");
+    require(staged == !fadedTarget,"stage raw targets only when the timed scope admits them");
     if (commits) {
         require(playback.transitionCount == 4 && playback.transitions[2].track == 1 &&
                 playback.transitions[3].track == 2 && playback.transitions[2].newClip == clips[2] &&
@@ -472,7 +512,8 @@ void exercise(std::string_view mode) {
                 state[0].run != old[0].run && state[1].run != old[1].run,
                 "both inherited clips start in order on the same exact sample");
         require(playback.sceneCount == 1 && playback.scenes[0].scene == 20 &&
-                playback.scenes[0].sample == cut && playback.scenes[0].tempoBpm == clock.after && bpm == clock.after,
+                playback.scenes[0].sample == cut && playback.scenes[0].tick == bar &&
+                playback.scenes[0].tempoBpm == clock.after && bpm == clock.after,
                 "the Scene receipt, clock and two clip starts share the boundary");
     } else if (competingStop) {
         const auto& edge = playback.transitions[2];
@@ -539,6 +580,19 @@ void exercise(std::string_view mode) {
             require(pcm[static_cast<std::size_t>(sample)] == expected,"post-receipt rebuild keeps exact PCM continuity");
         }
         std::printf("Receipt fence: refresh and device rebuild held through the suffix, completed timing rebuilt once at 140 BPM\n");
+    } else if (reuseRounded) {
+        require(session.devices().rebuildNow(),"the rounded cut's completed timing can publish as an ordinary rebuild");
+        playback.through(capacity);
+        require(playback.sceneCount == 1 && playback.transitionCount == 4,
+                "the rounded cut retains its one-shot receipt after a DeviceHost rebuild");
+        for (auto sample = renderEnd; sample < capacity; ++sample) {
+            const auto at = static_cast<std::size_t>(sample);
+            const auto frameA = sample - a + starts[2];
+            const auto frameB = sample - b + starts[3];
+            require(pcm[at] == signal(2,frameA) + signal(3,frameB) &&
+                    rightPcm[at] == rightSignal(2,frameA) + rightSignal(3,frameB),
+                    "the rounded cut keeps exact stereo PCM across its one-shot rebuild");
+        }
     } else if (!commits) {
         require(session.refresh(*store),"ordinary owner refresh reconciles a failed or superseded cut");
         require(session.setExternalTempoAt(*store,125,6 * textproj::kPPQ),
@@ -550,6 +604,7 @@ void exercise(std::string_view mode) {
                 "a new publication has the original prefix and its own tempo boundary");
     }
     require(mismatch == -1,"both source phases match the exact raw PCM across the boundary");
+    if (fractional) checkRoundedCallbackClock(session,clock,commits ? clock.after : clock.before);
     require(store->db().execAndGet("SELECT bpm FROM tempo_map WHERE pos_ticks=0").getDouble() == clock.before &&
             session.problems().empty() && test::sceneClockCallbackAllocations() == initialAllocations &&
             audio::callbackFileIo.load() == initialFileIo,
@@ -658,7 +713,8 @@ void exerciseExpiredRenderHandle() {
 
 namespace adi::test {
 void runTimedRawSceneTests() {
-    for (const auto mode : {"warm","opening","cold","stop","cancel","supersede","locate","alternate","fractional","fade","structural","reuse"})
+    for (const auto mode : {"warm","opening","cold","stop","cancel","supersede","locate","alternate",
+                            "round-up","round-down","cold-up","cold-down","fade","structural","reuse"})
         exercise(mode);
     exerciseTicketBeforeReceipt();
     exerciseIdleSavedStart();

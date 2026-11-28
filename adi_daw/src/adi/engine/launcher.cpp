@@ -1131,7 +1131,7 @@ std::optional<std::size_t> Launcher::planTimedSceneStarts(const LaunchBlock& blo
     if (!timedPrefix_ || !block.sampleAtTick || timedPrefix_->sample != block.sample ||
         timedPrefix_->incarnation != block.incarnation || timedPrefix_->followPass != block.followPass ||
         timedPrefix_->token != scene.token || scene.token <= lastPreparedScene_ ||
-        block.sampleAtTick(block.clock,scene.tick) != block.sample || scene.tick != nextTick_ ||
+        block.sampleAtTick(block.clock,scene.tick) != block.sample ||
         !std::isfinite(scene.velocity) || candidate.tracks.size() != trackCount_ || result.size() < trackCount_ ||
         !std::binary_search(candidate.scenes.begin(),candidate.scenes.end(),scene.scene)) return {};
 
