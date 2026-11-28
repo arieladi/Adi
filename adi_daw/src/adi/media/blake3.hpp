@@ -18,4 +18,10 @@ struct HashResult {
 [[nodiscard]] HashResult blake3Bytes(std::span<const std::byte> bytes) noexcept;
 [[nodiscard]] HashResult blake3File(const std::filesystem::path& path) noexcept;
 [[nodiscard]] HashResult blake3File(const std::filesystem::path& path, std::stop_token stop) noexcept;
+
+namespace detail {
+// The reader returns the byte count, zero at EOF, or a negative value on failure.
+using DigestRead = std::ptrdiff_t (*)(void*, std::span<char>);
+[[nodiscard]] HashResult blake3Read(void* context, DigestRead, std::stop_token) noexcept;
+} // namespace detail
 } // namespace adi::media

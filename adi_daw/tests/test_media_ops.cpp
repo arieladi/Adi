@@ -2,6 +2,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/peaks.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/history.hpp"
 #include "adi/digest.hpp"
@@ -478,8 +479,12 @@ void warmRelocatedWarpRefresh() {
         std::printf("\n");
         check(session.stats().rebuilds == rebuilds + 1, "the warm refresh rebuilds the playback graph");
 #if defined(__linux__)
-        check(before && after && *after >= *before && *after - *before < 1024U * 1024U,
-              "warm relocated Warp rebuild reads less than 1 MiB on the owner");
+        // Other volumes may supply too little native revision data to cache.
+        // The PCM and candidate-selection checks still cover those volumes.
+        if (before && after && media::blake3FileWithRevision(sample, {}).revision &&
+            media::blake3FileWithRevision(preferred, {}).revision)
+            check(*after >= *before && *after - *before < 1024U * 1024U,
+                  "warm relocated Warp rebuild reads less than 1 MiB on the owner");
 #endif
         check(plays(session, sample), "warm relocated Warp rebuild preserves the verified source and PCM");
         setFinalSample(0.25f);

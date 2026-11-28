@@ -200,21 +200,19 @@ class PlaybackDigests {
                 return {found->second.hash};
             }
         }
-        auto digest = blake3File(path, stop);
-        if (!digest)
-            return digest;
-        if (readFileRevision(path, error) != revision)
-            return {{}, HashError::read};
+        auto verified = blake3FileWithRevision(path, stop);
+        if (!verified.revision)
+            return std::move(verified.hash);
 
         const std::lock_guard lock(mutex_);
-        entries_.insert_or_assign(path, Entry{*revision, digest.hex, ++use_});
+        entries_.insert_or_assign(path, Entry{*verified.revision, verified.hash.hex, ++use_});
         if (entries_.size() > capacity) {
             const auto oldest = std::min_element(entries_.begin(), entries_.end(), [](const auto& a, const auto& b) {
                 return a.second.lastUse < b.second.lastUse;
             });
             entries_.erase(oldest);
         }
-        return digest;
+        return std::move(verified.hash);
     }
 
   private:
