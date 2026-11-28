@@ -2,9 +2,11 @@
 #include "temp_directory.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_clipboard.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/digest.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/history.hpp"
+#include "adi/render/queue.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -611,6 +613,95 @@ void takeLaneEdits() {
           "Delete removes the selected take only, even with an overlapping clip in the same lane");
     check(History(store).undo().ok && typedRows(store)==beforeDelete,"one Undo restores exactly the removed take");
 }
+void compTakeAudio() {
+    Project project;
+    auto& store = *project.store;
+    using audio::WavFormat;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(29,'master','Master');"
+            "INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,21,'take');"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain) VALUES(91,'track',21,'pan','real');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES"
+            "(101,'main','main.wav','wav'),(102,'first','first.wav','wav'),(103,'second','second.wav','wav')");
+    constexpr std::int64_t ms = 1000000;
+    constexpr std::size_t frames = 576;
+    std::array<std::vector<float>, 3> pcm{
+        std::vector<float>(frames * 2), std::vector<float>(frames * 2), std::vector<float>(frames * 2)};
+    const std::array names{"main.wav", "first.wav", "second.wav"};
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        for (std::size_t k = 0; k < pcm[i].size(); ++k) {
+            const auto code = static_cast<int>(i) * 37 - 20 + static_cast<int>(k % 31);
+            pcm[i][k] = static_cast<float>(code) / 128.0f;
+        }
+        audio::WavWriter writer(project.temporary.path() / names[i], 48000, 2, WavFormat::Float32);
+        writer.write(pcm[i].data(), static_cast<std::uint32_t>(frames));
+        writer.close();
+        addClip(store, 7 + static_cast<std::int64_t>(i), 21, 1, 0, 12 * ms, "audio");
+    }
+    db.exec("UPDATE clips SET lane_id=301, name='Take one' WHERE id=8;"
+            "UPDATE clips SET lane_id=302, name='Take two' WHERE id=9;"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES"
+            "(7,101,0,576),(8,102,0,576),(9,103,0,576);");
+    const auto initial = typedRows(store);
+    const auto lanes = tableRows(store, "clips", "WHERE lane_id IS NOT NULL");
+    const auto automation = tableRows(store, "automation_lanes");
+    const auto hear = [&](const char* name) {
+        render::Job job;
+        job.project = store.path();
+        job.directory = project.temporary.path();
+        job.nameTemplate = name;
+        job.endSample = static_cast<std::int64_t>(frames);
+        job.session = {2, 48000, 64};
+        job.source.trackId = 21;
+        job.encoding.format = WavFormat::Float32;
+        const auto result = render::renderWav(job, {});
+        check(result.state == render::JobState::Completed,
+              result.error.empty() ? "take comp render completes" : result.error.c_str());
+        if (result.state != render::JobState::Completed) return std::vector<float>{};
+        audio::WavReader wav(result.output);
+        std::vector<float> output(frames * 2);
+        if (wav.read(output.data(), static_cast<std::uint32_t>(frames)) != frames) output.clear();
+        return output;
+    };
+    check(hear("before") == pcm[0], "uncomped playback renders the main lane only");
+    const EditScope first{PlacementClock::Nanoseconds, {{21, {}}, {21, 301}}, {2 * ms, 6 * ms}, Domains::Clips};
+    const EditScope second{PlacementClock::Nanoseconds, {{21, {}}, {21, 302}}, {6 * ms, 9 * ms}, Domains::Clips};
+    const auto firstComp = prepareCompTake(store, first, 8, {});
+    check(firstComp.ok && firstComp.requests.size() == 1 &&
+          firstComp.requests.front().opType == "arranger.splice" && commit(store, firstComp),
+          "one guarded splice copies the take and splits the destination");
+    const auto afterFirst = typedRows(store);
+    const auto secondComp = prepareCompTake(store, second, 9, {});
+    check(secondComp.ok && secondComp.requests.size() == 1 && commit(store, secondComp),
+          "comping a second take applies a distinct single step");
+    check(tableRows(store, "clips", "WHERE lane_id IS NOT NULL") == lanes &&
+          tableRows(store, "automation_lanes") == automation &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE lane_id IS NULL AND name IN ('Take one','Take two')").getInt() == 2,
+          "main copies keep take names and leave source takes and automation intact");
+
+    auto reference = pcm[0];
+    const auto overlay = [&](std::size_t lane, std::size_t from, std::size_t to) {
+        std::copy(pcm[lane].begin() + static_cast<std::ptrdiff_t>(2 * from),
+                  pcm[lane].begin() + static_cast<std::ptrdiff_t>(2 * to),
+                  reference.begin() + static_cast<std::ptrdiff_t>(2 * from));
+    };
+    overlay(1, 96, 288);
+    overlay(2, 288, 432);
+    check(hear("unfaded-comp") == reference, "unfaded comp PCM nulls sample-for-sample against the two takes");
+    const auto both = typedRows(store);
+    check(History(store).undo().ok && typedRows(store) == afterFirst, "one Undo removes only the second comp");
+    check(History(store).undo().ok && typedRows(store) == initial, "one Undo restores the pre-comp main clip");
+    check(History(store).redo().ok && History(store).redo().ok && typedRows(store) == both &&
+          hear("redone-comp") == reference, "redo restores identical regions, source offsets and PCM");
+
+    auto tooWide = second;
+    tooWide.bounds.end = 13 * ms;
+    const ReadGuard stable(store);
+    check(!prepareCompTake(store, tooWide, 9, {}).ok && !prepareCompTake(store, second, 8, {}).ok &&
+          !prepareCompTake(store, second, 7, {}).ok && stable.unchanged(store),
+          "an uncovered range, wrong take lane and main input refuse without writes");
+}
+
 void roundedPhysicalBoundaries() {
     Project p;auto& store=*p.store;addClip(store,7,21,1,0,900);addClip(store,8,22,0,100,10);
     const ReadGuard before(store);const auto edit=move(store,scope(0,1000),{{8,{21,{}},{0,10}}});
@@ -1248,7 +1339,7 @@ void seededTransactions() {
 
 int main() {
     try {
-        clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();roundedPhysicalBoundaries();
+        clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();compTakeAudio();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
         explicitEnvelopeRanges();irrelevantRowsAndAliasDeletion();placementAdapters();sparseClipClipboard();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}

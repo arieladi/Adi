@@ -475,6 +475,56 @@ clip_edit::PreparedEdit prepareDelete(Store& store,std::span<const std::int64_t>
         return prepareDelete(store,scope,clips,options);
     } catch(const std::exception& error) {clip_edit::PreparedEdit result;result.error=error.what();return result;}
 }
+clip_edit::PreparedEdit prepareCompTake(Store& store, const EditScope& scope,
+                                        std::int64_t takeClip, const Options& options) {
+    try {
+        Read read(store.db());
+        if (scope.domains != Domains::Clips)
+            throw std::runtime_error("comp scope can change only clips");
+        auto compOptions = options;
+        compOptions.policy.automationFollowsClips = false;
+        validateScope(store, scope, compOptions);
+        const auto base = clockBase(scope.clock);
+        edit::TimeMap time(store.db());
+        OpContext context{store, store.db()};
+        auto image = clip_edit::captureDeleted(context, takeClip);
+        const auto source = laneOf(image);
+        const PlacementLane main{source.track, std::nullopt};
+        if (!source.lane || scope.targets.size() != 2 ||
+            std::find(scope.targets.begin(), scope.targets.end(), source) == scope.targets.end() ||
+            std::find(scope.targets.begin(), scope.targets.end(), main) == scope.targets.end())
+            throw std::runtime_error("comp requires the owning take and main lane of one track");
+        const auto& row = image.at("row");
+        if ((row.at("kind") != "audio" && row.at("kind") != "midi") || !row.at("alias_of").is_null())
+            throw std::runtime_error("comp requires an ordinary audio or MIDI take");
+        const PlacementSpan selection{convert(scope.bounds.begin, base, 1, time),
+                                      convert(scope.bounds.end, base, 1, time)};
+        const auto physical = interval(image, 1, time);
+        if (selection.begin < physical.begin || selection.end > physical.end || selection.begin >= selection.end)
+            throw std::runtime_error("comp range must be fully covered by this take");
+
+        const auto native = nativeSpan(image);
+        const auto begin = nativeBase(image) == 1 ? selection.begin :
+            directedTick(selection.begin, native, true, time);
+        const auto end = nativeBase(image) == 1 ? selection.end :
+            directedTick(selection.end, native, false, time);
+        detail::freezeImage(store, image, time, options.referenceRate);
+        detail::trimFrozenImage(image, begin, end, time, options.referenceRate);
+        if (interval(image, 1, time) != selection)
+            throw std::runtime_error("comp range must align to the take's native clock");
+
+        clip_edit::CopyIds ids(store.db());
+        auto copy = clip_edit::cloneImage(image, ids.next("clips"), ids);
+        copy["row"]["lane_id"] = nullptr;
+        detail::PlacementBatch batch;
+        batch.incoming.push_back(std::move(copy));
+        return detail::prepareCaptured(store, scope, std::move(batch), compOptions, ids, "Comp Take");
+    } catch (const std::exception& error) {
+        clip_edit::PreparedEdit result;
+        result.error = error.what();
+        return result;
+    }
+}
 
 Description describe(const clip_edit::PreparedEdit& prepared) {
     Description result;
