@@ -22694,6 +22694,39 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseUp(dragAt(canvas, addAt, finishAt));
     check(laneOf().lane == nullptr, "a cancelled draft adds no breakpoint");
     root.frame();
+    const auto cancelsAddDrag = [&](auto cancel, const char *reason) {
+        const auto before = OpJournal(document->store()).headSeq();
+        canvas.mouseDown(pressAt(canvas, addAt));
+        canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+        check(canvas.automationValueReadout().isNotEmpty(), "a held breakpoint draft shows its value");
+        cancel();
+        check(canvas.automationValueReadout().isEmpty(), "cancelling the breakpoint draft clears its value");
+        canvas.mouseUp(dragAt(canvas, addAt, finishAt));
+        root.frame();
+        check(laneOf().lane == nullptr && OpJournal(document->store()).headSeq() == before, reason);
+    };
+    cancelsAddDrag([&] {
+        root.setAutomationMode(false);
+        root.setAutomationMode(true);
+    }, "SC-344: turning Automation Mode off and back on cancels the held draft");
+    cancelsAddDrag([&] {
+        root.clipView.notes.setDrawMode(true);
+        root.clipView.notes.setDrawMode(false);
+    }, "SC-344: turning Draw Mode on and back off cancels the held draft");
+    const auto activator = activatorTarget(4);
+    cancelsAddDrag([&] {
+        root.showAutomation(4, activator);
+        root.showAutomation(4, volumeTarget(4));
+    }, "SC-344: changing the automation target and returning to Volume cancels the held draft");
+    cancelsAddDrag([&] { canvas.focusLost(juce::Component::focusChangedDirectly); },
+                   "SC-344: losing focus cancels the held draft");
+    cancelsAddDrag([&] {
+        auto &hidden = root.arrangement.geometry.hidden;
+        const auto previous = hidden;
+        hidden = {4};
+        canvas.mouseDrag(dragAt(canvas, addAt, finishAt));
+        hidden = previous;
+    }, "SC-344: a draft cannot resume after a drag sees its target hidden");
     // Off the line a double-click adds a breakpoint where it is (manual 25.5.2): at the foot, silence.
     canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
@@ -22703,7 +22736,6 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
               std::abs(laneOf().data->points[0].value + 150.) < 1e-9,
           "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
-    const auto activator = activatorTarget(4);
     const auto choices = root.automationChoices(4);
     check(std::find(choices.begin(), choices.end(), activator) != choices.end(),
           "SC-87: Track Activator is a Mixer automation target");
