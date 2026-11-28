@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 17:41 IST — basics/browser-chain `0fd68e875f6d0d36022d30fdead6fd0d9f6f0fa3`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+JUCE Debug linked libc++ and libc++abi. The UI document and window-state suites passed. `adi_ui_shell_tests` repeated the same 90-pixel Devices, Mixer and Mixer View differences at this documentation-only merge after `b71ec782`. The shared search cleanup is still at `adi_daw/tests/test_ui_shell.cpp:32055`. The `f80910a6` entry below records the fixture cause and correction.
+
 ### 28 November 2026, 17:32 IST — seats/stretcher-chain `e53968a5a007328003201abaa97b57697cee3e3e`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
