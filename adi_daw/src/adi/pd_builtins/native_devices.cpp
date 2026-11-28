@@ -15,6 +15,31 @@
 #include "adi/dsp/multiband_dynamics.hpp"
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
+#include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/spectral_resonator.hpp"
+#include "adi/dsp/spectral_time.hpp"
+#include "adi/dsp/roar.hpp"
+#include "adi/dsp/live_pedal.hpp"
+#include "adi/dsp/grain_delay.hpp"
+#include "adi/dsp/dynamic_tube.hpp"
+#include "adi/dsp/drum_buss.hpp"
+#include "adi/dsp/corpus.hpp"
+#include "adi/dsp/live_cabinet.hpp"
+#include "adi/dsp/live_amp.hpp"
+#include "adi/dsp/spectrum_device.hpp"
+#include "adi/dsp/auto_shift.hpp"
+#include "adi/dsp/dj_filter.hpp"
+#include "adi/dsp/filter_delay.hpp"
+#include "adi/dsp/vinyl_distortion.hpp"
+#include "adi/dsp/erosion.hpp"
+#include "adi/dsp/tuner.hpp"
+#include "adi/dsp/eq_three.hpp"
+#include "adi/dsp/channel_eq.hpp"
+#include "adi/dsp/auto_pan.hpp"
+#include "adi/dsp/align_delay.hpp"
+#include "adi/dsp/live_limiter.hpp"
+#include "adi/dsp/live_gate.hpp"
+#include "adi/dsp/glue_compressor.hpp"
 #include "adi/dsp/redux.hpp"
 #include "adi/dsp/resonators.hpp"
 #include "adi/dsp/saturator.hpp"
@@ -499,6 +524,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);
+        if (sameCanvas(patchText, canonical::compressor)) return create<dsp::LiveCompressor>(patchText, 2);
         if (sameCanvas(patchText, canonical::hybridReverb)) return create<HybridReverbStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::delay)) return create<dsp::LiveDelay>(patchText, 2);
         if (sameCanvas(patchText, canonical::eqEight)) return create<dsp::EqEight>(patchText, 2);
@@ -511,6 +537,30 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::saturator)) return create<dsp::Saturator>(patchText, 2);
         if (sameCanvas(patchText, canonical::shifter)) return create<dsp::Shifter>(patchText, 2);
         if (sameCanvas(patchText, canonical::utility)) return create<dsp::Utility>(patchText, 2);
+        if (sameCanvas(patchText, canonical::glueCompressor)) return create<dsp::GlueCompressor>(patchText, 2);
+        if (sameCanvas(patchText, canonical::liveGate)) return create<dsp::LiveGate>(patchText, 2);
+        if (sameCanvas(patchText, canonical::liveLimiter)) return create<dsp::LiveLimiter>(patchText, 2);
+        if (sameCanvas(patchText, canonical::alignDelay)) return create<dsp::AlignDelay>(patchText, 2);
+        if (sameCanvas(patchText, canonical::autoPan)) return create<dsp::AutoPan>(patchText, 2);
+        if (sameCanvas(patchText, canonical::channelEq)) return create<dsp::ChannelEq>(patchText, 2);
+        if (sameCanvas(patchText, canonical::eqThree)) return create<dsp::EqThree>(patchText, 2);
+        if (sameCanvas(patchText, canonical::tuner)) return create<dsp::Tuner>(patchText, 2);
+        if (sameCanvas(patchText, canonical::erosion)) return create<dsp::Erosion>(patchText, 2);
+        if (sameCanvas(patchText, canonical::vinylDistortion)) return create<dsp::VinylDistortion>(patchText, 2);
+        if (sameCanvas(patchText, canonical::filterDelay)) return create<dsp::FilterDelay>(patchText, 2);
+        if (sameCanvas(patchText, canonical::djFilter)) return create<dsp::DjFilter>(patchText, 2);
+        if (sameCanvas(patchText, canonical::autoShift)) return create<dsp::AutoShift>(patchText, 2);
+        if (sameCanvas(patchText, canonical::spectrumDevice)) return create<dsp::SpectrumDevice>(patchText, 2);
+        if (sameCanvas(patchText, canonical::liveAmp)) return create<dsp::LiveAmp>(patchText, 2);
+        if (sameCanvas(patchText, canonical::liveCabinet)) return create<dsp::LiveCabinet>(patchText, 2);
+        if (sameCanvas(patchText, canonical::corpus)) return create<dsp::Corpus>(patchText, 2);
+        if (sameCanvas(patchText, canonical::drumBuss)) return create<dsp::DrumBuss>(patchText, 2);
+        if (sameCanvas(patchText, canonical::dynamicTube)) return create<dsp::DynamicTube>(patchText, 2);
+        if (sameCanvas(patchText, canonical::grainDelay)) return create<dsp::GrainDelay>(patchText, 2);
+        if (sameCanvas(patchText, canonical::livePedal)) return create<dsp::LivePedal>(patchText, 2);
+        if (sameCanvas(patchText, canonical::roar)) return create<dsp::Roar>(patchText, 2);
+        if (sameCanvas(patchText, canonical::spectralTime)) return create<dsp::SpectralTime>(patchText, 2);
+        if (sameCanvas(patchText, canonical::spectralResonator)) return create<dsp::SpectralResonator>(patchText, 2);
     }
     return nullptr;
 }

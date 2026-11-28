@@ -54,6 +54,19 @@
 // input, delayed, bit for bit. From 176.4 kHz the Annex oversamples by 1 and
 // the mode is the sample-peak limiter with no added delay.
 //
+// A CEILING LOWERED WHILE RUNNING holds from the next sample out. The
+// detector keeps each step's level (the sample peak, or in True Peak mode the
+// largest interpolated value around the sample), and the hold is the ceiling
+// over the loudest level in its window, so every later target reads the new
+// ceiling. The gains already planned are re-planned once: each boxcar entry
+// k, which bounds the samples entered at steps k-L to k, is cut to the new
+// ceiling over the loudest of them. Every rel[k] in an output's boxcar is then
+// at most the new ceiling over that sample's level, so the guarantee above
+// holds for it exactly. The re-plan touches nothing the old ceiling did not
+// bind (a quiet programme passes as itself), is O(lookahead) once per
+// lowering, and allocates nothing. A raised ceiling needs none: the old
+// gains are within it, and the release recovers.
+//
 // NON-FINITE INPUT (EX4). A NaN or an infinity is read as silence, by the
 // detector and in the delayed audio alike: it cannot leave as a non-finite
 // sample or poison the gain, and the output is exactly that of the same
@@ -87,7 +100,9 @@ public:
     void setLookaheadMs(double ms);
 
     /// Linear, not dB. 0.966 is -0.3 dBFS.
-    void setCeiling(double linear) noexcept { ceiling_ = linear > 0.0 ? linear : 1.0e-6; }
+    /// Audio thread safe. Lowered while running, the planned gains are
+    /// re-planned so nothing leaves above it from the next sample (above).
+    void setCeiling(double linear) noexcept;
     /// Retained in seconds across prepare(), including a sample-rate change.
     void setReleaseSeconds(double s) noexcept;
 
@@ -126,9 +141,11 @@ private:
     template <class Sample>
     void run(const Sample* const* in, Sample* const* out, int frames) noexcept;
     /// True-peak mode: reads the current frame from frame_ (already finite),
-    /// returns the target gain for the
+    /// returns the level (the largest interpolated value around it) of the
     /// sample truePeakDelay() behind it.
-    double truePeakTarget() noexcept;
+    double truePeakLevel() noexcept;
+    /// A lowered ceiling: cut the planned gains to it (A CEILING LOWERED).
+    void replan() noexcept;
     template <class Sample>
     void runOffline(const Sample* const* in, Sample* const* out, std::int64_t frames);
 
@@ -160,7 +177,15 @@ private:
     int ring_ = 1;
     int writeIdx_ = 0;
 
-    // The sliding minimum of the target gain: a monotonic deque over a ring.
+    // Each step's level, for the re-plan: the last 2 * maxLookahead + 4.
+    std::vector<double> levels_;
+    int levelCap_ = 1;
+    // The re-plan's own sliding maximum, linear (it never wraps).
+    std::vector<double> scratchValue_;
+    std::vector<std::int64_t> scratchIndex_;
+
+    // The sliding MAXIMUM of the level (the hold is the ceiling over it, the
+    // same value as the minimum of the targets): a monotonic deque over a ring.
     std::vector<double> dqValue_;
     std::vector<std::int64_t> dqIndex_;
     int dqHead_ = 0, dqSize_ = 0, dqCap_ = 1;

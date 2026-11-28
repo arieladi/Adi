@@ -12,7 +12,7 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,21> entries={{
+constexpr std::array<BuiltinInfo,46> entries={{
  {.uid="org.adidaw.builtin.adi-shaper",.name="ADI-Shaper",.category="ADI",.group="Audio Effects",
   .inputs=2,.available=ready,.usesTransportPosition=true,.resetMissingParameters=true},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
@@ -36,7 +36,57 @@ constexpr std::array<BuiltinInfo,21> entries={{
  // DEV-21: the first of the two authorized instruments; no audio in, notes in.
  {"org.adidaw.builtin.oneshot","OneShot","Instruments","Instruments",0,ready,true,true},
  // DEV-21: the second authorized instrument; its declarations are not a canvas.
- {"org.adidaw.builtin.sampler","Sampler","Instruments","Instruments",0,ready,true,true}
+ {"org.adidaw.builtin.sampler","Sampler","Instruments","Instruments",0,ready,true,true},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Compressor, built, not verified (reading 17).
+ {"org.adidaw.builtin.compressor","Compressor","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Glue Compressor, built, not verified (reading 19).
+ {"org.adidaw.builtin.glue-compressor","Glue Compressor","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Gate, built, not verified (reading 20).
+ {"org.adidaw.builtin.gate","Gate","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Limiter, built, not verified (reading 21).
+ {"org.adidaw.builtin.limiter","Limiter","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Align Delay, built, not verified (reading 23).
+ {"org.adidaw.builtin.align-delay","Align Delay","Audio Effects","Utilities",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live 12.4's Auto Pan-Tremolo, built, not verified (reading 24).
+ {"org.adidaw.builtin.auto-pan-tremolo","Auto Pan-Tremolo","Audio Effects","Pitch & Modulation",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Channel EQ, built, not verified (reading 25).
+ {"org.adidaw.builtin.channel-eq","Channel EQ","Audio Effects","EQ & Filters",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's EQ Three, built, not verified (reading 26).
+ {"org.adidaw.builtin.eq-three","EQ Three","Audio Effects","EQ & Filters",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Tuner, built, not verified (reading 27).
+ {"org.adidaw.builtin.tuner","Tuner","Audio Effects","Utilities",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Erosion, built, not verified (reading 28).
+ {"org.adidaw.builtin.erosion","Erosion","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Vinyl Distortion, built, not verified (reading 29).
+ {"org.adidaw.builtin.vinyl-distortion","Vinyl Distortion","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Filter Delay, built, not verified (reading 30).
+ {"org.adidaw.builtin.filter-delay","Filter Delay","Audio Effects","Delay & Loop",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): The DJ Filter, built, not verified (reading 32).
+ {"org.adidaw.builtin.dj-filter","DJ Filter","Audio Effects","EQ & Filters",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Auto Shift, built, not verified (reading 33).
+ {"org.adidaw.builtin.auto-shift","Auto Shift","Audio Effects","Pitch & Modulation",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Spectrum, built, not verified (reading 34).
+ {"org.adidaw.builtin.spectrum","Spectrum","Audio Effects","Utilities",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Amp, built, not verified (reading 35).
+ {"org.adidaw.builtin.amp","Amp","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Cabinet, built, not verified (reading 36).
+ {"org.adidaw.builtin.cabinet","Cabinet","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Corpus, built, not verified (reading 37).
+ {"org.adidaw.builtin.corpus","Corpus","Audio Effects","Reverb & Resonance",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Drum Buss, built, not verified (reading 38).
+ {"org.adidaw.builtin.drum-buss","Drum Buss","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Dynamic Tube, built, not verified (reading 39).
+ {"org.adidaw.builtin.dynamic-tube","Dynamic Tube","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Grain Delay, built, not verified (reading 40).
+ {"org.adidaw.builtin.grain-delay","Grain Delay","Audio Effects","Delay & Loop",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Pedal, built, not verified (reading 41).
+ {"org.adidaw.builtin.pedal","Pedal","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Roar, built, not verified (reading 42).
+ {"org.adidaw.builtin.roar","Roar","Audio Effects","Drive & Color",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Spectral Time, built, not verified (reading 43).
+ {"org.adidaw.builtin.spectral-time","Spectral Time","Audio Effects","Delay & Loop",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Spectral Resonator, built, not verified (reading 44).
+ {"org.adidaw.builtin.spectral-resonator","Spectral Resonator","Audio Effects","Reverb & Resonance",2,ready,false}
 }};
 }
 std::span<const BuiltinInfo> builtinCatalog() noexcept{return entries;}
@@ -47,9 +97,9 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,21> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+    constexpr std::array<std::string_view,46> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
         hybridReverb,multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
-        oneShot,std::string_view{}};
+        oneShot,std::string_view{},compressor,glueCompressor,liveGate,liveLimiter,alignDelay,autoPan,channelEq,eqThree,tuner,erosion,vinylDistortion,filterDelay,djFilter,autoShift,spectrumDevice,liveAmp,liveCabinet,corpus,drumBuss,dynamicTube,grainDelay,livePedal,roar,spectralTime,spectralResonator};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
     (void)uid;

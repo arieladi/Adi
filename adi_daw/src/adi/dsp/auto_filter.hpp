@@ -72,6 +72,7 @@ class AutoFilter {
         double phase = 0, env = 0, envHeld = 0, holdPeak = 0, holdSamples = 0, quantLfo = 0,
                randomSmooth = 0, lastLfoSlot = -1, lastEnvSlot = -1, holdPhase = 1, held = 0,
                feedback = 0, onePole = 0, onePoleBand = 0, sc1 = 0, sc2 = 0;
+        int djSide = 0;   ///< the DJ type's side: -1 low pass, 0 the centre, +1 high pass
     };
     std::array<Lane, 2> lane_;
     // Live 12.4's Auto Filter default (DEV-22): LP, 24 dB, 10 kHz, no resonance,

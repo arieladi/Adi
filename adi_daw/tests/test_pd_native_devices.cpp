@@ -52,13 +52,14 @@ struct Fixture {
     int inputs;
     std::array<Change, 4> changes;
 };
-constexpr std::array<Fixture, 19> fixtures{{
+constexpr std::array<Fixture, 44> fixtures{{
     {"ADI-Shaper.pd", 2, {{{2, 3}, {128, 1}, {131, 2}, {23, 24}}}},
     {"AutoFilter.pd", 4, {{{3, 2500}, {11, 38}, {33, 1}, {34, 65}}}},
     {"Chord Comb.pd", 2, {{{1, 3}, {3, 0.2f}, {4, 0.4f}, {5, 0.7f}}}},
     {"Chorus-Ensemble.pd", 2, {{{3, 160}, {10, 2.3f}, {11, 70}, {16, 75}}}},
     {"Color Cab.pd", 2, {{{2, 0.7f}, {0, 0}, {0, 0}, {0, 0}}}},
-    {"Delay.pd", 2, {{{3, 1}, {5, 1}, {10, 55}, {25, 80}}}},
+    {"Compressor.pd", 2, {{{1, -32}, {2, 8}, {6, 1}, {11, 70}}}},
+    {"Delay.pd", 2, {{{13, 2400}, {5, 1}, {10, 55}, {25, 80}}}},
     {"EQEight.pd", 2, {{{3, 1100}, {4, 6}, {83, 0}, {87, 1}}}},
     {"Hybrid Reverb.pd", 2, {{{1, 2}, {8, 2.5f}, {13, 120}, {14, 70}}}},
     {"Echo.pd", 2, {{{4, 1}, {6, 0.0625f}, {15, 48}, {0, 0}}}},
@@ -67,10 +68,34 @@ constexpr std::array<Fixture, 19> fixtures{{
     {"Phaser-Flanger.pd", 2, {{{7, 1}, {9, 0.25f}, {19, 74}, {20, 35}}}},
     {"Redux.pd", 2, {{{1, 7800}, {2, 33}, {3, 7}, {9, 70}}}},
     {"Resonators.pd", 2, {{{5, 0.4f}, {8, 43}, {13, 5}, {30, 70}}}},
-    {"Reverb.pd", 2, {{{5, 1}, {20, 4}, {23, 0.3f}, {31, 72}}}},
-    {"Saturator.pd", 2, {{{2, 9}, {8, 1300}, {11, 70}, {18, 1}}}},
+    {"Reverb.pd", 2, {{{5, 0}, {20, 4}, {23, 0.3f}, {31, 72}}}},
+    {"Saturator.pd", 2, {{{2, 9}, {8, 1300}, {11, 70}, {18, 0}}}},
     {"Shifter.pd", 2, {{{1, 2}, {2, 7}, {31, 1}, {33, 12}}}},
     {"Utility.pd", 2, {{{4, 140}, {11, 6}, {12, -20}, {14, 1}}}},
+    {"Glue Compressor.pd", 2, {{{1, -30}, {2, 2}, {4, 2}, {7, 60}}}},
+    {"Gate.pd", 2, {{{1, -30}, {6, -20}, {7, 1}, {8, 1}}}},
+    {"Limiter.pd", 2, {{{1, 12}, {2, -6}, {4, 2}, {6, 2}}}},
+    {"Align Delay.pd", 2, {{{1, 2}, {6, 5}, {7, 2}, {9, 30}}}},
+    {"Auto Pan-Tremolo.pd", 2, {{{1, 1}, {2, 60}, {3, 3}, {8, 1}}}},
+    {"Channel EQ.pd", 2, {{{1, 1}, {2, 6}, {3, -4}, {5, 5}}}},
+    {"EQ Three.pd", 2, {{{4, 0}, {2, -10}, {7, 400}, {9, 1}}}},
+    {"Tuner.pd", 2, {{{1, 442}, {2, 1}}}},
+    {"Erosion.pd", 2, {{{1, 2}, {2, 6000}, {3, 2}, {4, 80}}}},
+    {"Vinyl Distortion.pd", 2, {{{5, 1}, {6, 0.5}, {9, 1}, {11, -20}}}},
+    {"Filter Delay.pd", 2, {{{5, 0}, {7, 120}, {8, 70}, {31, -6}}}},
+    {"DJ Filter.pd", 2, {{{1, -40}, {2, 3}, {3, 70}}}},
+    {"Auto Shift.pd", 2, {{{3, 1}, {6, 7}, {7, 20}, {9, 80}}}},
+    {"Spectrum.pd", 2, {{{1, 3}, {2, 0}, {4, 8}, {8, -60}}}},
+    {"Amp.pd", 2, {{{1, 3}, {2, 7}, {5, 8}, {10, 1}}}},
+    {"Cabinet.pd", 2, {{{1, 2}, {2, 2}, {3, 1}, {6, 1}}}},
+    {"Corpus.pd", 2, {{{1, 3}, {2, 220}, {4, 70}, {11, 20}}}},
+    {"Drum Buss.pd", 2, {{{2, 1}, {3, 60}, {8, 50}, {11, -6}}}},
+    {"Dynamic Tube.pd", 2, {{{1, 12}, {2, 2}, {4, 50}, {7, 30}}}},
+    {"Grain Delay.pd", 2, {{{3, 120}, {4, 30}, {5, 7}, {9, 80}}}},
+    {"Pedal.pd", 2, {{{1, 2}, {2, 70}, {3, 1}, {8, -12}}}},
+    {"Roar.pd", 2, {{{1, 4}, {6, 60}, {8, 2}, {26, 30}}}},
+    {"Spectral Time.pd", 2, {{{2, 400}, {3, 60}, {4, 30}, {7, 80}}}},
+    {"Spectral Resonator.pd", 2, {{{1, 330}, {2, 8}, {4, 5000}, {6, 80}}}},
     {"Vocoder.pd", 4, {{{1, 1}, {12, 2}, {20, 2}, {24, 70}}}}
 }};
 std::unique_ptr<adi::device::PdSampleBuffer> sample(double rate = 48000, double level = 1) {
@@ -126,6 +151,11 @@ void parity(const Fixture& fixture) {
         if (block == 32) {
             for (const auto& change : fixture.changes) {
                 if (change.id == 0) continue;
+                // A change that sets a control to its declared default moves
+                // nothing: the fixture would not exercise it (a found gap).
+                const auto* declared = declarations.param(change.id);
+                check(declared != nullptr && static_cast<double>(change.value) != declared->def, fixture.file,
+                      "each fixture change moves a declared control off its default");
                 countAllocations = true;
                 const bool nativeSent = native.sendParameter(change.id, change.value);
                 countAllocations = false;
