@@ -684,9 +684,10 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     // The complete plan has one action per catalog track in the same order.
     for (std::size_t index = 0; index < actions.size(); ++index) {
         const auto& action = actions[index];
-        if (action.kind == TimedSceneActionKind::Stop) continue;
         auto& ranges = ranges_.data()[index];
-        if (action.kind == TimedSceneActionKind::KeepIdle) {
+        const bool needsIdleClearance = action.kind == TimedSceneActionKind::KeepIdle ||
+            (action.kind == TimedSceneActionKind::Stop && action.outgoingRun == 0);
+        if (needsIdleClearance) {
             const auto tails = std::span(driver.tails_).first(driver.tailCount_);
             if (ranges.size || ranges.tailCount || ranges.cuePages || ranges.warpCuePages ||
                 driver.findRetained(action.track,driver.retainedCount_) ||
@@ -696,6 +697,7 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
             }
             continue;
         }
+        if (action.kind == TimedSceneActionKind::Stop) continue;
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto leaseFrames = candidate.frames;

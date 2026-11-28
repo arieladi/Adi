@@ -371,8 +371,11 @@ constexpr std::int64_t manyClip(std::size_t track, bool target) {
     return (target ? 400 : 300) + static_cast<std::int64_t>(track);
 }
 
+constexpr std::int64_t earlyStopFrames = 1024;
+
 std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder, std::size_t count,
-                                               std::span<const std::size_t> savedStops) {
+                                               std::span<const std::size_t> savedStops,
+                                               std::optional<std::size_t> shortOutgoing = {}) {
     auto store = prepareProject(folder,ThirdCell::Start,false);
     auto& db = store->db();
     {
@@ -416,6 +419,14 @@ std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder
         }
         replacement.commit();
     }
+    if (shortOutgoing) {
+        const auto clip = manyClip(*shortOutgoing,false);
+        const auto lengthNs = earlyStopFrames * 1'000'000'000 / rate;
+        SQLite::Statement length(db,"UPDATE clips SET length_ns=? WHERE id=?");
+        length.bind(1,lengthNs); length.bind(2,clip); length.exec();
+        SQLite::Statement end(db,"UPDATE clip_playback_details SET source_end_ns=content_offset_ns+? WHERE clip_id=?");
+        end.bind(1,lengthNs); end.bind(2,clip); end.exec();
+    }
     store.reset();
     StoreError error{};
     store = Store::open(folder.path() / "scene.adi",error);
@@ -423,7 +434,7 @@ std::unique_ptr<Store> prepareManyTrackProject(const test::TempDirectory& folder
     return store;
 }
 
-void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedStopCount) {
+void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedStopCount, bool idleSavedStop = false) {
     const bool warm = outcome == Outcome::Warm;
     const bool coldLast = outcome == Outcome::ColdThird;
     const bool stop = outcome == Outcome::StopTrack;
@@ -431,9 +442,11 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
     constexpr std::array<std::size_t,2> stopTracks{2,1};
     const auto savedStops = std::span(stopTracks).first(savedStopCount);
     const auto userStoppedTrack = savedStopCount == 2 ? std::size_t{0} : std::size_t{1};
-    const auto* mode = warm ? "warm" : coldLast ? "cold-last" : "stop";
+    const auto idleTrack = idleSavedStop ? std::optional{savedStops.front()} : std::nullopt;
+    const bool back = idleSavedStop && stop;
+    const auto* mode = warm ? "warm" : coldLast ? "cold-last" : back ? "back-on-idle" : "stop";
     test::TempDirectory folder{"many_raw_timed_scene",mode};
-    auto store = prepareManyTrackProject(folder,count,savedStops);
+    auto store = prepareManyTrackProject(folder,count,savedStops,idleTrack);
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
@@ -474,12 +487,33 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
         return rows;
     };
     const auto old = read();
-    require(playback.edgeCount == count && playback.sceneCount == 0,"all outgoing clips start before staging");
-    for (std::size_t index = 0; index < count; ++index)
-        require(old[index].clip == manyClip(index,false) && old[index].run != 0,"each old raw run is continuously active");
+    const auto initialEdges = count + (idleTrack ? 1u : 0u);
+    require(playback.edgeCount == initialEdges && playback.sceneCount == 0,"only outgoing edges precede the Scene");
+    const auto earlyStop = idleTrack ? startedAt[*idleTrack] + earlyStopFrames : 0;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (idleTrack == index) {
+            require(old[index].clip == 0 && old[index].run == 0 && old[index].source == LaunchTrackSource::Silence,
+                    "the first saved Stop is already silent after its physical End");
+            const auto beforeCut = std::span(playback.edges).first(initialEdges);
+            require(std::ranges::any_of(beforeCut,[&](const auto& edge) {
+                return edge.track == static_cast<std::int64_t>(index + 1) &&
+                    edge.oldClip == manyClip(index,false) && edge.oldRun != 0 && edge.newClip == 0 &&
+                    edge.sample == earlyStop && !edge.arrangement;
+            }),"the first saved Stop's old run ended once before staging");
+        } else {
+            require(old[index].clip == manyClip(index,false) && old[index].run != 0,"each other old raw run is active");
+        }
+    }
 
     if (!session.prepareSceneLaunch(*store,20,bar)) throw std::runtime_error(session.error());
-    if (stop) {
+    if (back) {
+        playback.through(cut);
+        LaunchRequest request;
+        request.kind = LaunchRequestKind::BackToArrangement;
+        request.incarnation = session.launchIncarnation();
+        request.track = static_cast<std::int64_t>(*idleTrack + 1);
+        require(session.postLaunchGesture({&request,1}),"queue Back for the silent Stop track on the old cut");
+    } else if (stop) {
         playback.through(cut);
         OpRequest command;
         command.opType = "session.stopTrack";
@@ -489,26 +523,33 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
     playback.through(end);
 
     const auto after = read();
+    const auto sceneEdges = count - (idleTrack ? 1u : 0u);
     require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
             playback.sceneCount == (warm ? 1u : 0u) &&
-            playback.edgeCount == count + (warm ? count : stop ? 1u : 0u),
+            playback.edgeCount == initialEdges + (warm ? sceneEdges : stop ? 1u : 0u),
             "the clock, receipt and complete raw track group resolve together");
     if (warm) {
         require(playback.scene.sample == cut && playback.scene.tick == bar && playback.scene.tempoBpm == 140,
                 "one receipt carries the adopted 140 BPM clock at the exact cut");
     } else if (stop) {
-        const auto& edge = playback.edges[count];
-        require(edge.track == static_cast<std::int64_t>(userStoppedTrack + 1) &&
-                edge.oldRun == old[userStoppedTrack].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar,
-                "the independent StopTrack alone takes effect on the old Bar");
+        const auto index = back ? *idleTrack : userStoppedTrack;
+        const auto& edge = playback.edges[initialEdges];
+        require(edge.track == static_cast<std::int64_t>(index + 1) && edge.oldClip == old[index].clip &&
+                edge.oldRun == old[index].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar &&
+                edge.arrangement == back,"only the independent manual command takes effect on the old Bar");
     }
     const auto stopsAtCut = [&](std::size_t index) {
-        return (stop && index == userStoppedTrack) ||
+        return (stop && !back && index == userStoppedTrack) ||
             (warm && std::ranges::find(savedStops,index) != savedStops.end());
     };
+    auto nextEdge = initialEdges;
     for (std::size_t index = 0; index < count; ++index) {
-        if (warm) {
-            const auto& edge = playback.edges[count + index];
+        if (idleTrack == index) {
+            require(after[index].clip == 0 && after[index].run == 0 &&
+                    after[index].source == (back ? LaunchTrackSource::Arrangement : LaunchTrackSource::Silence),
+                    "the idle saved Stop emits no duplicate transition and preserves its source unless Back wins");
+        } else if (warm) {
+            const auto& edge = playback.edges[nextEdge++];
             const auto expectedClip = stopsAtCut(index) ? 0 : manyClip(index,true);
             require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut && edge.tick == bar &&
                     edge.oldClip == old[index].clip && edge.oldRun == old[index].run && edge.newClip == expectedClip &&
@@ -524,7 +565,8 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
     for (auto sample = std::int64_t{0}; sample < end; ++sample) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < count; ++index) {
-            if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index))) continue;
+            if (sample < startedAt[index] || (idleTrack == index && sample >= earlyStop) ||
+                (sample >= cut && stopsAtCut(index))) continue;
             const auto prototype = index % 3 + (warm && sample >= cut ? 3 : 0);
             expected += signal(prototype,sample - startedAt[index] + starts[prototype]);
         }
@@ -532,14 +574,16 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
     }
     require(test::sceneClockCallbackAllocations() == initialAllocations && audio::callbackFileIo.load() == initialFileIo,
             "the bounded larger group performs no driver allocation or file reads");
-    std::printf("%zu-track raw Scene with %zu saved Stops %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
-                count,savedStopCount,mode,playback.edgeCount,playback.sceneCount);
+    std::printf("%zu-track raw Scene with %zu saved Stops %s%s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
+                count,savedStopCount,idleTrack ? "(one idle) " : "",mode,playback.edgeCount,playback.sceneCount);
 }
 
 } // namespace
 
 namespace adi::test {
 void runThreeTrackTimedRawSceneTests() {
+    for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack})
+        exerciseManyTracks(4,outcome,2,true);
     for (const auto tracks : {std::size_t{4},std::size_t{6}})
         for (const auto savedStops : {std::size_t{0},std::size_t{1},std::size_t{2}})
             for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack})
