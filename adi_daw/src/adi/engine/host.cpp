@@ -86,7 +86,27 @@ bool GraphHost::publish(PreparedGraph& ready) {
         error_ = "the ready graph belongs to an older host configuration";
     } else if (!ready.value_->graph().graph().preparationCurrent()) {
         error_ = "a ready graph node changed preparation or shape";
+    } else if (const auto* existing = pub_.peek(); existing && [&] {
+                   const auto cut = existing->cut.load(std::memory_order_acquire);
+                   if (cut == PublishedGraph::Cut::Ordinary || cut == PublishedGraph::Cut::Committed) return false;
+                   const auto* incoming = ready.value_->transportState();
+                   return cut != PublishedGraph::Cut::OwnerCanceled || !incoming ||
+                       incoming->restoredTimedGeneration() != existing->seq;
+               }()) {
+        error_ = "resolve the outstanding timed graph cut before publishing";
     } else {
+        auto* incoming = ready.value_.get();
+        if (incoming->cutSample >= 0 && !incoming->transportState()->mayPublishTimedAdoption()) {
+            const auto* current = pub_.peek();
+            if (!current || current->transportState() != incoming->transportState()) {
+                error_ = "the ready timed graph cut was already performed";
+                stats_.refused.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            // The owner can rebuild devices on the TimingView that already
+            // performed this Scene. That publication carries no new offer.
+            incoming->cut.store(PublishedGraph::Cut::Ordinary, std::memory_order_relaxed);
+        }
         try {
             // Every throwing allocation precedes exchange. The preserving
             // publisher leaves ready.value_ owned if retirement preflight fails.
@@ -234,13 +254,19 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
     renderActive_ = true;
     // Retain the previous publication until its history has been carried. The
     // publisher's strictly-greater reclamation rule protects both pointers.
-    const PublishedGraph* snap = pub_.peek();
+    return selectRenderGraph(pub_.peek());
+}
+
+const PublishedGraph* GraphHost::selectRenderGraph(const PublishedGraph* snap, bool timed) noexcept {
     if (!snap) return nullptr;
+    const auto cut = snap->cut.load(std::memory_order_acquire);
+    if (cut != PublishedGraph::Cut::Ordinary && cut != PublishedGraph::Cut::Committed &&
+        (!timed || cut != PublishedGraph::Cut::Committing)) return lastSnap_.load(std::memory_order_relaxed);
 
     const bool adopting = snap->seq != lastSeq_;
     if (adopting) {
         const auto* previous = lastSnap_.load(std::memory_order_relaxed);
-        if (previous != nullptr) {
+        if (!timed && previous != nullptr) {
             const auto* state = snap->transportState();
             if (state && !state->readyToAdopt(previous->transportState())) return previous;
         }
@@ -311,6 +337,72 @@ std::int32_t GraphHost::RenderBlock::latencySamples() const noexcept {
 const GraphTransportState* GraphHost::RenderBlock::transportState() const noexcept {
     return valid() ? snapshot_->transportState() : nullptr;
 }
+const PublishedGraph* GraphHost::currentTimedCut(const RenderBlock::TimedCut& offer) const noexcept {
+    const auto* snap = pub_.peek();
+    return snap && snap->seq == offer.generation && snap->cutSample == offer.sample &&
+        snap->transportState() == offer.state ? snap : nullptr;
+}
+
+std::optional<GraphHost::RenderBlock::TimedCut> GraphHost::RenderBlock::pendingTimedCut() const noexcept {
+    const auto* snap = host_.pub_.peek();
+    if (!valid() || !snap || snap->seq <= snapshot_->seq ||
+        snap->cut.load(std::memory_order_acquire) != PublishedGraph::Cut::Pending) return {};
+    return TimedCut{snap->seq, snap->cutSample, snap->transportState(), serial_};
+}
+
+void GraphHost::RenderBlock::rejectTimedCut(const TimedCut& offer) noexcept {
+    if (offer.renderSerial != serial_) return;
+    if (const auto* snap = host_.currentTimedCut(offer)) {
+        auto pending = PublishedGraph::Cut::Pending;
+        (void)snap->cut.compare_exchange_strong(pending, PublishedGraph::Cut::Rejected);
+    }
+}
+
+bool GraphHost::RenderBlock::commitTimedCut(const TimedCut& offer, std::int64_t sample) noexcept {
+    if (!valid() || offer.renderSerial != serial_ || sample != offer.sample || offer.generation <= snapshot_->seq) return false;
+    const auto* next = host_.currentTimedCut(offer);
+    if (!next || host_.fadeFrames() != 0 || latencySamples() != 0 || next->graph().graph().latencySamples() != 0)
+        return false;
+    auto pending = PublishedGraph::Cut::Pending;
+    if (!next->cut.compare_exchange_strong(pending, PublishedGraph::Cut::Committing)) return false;
+    snapshot_ = host_.selectRenderGraph(next, true);
+    snapshot_->graph().graph().pinPhysicalPdc(serial_);
+    return true;
+}
+
+bool GraphHost::RenderBlock::completeTimedCut(const TimedCut& offer) noexcept {
+    if (offer.renderSerial != serial_) return false;
+    // While the ticket commits, the owner cannot replace this publication.
+    // Its completion does not rely on the original render handle still being valid.
+    const auto* committed = host_.currentTimedCut(offer);
+    if (!committed || committed != snapshot_) return false;
+    auto committing = PublishedGraph::Cut::Committing;
+    return committed->cut.compare_exchange_strong(committing, PublishedGraph::Cut::Committed);
+}
+
+bool GraphHost::cancelTimedCut(const GraphTransportState& timing) noexcept {
+    const auto* snap = pub_.peek();
+    if (!snap || snap->transportState() != &timing) return false;
+    auto pending = PublishedGraph::Cut::Pending;
+    if (snap->cut.compare_exchange_strong(pending, PublishedGraph::Cut::OwnerCanceled)) return true;
+    if (pending == PublishedGraph::Cut::OwnerCanceled) return true;
+    if (pending != PublishedGraph::Cut::Rejected) return false;
+    return snap->cut.compare_exchange_strong(pending, PublishedGraph::Cut::OwnerCanceled);
+}
+
+std::uint64_t GraphHost::rejectedTimedCutGeneration(const GraphTransportState& timing) const noexcept {
+    const auto* snap = pub_.peek();
+    if (!snap || snap->transportState() != &timing) return 0;
+    const auto cut = snap->cut.load(std::memory_order_acquire);
+    return cut == PublishedGraph::Cut::Rejected || cut == PublishedGraph::Cut::OwnerCanceled ? snap->seq : 0;
+}
+
+bool GraphHost::committingTimedCut(const GraphTransportState& timing) const noexcept {
+    const auto* snap = pub_.peek();
+    return snap && snap->transportState() == &timing &&
+        snap->cut.load(std::memory_order_acquire) == PublishedGraph::Cut::Committing;
+}
+
 NodeId GraphHost::RenderBlock::find(const Node& node) const noexcept {
     return valid() ? snapshot_->graph().graph().find(node) : kInvalidNode;
 }

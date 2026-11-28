@@ -37,6 +37,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace adi::engine {
@@ -60,12 +61,19 @@ public:
     [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
     // Owner only, after the publisher freed obsolete graph catalogs.
     virtual void collectRetiredSources() const noexcept {}
+    // Owner-prepared exact cut. A candidate with a cut cannot be adopted by
+    // the ordinary physical callback entry point.
+    [[nodiscard]] virtual std::int64_t timedAdoptionSample() const noexcept { return -1; }
+    [[nodiscard]] virtual bool mayPublishTimedAdoption() const noexcept { return true; }
+    [[nodiscard]] virtual std::uint64_t restoredTimedGeneration() const noexcept { return 0; }
 };
 class PublishedGraph final : public Sequenced {
 public:
     explicit PublishedGraph(std::unique_ptr<RealizedGraph> g,std::shared_ptr<const GraphTransportState> state={},
                             std::int32_t maxFrames=0)
-        : transportState_(std::move(state)),graph_(std::move(g)),maxFrames_(maxFrames) {}
+        : transportState_(std::move(state)),graph_(std::move(g)),maxFrames_(maxFrames),
+          cutSample(transportState_ ? transportState_->timedAdoptionSample() : -1),
+          cut(cutSample >= 0 ? Cut::Pending : Cut::Ordinary) {}
 
     /// NON-CONST through a const `PublishedGraph`, on purpose. `AudioRead`
     /// hands out `const PublishedGraph*` because the snapshot's IDENTITY is
@@ -82,6 +90,12 @@ private:
     std::shared_ptr<const GraphTransportState> transportState_;
     std::unique_ptr<RealizedGraph> graph_;
     std::int32_t maxFrames_ = 0;
+
+    friend class GraphHost;
+    enum class Cut : std::uint8_t { Ordinary, Pending, Committing, Committed, Rejected, OwnerCanceled };
+    const std::int64_t cutSample;
+    static_assert(std::atomic<Cut>::is_always_lock_free);
+    mutable std::atomic<Cut> cut;
 };
 
 /// Holds the live graph, replaces it, and renders through whichever one is
@@ -270,6 +284,19 @@ public:
         [[nodiscard]] std::uint64_t generation() const noexcept;
         [[nodiscard]] std::int32_t latencySamples() const noexcept;
         [[nodiscard]] const GraphTransportState* transportState() const noexcept;
+        struct TimedCut {
+            std::uint64_t generation;
+            std::int64_t sample;
+            const GraphTransportState* state;
+            std::uint64_t renderSerial;
+        };
+        [[nodiscard]] std::optional<TimedCut> pendingTimedCut() const noexcept;
+        void rejectTimedCut(const TimedCut&) noexcept;
+        // The caller has validated eligibility and pinned every source needed by the suffix.
+        [[nodiscard]] bool commitTimedCut(const TimedCut&, std::int64_t sample) noexcept;
+        // Close the selected ticket even if a later render handle expired this
+        // handle. Only the callback that won the ticket may complete it.
+        [[nodiscard]] bool completeTimedCut(const TimedCut&) noexcept;
         [[nodiscard]] NodeId find(const Node&) const noexcept;
         bool pushInputEvent(NodeId, const Event&) const noexcept;
         /// False writes silence at both widths and never dereferences an expired
@@ -284,6 +311,10 @@ public:
         std::uint64_t serial_ = 0;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
+    // Owner cancellation claims the same publication ticket as the driver.
+    [[nodiscard]] bool cancelTimedCut(const GraphTransportState&) noexcept;
+    [[nodiscard]] std::uint64_t rejectedTimedCutGeneration(const GraphTransportState&) const noexcept;
+    [[nodiscard]] bool committingTimedCut(const GraphTransportState&) const noexcept;
 
     /// Render one block through whatever is current. Allocates nothing, locks
     /// nothing, waits for nothing.
@@ -297,6 +328,8 @@ private:
     using Pub = SnapshotPublisher<PublishedGraph>;
 
     const PublishedGraph* acquireRender() noexcept;
+    const PublishedGraph* selectRenderGraph(const PublishedGraph*, bool timed = false) noexcept;
+    [[nodiscard]] const PublishedGraph* currentTimedCut(const RenderBlock::TimedCut&) const noexcept;
 
     void fadeIn(const AudioIo& io) noexcept;
 

@@ -191,6 +191,12 @@ struct LaunchSink {
     std::int64_t (*legacyRawAnchor)(void*, std::int64_t clip, std::int64_t tick) noexcept = nullptr;
 };
 
+struct TimedSceneStart {
+    std::int64_t track, clip, outgoingClip;
+    std::uint64_t outgoingRun;
+    LaunchSourceCue cue;
+};
+
 /// One owner posts gestures and one driver renders. Capacity and all scratch
 /// are established off the audio thread. Sections and transitions for each
 /// track are chronological, with tracks visited in ascending ID order.
@@ -207,6 +213,12 @@ public:
     /// Owner only. Queue playback bounds for a single active prepared run.
     [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&, const LaunchSlot* prepared = nullptr) noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
+    // Freeze an empty ingress at an exact old-clock cut, then resolve only
+    // uncontested starts. A command seen before freezing uses the normal path.
+    bool freezeTimedScenePrefix(const LaunchBlock&, std::uint64_t token) noexcept;
+    void abandonSelectedScene(std::uint64_t token) noexcept;
+    [[nodiscard]] std::optional<std::size_t> planTimedSceneStarts(const LaunchBlock&, const LaunchView&,
+        const PreparedSceneLaunch&, std::span<TimedSceneStart>) const noexcept;
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
     /// Driver only. Drain a stopped block's valid gestures. A surviving fresh
@@ -288,6 +300,8 @@ private:
     [[nodiscard]] RetargetResult retarget(std::span<const LaunchRequest>, const LaunchBlock&,
                                           const LaunchView&, LaunchSink) noexcept;
     void drain(const LaunchBlock&, const LaunchView&, std::int64_t, LaunchSink) noexcept;
+    [[nodiscard]] std::optional<Pending> preparedFollower(const Track&, const LaunchView&,
+        const ScenePending&, std::int64_t sample, std::int64_t tick) const noexcept;
     void drainRegionEdits(const LaunchBlock&, const LaunchView&) noexcept;
     void queueStop(Track&, const Pending&, std::uint64_t preparedThrough) noexcept;
     [[nodiscard]] bool preparedFollowersCanceled(const Track&, std::uint64_t token) const noexcept;
@@ -343,6 +357,11 @@ private:
     std::uint64_t lastPreparedScene_ = 0, stoppedPreparedAllThrough_ = 0;
     bool stopAllSuppressesSceneFollow_ = false;
     std::int64_t nextSample_ = -1, nextTick_ = 0;
+    struct TimedPrefix {
+        std::int64_t sample;
+        std::uint64_t incarnation, followPass, token;
+    };
+    std::optional<TimedPrefix> timedPrefix_;
     std::array<StatusBuffer,statusBufferCount> statusBuffers_;
     std::atomic<std::uint32_t> publishedStatus_{statusBufferCount};
     std::uint64_t statusSerial_ = 0;

@@ -393,6 +393,7 @@ public:
     private:
         friend class Session;
         explicit RenderBlock(Session&) noexcept;
+        bool processSlice(const AudioIo&, bool captureRecording, bool timedCut) noexcept;
         // CallbackScope precedes acquisition and outlives the graph handle.
         audio::CallbackScope callback_;
         Session& session_;
@@ -745,6 +746,15 @@ private:
         void applyLoop() const noexcept;
         [[nodiscard]] bool projectLoop(Transport&) const noexcept;
         [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;
+        std::int64_t timedCutSample = -1;
+        std::uint64_t timedCutRevision = 0;
+        std::uint64_t timedCutPreviousGeneration = 0;
+        std::uint64_t timedCutRollbackGeneration = 0;
+        [[nodiscard]] std::uint64_t restoredTimedGeneration() const noexcept override { return timedCutRollbackGeneration; }
+        [[nodiscard]] std::int64_t timedAdoptionSample() const noexcept override { return timedCutSample; }
+        [[nodiscard]] bool mayPublishTimedAdoption() const noexcept override;
+        [[nodiscard]] bool exactTimedCutClock(std::int64_t tick, std::int64_t sample) const noexcept;
+        [[nodiscard]] bool readyForTimedCut(const TimingView&) const noexcept;
         void collectRetiredSources() const noexcept override;
         [[nodiscard]] bool samePausedTempo(const TimingView&) const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
@@ -793,6 +803,9 @@ private:
         std::optional<std::int64_t> authoredResume;
     };
     std::optional<SceneClockRollback> sceneClockRollback_;
+    [[nodiscard]] bool canPrepareTimedRawScene(const TimingView&, const rows::Model&) const noexcept;
+    [[nodiscard]] std::optional<bool> reconcileTimedSceneOwner(const Store&, bool supersede);
+    [[nodiscard]] const TimingView* launchTimingForOwner() const noexcept;
     std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;

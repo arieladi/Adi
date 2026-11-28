@@ -646,6 +646,50 @@ LaunchAudioRuntime::TrackRanges* LaunchAudioRuntime::trackRanges(std::int64_t tr
     return found != end && *found == track ? ranges_.data() + (found - first) : nullptr;
 }
 
+bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const LaunchAudioRuntime& outgoing,
+        LaunchBlock previous, LaunchBlock candidate, const Transport& transport) noexcept {
+    if (active_ || outgoing.active_ || !beforeClock_ || !project_->stored() || tracks_.size() != 2 ||
+        candidate.frames <= 0 || candidate.frames > maxFrames_ ||
+        clockSample_ > std::numeric_limits<std::int64_t>::max() - candidate.frames ||
+        !candidate.preparedScene || !transport.playing() || transport.looping() ||
+        transport.position() != clockSample_ || driver.nextTimelineSample_ != clockSample_ ||
+        driver.transportRevision_ != transport.revision() || outgoing.mediaAt(clockSample_ - 1) != beforeClock_)
+        return false;
+
+    previous.sample = candidate.sample = clockSample_;
+    previous.incarnation = beforeClock_->incarnation();
+    candidate.incarnation = project_->incarnation();
+    previous.followPass = candidate.followPass = driver.pass_;
+    auto after = project_->view();
+    after.tracks = tracks_;
+    if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
+    std::array<TimedSceneStart,2> starts{};
+    const auto count = driver.launcher_.planTimedSceneStarts(candidate,after,*candidate.preparedScene,starts);
+    if (!count || *count != starts.size()) return false;
+
+    for (const auto& action : std::span(starts).first(*count)) {
+        const auto* pcm = project_->clip(action.clip);
+        auto* reader = pcm ? pcm->pageReader() : nullptr;
+        auto* ranges = trackRanges(action.track);
+        if (!reader || !ranges || ranges->cuePages || action.outgoingRun == 0 || action.outgoingClip == action.clip ||
+            action.cue.physicalFrame < 0 ||
+            !reader->reserveCue(action.clip,action.cue.physicalFrame,candidate.frames,false,false)) {
+            finish();
+            return false;
+        }
+        ranges->cuePages = reader;
+        ranges->cueClip = action.clip;
+        ranges->timedCueFrame = action.cue.physicalFrame;
+    }
+    return true;
+}
+
+void LaunchAudioDriver::abandonSelectedScene(std::uint64_t token) noexcept {
+    launcher_.abandonSelectedScene(token);
+    if (token > resolvedScene_.load(std::memory_order_relaxed))
+        resolvedScene_.store(token,std::memory_order_release);
+}
+
 void LaunchAudioRuntime::finish() noexcept {
     active_ = false;
     for (std::size_t index = 0; index < ranges_.size(); ++index) {
@@ -653,6 +697,7 @@ void LaunchAudioRuntime::finish() noexcept {
         if (ranges.cuePages) {
             ranges.cuePages->releaseCue(ranges.cueClip);
             ranges.cuePages = nullptr;
+            ranges.timedCueFrame = -1;
         }
         if (ranges.warpCuePages) {
             ranges.warpCuePages->releaseCue();
@@ -796,7 +841,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchSceneTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         if (edge.preparedToken != 0)
-            call.driver.performedScene_.store(edge.preparedToken, std::memory_order_release);
+            call.driver.resolvedScene_.store(edge.preparedToken, std::memory_order_release);
         if (call.sceneObserver) {
             auto logicalEdge = edge;
             logicalEdge.offset += call.offset;
@@ -822,6 +867,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         auto& call = *static_cast<Context*>(state);
         if (!call.media->stored()) return true;
         const auto physical = target.physicalFrames > 0;
+        if (const auto* staged = call.runtime.trackRanges(target.track); staged && staged->timedCueFrame >= 0 &&
+            call.block.preparedScene && call.block.sample == call.runtime.clockSample_ && offset == 0 &&
+            physical && cueAdmission == LaunchCueAdmission::None)
+            return staged->cuePages && staged->cueClip == target.clip && staged->timedCueFrame == cue.physicalFrame;
         const auto scheduled = cueAdmission == LaunchCueAdmission::Scheduled;
         const auto linked = cueAdmission == LaunchCueAdmission::Linked;
         const auto musicalLinked = cueAdmission == LaunchCueAdmission::MusicalLinked;

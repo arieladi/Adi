@@ -545,6 +545,11 @@ struct AudioInputRecorder::Impl {
 };
 AudioInputRecorder::AudioInputRecorder():impl_(std::make_unique<Impl>()){}
 AudioInputRecorder::~AudioInputRecorder()=default;
+bool AudioInputRecorder::armedOnDriver() const noexcept {
+    const auto* published = impl_->published->peek();
+    return published && published->job;
+}
+
 bool AudioInputRecorder::pending()const noexcept{return static_cast<bool>(impl_->job);}
 std::uint64_t AudioInputRecorder::acceptedFrames()const noexcept{return impl_->job?impl_->job->written.load(std::memory_order_acquire):0;}
 std::shared_ptr<const AudioRecordingPreview> AudioInputRecorder::preview()const noexcept {

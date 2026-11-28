@@ -19,7 +19,11 @@
 #include <stdexcept>
 
 namespace { std::atomic<unsigned> allocations{0}; }
-void adi::test::countReplacedNew() noexcept { if (adi::audio::onAudioThread) ++allocations; }
+namespace adi::test {
+void countReplacedNew() noexcept { if (adi::audio::onAudioThread) ++allocations; }
+unsigned sceneClockCallbackAllocations() noexcept { return allocations.load(std::memory_order_relaxed); }
+void runTimedRawSceneTests();
+} // namespace adi::test
 
 namespace {
 using namespace adi;
@@ -311,7 +315,7 @@ void audioHandover() {
 } // namespace
 
 int main() {
-    try { exercise(); audioHandover(); }
+    try { exercise(); audioHandover(); adi::test::runTimedRawSceneTests(); }
     catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

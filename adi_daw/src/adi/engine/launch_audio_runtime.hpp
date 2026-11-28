@@ -99,8 +99,12 @@ public:
                           std::int64_t sample, bool preserveExisting) noexcept;
     void discardIncompatiblePinnedRuns(const LaunchAudioRuntime*, std::int64_t sample) noexcept;
     void collectPinnedSourceOwners() noexcept; // owner only
+    // Driver only. A selected clock is irreversible once its graph has
+    // been announced. If its suffix could not emit a Scene receipt, consume
+    // the offer without reporting a performed launch or permitting replay.
+    void abandonSelectedScene(std::uint64_t token) noexcept;
     [[nodiscard]] std::uint64_t performedSceneToken() const noexcept {
-        return performedScene_.load(std::memory_order_acquire);
+        return resolvedScene_.load(std::memory_order_acquire);
     }
 
 private:
@@ -149,7 +153,7 @@ private:
     std::int64_t nextTimelineSample_ = -1, loopBegin_ = -1, loopEnd_ = -1;
     std::uint64_t transportRevision_ = 0;
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
-    std::atomic<std::uint64_t> performedScene_{0};
+    std::atomic<std::uint64_t> resolvedScene_{0};
 };
 
 /// Scratch belonging to one published graph. The driver fills the current
@@ -172,6 +176,8 @@ public:
                void* sceneObserverContext = nullptr,
                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
                LaunchCaptureBuffer* capture = nullptr) noexcept;
+    [[nodiscard]] bool reserveTimedRawScene(LaunchAudioDriver&, const LaunchAudioRuntime& outgoing,
+        LaunchBlock previous, LaunchBlock candidate, const Transport&) noexcept;
     void finish() noexcept;
     void finish(LaunchAudioDriver& driver) noexcept { finish(); driver.finishRanges(); }
     void overlay(std::int64_t track, const NodeIo&, std::span<std::uint8_t> replaces = {}) const noexcept;
@@ -225,6 +231,7 @@ private:
         LaunchPagedAudio* cuePages = nullptr;
         LaunchWarpSource* warpCuePages = nullptr;
         std::int64_t cueClip = 0;
+        std::int64_t timedCueFrame = -1;
     };
     [[nodiscard]] TrackRanges* trackRanges(std::int64_t track) noexcept;
     [[nodiscard]] bool addTail(LaunchAudioDriver::Tail&, std::int32_t offset,

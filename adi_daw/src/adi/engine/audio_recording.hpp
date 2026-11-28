@@ -189,6 +189,8 @@ public:
     SliceResult captureAndRender(const AudioIo&, const Transport&, RecordingPunch,
                                  const RecordingPunchWindow&, const TempoMap*, std::uint64_t clockGeneration,
                                  RenderSlice) noexcept;
+    // Driver only, before the slice's captureAndRender announces ownership.
+    [[nodiscard]] bool armedOnDriver() const noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

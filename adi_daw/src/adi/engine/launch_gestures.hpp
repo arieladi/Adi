@@ -98,6 +98,12 @@ public:
         return true;
     }
 
+    // Driver only. A producer publication after this observation is due in
+    // the next logical slice when a cut has frozen the current ingress.
+    [[nodiscard]] bool emptyOnDriver() const noexcept {
+        return read_.load(std::memory_order_relaxed) == written_.load(std::memory_order_acquire);
+    }
+
     /// InsufficientSpace reports the oldest gesture's size and leaves both
     /// the queue and the supplied output untouched.
     [[nodiscard]] PopResult pop(std::span<LaunchRequest> output) noexcept {
