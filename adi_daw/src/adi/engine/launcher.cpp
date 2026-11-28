@@ -99,12 +99,23 @@ std::int64_t sourceEnd(const LaunchSlot& slot) noexcept {
     return loops(slot) ? slot.loopEndTick : slot.endTick;
 }
 
-std::int64_t physicalSourceTick(const LaunchSlot& slot, std::int64_t elapsed) noexcept {
-    if (elapsed <= 0) return slot.startTick;
-    if (elapsed >= slot.physicalFrames) return slot.endTick;
-    const auto fraction = static_cast<long double>(elapsed) / static_cast<long double>(slot.physicalFrames);
-    const auto ticks = static_cast<long double>(slot.endTick - slot.startTick);
-    return slot.startTick + static_cast<std::int64_t>(fraction * ticks);
+struct PhysicalLap {
+    std::int64_t startFrame = -1, endFrame = -1, startTick = 0, endTick = 0;
+    std::int64_t length() const noexcept { return endFrame - startFrame; }
+    std::int64_t tickAt(std::int64_t elapsed) const noexcept {
+        if (elapsed <= 0) return startTick;
+        if (elapsed >= length()) return endTick;
+        const auto fraction = static_cast<long double>(elapsed) / static_cast<long double>(length());
+        return startTick + static_cast<std::int64_t>(fraction * static_cast<long double>(endTick - startTick));
+    }
+};
+
+PhysicalLap physicalLap(const LaunchSlot* slot, bool wrapped) noexcept {
+    if (!slot || slot->physicalFrames <= 0) return {};
+    if (!slot->physicalLoopEndFrame)
+        return {slot->physicalStartFrame,slot->physicalStartFrame + slot->physicalFrames,slot->startTick,slot->endTick};
+    return {wrapped ? slot->physicalLoopBeginFrame : slot->physicalStartFrame,slot->physicalLoopEndFrame,
+            wrapped ? slot->loopStartTick : slot->startTick,slot->loopEndTick};
 }
 
 std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept {
@@ -145,6 +156,7 @@ const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<
     scratch.loopEndTick = region->loop ? region->loop->end : 0;
     scratch.physicalStartFrame = -1;
     scratch.physicalFrames = 0;
+    scratch.physicalLoopBeginFrame = scratch.physicalLoopEndFrame = 0;
     return &scratch;
 }
 
@@ -408,11 +420,13 @@ void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock&
         const auto tick = launch_quantize::nextGridTick(due,grid,block.meters).value_or(lastTick);
         track.follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
             grid,false,earliestSample};
+        track.follow->physicalLaps = follow.physicalLaps;
     }
     if (request.kind == LaunchRequestKind::StopTrack) {
         auto& track = *findTrack(*request.track);
         if (track.stopSuppressesFollow) return;
         track.follow = Pending{Action::Stop,due,0,0,1.0f,LaunchQuantization::None,false,earliestSample};
+        track.follow->physicalLaps = follow.physicalLaps;
     }
     if (request.kind == LaunchRequestKind::ScenePress) {
         if (stopAllSuppressesSceneFollow_) return;
@@ -537,7 +551,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         block.sample + offset,tick,offset,track.run.arrangement,previous.serial,track.run.serial,followOrdinal,
         track.run.velocity,track.run.fade,previous.pcmAnchorTick,previous.frames-previous.pcmAnchorFrame,
         previous.frames,previous.velocity,previous.fade,previous.anchorTick,previous.anchorSourceTick,
-        oldSlot ? oldSlot->physicalStartFrame : -1};
+        physicalLap(oldSlot,previous.completedLoops != 0).startFrame};
     if (sink.transition) sink.transition(sink.context,edge);
     if (block.followActionsEnabled && sink.followOnLaunch && edge.newClip != 0) {
         const auto follow = sink.followOnLaunch(sink.context,edge);
@@ -568,13 +582,14 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
         const auto elapsed = track.run.frames - track.run.pcmAnchorFrame;
+        const auto lap = physicalLap(slot,track.run.completedLoops != 0);
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
         if (track.run.clip != 0 && !occupied(slot)) {
             sourceOffset = cursor;
             sourceTick = tick;
-        } else if (slot && slot->physicalFrames > 0) {
-            const auto remaining = std::max<std::int64_t>(0,slot->physicalFrames - elapsed);
+        } else if (lap.startFrame >= 0) {
+            const auto remaining = std::max<std::int64_t>(0,lap.length() - elapsed);
             if (remaining <= block.frames - cursor) {
                 sourceOffset = cursor + static_cast<std::int32_t>(remaining);
                 sourceTick = atSample(block,block.sample + sourceOffset);
@@ -589,12 +604,21 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         auto boundary = end;
         bool editRegion = false;
         const bool prepared = track.dueScene && track.dueScene->prepared;
+        const auto usesPhysicalLaps = [slot](const Pending& pending) noexcept {
+            return slot && slot->physicalLoopEndFrame && pending.physicalLaps > 0;
+        };
         for (auto* candidate : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
                                 prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
             if (!*candidate) continue;
             const auto earliest = static_cast<std::int32_t>(std::clamp<std::int64_t>(
                 (*candidate)->earliestSample - block.sample, 0, block.frames));
-            const auto offset = std::max({cursor,earliest,offsetAt(block,(*candidate)->tick)});
+            auto due = offsetAt(block,(*candidate)->tick);
+            if (usesPhysicalLaps(**candidate)) {
+                if (track.run.completedLoops + 1 < static_cast<std::uint64_t>((*candidate)->physicalLaps))
+                    continue;
+                due = sourceOffset;
+            }
+            const auto offset = std::max({cursor,earliest,due});
             if (offset < boundary) {
                 boundary = offset;
                 next = candidate;
@@ -623,7 +647,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             next = nullptr;
             editRegion = false;
         }
-        auto edgeTick = next ? (*next)->tick : sourceTick;
+        auto edgeTick = next && !usesPhysicalLaps(**next) ? (*next)->tick : sourceTick;
         if (editRegion) {
             const auto target = track.regionEdit->boundary.tick;
             edgeTick = block.sampleAtTick(block.clock,target) == block.sample + boundary
@@ -638,8 +662,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         if (boundary > cursor) {
             auto endSource = track.run.sourceTick;
             if (slot) {
-                if (slot->physicalFrames > 0)
-                    endSource = physicalSourceTick(*slot,add(elapsed,boundary-cursor));
+                if (lap.startFrame >= 0)
+                    endSource = lap.tickAt(add(elapsed,boundary-cursor));
                 else
                     endSource = atSourceEdge ? sourceEnd(*slot) : std::min(sourceEnd(*slot),
                         add(track.run.anchorSourceTick,std::max<std::int64_t>(0,nextTick - track.run.anchorTick)));
@@ -648,7 +672,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
                 track.run.pcmAnchorTick,elapsed,track.run.region.has_value(),
-                track.run.anchorTick,track.run.anchorSourceTick,slot ? slot->physicalStartFrame : -1});
+                track.run.anchorTick,track.run.anchorSourceTick,lap.startFrame});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
@@ -656,8 +680,27 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         }
         if (cursor == end) break;
         if (next) {
-            const auto pending = **next;
+            auto pending = **next;
             next->reset();
+            if (usesPhysicalLaps(pending) && pending.grid != LaunchQuantization::None) {
+                // A grid line can round onto the physical edge even when its
+                // tick is below the inverse clock at that sample.
+                const auto sample = block.sample + cursor;
+                const auto first = sample > 0 ? add(atSample(block,sample - 1),1) : 0;
+                auto target = launch_quantize::nextGridTick(first,pending.grid,block.meters).value_or(lastTick);
+                auto targetSample = target == lastTick ? lastTick : block.sampleAtTick(block.clock,target);
+                if (targetSample < sample) {
+                    target = launch_quantize::nextGridTick(add(target,1),pending.grid,block.meters).value_or(lastTick);
+                    targetSample = target == lastTick ? lastTick : block.sampleAtTick(block.clock,target);
+                }
+                if (targetSample != sample) {
+                    pending.tick = target;
+                    pending.physicalLaps = 0;
+                    *next = pending;
+                    continue;
+                }
+                edgeTick = target;
+            }
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
             if (transition(track,block,view,sink,pending,cursor,edgeTick)) {
@@ -739,6 +782,8 @@ Launcher::RetargetResult Launcher::retarget(std::span<const LaunchRequest> reque
             before->startTick != after->startTick || before->endTick != after->endTick ||
             before->loopStartTick != after->loopStartTick || before->loopEndTick != after->loopEndTick ||
             before->physicalStartFrame != after->physicalStartFrame || before->physicalFrames != after->physicalFrames ||
+            before->physicalLoopBeginFrame != after->physicalLoopBeginFrame ||
+            before->physicalLoopEndFrame != after->physicalLoopEndFrame ||
             before->mode != after->mode || before->quantization != after->quantization ||
             before->legato != after->legato || before->fade != after->fade || before->velocityAmount != after->velocityAmount)
             return RetargetResult::Rejected;
@@ -945,6 +990,17 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto physicalSample = [&](const Pending& event) {
+        if (event.physicalLaps > 0 && current->physicalLoopEndFrame) {
+            const auto lap = physicalLap(current,run.completedLoops != 0);
+            const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
+            const auto period = physicalLap(current,true).length();
+            const auto completed = std::min(run.completedLoops,static_cast<std::uint64_t>(event.physicalLaps));
+            const auto laps = std::max<std::int64_t>(0,event.physicalLaps - static_cast<std::int64_t>(completed) - 1);
+            if (laps > (lastTick - first) / period) return lastTick;
+            // The follow cannot run before this lap boundary, even if its
+            // target grid later delays it farther.
+            return std::max(event.earliestSample,add(endSample,first + laps * period));
+        }
         return std::max(event.earliestSample,block.sampleAtTick(block.clock,event.tick));
     };
     const auto dueSample = physicalSample(pending);
@@ -958,8 +1014,12 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
 
     if (current->physicalFrames > 0) {
         const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
-        if (elapsed > current->physicalFrames) return {};
-        return launchSourceTick(target,current,physicalSourceTick(*current,elapsed));
+        const auto lap = physicalLap(current,run.completedLoops != 0);
+        if (elapsed <= lap.length())
+            return launchSourceTick(target,current,lap.tickAt(elapsed));
+        if (!current->physicalLoopEndFrame) return {};
+        const auto wrapped = physicalLap(current,true);
+        return launchSourceTick(target,current,wrapped.tickAt((elapsed - lap.length()) % wrapped.length()));
     }
     const auto dueTick = block.sampleAtTick(block.clock,pending.tick) == dueSample
         ? pending.tick : atSample(block,dueSample);

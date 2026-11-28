@@ -107,7 +107,7 @@ void addClip(Store& store, const std::filesystem::path& folder, int clip, int sc
 }
 
 struct Playback {
-    struct Edge { std::int64_t newClip = 0, sample = 0, sourceTick = 0, track = 0; };
+    struct Edge { std::int64_t newClip = 0, sample = 0, sourceTick = 0, track = 0, tick = 0; };
     struct Scene { std::int64_t scene = 0, sample = 0; double bpm = 0; };
     Session& session;
     std::span<float> pcm;
@@ -131,7 +131,7 @@ struct Playback {
                 block.observeLaunchTransitions(this, [](void* opaque, const LaunchTransition& edge, std::int64_t) noexcept {
                     auto& self = *static_cast<Playback*>(opaque);
                     if (self.count < self.edges.size()) {
-                        self.edges[self.count++] = {edge.newClip, edge.sample, edge.sourceTick, edge.track};
+                        self.edges[self.count++] = {edge.newClip, edge.sample, edge.sourceTick, edge.track, edge.tick};
                     }
                 });
                 block.observeSceneLaunches(this, [](void* opaque, const LaunchSceneTransition& edge, std::int64_t) noexcept {
@@ -806,6 +806,180 @@ void physicalOneShotRetainedByTempoScene() {
     }
 }
 
+std::unique_ptr<Store> physicalLoopProject(const std::filesystem::path& folder, bool ram) {
+    auto store = sceneProject(folder);
+    addClip(*store,folder,101,10,5,false,3000,1,6000);
+    pinUnwarpedOneShot(*store,50000000,450000000);
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880;"
+            "UPDATE clip_playback_details SET loop_begin_ns=100000000,loop_end_ns=350000000;");
+    db.exec(ram ? "UPDATE clip_launch SET ram_mode=1" : "UPDATE clip_launch SET ram_mode=0");
+    return store;
+}
+
+void persistedPhysicalLoopTempo() {
+    bool matched = true;
+    for (const bool ram : {true,false}) {
+        for (const bool linkedFollow : {false,true}) {
+            test::TempDirectory folder{"unwarped_loop_link",ram ? "ram" : "paged"};
+            auto store = physicalLoopProject(folder.path(),ram);
+            auto& db = store->db();
+            if (linkedFollow)
+                db.exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1");
+            if (!ram) addClip(*store,folder.path(),102,20,3,false);
+            constexpr auto firstLap = 14400;
+            constexpr auto period = 12000;
+            constexpr auto linkedStop = firstLap + 2 * period;
+            constexpr auto performedStop = 84000;
+            const auto render = [&](bool retime) {
+                Session session;
+                session.graph().setFadeFrames(0);
+                if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+                std::vector<float> pcm(97000);
+                Playback playback{session,pcm};
+                playback.paged = !ram;
+                scene(*store,session,10);
+                playback.through(6000);
+                if (retime)
+                    require(session.setExternalTempoAt(*store,140,quarter/2), "perform the ordinary 140 BPM boundary");
+                if (retime && !ram) {
+                    playback.through(6001);
+                    const auto swaps = session.graph().stats().swaps;
+                    OpRequest edit;
+                    edit.opType = "clip.setGain";
+                    edit.payload = {{"id", 102}, {"gain", -6.0}};
+                    require(OpJournal(*store).commit(edit).ok && session.refresh(*store),
+                            "refresh a different slot during the pinned paged loop");
+                    playback.through(6002);
+                    require(session.graph().stats().swaps > swaps && session.problems().empty(),
+                            "the changed graph adopts with the original loop reader still warm");
+                }
+                playback.through(firstLap);
+                const auto beforeWrap = trackState(session);
+                playback.through(firstLap+1);
+                const auto afterWrap = trackState(session);
+                if (!linkedFollow) {
+                    OpRequest stop;
+                    stop.opType = "session.stopTrack";
+                    stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+                    require(OpJournal(*store).commit(stop).ok, "queue manual Slot Stop on the active clock");
+                }
+                playback.through(static_cast<std::int64_t>(pcm.size()));
+                const auto stop = playback.count == 2 && playback.edges[1].newClip == 0 ? playback.edges[1].sample : -1;
+                const auto expected = linkedFollow ? linkedStop : retime ? performedStop : 96000;
+                std::printf("Physical loop %s %s link=%d: wraps %llu/%llu; pulse .55 -> %.6f at 18600; stop %lld (expected %d)\n",
+                    ram ? "RAM" : "paged",linkedFollow ? "linked Follow" : "manual",
+                    retime, static_cast<unsigned long long>(beforeWrap.completedLoops),
+                    static_cast<unsigned long long>(afterWrap.completedLoops),static_cast<double>(pcm[18600]),
+                    static_cast<long long>(stop),expected);
+                for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+                matched &= playback.count == 2 && playback.edges[0].sample == 0 && stop == expected &&
+                    beforeWrap.run != 0 && beforeWrap.run == afterWrap.run &&
+                    beforeWrap.completedLoops == 0 && afterWrap.completedLoops == 1 &&
+                    session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0;
+                return pcm;
+            };
+            const auto steady = render(false);
+            const auto retimed = render(true);
+            const auto end = linkedFollow ? linkedStop : performedStop;
+            matched &= std::equal(steady.begin(),steady.begin()+end,retimed.begin()) &&
+                std::all_of(retimed.begin()+end,retimed.end(),[](float frame) {return frame == 0;});
+        }
+    }
+    require(matched, "pinned loops preserve physical laps, follow and quantized stop under ordinary tempo");
+}
+
+void physicalLoopFollowUsesTargetGrid() {
+    test::TempDirectory folder{"unwarped_loop_link","follow-target-grid"};
+    auto store = physicalLoopProject(folder.path(),true);
+    addClip(*store,folder.path(),102,20,2,false,1200);
+    store->db().exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=4 WHERE clip_id=101;"
+                    "UPDATE clip_launch SET launch_quant=12 WHERE clip_id=102");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto earlyGrid = 37714, actualGrid = 42857;
+    constexpr auto attack = actualGrid + 1029; // 1200 source frames at 120→140 BPM
+    std::vector<float> pcm(attack + blockFrames);
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(6000);
+    require(session.setExternalTempoAt(*store,140,quarter / 2), "perform tempo before the linked lap deadline");
+    playback.through(earlyGrid + 1);
+    require(playback.count == 1 && trackState(session).clip == 101,
+            "the earlier musical grid does not steal time from the linked physical lap");
+    playback.through(attack + blockFrames);
+    require(playback.count == 2 && playback.edges[1].newClip == 102 && playback.edges[1].sample == actualGrid,
+            "linked Follow resolves the explicit sixteenth grid after the actual third lap");
+    const auto peak = std::max_element(pcm.begin()+attack-4,pcm.begin()+attack+5);
+    require(std::abs((peak - pcm.begin()) - attack) <= 1 && std::abs(*peak - .55f) < .03f &&
+            session.problems().empty() &&
+            callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the quantized target plays the correct source and adds no callback I/O or allocation");
+}
+
+void physicalFollowKeepsCoincidentGridSample() {
+    test::TempDirectory folder{"unwarped_loop_link","follow-grid-tie"};
+    auto store = physicalLoopProject(folder.path(),true);
+    addClip(*store,folder.path(),102,20,2,false);
+    store->db().exec("UPDATE tempo_map SET bpm=140 WHERE pos_ticks=0;"
+                    "UPDATE clip_playback_details SET loop_end_ns=157145833 WHERE clip_id=101;"
+                    "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=1,follow_a=4 WHERE clip_id=101;"
+                    "UPDATE clip_launch SET launch_quant=12 WHERE clip_id=102");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto coincident = 5143; // source frames 2400–7543, and tick quarter/4 rounds here
+    std::vector<float> pcm(10543);
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(coincident);
+    require(playback.count == 1, "linked Follow waits for its complete physical lap");
+    playback.through(static_cast<std::int64_t>(pcm.size()));
+    std::printf("Physical Follow at a coincident sixteenth grid: %lld (expected %d)\n",
+        static_cast<long long>(playback.edges[1].sample),coincident);
+    require(playback.count == 2 && playback.edges[1].newClip == 102 && playback.edges[1].sample == coincident &&
+            playback.edges[1].tick == quarter / 4,
+            "a target sixteenth rounded onto the physical lap is eligible on that sample");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "settling the coincident grid is allocation and I/O free");
+}
+
+void laterFollowKeepsEarlierLegatoForecast() {
+    test::TempDirectory folder{"unwarped_loop_link","legato-before-follow"};
+    auto store = physicalLoopProject(folder.path(),true);
+    // The inherited source at 82,288 is beyond the native bank's initial pages.
+    addClip(*store,folder.path(),102,20,2,true,82288,1,192000);
+    store->db().exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=20,follow_a=1 WHERE clip_id=101;"
+                    "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto due = 22286; // one quarter under the performed 120→140 clock
+    const auto expected = std::int64_t{10286} * quarter / (rate / 2);
+    std::vector<float> pcm(due + blockFrames);
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(6000);
+    require(session.setExternalTempoAt(*store,140,quarter / 2), "retime with the linked physical Follow still queued");
+    playback.through(17000);
+    const LaunchRequest request{LaunchRequestKind::SlotPress,1,20,102,session.launchIncarnation()};
+    require(session.postLaunchGesture(std::array{request}), "queue the earlier native paged Legato slot");
+    playback.through(17000 + blockFrames);
+    const auto queued = trackState(session).queued;
+    require(queued.clip == 102 && queued.tick == quarter && queued.legatoSourceTick &&
+            std::abs(*queued.legatoSourceTick - expected) <= 1,
+            "a much later linked Follow permits prefetch of the earlier physical Legato phase");
+    playback.through(due + blockFrames);
+    require(playback.count == 2 && playback.edges[1].newClip == 102 && playback.edges[1].sample == due &&
+            std::abs(playback.edges[1].sourceTick - expected) <= 1 && pcm[due] < -.4f,
+            "the actual earlier Legato launch starts on its prefetched source attack");
+    require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "prefetching the earlier Legato phase keeps callback work allocation and I/O free");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -878,6 +1052,10 @@ int main() {
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
+        persistedPhysicalLoopTempo();
+        physicalLoopFollowUsesTargetGrid();
+        physicalFollowKeepsCoincidentGridSample();
+        laterFollowKeepsEarlierLegatoForecast();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

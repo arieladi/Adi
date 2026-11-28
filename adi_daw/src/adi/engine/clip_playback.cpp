@@ -1678,8 +1678,9 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
         appendLaunchSource(*pagedProject,original,clip,clip.id,end,pinned ? clip.sourceEndNs : std::nullopt);
         paged.push_back({clip.id,clip.id,pinned ? slot.physicalStartFrame : fixedFrame(slot.startTick),
-            fixedFrame(slot.loopStartTick),fixedFrame(slot.loopEndTick),extent,
-            pinned && slot.physicalFrames <= 3 * ClipPlayback::readAheadFrames(rate)});
+            pinned ? slot.physicalLoopBeginFrame : fixedFrame(slot.loopStartTick),
+            pinned ? slot.physicalLoopEndFrame : fixedFrame(slot.loopEndTick),extent,
+            pinned && !slot.physicalLoopEndFrame && slot.physicalFrames <= 3 * ClipPlayback::readAheadFrames(rate)});
         pagedExtents.push_back(static_cast<std::uint64_t>(extent));
     };
     const auto add = [](std::int64_t a, std::int64_t b) {
@@ -1721,8 +1722,14 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
             LaunchQuantization::Bar);
         try {
             const bool usePins = clip->kind == "audio" && !warped;
-            const bool physicalPins = usePins && clip->timeBase == 1 && clip->contentOffsetNs && clip->sourceEndNs &&
-                *clip->contentOffsetNs >= 0 && !clip->loopEnabled && !slot.legato && slot.mode != LaunchMode::Repeat;
+            const bool physicalSource = usePins && clip->timeBase == 1 && clip->contentOffsetNs && clip->sourceEndNs &&
+                *clip->contentOffsetNs >= 0 && !slot.legato && slot.mode != LaunchMode::Repeat;
+            const bool physicalLoop = physicalSource && clip->loopEnabled && clip->loopBeginNs && clip->loopEndNs &&
+                *clip->loopBeginNs >= 0 && *clip->loopEndNs <= *clip->sourceEndNs &&
+                *clip->loopEndNs > std::max(*clip->loopBeginNs,*clip->contentOffsetNs) &&
+                samplesAtNs(*clip->loopEndNs,rate) >
+                    samplesAtNs(std::max(*clip->loopBeginNs,*clip->contentOffsetNs),rate);
+            const bool physicalPins = physicalSource && (!clip->loopEnabled || physicalLoop);
             // A paired tempo scene still observes the outgoing pin's logical
             // region when a different slot takes its relative Legato phase.
             const auto& pinClock = physicalPins ? nativeReferenceClock : fixedClock;
@@ -1735,9 +1742,9 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 : clip->endMarkerTicks.value_or(add(slot.startTick, length));
             if (clip->loopEnabled) {
                 slot.loopStartTick = usePins && clip->loopBeginNs
-                    ? fixedClock.storedNanosecondsToTicks(*clip->loopBeginNs) : clip->loopStartTicks;
+                    ? pinClock.storedNanosecondsToTicks(*clip->loopBeginNs) : clip->loopStartTicks;
                 slot.loopEndTick = usePins && clip->loopEndNs
-                    ? fixedClock.storedNanosecondsToTicks(*clip->loopEndNs)
+                    ? pinClock.storedNanosecondsToTicks(*clip->loopEndNs)
                     : add(slot.loopStartTick, clip->loopLenTicks.value_or(0));
                 if (slot.loopEndTick <= slot.loopStartTick) throw std::runtime_error("invalid Session loop bounds");
             }
@@ -1773,6 +1780,10 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     if (endFrame <= startFrame) throw std::runtime_error("Session clip source is shorter than one frame");
                     prepared.physicalStartFrame = startFrame;
                     prepared.physicalFrames = endFrame - startFrame;
+                    if (physicalLoop) {
+                        prepared.physicalLoopBeginFrame = samplesAtNs(*clip->loopBeginNs,rate);
+                        prepared.physicalLoopEndFrame = samplesAtNs(*clip->loopEndNs,rate);
+                    }
                     if (!setting.ramMode) {
                         if (priorPinnedPages.source && priorPinnedPages.bank) {
                             const auto* prior = priorPinnedPages.bank->clip(clip->id);
@@ -1785,6 +1796,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                                 prior->frames() == static_cast<std::uint64_t>(endFrame) &&
                                 priorSlot != priorSlots.end() && priorSlot->physicalStartFrame == startFrame &&
                                 priorSlot->physicalFrames == prepared.physicalFrames &&
+                                priorSlot->physicalLoopBeginFrame == prepared.physicalLoopBeginFrame &&
+                                priorSlot->physicalLoopEndFrame == prepared.physicalLoopEndFrame &&
                                 priorClip != priorClips.end() && *priorClip == *clip &&
                                 sameStoredAudioBacking(*priorPinnedPages.source,original,clip->id)) {
                                 // Share the warm reader only for this unchanged
@@ -1794,7 +1807,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                             }
                         }
                         if (!hasPreparedClock && !allowColdPinnedPages &&
-                            prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate))
+                            (physicalLoop || prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate)))
                             throw std::runtime_error("Session unwarped source needs an identical running page bank");
                     }
                 }

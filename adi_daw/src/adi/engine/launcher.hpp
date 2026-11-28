@@ -21,8 +21,9 @@ struct LaunchSlot {
     std::optional<LaunchQuantization> quantization; // absent means Global
     float velocityAmount = 0.0f;
     bool legato = false, fade = false, hasStop = true;
-    // An absolute one-shot keeps its native extent when the project clock changes.
+    // Absolute pins keep their native extent and laps when the project clock changes.
     std::int64_t physicalStartFrame = -1, physicalFrames = 0;
+    std::int64_t physicalLoopBeginFrame = 0, physicalLoopEndFrame = 0;
 };
 
 struct LaunchView {
@@ -100,6 +101,7 @@ struct LaunchTransition {
 struct LaunchFollowRequest {
     LaunchRequest request;
     std::int64_t tick = 0;
+    std::int64_t physicalLaps = 0;
 };
 
 struct LaunchSceneTransition {
@@ -198,6 +200,7 @@ private:
         bool sceneGesture = false;
         std::uint64_t admission = 0;
         bool prepared = false;
+        std::int64_t physicalLaps = 0;
     };
     struct Run {
         std::int64_t scene = 0, clip = 0, sourceTick = 0, frames = 0;

@@ -191,8 +191,8 @@ bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::
     auto* slot = std::lower_bound(slots.data(),end,track,
         [](const LaunchSlot& item,std::int64_t id) { return item.track < id; });
     for (; slot != end && slot->track == track; ++slot) {
-        if (slot->clip != clip || slot->physicalFrames <= 3 * ClipPlayback::readAheadFrames(source->rate()))
-            continue;
+        if (slot->clip != clip || (!slot->physicalLoopEndFrame &&
+            slot->physicalFrames <= 3 * ClipPlayback::readAheadFrames(source->rate()))) continue;
         const auto* nextBank = after && after->hasTrack(track) ? after->mediaAt(sample).get() : nullptr;
         if (retainedOnly) {
             // An ordinary refresh may deliberately remove or move the slot.
