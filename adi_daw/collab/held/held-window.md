@@ -36,6 +36,24 @@ stream reads the newest entry first.
 
 ---
 
+## 2026-11-28, round 2 — the first proof (of the chain's second commit only)
+
+The cold check round 1 started (`all`, on `cc2d2c1a`: BASE plus summing-drive and tap-quiet) ended at 18:17.
+**Core build OK, UI build OK** under MSVC /WX. Tests: 289 of 291 core pass, 3 of 4 window suites pass. The
+failures, all timing checks on a build PC shared by about twenty sessions, none in code the chain touches:
+- `adi_link_playback_tests`: "both tempo directions detect old history on repeated loops...", "bounded owner
+  preparation makes every observed current BPM agree...", "owner repairs backward-seek history at its captured
+  landing", "repaired backward seek continues real native audio..." (8 checks). The chain changes no Link or
+  playback code.
+- `adi_ui_document_tests` (in core and ui): "opening yields to the owner between slow plug-in loads" (SC-415's
+  `longestTurn < wall / 3`: 864 ms of 1594 ms). The chain does not touch plug-in loading.
+These are judged load, not merges, until a rerun of those two tests alone says otherwise (next entry).
+
+Nothing new to gather: `origin/main` is still `629a4834` (in the chain), and no seat branch has moved since
+round 1's survey. The head `b85ca765` is now in its core check on slot 17.
+
+---
+
 ## 2026-11-28, round 1 ends — where the stream stands; what the next session does
 
 **State.** Steps 1 and 2 are done: the survey (below) and the chain, `held/window-chain` at `b85ca765` (BASE
