@@ -2735,15 +2735,17 @@ void holdFollowerOracle(bool split, bool on, bool fullBase, unsigned sourceMask 
         }
     }
     // Independent first-order transfer from the 320 Hz and 3.2 kHz splits.
+    // Each outer band crosses its own edge first and the middle is the
+    // complement, as the rack's first-order three-way split does.
     struct SplitPole {
         double previousX = 0, previousY = 0;
-        float run(float x, double g) {
+        double run(double x, double g) {
             previousY = (g * (x + previousX) + (1.0 - g) * previousY) / (1.0 + g);
             previousX = x;
-            return static_cast<float>(previousY);
+            return previousY;
         }
     };
-    std::array<std::array<SplitPole, 2>, 2> poles{};
+    std::array<std::array<SplitPole, 4>, 2> poles{};
     const double lowG = std::tan(std::numbers::pi * 320.0 / 48000.0);
     const double highG = std::tan(std::numbers::pi * 3200.0 / 48000.0);
     double worst = 0;
@@ -2765,10 +2767,14 @@ void holdFollowerOracle(bool split, bool on, bool fullBase, unsigned sourceMask 
         bands[1] = dry;
         if (split) {
             for (std::size_t ch = 0; ch < 2; ++ch) {
-                bands[0][ch] = poles[0][ch].run(dry[ch], lowG);
-                const float upper = dry[ch] - bands[0][ch];
-                bands[1][ch] = poles[1][ch].run(upper, highG);
-                bands[2][ch] = upper - bands[1][ch];
+                auto& pole = poles[ch];
+                const double x = dry[ch];
+                const double bass = pole[1].run(pole[0].run(x, lowG), highG);
+                const double upper = x - pole[2].run(x, highG);
+                const double treble = upper - pole[3].run(upper, lowG);
+                bands[0][ch] = static_cast<float>(bass);
+                bands[1][ch] = static_cast<float>(x - bass - treble);
+                bands[2][ch] = static_cast<float>(treble);
             }
         }
         std::array<float, 2> deltas{};

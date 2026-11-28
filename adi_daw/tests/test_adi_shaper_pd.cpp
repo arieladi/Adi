@@ -1746,7 +1746,8 @@ int main() try {
         const auto* descriptor = device->paramAt(515 + id - 626);
         check(descriptor && descriptor->id == std::to_string(id), "room descriptor keeps its saved ID");
     }
-    for (int id : {464, 535, 724, 855, 2049})
+    // 855 became the high band's Sweep stereo offset; 860 is still a hole.
+    for (int id : {464, 535, 724, 860, 2049})
         check(!device->setParam(std::to_string(id), ParamValue::fromNormalized(1)), "undeclared ID rejected");
     for (int id = 416; id <= 463; ++id) {
         const auto* desc = device->paramAt(605 + id - 416);
