@@ -6,6 +6,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/engine/launch_audio.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/media/blake3.hpp"
@@ -100,7 +101,7 @@ struct Playback {
     Session& session;
     std::array<std::vector<float>,2> pcm;
     std::int64_t first = 0, performedAt = -1;
-    std::int64_t enteredPhase = -1;
+    std::int64_t enteredPhase = -1, rawStoppedAt = -1;
     double performedBpm = 0;
 
     void through(std::int64_t end) {
@@ -116,7 +117,9 @@ struct Playback {
                 audio::CallbackScope callback;
                 auto block = session.beginRender();
                 block.observeLaunchTransitions(this,[](void* context,const LaunchTransition& edge,std::int64_t) noexcept {
-                    if (edge.newClip == 102) static_cast<Playback*>(context)->enteredPhase = edge.sourceTick;
+                    auto& playback = *static_cast<Playback*>(context);
+                    if (edge.newClip == 102) playback.enteredPhase = edge.sourceTick;
+                    if (edge.oldClip == 102 && edge.newClip == 0) playback.rawStoppedAt = edge.sample;
                 });
                 block.observeSceneLaunches(this,[](void* context,const LaunchSceneTransition& scene,std::int64_t) noexcept {
                     auto& playback = *static_cast<Playback*>(context);
@@ -299,6 +302,171 @@ void workerExternalTempo(ExternalCase variant) {
             "an idle fixed slot does not block the ordinary external tempo path");
     }
 }
+void preparedWarpToRawScene(bool loop) {
+    constexpr auto oldElapsed = std::int64_t{6000};
+    constexpr auto rawStart = std::int64_t{4800};
+    constexpr auto rawCue = rawStart + oldElapsed;
+    constexpr auto oldLaunch = sceneFrame - oldElapsed;
+    constexpr auto loopBegin = 9600, loopEnd = 21600, loopLength = loopEnd - loopBegin;
+    constexpr auto firstWrap = sceneFrame + loopEnd - rawCue;
+    constexpr auto linkedStop = firstWrap + 2*loopLength;
+    constexpr auto dryBefore = sceneFrame - 600, dryAfter = sceneFrame + 1200;
+    constexpr auto finish = sceneFrame + 48000 + 4096;
+    const auto render = [&](bool tempo,bool fade,bool pending = false) {
+        test::TempDirectory folder{"r3_to_raw_scene",fade ? "fade" : "no-fade"};
+        StoreError error{};
+        auto store = Store::createEmpty(folder.path()/"song.adi",error);
+        require(static_cast<bool>(store),"create worker-to-raw scene project");
+        test::applySessionSchema(store->db());
+        auto& db = store->db();
+        db.exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Worker Warp to raw',48000);"
+                "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+                "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                "(1,'audio','Warp and raw',0),(2,'audio','Dry',1),(9,'master','Main',2);"
+                "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1);"
+                "INSERT INTO clip_slots(track_id,scene_id,has_stop) VALUES(2,10,0),(2,20,0)");
+        if (tempo) db.exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        addSlot(*store,101,10,.8f,2*quarter,oldElapsed+96,false);
+        db.exec("UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id=101;"
+                "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101");
+        if (fade) db.exec("UPDATE clip_launch SET clip_fade=1 WHERE clip_id=101");
+
+        writeSource(*store,102,60000,0,std::array{Pulse{rawCue,-.6f},Pulse{rawCue+12000,-.7f}});
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled)"
+                "VALUES(102,1,'audio',1,0,1000000000,0);"
+                "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(102,102,60000,0);"
+                "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns)"
+                "VALUES(102,100000000,1100000000);"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,20,102);"
+                "INSERT INTO clip_launch(clip_id,legato,ram_mode,clip_fade) VALUES(102,1,0,0);");
+        if (loop) {
+            db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=2306304,loop_len_ticks=2882880 WHERE id=102;"
+                    "UPDATE clip_playback_details SET loop_begin_ns=200000000,loop_end_ns=450000000 WHERE clip_id=102;"
+                    "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1 WHERE clip_id=102;");
+        }
+
+        constexpr auto dryFrames = 150000;
+        writeSource(*store,103,dryFrames,1,std::array{Pulse{dryBefore,.5f},Pulse{dryAfter,.5f}});
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled)"
+                "VALUES(103,2,'audio',1,0,3000000000,0);"
+                "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(103,103,150000,0);");
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{},SessionSpec{2,rate,blockFrames})) throw std::runtime_error(session.error());
+        const auto delay = session.graph().currentGraph()->latencySamples();
+        require(delay == 2048,"the outgoing Complex worker declares 2048 frames");
+        session.transport().play();
+        Playback playback{session,{std::vector<float>(finish),std::vector<float>(finish)}};
+        playback.through(oldLaunch);
+        OpRequest start;
+        start.opType="session.launchClip";
+        start.payload={{"track",1},{"scene",10},{"clip",101},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(start).ok,"launch the persisted outgoing worker Warp");
+        playback.through(sceneFrame-3*blockFrames);
+        if (pending) {
+            require(session.refresh(*store),"publish a fresh replacement for the outgoing prepared reader");
+            require(session.graph().currentTransportState() != session.graph().adoptedTransportState(),
+                    "the replacement reader is not adopted");
+        }
+        const auto* before = session.graph().currentTransportState();
+        require(launchScene(*store,session,20),"queue the raw Legato scene");
+        if (pending) {
+            require(session.error().find("prepared Warp scene waits for the adopted outgoing bank") != std::string::npos &&
+                    session.graph().currentTransportState() == before,"the scene refuses a fresh prepared replacement bank");
+            return playback.pcm;
+        }
+        playback.through(sceneFrame+1);
+        LaunchStatusHeader status{};
+        std::array<LaunchTrackStatus,2> rows{};
+        require(session.readLaunchStatus(rows,status),"read the driver-selected run");
+        const auto incoming = rows[0];
+        bool exactLoop = true;
+        if (loop) {
+            playback.through(firstWrap);
+            require(session.readLaunchStatus(rows,status),"read the partial lap up to its boundary");
+            exactLoop &= rows[0].run == incoming.run && rows[0].completedLoops == 0;
+            playback.through(firstWrap+1);
+            require(session.readLaunchStatus(rows,status),"read the first physical wrap");
+            exactLoop &= rows[0].run == incoming.run && rows[0].completedLoops == 1;
+            playback.through(firstWrap+loopLength+1);
+            require(session.readLaunchStatus(rows,status),"read the second physical wrap");
+            exactLoop &= rows[0].run == incoming.run && rows[0].completedLoops == 2;
+        }
+        playback.through(finish);
+        const auto& left=playback.pcm[0];
+        const auto& right=playback.pcm[1];
+        const auto heardHead=static_cast<std::size_t>(sceneFrame+delay);
+        if (loop) {
+            audio::WavReader original(folder.path() / "102.wav");
+            std::vector<float> raw(static_cast<std::size_t>(2*loopEnd));
+            require(original.read(raw.data(),loopEnd) == loopEnd,"read saved stereo loop PCM");
+            auto source = rawCue;
+            const auto fadeEnd = heardHead + static_cast<std::size_t>(fade ? launchFadeFrames(rate) : 0);
+            const auto delayedStop = static_cast<std::size_t>(linkedStop+delay);
+            for (auto frame=heardHead; frame<delayedStop; ++frame) {
+                if (frame >= fadeEnd)
+                    exactLoop &= left[frame] == raw[static_cast<std::size_t>(2*source)];
+                if (++source == loopEnd) source = loopBegin;
+            }
+            exactLoop &= playback.rawStoppedAt == linkedStop &&
+                std::all_of(left.begin()+linkedStop+delay,left.end(),[](float sample) { return sample == 0; });
+            std::printf("Prepared Warp to raw loop: first wrap %lld, linked Stop %lld/%lld, exact PCM %d\n",
+                static_cast<long long>(firstWrap),static_cast<long long>(playback.rawStoppedAt),
+                static_cast<long long>(linkedStop),exactLoop);
+        }
+        const auto rightPeak = [&](std::int64_t at) {
+            const auto peak=std::max_element(right.begin()+at-96,right.begin()+at+97);
+            const auto position=static_cast<std::int64_t>(peak-right.begin());
+            if (std::abs(*peak - .5f) > 1e-4f || position != at)
+                std::printf("    dry expected %lld, peak %lld at %.8f, exact sample %.8f\n",
+                    static_cast<long long>(at),static_cast<long long>(position),static_cast<double>(*peak),
+                    static_cast<double>(right[static_cast<std::size_t>(at)]));
+            return std::abs(*peak - .5f) <= 1e-4f && position == at;
+        };
+        std::printf("R3 to raw tempo=%d fade=%d: scene %lld/%g, phase %lld, graph delay %d, dry aligned %d/%d, raw head %.6f\n",
+            tempo,fade,static_cast<long long>(playback.performedAt),playback.performedBpm,
+            static_cast<long long>(playback.enteredPhase),session.graph().currentGraph()->latencySamples(),
+            rightPeak(dryBefore+delay),rightPeak(dryAfter+delay),static_cast<double>(left[heardHead]));
+        if (!session.error().empty()) std::printf("  %s\n",session.error().c_str());
+        for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+        std::printf("    active %lld, raw later %.8f, allocations %u, I/O %u\n",
+            static_cast<long long>(rows[0].clip),static_cast<double>(left[heardHead+12000]),
+            allocations,audio::callbackFileIo.load());
+        require(playback.performedAt == sceneFrame && (tempo ? playback.performedBpm == 140 :
+                    session.beginRender().bpmAtTick(4*quarter) == 120) &&
+                playback.enteredPhase == rawCue*quarter/(rate/2) && incoming.clip == 102 &&
+                session.graph().currentGraph()->latencySamples() == delay &&
+                rightPeak(dryBefore+delay) && rightPeak(dryAfter+delay) &&
+                (loop ? exactLoop : left[heardHead+12000] == -.7f) &&
+                session.problems().empty() && audio::callbackFileIo == 0 && allocations == 0,
+                "the worker exits at the scene and its raw replacement remains PDC aligned");
+        if (!fade) require(left[heardHead] == -.6f,"the raw attack follows one physical graph delay");
+        return playback.pcm;
+    };
+
+    const auto steadyFade=render(false,true);
+    const auto tempoFade=render(true,true);
+    const auto steadyDry=render(false,false);
+    const auto tempoDry=render(true,false);
+    require(steadyFade == tempoFade && steadyDry == tempoDry,
+            "the outgoing old bank and its bounded fade match the unchanged clock exactly");
+    constexpr auto delay = 2048;
+    const auto from = sceneFrame+delay;
+    const auto to = from+launchFadeFrames(rate);
+    float greatest = 0;
+    auto leaked = false;
+    for (auto frame = sceneFrame; frame < finish; ++frame) {
+        const auto delta = std::abs(tempoFade[0][static_cast<std::size_t>(frame)]-tempoDry[0][static_cast<std::size_t>(frame)]);
+        if (frame < from || frame >= to) leaked |= delta != 0;
+        else greatest=std::max(greatest,delta);
+    }
+    std::printf("Old prepared R3 fade: largest residual %.6f only in physical frames [%lld,%lld)\n",
+        static_cast<double>(greatest),static_cast<long long>(from),static_cast<long long>(to));
+    require(greatest > .05f && !leaked,"only the finite old before-bank fade follows the logical cut");
+    (void)render(true,true,true);
+}
+
 } // namespace
 
 int main() {
@@ -306,6 +474,8 @@ int main() {
         workerTempoScene(SceneCase::Restart);
         workerTempoScene(SceneCase::Legato);
         workerTempoScene(SceneCase::LegatoColdAfterRetime);
+        preparedWarpToRawScene(false);
+        preparedWarpToRawScene(true);
         workerExternalTempo(ExternalCase::Active);
         workerExternalTempo(ExternalCase::Idle);
         workerExternalTempo(ExternalCase::StartsDuringPreparation);

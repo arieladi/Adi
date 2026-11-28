@@ -82,14 +82,24 @@ bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexc
         before.physicalLoopEndFrame == after.physicalLoopEndFrame;
 }
 
+bool sameLogicalWarpWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
+    return before.track == after.track && before.startTick == after.startTick && before.endTick == after.endTick &&
+        before.loopStartTick == after.loopStartTick && before.loopEndTick == after.loopEndTick;
+}
+
 bool sameNativeWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
-                            const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
+                          const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
     const auto nativeWarp = [](const LaunchAudioClip* clip) {
         return clip && clip->followsTempo() && clip->latencySamples() == 0;
     };
     return nativeWarp(beforeAudio) && nativeWarp(afterAudio) && beforeAudio->usesPages() == afterAudio->usesPages() &&
-        before.track == after.track && before.startTick == after.startTick && before.endTick == after.endTick &&
-        before.loopStartTick == after.loopStartTick && before.loopEndTick == after.loopEndTick;
+        sameLogicalWarpWindow(before,after);
+}
+
+bool samePreparedWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
+                            const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
+    return beforeAudio && afterAudio && beforeAudio->latencySamples() > 0 &&
+        beforeAudio->latencySamples() == afterAudio->latencySamples() && sameLogicalWarpWindow(before,after);
 }
 
 const LaunchSlot* sceneCell(const LaunchView& view, std::int64_t track, std::int64_t scene) noexcept {
@@ -1294,10 +1304,14 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
                         hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
                         oldAudio->pageReader() == newAudio->pageReader();
-                    const bool sameWarp = !target.physicalLoopEndFrame && newSlot != after.end() &&
+                    const bool sameWarp = !retained && newSlot != after.end() &&
                         sameNativeWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
-                    if (!samePhysical && !sameWarp)
+                    const bool samePrepared = !retained && newSlot != after.end() &&
+                        samePreparedWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
+                    if (!samePhysical && !sameWarp && !samePrepared)
                         throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");
+                    if (samePrepared && !adoptedBefore)
+                        throw std::runtime_error("a pinned Session Legato prepared Warp scene waits for the adopted outgoing bank");
                     // An unadopted replacement pager may only have pages
                     // around Start and Loop Begin.
                     if (sameWarp && oldAudio->usesPages() && !adoptedBefore && !oldAudio->allWarpPhasesPrimed())

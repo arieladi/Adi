@@ -41,16 +41,21 @@ std::int32_t offsetAt(const LaunchBlock& block, std::int64_t tick) noexcept {
     return static_cast<std::int32_t>(std::min<std::int64_t>(block.frames, sample - block.sample));
 }
 
+std::int64_t gridAtOrAfterSample(const LaunchBlock& block, LaunchQuantization grid,
+                                 std::int64_t sample) noexcept {
+    if (sample == lastTick) return lastTick;
+    // A grid tick can round onto this sample even when sample->tick is
+    // already past the grid. Start the search just after the previous sample.
+    const auto lowerTick = sample == 0 ? 0 : add(atSample(block,sample - 1),1);
+    auto target = launch_quantize::nextGridTick(lowerTick,grid,block.meters).value_or(lastTick);
+    if (target != lastTick && block.sampleAtTick(block.clock,target) < sample)
+        target = launch_quantize::nextGridTick(add(target,1),grid,block.meters).value_or(lastTick);
+    return target;
+}
+
 std::int64_t gridForPress(const LaunchBlock& block, LaunchQuantization grid,
                          std::int64_t now) noexcept {
-    if (grid == LaunchQuantization::None) return now;
-    // A tick may project to the current sample even when sample->tick is
-    // already past the grid. Start the search just after the previous sample.
-    const auto lowerTick = block.sample == 0 ? 0 : add(atSample(block, block.sample - 1), 1);
-    auto target = launch_quantize::nextGridTick(lowerTick, grid, block.meters).value_or(lastTick);
-    if (target != lastTick && block.sampleAtTick(block.clock, target) < block.sample)
-        target = launch_quantize::nextGridTick(add(target,1), grid, block.meters).value_or(lastTick);
-    return target;
+    return grid == LaunchQuantization::None ? now : gridAtOrAfterSample(block,grid,block.sample);
 }
 
 std::span<const LaunchSlot> trackSlots(const LaunchView& view, std::int64_t track) noexcept {
@@ -533,6 +538,7 @@ void Launcher::applyFollow(const LaunchFollowRequest& follow, const LaunchBlock&
         track.follow = Pending{Action::Start,tick,slot.scene,slot.clip,request.velocity,
             grid,false,earliestSample};
         track.follow->physicalLaps = follow.physicalLaps;
+        track.follow->linkedPhysical = follow.physicalLaps > 0;
     }
     if (request.kind == LaunchRequestKind::StopTrack) {
         auto& track = *findTrack(*request.track);
@@ -620,7 +626,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
 
 bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
-                          std::int64_t tick) noexcept {
+                          std::int64_t tick, bool quantizedHandoff) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
     if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
@@ -633,23 +639,28 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         if (slot && (occupied(slot) || !slot->hasStop)) return false;
     }
 
-    track.follow.reset();
-    track.repeat.reset();
-    track.regionEdit.reset();
-    track.run = {};
-    track.run.arrangement = pending.action == Action::Arrangement;
     LaunchSlot oldGeometry;
     const auto* oldSlot = previous.clip
         ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,previous.physicalRegion,oldGeometry) : nullptr;
     const auto oldLap = cuedPhysicalLap(oldSlot,previous.completedLoops,previous.physicalCueFrame);
     const auto elapsed = previous.frames - previous.pcmAnchorFrame;
+    LaunchSourceCue cue;
     if (pending.action == Action::Start) {
-        track.stopSuppressesFollow = false;
         const auto oldFrame = oldLap.startFrame < 0 ? -1 :
             oldSlot->physicalLoopEndFrame && elapsed == oldLap.length() ? oldSlot->physicalLoopBeginFrame :
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
-        const auto cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,quantizedHandoff)) return false;
+    }
+    track.follow.reset();
+    track.repeat.reset();
+    track.regionEdit.reset();
+    track.run = {};
+    track.run.arrangement = pending.action == Action::Arrangement;
+    if (pending.action == Action::Start) {
+        track.stopSuppressesFollow = false;
         const auto position = cue.tick;
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
@@ -691,6 +702,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                       std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
     std::uint64_t projectedRawRun = 0;
+    auto refusedUserStartAtCursor = false;
     while (cursor < end) {
         const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
@@ -832,22 +844,16 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             track.run.frames = add(track.run.frames,boundary-cursor);
             cursor = boundary;
             phaseChangedAtCursor = false;
+            refusedUserStartAtCursor = false;
         }
         if (cursor == end) break;
         if (next) {
             auto pending = **next;
             next->reset();
             if (usesPhysicalLaps(pending) && pending.grid != LaunchQuantization::None) {
-                // A grid line can round onto the physical edge even when its
-                // tick is below the inverse clock at that sample.
                 const auto sample = block.sample + cursor;
-                const auto first = sample > 0 ? add(atSample(block,sample - 1),1) : 0;
-                auto target = launch_quantize::nextGridTick(first,pending.grid,block.meters).value_or(lastTick);
-                auto targetSample = target == lastTick ? lastTick : block.sampleAtTick(block.clock,target);
-                if (targetSample < sample) {
-                    target = launch_quantize::nextGridTick(add(target,1),pending.grid,block.meters).value_or(lastTick);
-                    targetSample = target == lastTick ? lastTick : block.sampleAtTick(block.clock,target);
-                }
+                const auto target = gridAtOrAfterSample(block,pending.grid,sample);
+                const auto targetSample = target == lastTick ? lastTick : block.sampleAtTick(block.clock,target);
                 if (targetSample != sample) {
                     pending.tick = target;
                     pending.physicalLaps = 0;
@@ -856,9 +862,19 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 }
                 edgeTick = target;
             }
+            if (next == &track.follow && pending.linkedPhysical && pending.grid != LaunchQuantization::None &&
+                refusedUserStartAtCursor) {
+                // A due manual Start owns its grid even when its cue is cold.
+                // A Follow deferred to a later grid already continued above.
+                tick = nextTick;
+                continue;
+            }
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            if (transition(track,block,view,sink,pending,cursor,edgeTick)) {
+            const auto quantizedHandoff = pending.grid != LaunchQuantization::None &&
+                ((next == &track.user && !pending.sceneGesture && !pending.repeat) ||
+                 (next == &track.follow && pending.linkedPhysical));
+            if (transition(track,block,view,sink,pending,cursor,edgeTick,quantizedHandoff)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();
                 if (pending.prepared) {
@@ -867,6 +883,9 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                             offsetAt(block,(*other)->tick) <= cursor) other->reset();
                     }
                 }
+            } else if (next == &track.user && pending.action == Action::Start && !pending.sceneGesture) {
+                const auto* requested = findSlot(view,track.id,pending.scene);
+                refusedUserStartAtCursor = occupied(requested) && requested->clip == pending.clip;
             }
             phaseChangedAtCursor = phaseChangedAtCursor || run != track.run.serial;
         } else if (editRegion) {
@@ -1160,7 +1179,8 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
 }
 
 std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& track, const Pending& pending,
-    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample) const noexcept {
+    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample,
+    std::int64_t* due) const noexcept {
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto lap = cuedPhysicalLap(current,run.completedLoops,run.physicalCueFrame);
@@ -1171,21 +1191,33 @@ std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& trac
             const auto completed = std::min(run.completedLoops,static_cast<std::uint64_t>(event.physicalLaps));
             const auto laps = std::max<std::int64_t>(0,event.physicalLaps - static_cast<std::int64_t>(completed) - 1);
             if (laps > (lastTick - first) / period) return lastTick;
-            // The follow cannot run before this lap boundary, even if its
-            // target grid later delays it farther.
-            return std::max(event.earliestSample,add(endSample,first + laps * period));
+            const auto lapEnd = std::max(event.earliestSample,add(endSample,first + laps * period));
+            if (event.grid == LaunchQuantization::None) return lapEnd;
+            const auto tick = gridAtOrAfterSample(block,event.grid,lapEnd);
+            return tick == lastTick ? lastTick : block.sampleAtTick(block.clock,tick);
         }
-        return std::max(event.earliestSample,block.sampleAtTick(block.clock,event.tick));
+        return event.tick == lastTick ? lastTick
+            : std::max(event.earliestSample,block.sampleAtTick(block.clock,event.tick));
     };
     const auto dueSample = physicalSample(pending);
-    // Reinspect after any queued event that could replace or move the source.
-    for (auto* event : {&track.back,&track.gateStop,&track.follow,&track.repeat,&track.sceneFollow,&track.dueScene}) {
-        if (*event && physicalSample(**event) <= dueSample) return {};
+    if (dueSample == lastTick) return {};
+    // Match render's tie order so a linked launch never hides an earlier or
+    // coincident user Start/Stop. Leave scene settlement conservative.
+    const bool prepared = track.dueScene && track.dueScene->prepared;
+    auto winsTie = true;
+    for (auto* event : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
+                        prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
+        if (!*event) continue;
+        if (&**event == &pending) { winsTie = false; continue; }
+        const auto sample = physicalSample(**event);
+        if (sample < dueSample || (sample == dueSample && winsTie)) return {};
     }
+    if (track.sceneFollow && physicalSample(*track.sceneFollow) <= dueSample) return {};
     if (track.regionEdit && (track.regionEdit->edit.rate == ClipUpdateRate::None
         ? track.regionEdit->boundary.sample : block.sampleAtTick(block.clock,track.regionEdit->boundary.tick)) <= dueSample)
         return {};
 
+    if (due) *due = dueSample;
     if (current->physicalFrames > 0) {
         const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
         if (elapsed < lap.length() || (!current->physicalLoopEndFrame && elapsed == lap.length()))
@@ -1275,6 +1307,23 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
     return status;
 }
 
+void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, const LaunchBlock& block,
+                                    LaunchSink sink, std::int64_t endSample) const noexcept {
+    if (!track.follow || !track.follow->linkedPhysical || track.follow->grid == LaunchQuantization::None ||
+        !track.run.clip) return;
+    const auto& pending = *track.follow;
+    const auto* target = findSlot(view,track.id,pending.scene);
+    if (!occupied(target) || target->clip != pending.clip || target->physicalFrames <= 0 ||
+        target->physicalLoopEndFrame) return;
+    const auto* current = findSlot(view,track.id,track.run.scene);
+    if (!current || current->clip != track.run.clip) current = findClip(view,track.id,track.run.clip);
+    LaunchSlot region;
+    current = effectiveSlot(current,track.run.region,track.run.physicalRegion,region);
+    std::int64_t due = 0;
+    const auto cue = queuedLegatoSourceCue(track,pending,*target,current,block,endSample,&due);
+    if (cue && cue->physicalFrame >= 0) sink.prefetchLinkedLegato(sink.context,*target,due,cue->physicalFrame);
+}
+
 std::uint32_t Launcher::claimStatusBuffer() noexcept {
     const auto current = publishedStatus_.load(std::memory_order_relaxed);
     for (std::uint32_t index = 0; index < statusBufferCount; ++index) {
@@ -1299,13 +1348,15 @@ void Launcher::publishStatus(const LaunchBlock& block, const LaunchView& view, L
     const auto index = claimStatusBuffer();
     const auto endSample = playing ? block.sample + block.frames : block.sample;
     auto* frame = index < statusBufferCount ? &statusBuffers_[index] : nullptr;
-    if (!frame && !sink.trackStatus) return;
+    const bool prefetch = playing && sink.prefetchLinkedLegato;
+    if (!frame && !sink.trackStatus && !prefetch) return;
     auto back = false;
     for (std::size_t row = 0; row < trackCount_; ++row) {
         const auto status = trackStatus(activeTracks_[row],block,view,endSample);
         back = back || status.source != LaunchTrackSource::Arrangement;
         if (frame) frame->rows[row] = status;
         if (sink.trackStatus) sink.trackStatus(sink.context,status);
+        if (prefetch) prefetchLinkedLegato(activeTracks_[row],view,block,sink,endSample);
     }
     if (frame) {
         frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back,

@@ -66,6 +66,10 @@ public:
     /// Driver-only lookahead for an idle source. Each candidate is a physical
     /// source window. Queue pages with the same worker used by playback.
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
+    /// Driver only. One private source, reserving every page read by the first
+    /// render window. Releases partial admission on refusal.
+    [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames) noexcept;
+    static void releaseSource(Node&) noexcept;
     /// Owner only, before publication. Keep a private physical slot's
     /// Start in the same bounded request as the running reader.
     static void keepSourceStartWarm(Node&, std::int64_t firstFrame) noexcept;

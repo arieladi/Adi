@@ -1910,7 +1910,8 @@ static std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchBank(const C
             const bool boundedPhysicalWindow = physicalSource && samplesAtNs(*clip->sourceEndNs,rate) -
                 samplesAtNs(physicalLoop ? std::min(*clip->contentOffsetNs,*clip->loopBeginNs) : *clip->contentOffsetNs,rate)
                     <= 3 * ClipPlayback::readAheadFrames(rate);
-            const bool supportedPhysicalLaunch = !slot.legato || setting.ramMode || boundedPhysicalWindow;
+            const bool supportedPhysicalLaunch = !slot.legato || setting.ramMode || boundedPhysicalWindow ||
+                (!clip->loopEnabled && slot.mode != LaunchMode::Repeat);
             const bool physicalPins = physicalSource && supportedPhysicalLaunch && (!clip->loopEnabled || physicalLoop);
             const bool warmPhysicalWindow = boundedPhysicalWindow && (!physicalLoop || slot.legato);
             // A paired tempo scene still observes the outgoing pin's logical
@@ -2153,6 +2154,31 @@ void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candida
         clip.request(requested);
     }
 }
+bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::int32_t frames) noexcept {
+    auto* source = dynamic_cast<TrackSource*>(&node);
+    if (!source || source->clips.size() != 1 || frames < 1 || frames > source->maxFrames) return false;
+    auto& clip = *source->clips.data()[0];
+    const auto required = clip.wanted(transport,frames,false);
+    clip.trimAdmission(required);
+    clip.request(clip.wanted(transport,frames));
+    if (required.front() < 0 || clip.errors.load(std::memory_order_relaxed)) {
+        clip.releaseAdmission();
+        return false;
+    }
+    for (const auto page : required) {
+        if (page >= 0 && !clip.reserve(page)) {
+            clip.releaseAdmission();
+            return false;
+        }
+    }
+    return true;
+}
+
+void ClipPlayback::releaseSource(Node& node) noexcept {
+    auto* source = dynamic_cast<TrackSource*>(&node);
+    if (source && source->clips.size() == 1) source->clips.data()[0]->releaseAdmission();
+}
+
 void ClipPlayback::keepSourceStartWarm(Node& node, std::int64_t firstFrame) noexcept {
     auto* source = dynamic_cast<TrackSource*>(&node);
     if (!source) return;

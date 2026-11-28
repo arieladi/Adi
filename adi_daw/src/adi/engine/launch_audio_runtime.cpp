@@ -626,6 +626,25 @@ void LaunchAudioRuntime::startIfQueued(LaunchAudioDriver& driver, LaunchBlock bl
     driver.finishRanges();
 }
 
+LaunchAudioRuntime::TrackRanges* LaunchAudioRuntime::trackRanges(std::int64_t track) noexcept {
+    if (tracks_.empty()) return nullptr;
+    const auto* first = tracks_.data();
+    const auto* end = first + tracks_.size();
+    const auto* found = std::lower_bound(first,end,track);
+    return found != end && *found == track ? ranges_.data() + (found - first) : nullptr;
+}
+
+void LaunchAudioRuntime::finish() noexcept {
+    active_ = false;
+    for (std::size_t index = 0; index < ranges_.size(); ++index) {
+        auto& ranges = ranges_.data()[index];
+        if (ranges.cuePages) {
+            ranges.cuePages->releaseCue(ranges.cueClip);
+            ranges.cuePages = nullptr;
+        }
+    }
+}
+
 void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                                const Transport& transport, std::int64_t streamSample,
                                void* observerContext,
@@ -633,6 +652,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                                void* sceneObserverContext,
                                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept,
                                LaunchCaptureBuffer* capture) noexcept {
+    if (active_) finish();
     for (std::size_t index = 0; index < ranges_.size(); ++index) {
         auto& ranges = ranges_.data()[index];
         ranges.size = 0;
@@ -729,6 +749,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (clip && clip->followsTempo())
             clip->prefetchWarp(track.queued.tick,*track.queued.legatoSourceTick);
         else if (clip && clip->pageReader()) {
+            const auto* rendered = call.runtime.trackRanges(track.track);
+            if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == clip->clip()) return;
             const auto frame = track.queued.legatoSourceFrame ? *track.queued.legatoSourceFrame
                 : clip->frameForTick(*track.queued.legatoSourceTick,media.bpm());
             clip->pageReader()->prefetch(clip->clip(),frame);
@@ -758,6 +780,44 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }};
     sink.retargeted = [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
         static_cast<Context*>(state)->driver.retargetPinnedRun(previous,next,run);
+    };
+    sink.admitLegatoCue = [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue,
+           std::int32_t offset, bool quantizedHandoff) noexcept {
+        auto& call = *static_cast<Context*>(state);
+        if (!call.media->stored() || target.physicalLoopEndFrame || target.physicalFrames <=
+            3 * ClipPlayback::readAheadFrames(static_cast<std::uint32_t>(call.block.sampleRate))) return true;
+        const auto* pcm = call.media->clip(target.clip);
+        if (!pcm) return false;
+        auto* pages = pcm->pageReader();
+        if (!pages) return true;
+        if (!quantizedHandoff || cue.physicalFrame < 0) return false;
+        auto* rendered = call.runtime.trackRanges(target.track);
+        if (!rendered || rendered->cuePages) return false;
+        // An earlier range on this source could trim the new reservation
+        // before the due range reads it. Admit only an idle reader here.
+        const auto sameReader = [pages,clip=target.clip](const Range& range) noexcept {
+            return range.pcm && range.pcm->pageReader() == pages && range.pcm->clip() == clip;
+        };
+        for (std::size_t index = 0; index < rendered->size; ++index)
+            if (sameReader(rendered->items.data()[index])) return false;
+        for (std::size_t index = 0; index < rendered->tailCount; ++index)
+            if (sameReader(rendered->tails.data()[index].range)) return false;
+        // The exact slice can end earlier than its maximum at a timeline
+        // wrap or phase change; reserve the outer callback's remaining PCM.
+        const auto remaining = call.frames - call.offset - offset;
+        if (!pages->reserveCue(target.clip,cue.physicalFrame,remaining)) return false;
+        rendered->cuePages = pages;
+        rendered->cueClip = target.clip;
+        return true;
+    };
+    sink.prefetchLinkedLegato = [](void* state, const LaunchSlot& target, std::int64_t due, std::int64_t frame) noexcept {
+        const auto& call = *static_cast<const Context*>(state);
+        if (call.runtime.mediaAt(due).get() != call.media) return;
+        const auto* clip = call.media->clip(target.clip);
+        if (!clip || !clip->pageReader() || target.physicalFrames <= 3 * ClipPlayback::readAheadFrames(clip->rate())) return;
+        const auto* rendered = call.runtime.trackRanges(target.track);
+        if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == target.clip) return;
+        clip->pageReader()->prefetch(target.clip,frame);
     };
     sink.rawSourceTickAfterBankChange =
         [](void* state, std::int64_t clip, std::int64_t oldAnchor, std::int64_t elapsed) noexcept

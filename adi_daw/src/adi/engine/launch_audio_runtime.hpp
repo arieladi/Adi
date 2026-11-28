@@ -257,7 +257,7 @@ public:
                void* sceneObserverContext = nullptr,
                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
                LaunchCaptureBuffer* capture = nullptr) noexcept;
-    void finish() noexcept { active_ = false; }
+    void finish() noexcept;
     void finish(LaunchAudioDriver& driver) noexcept { finish(); driver.finishRanges(); }
     void overlay(std::int64_t track, const NodeIo&, std::span<std::uint8_t> replaces = {}) const noexcept;
     // Owner only. The source declares this latency before graph realization.
@@ -312,7 +312,10 @@ private:
         std::vector<TailRange> tails;
         std::size_t size = 0;
         std::size_t tailCount = 0;
+        LaunchPagedAudio* cuePages = nullptr;
+        std::int64_t cueClip = 0;
     };
+    [[nodiscard]] TrackRanges* trackRanges(std::int64_t track) noexcept;
     [[nodiscard]] bool addTail(LaunchAudioDriver::Tail&, std::int32_t offset,
                                std::int32_t frames, LaunchCaptureBuffer*) noexcept;
     void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
