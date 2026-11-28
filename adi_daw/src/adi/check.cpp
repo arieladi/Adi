@@ -203,7 +203,7 @@ void checkBlobs(Ctx& c) {
             const auto data = blobOf(st.getColumn(3));
             if (kind == "notes")
                 verifyStream<NoteRecord>(c, data, FourCC::Notes, where);
-            else if (kind == "cc")
+            else if (kind == "cc" || kind == "pitchbend")
                 verifyStream<AutomationPoint>(c, data, FourCC::Controller, where);
             // Other stream kinds have no record type yet; not an error.
         }
@@ -611,12 +611,19 @@ void checkAutomationLanes(Ctx& c) {
     try {
         SQLite::Statement st(
             c.db,
-            "SELECT id, param_ref FROM automation_lanes WHERE owner_kind = 'device' ORDER BY id");
+            "SELECT id, param_ref, value_domain FROM automation_lanes WHERE owner_kind = 'device' ORDER BY id");
         while (st.executeStep()) {
             const auto id = st.getColumn(0).getInt64();
             const auto ref = st.getColumn(1).getString();
             std::uint32_t paramId = 0;
             bool canonical = false;
+            if (ref == kDeviceActivatorParamRef) {
+                if (st.getColumn(2).getString() != "enum")
+                    c.add(Severity::Warning, "automation.paramRef",
+                          "automation_lanes#" + std::to_string(id) + ".param_ref",
+                          "Device Activator requires an enum lane; not played");
+                continue;
+            }
             const bool parsed = parseDeviceParamRef(ref, paramId, &canonical);
             if (parsed && canonical) continue;
             const std::string detail = parsed

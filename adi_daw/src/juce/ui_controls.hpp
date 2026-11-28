@@ -11,6 +11,9 @@
 #include <optional>
 #include <utility>
 namespace adi::ui::controls {
+// Opt in only for controls whose glyph does not already name the action.
+inline const juce::Identifier iconTooltip{"adiIconTooltip"};
+
 // A control with an external context menu must not start a value gesture on a
 // popup press. A primary press still owns its drag and release when modifiers
 // change during the gesture.

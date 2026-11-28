@@ -6,25 +6,34 @@
 #include <algorithm>
 namespace adi {
 namespace {
+bool validPair(int first) { return first >= 0 && first <= 62 && first % 2 == 0; }
 bool valid(const CueSettings& s) {
-    return s.firstOutputChannel>=0 && s.firstOutputChannel<=62 && s.firstOutputChannel%2==0 && std::isfinite(s.volumeDb) && s.volumeDb>=-150 && s.volumeDb<=6 &&
+    return validPair(s.firstOutputChannel) && validPair(s.firstMainOutputChannel) && std::isfinite(s.volumeDb) && s.volumeDb>=-150 && s.volumeDb<=6 &&
         s.referenceTrack>=0 && (!s.referenceOn || s.referenceTrack!=0) &&
         std::is_sorted(s.selectedTracks.begin(),s.selectedTracks.end()) &&
         std::adjacent_find(s.selectedTracks.begin(),s.selectedTracks.end())==s.selectedTracks.end() &&
         std::all_of(s.selectedTracks.begin(),s.selectedTracks.end(),[](std::int64_t id){return id>0;});
 }
 Payload value(const CueSettings& s) {
-    return {{"cue",s.cueMode},{"sip",s.soloInPlace},{"first",s.firstOutputChannel},{"db",s.volumeDb},{"reference",s.referenceFromRole?0:s.referenceTrack},{"reference_on",s.referenceOn},{"selected",s.selectedTracks}};
+    Payload data = {{"cue",s.cueMode},{"sip",s.soloInPlace},{"first",s.firstOutputChannel},{"db",s.volumeDb},{"reference",s.referenceFromRole?0:s.referenceTrack},{"reference_on",s.referenceOn},{"selected",s.selectedTracks}};
+    if (s.firstMainOutputChannel != 0)
+        data["main_first"] = s.firstMainOutputChannel;
+    return data;
 }
 bool update(OpContext& c,const Payload& p,std::string& error,int field) {
     try {
         auto s=readCueSettings(c.store);
         switch(field) {
             case 0:s.cueMode=p.at("on").get<bool>();break;
-            case 1:{
-                const auto first=p.at("first").get<std::int64_t>();
-                if(first<0 || first>62){error="Cue Out is a stereo pair from 0 through 62";return false;}
-                s.firstOutputChannel=static_cast<int>(first);break;
+            case 1:
+            case 6: {
+                const auto first = p.at("first").get<std::int64_t>();
+                if (first < 0 || first > 62 || first % 2 != 0) {
+                    error = "The output must be a stereo pair from 0 through 62";
+                    return false;
+                }
+                (field == 6 ? s.firstMainOutputChannel : s.firstOutputChannel) = static_cast<int>(first);
+                break;
             }
             case 2:s.volumeDb=p.at("db").get<double>();break;
             case 3:
@@ -72,6 +81,11 @@ CueSettings readCueSettings(const Store& store) {
     try {
         const auto p=Payload::parse(q.getColumn(0).getString());
         s.cueMode=p.at("cue").get<bool>();s.soloInPlace=p.at("sip").get<bool>();s.firstOutputChannel=p.at("first").get<int>();
+        if (p.contains("main_first")) {
+            const auto first = p.at("main_first").get<std::int64_t>();
+            if (first >= 0 && first <= 62 && first % 2 == 0)
+                s.firstMainOutputChannel = static_cast<int>(first);
+        }
         s.volumeDb=p.at("db").get<double>();s.referenceTrack=p.at("reference").get<std::int64_t>();s.referenceOn=p.at("reference_on").get<bool>();
         s.referenceFromRole=s.referenceTrack==0;
         if(s.referenceFromRole)s.referenceTrack=s.projectReferenceTrack;
@@ -81,6 +95,7 @@ CueSettings readCueSettings(const Store& store) {
 }
 bool cueModeApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,0);}
 bool cueOutputApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,1);}
+bool mainOutputApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,6);}
 bool cueVolumeApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,2);}
 bool cueTrackApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,5);}
 bool cueReferenceApply(OpContext& c,const Payload& p,std::string& e){return update(c,p,e,3);}

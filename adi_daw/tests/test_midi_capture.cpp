@@ -223,6 +223,59 @@ void expressionHistory() {
           History(*fixture.store).redo().ok && digestProject(*fixture.store).text == after,
           "Capture undo and redo restore both notes and expression rows");
 }
+void channelPitchHistory() {
+    Fixture fixture;
+    MidiMemory memory(8, 1, 48000, NoteChannelBase::One, 64);
+    memory.setListening(true, false);
+    MpeParser parser;
+    parser.setZone(MpeZone::lower());
+    const auto sink = [](void* context, const Event& event) {
+        return static_cast<MidiMemory*>(context)->push(event, inputStart + event.frame);
+    };
+    const auto feed = [&](std::int32_t frame, std::array<std::uint8_t, 3> bytes) {
+        audio::CallbackScope scope;
+        parser.setFrame(frame);
+        parser.feed(bytes.data(), 3, sink, &memory);
+    };
+    feed(0, {0xe0, 37, 73});
+    feed(8, {0xb0, 7, 88});
+    feed(16, {0x91, 60, 90});
+    feed(24, {0xe1, 0, 76});
+    feed(32, {0xe0, 0, 64});
+    feed(40, {0x81, 60, 0});
+    const Event typed{48, EventType::Controller, 15, 0, 0, controllers::kPitchBend, 1.};
+    check(memory.push(typed, inputStart + 48), "MIDI memory also retains a typed normalized channel pitch wheel");
+    memory.advance(inputStart + 64);
+    MidiMemorySnapshot source;
+    std::string error;
+    check(memory.snapshot(source, error) && source.events.size() == 7,
+          "MIDI memory preserves the plain channel wheel and the MPE member pitch");
+    if (source.events.size() != 7)
+        return;
+    const auto prepared = capture::prepareMidi(*fixture.store, source, spec(), error);
+    check(prepared && prepared->controllerLanes == 3 && capture::commitMidi(*fixture.store, *prepared).ok,
+          "retrospective Capture commits both channel wheels beside the original CC");
+    if (!prepared)
+        return;
+    const auto controllerRows = controllers::readLanes(*fixture.store, 7);
+    const auto& lanes = controllerRows.lanes;
+    check(controllerRows.ok && lanes.size() == 3 && lanes[0].controller == 7 && lanes[0].points.size() == 1 &&
+              lanes[0].points[0].value == 88. / 127. && lanes[1].channel == 0 &&
+              lanes[1].controller == controllers::kPitchBend && lanes[1].points.size() == 2 &&
+              std::lround(controllers::pitchBendWordExact(lanes[1].points[0].value)) == (73 * 128 + 37) &&
+              lanes[1].points[1].value == .5 && lanes[2].channel == 15 &&
+              lanes[2].controller == controllers::kPitchBend && lanes[2].points.size() == 1 &&
+              lanes[2].points[0].value == 1.,
+          "Capture preserves the wire pitch bits, explicit center and channel conventions");
+    const auto& packet = prepared->requests.front().payload;
+    check(packet.contains("expressions") && packet.at("expressions").size() == 1,
+          "MPE member pitch stays in its owning note's expression stream");
+    History history(*fixture.store);
+    check(history.undo().ok && controllers::readLanes(*fixture.store, 7).lanes.empty() &&
+              history.redo().ok && controllers::readLanes(*fixture.store, 7).lanes == lanes,
+          "Capture pitch lanes revert and replay atomically with the clip");
+}
+
 void liveHistoryConsumption() {
     Fixture fixture;
     fixture.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
@@ -259,6 +312,29 @@ void liveHistoryConsumption() {
     session.consumeMidiHistories(more);
     session.consumeMidiHistories(replacement);
     check(!session.midiHistoryAvailable(), "consuming an earlier snapshot cannot move its history watermark back");
+
+    const Event normalized{0, EventType::Controller, 15, 0, 0, controllers::kPitchBend, .75};
+    const Event legacy{0, EventType::NoteExpression, 2, static_cast<std::uint16_t>(ExpressionDim::Pitch), 0, 0, 0};
+    check(session.enqueueMidiInput(129, normalized) && session.enqueueMidiInput(140, legacy),
+          "the live input dispatches normalized and parser-style channel pitch wheels");
+    {
+        audio::CallbackScope callback;
+        session.process({output, nullptr, 2, 0, 64, 128});
+    }
+    check(session.readMidiHistories(more, error) && more.size() == 1 && more.front().events.size() == 2,
+          "a pitch-only gesture remains available to Capture MIDI");
+    if (more.size() != 1 || more.front().events.size() != 2)
+        return;
+    capture::MidiSpec choice{7, 0, 129, 192, "Captured Pitch Wheels", true};
+    const auto prepared = capture::prepareMidi(*fixture.store, more.front(), choice, error);
+    check(prepared && capture::commitMidi(*fixture.store, *prepared).ok,
+          "Capture can create a clip from channel pitch movements alone");
+    const auto pitch = controllers::readLanes(*fixture.store, 7);
+    check(pitch.ok && pitch.lanes.size() == 2 && pitch.lanes[0].channel == 2 &&
+              pitch.lanes[0].points.size() == 1 && pitch.lanes[0].points.front().value == .5 &&
+              pitch.lanes[1].channel == 15 && pitch.lanes[1].points.size() == 1 &&
+              pitch.lanes[1].points.front().value == .75,
+          "session Capture retains zero-based physical channels, neutral and the normalized bend");
 }
 void clocksAndSourceConventions() {
     bool all=true;
@@ -393,6 +469,6 @@ void largeCapture() {
         "large Capture retains every identity and one undo/redo restores the complete stream");
 }
 }
-int main(){try{nativeHistory();expressionHistory();liveHistoryConsumption();clocksAndSourceConventions();sampleOriginRounding();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
+int main(){try{nativeHistory();expressionHistory();channelPitchHistory();liveHistoryConsumption();clocksAndSourceConventions();sampleOriginRounding();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture: %d checks, %d failures\n",checks,failures);return failures?1:0;}

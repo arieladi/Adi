@@ -3,6 +3,11 @@
 #include "adi/engine/midi_memory.hpp"
 #include "adi/ops.hpp"
 namespace adi::capture {
+// The physical input parser sends a channel wheel as an unowned pitch event.
+// Unlike per-note expression, it can create a controller-only MIDI clip.
+bool isChannelPitchWheel(const engine::Event&) noexcept;
+double channelPitchWheelValue(double semitones) noexcept;
+
 struct MidiSpec {
     std::int64_t clip=0,positionTicks=0,firstSample=0,endSample=0;
     std::string name="Captured MIDI";

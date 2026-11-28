@@ -402,6 +402,126 @@ AutomationRangeCopy copyAutomationRange(Store& store,std::span<const automation:
     return result;
 }
 
+automation::PreparedEnvelopeSplice prepareAutomationTransform(Store& store,std::int64_t laneId,
+    const AutomationTransform& transform,double rate,std::string_view label,
+    std::optional<Payload> selection) {
+    try {
+        const auto [sourceBegin,sourceEnd,destinationBegin,destinationEnd,values]=transform;
+        if(sourceBegin<0 || sourceEnd<=sourceBegin || destinationBegin<0 || destinationEnd<=destinationBegin ||
+           !std::isfinite(rate) || rate<=0 || rate>768000)
+            throw std::runtime_error("automation transform needs positive time spans and a supported rate");
+        if(values) {
+            const auto& map=*values;
+            if(!std::isfinite(map.maximum-map.minimum) ||
+               !std::isfinite(map.leftMinimum) || !std::isfinite(map.leftMaximum) ||
+               !std::isfinite(map.rightMinimum) || !std::isfinite(map.rightMaximum) ||
+               !(map.minimum<map.maximum) || map.leftMinimum>map.leftMaximum ||
+               map.rightMinimum>map.rightMaximum)
+                throw std::runtime_error("automation transform has invalid value bounds");
+        }
+        const bool transformValues=values &&
+            (values->leftMinimum!=values->minimum || values->rightMinimum!=values->minimum ||
+             values->leftMaximum!=values->maximum || values->rightMaximum!=values->maximum);
+        if(!transformValues && sourceBegin==destinationBegin && sourceEnd==destinationEnd)
+            return {true,{},{}};
+
+        auto& db=store.db();
+        RangeRead read(db);
+        const auto lane=detail::captureRow(db,"automation_lanes","id",laneId);
+        if(!lane || lane->at("time_base")!=0 || lane->at("owner_kind")=="clip")
+            throw std::runtime_error("automation transform needs a musical Arrangement lane");
+        const TimeMap time(db);
+        if(sampleAt(time,0,sourceBegin,rate)==sampleAt(time,0,sourceEnd,rate) ||
+           sampleAt(time,0,destinationBegin,rate)==sampleAt(time,0,destinationEnd,rate))
+            throw std::runtime_error("automation transform is shorter than one sample");
+        const auto copy=copyLane(db,*lane,time,sourceBegin,sourceEnd,rate,false);
+        if(copy.is_null())return {true,{},{}};
+        auto envelope=decode({{"data",copy.at("data")}},0);
+        for(const auto& range:copy.at("ranges"))addRange(envelope,range);
+        const auto length=sourceEnd-sourceBegin;
+        if(envelope.points.size()<2 || envelope.points.front().time!=0 || envelope.points.back().time!=length)
+            throw std::runtime_error("automation transform does not cover the selected span");
+
+        const auto minimum=lane->at("min_value").is_null() ? -std::numeric_limits<double>::infinity()
+                                                            : lane->at("min_value").get<double>();
+        const auto maximum=lane->at("max_value").is_null() ? std::numeric_limits<double>::infinity()
+                                                            : lane->at("max_value").get<double>();
+        auto transformedValue=[&](double original,double phase) {
+            if(!transformValues)return original;
+            const auto& map=*values;
+            const auto low=std::lerp(map.leftMinimum,map.rightMinimum,phase);
+            const auto high=std::lerp(map.leftMaximum,map.rightMaximum,phase);
+            const auto level=std::clamp((original-map.minimum)/(map.maximum-map.minimum),0.,1.);
+            auto result=std::clamp(std::lerp(low,high,level),map.minimum,map.maximum);
+            // A mixer silence value can be below its displayed floor. Keep
+            // that value if the gesture leaves it at the same visual bound.
+            if((original<map.minimum && result==map.minimum) ||
+               (original>map.maximum && result==map.maximum))
+                result=original;
+            return std::clamp(result,minimum,maximum);
+        };
+
+        std::vector<automation::NativeSpliceKnot> incoming;
+        incoming.reserve(envelope.points.size()+2);
+        const auto destinationLength=destinationEnd-destinationBegin;
+        for(std::size_t i=0;i<envelope.points.size();++i) {
+            auto point=envelope.points[i];
+            const auto phase=static_cast<long double>(point.time)/static_cast<long double>(length);
+            if(destinationLength==length) {
+                point.time=destinationBegin+point.time;
+            } else {
+                const auto scaled=std::round(phase*static_cast<long double>(destinationLength));
+                // Assign the endpoint literally to avoid a signed cast at the
+                // int64 boundary on platforms where long double equals double.
+                point.time=scaled>=static_cast<long double>(destinationLength)
+                    ? destinationEnd : destinationBegin+static_cast<std::int64_t>(scaled);
+            }
+            point.value=transformedValue(point.value,static_cast<double>(phase));
+            point.point_id=0;
+            const auto slice=envelope.ranges.contains(i)
+                ? std::optional<engine::CurveSlice>(sliceAt(envelope,i)) : std::nullopt;
+            incoming.push_back({point,slice});
+        }
+        if(transformValues)
+            for(std::size_t i=0;i+1<incoming.size();++i) {
+                auto& outgoing=incoming[i];
+                if(!outgoing.slice)continue;
+                auto& slice=*outgoing.slice;
+                const auto first=engine::curveShape(outgoing.point.curve,slice.begin,outgoing.point.tension);
+                const auto last=engine::curveShape(outgoing.point.curve,slice.end,outgoing.point.tension);
+                if(!(first<last)) {
+                    // Held segments need no sliced value axis after scaling.
+                    outgoing.slice.reset();
+                    continue;
+                }
+                // Preserve the normalized bend over the retained source domain,
+                // fitting its two values to the transformed adjacent knots.
+                const auto difference=(incoming[i+1].point.value-outgoing.point.value)/(last-first);
+                slice.sourceFirst=outgoing.point.value-difference*first;
+                slice.sourceLast=slice.sourceFirst+difference;
+            }
+
+        const auto begin=std::min(sourceBegin,destinationBegin);
+        const auto end=std::max(sourceEnd,destinationEnd);
+        if(begin<destinationBegin) {
+            AutomationPoint hold{};
+            hold.time=begin;
+            hold.value=incoming.front().point.value;
+            incoming.insert(incoming.begin(),automation::NativeSpliceKnot{hold,{}});
+        }
+        if(end>destinationEnd) {
+            AutomationPoint hold{};
+            hold.time=end;
+            hold.value=incoming.back().point.value;
+            incoming.push_back({hold,{}});
+        }
+        return automation::prepareEnvelopeSplice(store,laneId,begin,end,incoming,rate,
+            automation::kSplicePointBudget,label,std::move(selection));
+    } catch(const std::exception& error) {
+        return {false,error.what(),{}};
+    }
+}
+
 clip_edit::PreparedEdit prepareDeleteAutomationRange(Store& store,std::span<const automation::LaneSpec> targets,
         std::int64_t begin,std::int64_t end,double rate) {
     return prepareLaneRange(store,targets,begin,end,rate,nullptr);

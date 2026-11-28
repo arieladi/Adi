@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -66,6 +67,15 @@ void checkState(std::string_view role, std::span<const std::byte> bytes) {
     if (!validText(role) || bytes.empty() ||
         bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("A device preset holds an invalid state role or byte length");
+}
+void checkPanel(const std::vector<std::string> &ids) {
+    std::set<std::string_view> seen;
+    for (const auto &id : ids) {
+        if (!validText(id))
+            throw std::runtime_error("A device preset holds an invalid panel control ID");
+        if (!seen.emplace(id).second)
+            throw std::runtime_error("Duplicate device preset panel control ID");
+    }
 }
 std::string encode(std::span<const std::byte> bytes) {
     std::string text;
@@ -124,10 +134,15 @@ Json encodePreset(const Preset &preset, const std::string &key) {
         checkState(role, bytes);
         state.push_back({{"role", role}, {"blake3", stateDigest(bytes)}, {"base64", encode(bytes)}});
     }
-    return {{"format", std::string(kDocument)}, {"version", 1}, {"name", preset.name}, {"deviceKey", key},
-            {"device", {{"format", preset.device.format}, {"uid", preset.device.uid},
-                        {"shellId", shellId(preset.device)}, {"name", preset.deviceName}}},
-            {"parameters", std::move(parameters)}, {"state", std::move(state)}};
+    Json document{{"format", std::string(kDocument)}, {"version", 1}, {"name", preset.name}, {"deviceKey", key},
+                  {"device", {{"format", preset.device.format}, {"uid", preset.device.uid},
+                              {"shellId", shellId(preset.device)}, {"name", preset.deviceName}}},
+                  {"parameters", std::move(parameters)}, {"state", std::move(state)}};
+    if (preset.panel) {
+        checkPanel(*preset.panel);
+        document["panel"] = *preset.panel;
+    }
+    return document;
 }
 Preset decodePreset(const Json &json, const fs::path &file) {
     const auto &format = json.at("format");
@@ -161,6 +176,12 @@ Preset decodePreset(const Json &json, const fs::path &file) {
     const auto &state = json.at("state");
     if (!parameters.is_array() || !state.is_array())
         throw std::runtime_error("Invalid parameter or state list in device preset");
+    if (const auto panel = json.find("panel"); panel != json.end() && !panel->is_null()) {
+        if (!panel->is_array())
+            throw std::runtime_error("Invalid panel control list in device preset");
+        preset.panel = panel->get<std::vector<std::string>>();
+        checkPanel(*preset.panel);
+    }
     for (const auto &parameter : parameters) {
         const auto id = parameter.at("id").get<std::string>();
         const auto &value = parameter.at("norm");
@@ -221,6 +242,17 @@ class PresetStage {
   private:
     fs::path folder_;
 };
+void writeDocument(const fs::path &file, const Json &document) {
+    std::ofstream stream(file, std::ios::binary | std::ios::trunc);
+    stream.exceptions(std::ios::badbit | std::ios::failbit);
+    stream << std::setw(2) << document << '\n';
+    stream.close();
+    if (fs::file_size(file) > kMaxFileBytes)
+        throw std::runtime_error("The device preset file is too large to save");
+}
+fs::path defaultPath(const fs::path &library, const std::string &key) {
+    return library / "Defaults" / "Devices" / (key + std::string(kExtension));
+}
 } // namespace
 
 std::string deviceKey(const Identity &identity) {
@@ -292,14 +324,7 @@ fs::path write(const fs::path &library, const Preset &preset) {
     const auto directory = presets / key;
     ensureDirectory(directory);
     const PresetStage stage(directory);
-    {
-        std::ofstream stream(stage.file(), std::ios::binary | std::ios::trunc);
-        stream.exceptions(std::ios::badbit | std::ios::failbit);
-        stream << std::setw(2) << document << '\n';
-        stream.close();
-    }
-    if (fs::file_size(stage.file()) > kMaxFileBytes)
-        throw std::runtime_error("The device preset file is too large to save");
+    writeDocument(stage.file(), document);
     for (unsigned index = 1; index <= 10000; ++index) {
         const auto target = directory / (index == 1 ? preferred : targetFor(index));
         const auto result = media::publishFile(stage.file(), target, {}, media::PublishPolicy::AtomicOnly);
@@ -309,5 +334,46 @@ fs::path write(const fs::path &library, const Preset &preset) {
             throw std::runtime_error("Could not save the device preset: " + result.error);
     }
     throw std::runtime_error("No unused name is available for the device preset");
+}
+std::optional<Preset> readDefault(const fs::path &library, const Identity &identity) {
+    requireOwner();
+    if (library.empty())
+        return std::nullopt;
+    const auto file = defaultPath(library, deviceKey(identity));
+    const auto directory = file.parent_path();
+    for (const auto &folder : {directory.parent_path(), directory}) {
+        const auto status = fs::symlink_status(folder);
+        if (!fs::exists(status))
+            return std::nullopt;
+        if (!fs::is_directory(status))
+            throw std::runtime_error("The device defaults folder is not an ordinary directory");
+    }
+    if (!fs::exists(fs::symlink_status(file)))
+        return std::nullopt;
+    auto loaded = read(file);
+    if (loaded.device != identity)
+        throw std::runtime_error("The default preset does not match this device");
+    return loaded;
+}
+fs::path writeDefault(const fs::path &library, const Preset &preset) {
+    requireOwner();
+    if (library.empty())
+        throw std::runtime_error("Set the User Library folder before saving a device default");
+    checkName(preset);
+    const auto key = deviceKey(preset.device);
+    const auto file = defaultPath(library, key);
+    const auto directory = file.parent_path();
+    const auto document = encodePreset(preset, key);
+    fs::create_directories(library);
+    ensureDirectory(directory.parent_path());
+    ensureDirectory(directory);
+    const PresetStage stage(directory);
+    writeDocument(stage.file(), document);
+    auto result = media::publishFile(stage.file(), file, {}, media::PublishPolicy::AtomicOnly);
+    if (result.status == media::PublishStatus::exists)
+        result = media::replaceFile(stage.file(), file);
+    if (result.status != media::PublishStatus::published)
+        throw std::runtime_error("Could not save the default device preset: " + result.error);
+    return file;
 }
 } // namespace adi::preset
