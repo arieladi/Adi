@@ -99,12 +99,24 @@ class Sampler final : public DeviceInstance {
     void initialise();
     static void applyZone(OneShot &, const Zone &) noexcept;
     // The Sampler's own parameters, after the 23 it hands to every layer.
-    static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25;
+    static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25, kRoundRobin = 26,
+                                 kRoundRobinMode = 27;
     /// The parameters a state of the first version held (SC-483 added to them).
     static constexpr std::size_t kFirstParams = 24;
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,
                    const std::array<double, OneShot::Count> &initial,
-                   const OneShot::PreparedSample *, std::uint64_t generation, bool slot) noexcept;
+                   const OneShot::PreparedSample *, std::uint64_t generation, bool slot,
+                   std::size_t layer) noexcept;
+    /// SC-483, Round Robin: with it on, the one layer that plays each note-on
+    /// of this call, among the layers the note matches (a null zone is a layer
+    /// that cannot play). Audio thread.
+    void chooseLayers(const engine::NodeIo &, const std::array<double, OneShot::Count> &initial,
+                      std::span<const Zone *const, kSlots>) noexcept;
+    static constexpr std::int8_t kNoLayer = -1;
+    std::vector<std::int8_t> chosen_;   // per note-on of the call, in order
+    bool roundRobin_ = false;           // this call's
+    std::uint32_t robinCount_ = 0, robinSeed_ = 1;
+    std::int8_t robinLast_ = kNoLayer;
     void rememberEvents(engine::EventSpan) noexcept;
     std::array<std::unique_ptr<OneShot>, kSlots> slotEngines_{};
     engine::SnapshotPublisher<SlotZones> slotZones_;

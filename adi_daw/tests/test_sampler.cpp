@@ -529,18 +529,95 @@ void slotLoops() {
         check(d->publishSlotZones(looped()), "and the plain looped table is taken");
     }
 }
+// SC-483, Round Robin: with it on, one of the layers a note matches plays it.
+// Three slots hold three steady levels, so a frame names the layer that played.
+void slotRoundRobin() {
+    using S = device::Sampler;
+    const std::vector<float> a(8192, .1f), b(8192, .2f), c(8192, .4f);
+    const auto first = device::OneShot::prepareSample(a, 1, 48000);
+    const auto second = device::OneShot::prepareSample(b, 1, 48000);
+    const auto third = device::OneShot::prepareSample(c, 1, 48000);
+    const auto fill = [&](int, SlotArray &slots) {
+        slots[1] = {first.get(), 1};
+        slots[5] = {second.get(), 1};
+        slots[9] = {third.get(), 1};
+    };
+    // `count` notes, 256 frames apart, each let go after 128 (the release is 1 ms).
+    const auto notes = [](int count, int key) {
+        std::vector<engine::Event> events;
+        for (int i = 0; i < count; ++i) {
+            events.push_back(on(i * 256, key));
+            events.push_back({i * 256 + 128, engine::EventType::NoteOff, 0, static_cast<std::uint16_t>(key), 1, 0, 0});
+        }
+        return events;
+    };
+    // The level of each note, 64 frames in, as tenths: 1, 2 or 4 names a layer.
+    const auto levels = [&](S &d, int count, int key = 60) {
+        const auto events = notes(count, key);
+        const auto out = renderSlots(d, count * 256, events, fill);
+        std::vector<int> heard;
+        for (int i = 0; i < count; ++i) {
+            heard.push_back(static_cast<int>(std::lround(static_cast<double>(out[static_cast<std::size_t>(i * 256 + 64)]) * 10)));
+        }
+        return heard;
+    };
+    {
+        const auto d = plainSlots();
+        check(levels(*d, 2) == std::vector<int>{7, 7}, "Round Robin off: every matching layer plays each note");
+        set(*d, "round_robin", 1);
+        check(levels(*d, 4) == std::vector<int>{1, 2, 4, 1}, "Forward: the matching layers take turns in list order, and wrap");
+        set(*d, "round_robin_mode", 1);
+        check(levels(*d, 4) == std::vector<int>{4, 2, 1, 4}, "Backward: in the opposite order");
+        // Only the layers the note matches take part: the first keeps to the keys below C3.
+        std::array<S::Zone, S::kSlots> table{};
+        table[1].key = {0, 59, 0, 0};
+        check(d->publishSlotZones(table), "a table that keeps the first layer below C3");
+        set(*d, "round_robin_mode", 0);
+        check(levels(*d, 3) == std::vector<int>{2, 4, 2} && levels(*d, 3, 48) == std::vector<int>{1, 2, 4},
+              "a layer the note does not match takes no turn");
+    }
+    {
+        // Two layers. Other never plays the layer it played last; Random may.
+        const auto two = [&](int, SlotArray &slots) {
+            slots[1] = {first.get(), 1};
+            slots[5] = {second.get(), 1};
+        };
+        const auto drawn = [&](double mode) {
+            const auto d = plainSlots();
+            set(*d, "round_robin", 1);
+            set(*d, "round_robin_mode", mode);
+            const auto events = notes(40, 60);
+            const auto out = renderSlots(*d, 40 * 256, events, two);
+            int repeats = 0, ones = 0, last = 0;
+            for (int i = 0; i < 40; ++i) {
+                const int heard = static_cast<int>(std::lround(static_cast<double>(out[static_cast<std::size_t>(i * 256 + 64)]) * 10));
+                repeats += heard == last ? 1 : 0;
+                ones += heard == 1 ? 1 : 0;
+                last = heard;
+            }
+            return std::array{repeats, ones};
+        };
+        const auto other = drawn(3), random = drawn(2);
+        check(other[0] == 0 && other[1] == 20, "Other: forty notes on two layers never repeat a layer");
+        check(random[0] > 0 && random[1] > 0 && random[1] < 40, "Random: both layers play, and a layer may play twice running");
+    }
+}
 // The declaration text the host reads agrees with the core it hosts.
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
     device::Sampler d(device::Sampler::slotBacked);
-    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 26 &&
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 28 &&
               static_cast<int>(parsed.params.size()) == d.paramCount(),
-          "the Sampler's declarations parse: 26 parameters");
+          "the Sampler's declarations parse: 28 parameters");
     // SC-483: ids are fixed. The 24 of 28 November keep their places; what was
     // added since follows them.
-    check(parsed.params.size() == 26 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
+    check(parsed.params.size() == 28 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
               parsed.params[24].name == "Reverse" && parsed.params[24].def == 0 && parsed.params[25].def == 1,
           "Volume is still 1 and Sample select 24; Reverse is 25, off; the loop fades' law 26, constant power");
+    check(parsed.params.size() == 28 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
+              parsed.params[27].items == std::vector<std::string>{"Forward", "Backward", "Random", "Other"} &&
+              parsed.params[27].def == 0,
+          "Round Robin is 27, off; its mode 28: Forward, Backward, Random, Other");
     bool same = true;
     for (std::size_t i = 0; i < parsed.params.size(); ++i) {
         const auto &decl = parsed.params[i];
@@ -575,6 +652,7 @@ int main(int argc, char **argv) {
     slotMode();
     slotZoneState();
     slotLoops();
+    slotRoundRobin();
     midiControllers();
     declarations();
 

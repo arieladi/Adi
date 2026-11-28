@@ -113,6 +113,20 @@ void Sampler::initialise() {
     };
     toggle("reverse", "Reverse", 0);
     toggle("loop_fade_power", "Loop fade: constant power", 1);
+    // Live's Round Robin: off, the layers a note matches all play it, as before.
+    toggle("round_robin", "Round Robin", 0);
+    ParamDescriptor mode;
+    mode.id = "round_robin_mode";
+    mode.name = "Round Robin mode";
+    mode.hasRealRange = true;
+    mode.minReal = 0;
+    mode.maxReal = 3;
+    mode.domain = ParamDomain::Enum;
+    mode.shape = ParamShape::Menu;
+    mode.stepCount = 4;
+    mode.defaultValue = ParamValue::withReal(0, 0);
+    params_.push_back(mode);
+    destinations_.push_back(OneShot::Count);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
 }
@@ -330,6 +344,10 @@ void Sampler::prepare(double rate, std::int32_t frames) {
                                 rate_, maxFrames_, 32)),
                             kEventCapacity) +
                    params_.size());
+    chosen_.assign(events_.size(), kNoLayer);
+    robinCount_ = 0;
+    robinSeed_ = 1;
+    robinLast_ = kNoLayer;
     modulation_.fill(0);
     midiChannels_ = {};
     if (messageBank_)
@@ -346,10 +364,85 @@ void Sampler::prepare(double rate, std::int32_t frames) {
         }
     }
 }
+void Sampler::chooseLayers(const engine::NodeIo &io,
+                           const std::array<double, OneShot::Count> &initial,
+                           std::span<const Zone *const, kSlots> zones) noexcept {
+    roundRobin_ = initial[kRoundRobin] + modulation_[kRoundRobin] >= .5;
+    if (!roundRobin_) {
+        return;
+    }
+    // Forward, Backward, Random, Other (random, never the layer before).
+    const int mode = static_cast<int>(
+        real(params_[kRoundRobinMode], initial[kRoundRobinMode] + modulation_[kRoundRobinMode]));
+    double select = initial[kSelect], selectMod = modulation_[kSelect];
+    std::size_t note = 0;
+    for (const auto &e : io.events) {
+        if ((e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) &&
+            e.paramId == kSelect && std::isfinite(e.value)) {
+            // Sample Select as each layer will read it at this note.
+            if (e.type == engine::EventType::ParamValue) {
+                select = std::clamp(e.value, 0., 1.);
+            } else {
+                selectMod = e.value;
+            }
+            continue;
+        }
+        if (e.type != engine::EventType::NoteOn || !(e.value > 0)) {
+            continue;
+        }
+        if (note == chosen_.size()) {
+            break;
+        }
+        std::array<std::int8_t, kSlots> matching{};
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < kSlots; ++i) {
+            if (zones[i] == nullptr) {
+                continue;
+            }
+            const auto &z = *zones[i];
+            if (weight(z.key, e.dim, z.constantPower) * weight(z.velocity, e.value * 127, z.constantPower) *
+                    weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127, z.constantPower) > 0) {
+                matching[count++] = static_cast<std::int8_t>(i);
+            }
+        }
+        std::int8_t pick = kNoLayer;
+        if (count > 0) {
+            std::size_t at = 0;
+            if (mode == 0) {
+                at = robinCount_ % count;
+            } else if (mode == 1) {
+                at = count - 1 - robinCount_ % count;
+            } else {
+                robinSeed_ = 1664525u * robinSeed_ + 1013904223u;
+                const std::size_t draw = robinSeed_ >> 16;
+                std::size_t before = count;   // where the layer before sits among these, if it does
+                if (mode == 3 && count > 1) {
+                    for (std::size_t k = 0; k < count; ++k) {
+                        if (matching[k] == robinLast_) {
+                            before = k;
+                        }
+                    }
+                }
+                if (before < count) {
+                    at = draw % (count - 1);
+                    if (at >= before) {
+                        ++at;
+                    }
+                } else {
+                    at = draw % count;
+                }
+            }
+            ++robinCount_;
+            pick = matching[at];
+            robinLast_ = pick;
+        }
+        chosen_[note++] = pick;
+    }
+}
 void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z,
                         const std::array<double, OneShot::Count> &initial,
                         const OneShot::PreparedSample *sample, std::uint64_t generation,
-                        bool slot) noexcept {
+                        bool slot, std::size_t layer) noexcept {
     engine.setMidiChannels(midiChannels_);
     // This block's values, by index: no string lookup per layer (DEV-21).
     for (std::size_t i = 0; i < kSelect; ++i) {
@@ -377,6 +470,7 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
     travel.linearFade = initial[kLoopFadePower] + modulation_[kLoopFadePower] < .5;
     engine.setTravel(travel);
     bool notes = false;  // a note-on this layer takes this block
+    std::size_t noteOn = 0;  // which note-on of the call, as chooseLayers counted them
     for (const auto &input : io.events) {
         auto e = input;
         if (e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) {
@@ -395,6 +489,12 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             }
             e.paramId = destinations_[e.paramId];
         } else if (e.type == engine::EventType::NoteOn && e.value > 0) {
+            // SC-483, Round Robin: one of the matching layers plays the note.
+            const std::size_t index = noteOn++;
+            if (roundRobin_ && (index >= chosen_.size() ||
+                                chosen_[index] != static_cast<std::int8_t>(layer))) {
+                continue;
+            }
             const double w = weight(z.key, e.dim, z.constantPower) *
                              weight(z.velocity, e.value * 127, z.constantPower) *
                              weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127,
@@ -463,9 +563,14 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
     std::array<double, OneShot::Count> initial{};
     for (std::size_t i = 0; i < params_.size(); ++i)
         initial[i] = values_[i].load(std::memory_order_relaxed);
-    if (bank.valid())
-        for (const auto &layer : bank->layers)
-            playLayer(io, *layer.engine, layer.zone, initial, nullptr, 0, false);
+    if (bank.valid()) {
+        std::array<const Zone *, kSlots> zones{};
+        for (std::size_t i = 0; i < std::min(bank->layers.size(), kSlots); ++i)
+            zones[i] = &bank->layers[i].zone;
+        chooseLayers(io, initial, zones);
+        for (std::size_t i = 0; i < bank->layers.size(); ++i)
+            playLayer(io, *bank->layers[i].engine, bank->layers[i].zone, initial, nullptr, 0, false, i);
+    }
     rememberEvents(io.events);
 }
 void Sampler::processSlots(const engine::NodeIo &io,
@@ -497,6 +602,16 @@ void Sampler::processSlots(const engine::NodeIo &io,
     for (std::size_t i = 0; i < params_.size(); ++i) {
         initial[i] = values_[i].load(std::memory_order_relaxed);
     }
+    {
+        // Round Robin chooses among the filled slots only.
+        std::array<const Zone *, kSlots> zones{};
+        for (std::size_t i = 0; i < kSlots; ++i) {
+            if (slots[i].sample != nullptr && slots[i].generation != 0) {
+                zones[i] = &table->zones[i];
+            }
+        }
+        chooseLayers(io, initial, zones);
+    }
     for (std::size_t i = 0; i < kSlots; ++i) {
         auto &engine = *slotEngines_[i];
         const auto &slot = slots[i];
@@ -510,7 +625,7 @@ void Sampler::processSlots(const engine::NodeIo &io,
             continue;
         }
         slotSeen_[i] = slot.generation;
-        playLayer(io, engine, table->zones[i], initial, slot.sample, slot.generation, true);
+        playLayer(io, engine, table->zones[i], initial, slot.sample, slot.generation, true, i);
     }
     rememberEvents(io.events);
 }
