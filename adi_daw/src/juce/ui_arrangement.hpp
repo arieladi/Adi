@@ -583,6 +583,13 @@ class ArrangementCanvas final : public juce::Component,
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
     bool rangeEdit(bool deactivate);
+    bool moveTimeSelection(std::int64_t target);
+    struct RangeDrag {
+        Selection from;
+        std::int64_t to;
+        bool cancelled = false;
+    };
+    std::optional<RangeDrag> rangeDrag_;
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     ResizeEdge resizeEdge_ = ResizeEdge::None;

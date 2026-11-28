@@ -14648,6 +14648,162 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     check(second.size() == 1 && second.front()->id == 12 && second.front()->posTicks == bar &&
               second.front()->lengthTicks == bar,
           "SC-177: Cut after releasing a track title leaves the clip intact");
+
+    const juce::KeyPress space(juce::KeyPress::spaceKey);
+    const auto stopPlayback = [&] {
+        check(canvas.keyPressed(space), "SC-182 fixture stops playback");
+        mailbox.drain(driver);
+        root.frame();
+        check(!driver.playing(), "SC-182 fixture is stopped before selecting");
+    };
+    mailbox.drain(driver);
+    stopPlayback();
+    const auto sampleAt = [&](std::int64_t tick) {
+        return static_cast<std::int64_t>(root.current()->tempo->ticksToSeconds(tick) * mailbox.sampleRate());
+    };
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    geo.grid.snap = true;
+    const juce::Point<float> right{x(2 * bar) + 1.f, lane(1)}, left{x(bar / 2) + 1.f, lane(1)};
+    canvas.mouseDown(pressAt(canvas, right));
+    canvas.mouseDrag(dragAt(canvas, right, left));
+    canvas.mouseUp(dragAt(canvas, right, left));
+    check(geo.selection.start == 2 * bar && geo.selection.end == bar / 2 && geo.selection.insert == 2 * bar &&
+              geo.selection.clip == 0,
+          "SC-182: a backwards drag keeps the insert marker where the press began");
+    check(canvas.keyPressed(space), "SC-182: Space starts playback after a backwards drag");
+    mailbox.drain(driver);
+    check(driver.playing() && driver.position() == sampleAt(bar / 2) && geo.selection.insert == 2 * bar,
+          "SC-182: playback starts at the left edge without moving the insert marker");
+    stopPlayback();
+
+    const juce::Point<float> point{x(3 * bar) + 1.f, lane(1)};
+    canvas.mouseDown(pressAt(canvas, point));
+    canvas.mouseUp(pressAt(canvas, point));
+    check(geo.selection.start == geo.selection.end && geo.selection.insert == 3 * bar,
+          "SC-182 fixture places only the insert marker");
+    check(canvas.keyPressed(space), "SC-182: Space starts playback from an insert marker alone");
+    mailbox.drain(driver);
+    check(driver.playing() && driver.position() == sampleAt(3 * bar), "SC-182: point playback uses the marker");
+}
+void dragTimeSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "drag-time-selection.adi", err);
+    check(store != nullptr, "the time-selection drag project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Drag Time Selection')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    for (std::int64_t id = 1; id <= 4; ++id) {
+        OpRequest track;
+        track.opType = "track.create";
+        track.payload = {{"id", id}, {"kind", id == 3 ? "instrument" : "midi"}, {"name", "MIDI"}, {"index", id - 1}};
+        check(submitter.submit(std::move(track)).ok, "create a track for the time-selection drag");
+    }
+    auto makeClip = [&](std::int64_t id, std::int64_t track, std::int64_t position, std::int64_t length) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", id}, {"track", track}, {"kind", "midi"}, {"pos", position}, {"length", length}};
+        check(submitter.submit(std::move(clip)).ok, "create a clip for the time-selection drag");
+    };
+    makeClip(11, 1, 0, 4 * bar);
+    makeClip(12, 2, bar, bar);
+    makeClip(13, 3, 2 * bar, bar);
+    makeClip(14, 3, 4 * bar, bar);
+    makeClip(15, 4, 2 * bar, bar);
+    const auto before = submitter.nextUndo()->txnId;
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "drag-time-selection");
+    root.setSize(1200, 720);
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    geo.scale = 24.;
+    geo.grid.snap = geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 4.;
+    for (std::int64_t id = 1; id <= 4; ++id)
+        geo.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const juce::Point<float> from{x(bar) + 1.f, static_cast<float>(laneTop(root, 1) + 30)};
+    const juce::Point<float> to{x(3 * bar) - 1.f, static_cast<float>(laneTop(root, 3) + 30)};
+    const juce::Point<float> title{x(bar) + 6.f, static_cast<float>(laneTop(root, 2) + 5)};
+    const juce::Point<float> drop{x(5 * bar) + 6.f, title.y};
+    const auto selectRange = [&] {
+        canvas.mouseDown(pressAt(canvas, from));
+        canvas.mouseDrag(dragAt(canvas, from, to));
+        canvas.mouseUp(dragAt(canvas, from, to));
+        check(geo.selection.clip == 0 && geo.selection.start == bar && geo.selection.end == 3 * bar &&
+                  geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 2, 3},
+              "drag across three lanes to select two bars with partial and whole clips");
+    };
+    selectRange();
+    const auto selection = geo.selection;
+    canvas.mouseDown(pressAt(canvas, title));
+    canvas.mouseDrag(dragAt(canvas, title, drop));
+    canvas.mouseDrag(dragAt(canvas, title, title));
+    canvas.mouseUp(dragAt(canvas, title, title));
+    check(geo.selection == selection && submitter.nextUndo()->txnId == before,
+          "dragging back to the original position leaves the time range selected without an edit");
+
+    canvas.mouseDown(pressAt(canvas, title));
+    canvas.mouseDrag(dragAt(canvas, title, title)); // The held-drag timer reports no pointer motion.
+    canvas.mouseUp(dragAt(canvas, title, title));
+    check(geo.selection.clip == 12 && geo.selection.toTrack == 0 && submitter.nextUndo()->txnId == before,
+          "a title click without a drag selects only the clicked clip");
+
+    selectRange();
+    const auto beforeCancel = geo.selection;
+    canvas.mouseDown(pressAt(canvas, title));
+    canvas.mouseDrag(dragAt(canvas, title, drop));
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), "Escape cancels the held time-selection drag");
+    canvas.mouseDrag(dragAt(canvas, title, to));
+    canvas.mouseUp(dragAt(canvas, title, to));
+    root.frame();
+    check(geo.selection == beforeCancel && submitter.nextUndo()->txnId == before,
+          "motion and release after Escape keep the original selection and commit no edit");
+
+    canvas.mouseDown(pressAt(canvas, title));
+    canvas.mouseDrag(dragAt(canvas, title, drop));
+    check(submitter.nextUndo()->txnId == before && geo.selection.clip == 0 && geo.selection.toTrack == 3,
+          "dragging a title inside the range keeps the three-track selection and previews without an edit");
+    canvas.mouseUp(dragAt(canvas, title, drop));
+    root.frame();
+
+    using Span = std::pair<std::int64_t, std::int64_t>;
+    const auto spans = [&](std::int64_t track) {
+        std::vector<Span> result;
+        for (const auto &clip : root.reader().findTrack(track)->clips)
+            result.emplace_back(clip->posTicks, clip->lengthTicks);
+        std::sort(result.begin(), result.end());
+        return result;
+    };
+    check(spans(1) == std::vector<Span>{{0, bar}, {3 * bar, bar}, {5 * bar, 2 * bar}} &&
+              spans(2) == std::vector<Span>{{5 * bar, bar}} &&
+              spans(3) == std::vector<Span>{{4 * bar, bar}, {6 * bar, bar}} &&
+              spans(4) == std::vector<Span>{{2 * bar, bar}},
+          "the three-track move preserves gaps and both unselected fragments of the longer clip");
+    const auto &firstTrack = root.reader().findTrack(1)->clips;
+    const auto moved = std::find_if(firstTrack.begin(), firstTrack.end(), [&](const auto &clip) {
+        return clip->posTicks == 5 * bar;
+    });
+    const auto details = moved == firstTrack.end() ? engine::ClipDetailsRead{} : engine::readClipDetails(*store, (*moved)->id);
+    check(details.clip && details.clip->contentOffsetTicks == bar, "the moved fragment retains its source offset");
+    check(geo.selection.clip == 0 && geo.selection.start == 5 * bar && geo.selection.end == 7 * bar &&
+              geo.selection.insert == 5 * bar && geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 2, 3} &&
+              root.undoTitle(false) == "Undo Move Material",
+          "the selection follows the material as a single move");
+    check(root.command(AppCommands::Undo), "undo the time-selection drag");
+    root.frame();
+    check(spans(1) == std::vector<Span>{{0, 4 * bar}} && spans(2) == std::vector<Span>{{bar, bar}} &&
+              spans(3) == std::vector<Span>{{2 * bar, bar}, {4 * bar, bar}} && submitter.nextUndo()->txnId == before,
+          "one undo restores all three tracks");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -32829,6 +32985,7 @@ int main(int argc, char **argv) {
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });
     trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
+    trace("dragTimeSelection", [&] { dragTimeSelection(commands, temp.path()); });
     trace("selectionDurationAcrossTempo", [&] { selectionDurationAcrossTempo(commands, temp.path()); });
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
