@@ -1024,7 +1024,14 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
         sameLaunchSource(*previous->launchSource,*clipProject_);
     if (!reuse && sceneClockPending())
         throw std::runtime_error("a Session scene clock needs its current launch source image");
-    const auto* audible = reuse ? previous->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get() : nullptr;
+    // Rebuilding the prepared banks still tolerates known unavailable cells.
+    // A new cell or one that previously played must have PCM in each bank.
+    std::set<std::pair<std::int64_t,std::int64_t>> unavailable;
+    if (previous->launchAudio) {
+        const auto& lastBank = previous->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max());
+        for (const auto& slot : lastBank->view().slots)
+            if (slot.clip != 0 && !lastBank->clip(slot.clip)) unavailable.emplace(slot.track,slot.clip);
+    }
     const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
     const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
     auto budget = kSessionResidentPcmBudget;
@@ -1048,7 +1055,8 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
                     storedLaunchIncarnation_,diagnostics,budget);
             }
             if (!bank || bank->residentBytes() > budget || std::ranges::any_of(model.slotClips,[&](const rows::Clip& clip) {
-                    return clip.kind == "audio" && !clip.muted && (!audible || audible->clip(clip.id)) && !bank->clip(clip.id);
+                    return clip.kind == "audio" && !clip.muted && !bank->clip(clip.id) &&
+                        !unavailable.contains({clip.trackId,clip.id});
                 })) throw std::runtime_error("cannot prepare the complete Session media banks within the resident audio budget");
             if (bank->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");

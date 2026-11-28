@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 
 namespace { std::atomic<unsigned> allocations{0}; }
@@ -278,8 +279,14 @@ void verifyResidentTempoHistory(Store& store) {
     constexpr auto secondStep = 8 * quarter;
     constexpr auto nextStep = 12 * quarter;
     constexpr std::int64_t firstCut = 96'000, secondCut = 178'286;
-    store.db().exec("INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(40,3,160,1),(50,4,120,1)");
-    store.db().exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
+    store.db().exec(
+        "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(40,3,160,1),(50,4,120,1),(60,5,120,0);"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(3,'unavailable','missing.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(104,1,'audio',0,5765760);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(104,3,24000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,104);"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(104,1);"
+        "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102;");
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
@@ -331,6 +338,26 @@ void verifyResidentTempoHistory(Store& store) {
     };
     require(matches(hear(1000),-0.25f,-0.25f) && matches(hear(firstCut+1000),-0.25f,0.375f) &&
         matches(hear(secondCut+1000),0.375f,0.375f), "seek selects the physical Warp projection for each of three resident tempos");
+    OpRequest arrangementEdit;
+    arrangementEdit.opType = "clip.create";
+    arrangementEdit.payload = {{"id",120},{"track",1},{"kind","midi"},{"pos",16*quarter},{"length",quarter}};
+    const auto arrangement = OpJournal(store).commit(arrangementEdit);
+    require(arrangement.ok && session.refresh(store),
+        "an unrelated Arrangement clip can rebuild history with a preexisting unavailable slot");
+    require(store.db().execAndGet("SELECT clip_id FROM clip_slots WHERE track_id=1 AND scene_id=60").getInt64() == 104 &&
+        tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160 &&
+        matches(hear(1000),-0.25f,-0.25f) && matches(hear(secondCut+1000),0.375f,0.375f),
+        "the unrelated edit keeps all admitted clocks and the audible source projections");
+
+    const auto source = store.path().parent_path()/"before.wav";
+    const auto offline = source.parent_path()/"temporarily-offline.wav";
+    std::filesystem::rename(source,offline);
+    const auto refused = !session.refresh(store);
+    std::filesystem::rename(offline,source);
+    require(refused && tempoAt(secondStep) == 160,
+        "a previously admitted source going offline refuses the new history publication");
+    require(session.refresh(store), "restore the proven resident audio and rebuild");
+
     store.db().exec("UPDATE clips SET gain_db=6.020599913279624 WHERE id=102");
     require(!session.prepareSceneLaunch(store,50,nextStep) && tempoAt(nextStep) == 160,
         "a stale launch source refuses the new clock and keeps the prior publication");
@@ -358,7 +385,8 @@ void verifyResidentTempoHistory(Store& store) {
     require(render.count == 2 && allocations == 0 && audio::callbackFileIo == 0,
         "retained bank seeks neither perform new scenes nor add driver allocation or file access");
     writeSource(-0.25f,0.375f);
-    store.db().exec("UPDATE clips SET gain_db=0 WHERE id=102");
+    store.db().exec("UPDATE clips SET gain_db=0 WHERE id=102;"
+        "DELETE FROM clips WHERE id=120; DELETE FROM scenes WHERE id=60; DELETE FROM media_files WHERE id=3;");
     std::printf("PASS -- audited 120/140/160 BPM banks survive rollback, seeks and a source refresh at exact frames\n");
 }
 
