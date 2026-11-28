@@ -1212,7 +1212,7 @@ void testAgentDeviceWork() {
                 "(5,'vst3','00000000000000000000000000000005','Example','Space','1.0.0','effect')");
         db.exec("INSERT INTO device_chains(id,track_id,ord,name) VALUES (20,3,0,'Devices')");
         db.exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES (21,20,0,4,'Echo'),(22,20,1,5,'Space')");
-        db.exec("INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES (21,'mix',0.5),(21,'time',0.25)");
+        db.exec("INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES (21,'mix',0.5),(21,'time',0.25),(22,'2',0.4)");
         setup->close();
     }
     auto headless = openHeadless(f.path);
@@ -1269,6 +1269,39 @@ void testAgentDeviceWork() {
               after.at(1).value("ord", -1) == 2,
           "the space comes first, renamed and bypassed; the echo after it at ord 2");
     check(paramOf(21, "mix") == 0.8 && paramOf(21, "time") == 0.25, "the echo's mix is 0.8, its time untouched");
+
+    // A device parameter's lane: a lane names a plug-in parameter by its
+    // numeric id in canonical decimal (ADR-0165), as the read gives it.
+    check(paramOf(22, "2") == 0.4, "level 1: Space's parameter 2 at 0.4");
+    const Json ids = b.tool("project_read", Json::object()).at("structuredContent").at("nextIds");
+    const std::int64_t lane = ids.value("automationLane", 0), data = ids.value("automationData", 0);
+    const Json automate = b.tool(
+        "changeset_propose",
+        {{"request", "Open the space over two bars"},
+         {"baseHead", b.head()},
+         {"ops", Json::array(
+                     {{{"op", "automation.createLane"},
+                       {"payload", {{"id", lane},
+                                    {"row", {{"id", lane}, {"owner_kind", "device"}, {"owner_id", 22}, {"param_ref", "2"},
+                                             {"param_name", "Size"}, {"time_base", 0}, {"value_domain", "normalized"},
+                                             {"unit", ""}, {"default_value", 0.4}, {"min_value", 0.0},
+                                             {"max_value", 1.0}, {"enabled", 1}, {"visible", 1}, {"height", 0}}}}}},
+                      {{"op", "automation.writePoints"},
+                       {"payload", {{"id", data},
+                                    {"lane", lane},
+                                    {"clip", nullptr},
+                                    {"points", {{{"id", 1}, {"time", 0}, {"value", 0.2}, {"curve", 1}, {"tension", 0.0}},
+                                                {{"id", 2}, {"time", 2 * textproj::kWhole}, {"value", 0.9},
+                                                 {"curve", 0}, {"tension", 0.0}}}}}}}})}});
+    check(!isToolError(automate) && applyProposal(automate),
+          "a lane on the device's parameter, with two points, is proposed and applied: " + automate.dump().substr(0, 300));
+    const Json lanes =
+        b.tool("project_read", {{"level", 1}, {"tracks", {3}}}).at("structuredContent").at("automationLanes");
+    const Json* sizeLane = rowWith(lanes, "id", lane);
+    check(sizeLane && sizeLane->at("owner") == Json({{"kind", "device"}, {"id", 22}}) &&
+              sizeLane->value("param", "") == "2" && sizeLane->at("data").size() == 1 && sizeLane->at("data").at(0).at("points").size() == 2 &&
+              sizeLane->at("data").at(0).at("points").at(1).value("at", "") == "3|1|0",
+          "the read shows the device's lane in the track's scope, its stream and both points");
 
     const std::string projection = textproj::projectStore(*store).text;
     const Json removal = b.tool("changeset_propose",
