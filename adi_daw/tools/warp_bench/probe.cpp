@@ -10,7 +10,10 @@
 #include <charconv>
 #include <iomanip>
 #include <iostream>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 using namespace adi::audio;
@@ -73,11 +76,21 @@ void reportCandidate(WavReader& reader, WarpBeatCandidateAnalyzer& analyzer) {
         emit("candidate", "downbeat", static_cast<double>(result.beats[index]) / kWarpAnalysisRate);
 }
 
-template <class Value>
-Value number(std::string_view raw) {
-    Value value{};
+unsigned int meterNumber(std::string_view raw) {
+    unsigned int value{};
     const auto parsed = std::from_chars(raw.data(), raw.data() + raw.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr != raw.data() + raw.size())
+        throw std::runtime_error("invalid numeric meter or tempo");
+    return value;
+}
+
+double tempoNumber(std::string_view raw) {
+    // Floating from_chars is unavailable on older macOS deployment targets.
+    std::istringstream input{std::string(raw)};
+    input.imbue(std::locale::classic());
+    double value = 0;
+    if (raw.empty() || raw.front() == '+' || raw.find_first_not_of("-+eE.0123456789") != raw.npos ||
+        !(input >> std::noskipws >> value) || !input.eof())
         throw std::runtime_error("invalid numeric meter or tempo");
     return value;
 }
@@ -96,8 +109,8 @@ int main(int argc, char** argv) {
             WarpBeatCandidateAnalyzer analyzer;
             reportCandidate(reader, analyzer);
         } else {
-            WarpBeatMeter meter{number<unsigned int>(argv[2]), number<unsigned int>(argv[3]), {}};
-            if (argc == 5) meter.quarterBpm = number<double>(argv[4]);
+            WarpBeatMeter meter{meterNumber(argv[2]), meterNumber(argv[3]), {}};
+            if (argc == 5) meter.quarterBpm = tempoNumber(argv[4]);
             WarpBeatCandidateAnalyzer analyzer(meter);
             reportCandidate(reader, analyzer);
         }
