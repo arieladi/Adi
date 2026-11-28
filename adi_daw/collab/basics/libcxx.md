@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 12:56 IST — seats/server-chain `bc7877193c782d37e0c6c4a6b85863e70855b711`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 292 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+`adi_plugin_admission_tests` passed with the explicit preserve-policy fixture and the separate default share-policy case. This tip also includes the portable AudioGridder parser fix `5cce0417`.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 12:46 IST — seats/server-chain `dd26236dd049820217d431e0c1a77a9787e16ca3`
 
 Headless Debug compiled with Clang 20, libc++, Pd and the strict warning flags. The full `ctest -LE performance` run passed 291 of 292 suites. `adi_plugin_admission_tests` failed at `adi_daw/tests/test_plugin_admission.cpp:204` when the copy received a new UUID. The same assertion failed on a direct rerun. The gate ended before the JUCE phase.
