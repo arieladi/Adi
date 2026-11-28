@@ -300,10 +300,28 @@ What the chain adds, once proved (one line per thing a user would notice):
 - A Clean plug-in scan that re-probes everything except plug-ins the user blocked (DEV-25, engine side).
 - ADI can tell which sync folder (OneDrive, iCloud Drive) holds a project (PD-08, engine side; no status yet).
 - Not a user feature: the research probes are built and self-tested on every platform in CI (#663).
+- Export (EX-02..EX-12, engine side; the dialog controls are not built): one render can write several
+  files at once, in WAV, FLAC, AIFF, MP3 (320 kbit/s CBR), Ogg Vorbis and Opus.
+- Export from a chosen point of a track: before effects, after effects, after the fader, after the mixer.
+- Export at the project's rate, then downsample to the chosen rate (SoXR).
+- Export tails: a fixed length, or until the audio falls silent; and Render as Loop (Live's option).
+- Adjacent cycle markers export as separate files cut from one continuous render (gapless).
+- Three noise-shaped dithers beside None, Triangular and Rectangular; a WAV speaker layout; a stereo source
+  folded to mono.
+- Normalize to integrated loudness, RMS, maximum momentary or short-term loudness; only when above or below
+  the target; with a brickwall limiter at the ceiling.
+- Analyze Only: measure an export without writing a file.
+- A file converter (single files and batches) through the same export pipeline.
+- After Export can import the exported file into the project.
+- A track/tap/cycle-marker render matrix and direct-stem batches with distinct names.
+- Not a user feature: unchanged media is hashed once per session (TM-MD-03 source hash memo).
 
 Left out, and why: see the survey's "already on main" and "abandoned" rows, and project-snapshot-backup
-(SC-157 did it). Not yet merged (next round, not left out): export-profile-validation and
-source-hash-flac-proof.
+(SC-157 did it). Nothing else is left out: all 18 taken stacks are on the chain.
+
+Found in passing, the seat's own: on export-profile-validation, its render-matrix commit `59a97c2b`
+deleted the calls of its own tests `explicitDirectTaps` and `directStemBatch` from `main()` (they were
+defined, never run). The chain calls them again; if they fail, that failure predates the merge.
 
 ## For the director
 
@@ -317,7 +335,13 @@ source-hash-flac-proof.
 - **Two AIFF exports.** Main has AIFF from the save dialog (`PcmContainer::Aiff`); the seat's held export
   stack has its own AIFF writer for its multi-format deliveries. Recommendation: one writer, main's; the
   seat folds its delivery onto it before the export stack lands. Nothing for him to choose unless he wants
-  the seat's multi-delivery export at all before 3 December's plan rows are read.
+  the seat's multi-delivery export at all before 3 December's plan rows are read. On the chain both build;
+  an AIFF or literal-filename job from the save dialog is refused together with the seat's deliveries.
+- **Saved export jobs and presets (job JSON version 2) cannot hold the new export options.** The chain
+  refuses to save such a job rather than drop the options silently. Recommendation: a version 3 of the
+  job format when the export dialog gets these controls; it needs a register id, asked for then.
+- **New external libraries come with the export stack**: SoXR (LGPL-2.1), libFLAC, Ogg/Vorbis/Opus and
+  libopusenc (BSD-3), LAME 3.100 for MP3 (LGPL-2.0-or-later). All are open source, so allowed; listed for him to know.
 - **Two sync-folder detectors.** Main's journal policy (ADR-0258 d7) and the seat's PD-08 status detect
   OneDrive/iCloud separately. Recommendation: the seat makes both use one root list before the status is
   shown; no ruling needed.
