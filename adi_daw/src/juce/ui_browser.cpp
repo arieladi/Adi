@@ -671,7 +671,7 @@ void BrowserPanel::updateMarkedSamples() {
     markedSamples_.clear();
     if (sampleMarks_.empty())
         return;
-    std::unordered_set<std::filesystem::path> projectMarks;
+    std::unordered_set<std::filesystem::path, LibraryPathHash> projectMarks;
     if (projectLibrary_)
         for (const auto &sample : projectLibrary_->listing().files)
             if (sample.isSample() && sampleMarks_.contains(sample.path)) {
@@ -770,7 +770,7 @@ const void *browserCatalogueRow(const BrowserPanel::Row &row) {
     return row.device ? static_cast<const void *>(row.device) : row.plugin;
 }
 struct BrowserListPosition {
-    std::unordered_set<std::filesystem::path> paths;
+    std::unordered_set<std::filesystem::path, LibraryPathHash> paths;
     std::unordered_set<const void *> catalogue;
     const std::filesystem::path *primaryPath = nullptr;
     const void *primaryCatalogue = nullptr;

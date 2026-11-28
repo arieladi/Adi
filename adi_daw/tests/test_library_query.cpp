@@ -9,6 +9,12 @@
 #include "temp_directory.hpp"
 #include <array>
 #include <cstdio>
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
 
 using namespace adi;
 using namespace adi::ui;

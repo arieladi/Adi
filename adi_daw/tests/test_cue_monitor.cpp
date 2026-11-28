@@ -19,6 +19,13 @@
 #include <cstdlib>
 #include <new>
 #include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <span>
+#include <vector>
 namespace {std::atomic<long> allocations{0};std::atomic<bool> countAllocations{false};}
 #if defined(__GNUC__) && !defined(__clang__)
 #define ADI_TEST_NOINLINE __attribute__((noinline))
