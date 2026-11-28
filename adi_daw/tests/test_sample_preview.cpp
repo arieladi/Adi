@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -202,6 +203,64 @@ void transitions(const std::filesystem::path &folder) {
           "starting at a non-zero seek fades in from silence while advancing from the chosen source position");
 }
 
+void downsampling(const std::filesystem::path &folder) {
+    const auto source = folder / "downsample.wav";
+    constexpr std::uint32_t sourceRate = 96000, frames = 8192;
+    std::array<float, frames * 2> pcm{};
+    for (std::uint32_t i = 0; i < frames; ++i) {
+        const auto t = static_cast<double>(i) * 2. * std::numbers::pi / sourceRate;
+        pcm[i * 2] = static_cast<float>(.5 * std::sin(3000. * t));
+        pcm[i * 2 + 1] = static_cast<float>(.5 * std::sin(30000. * t));
+    }
+    audio::WavWriter writer(source, sourceRate, 2, audio::WavFormat::Float32);
+    writer.write(pcm.data(), frames);
+    writer.close();
+
+    for (const auto deviceRate : {48000., 44100.}) {
+        SamplePreview preview;
+        Block block;
+        int blocks = 0;
+        double passband = 0., stopband = 0.;
+        preview.play(source);
+        const bool rendered = await([&] {
+            const auto before = preview.status().position;
+            block.render(preview, deviceRate);
+            if (preview.status().position <= before)
+                return false;
+            ++blocks;
+            if (blocks > 4) { // Leave the filter's start-up transient out of the steady-state measurement.
+                for (std::size_t i = 0; i < block.pcm[0].size(); ++i) {
+                    passband += block.pcm[0][i] * static_cast<double>(block.pcm[0][i]);
+                    stopband += block.pcm[1][i] * static_cast<double>(block.pcm[1][i]);
+                }
+            }
+            return blocks == 32;
+        });
+        const auto count = 28. * static_cast<double>(block.pcm[0].size());
+        check(rendered && std::sqrt(passband / count) > .33 && std::sqrt(passband / count) < .37 &&
+                  std::sqrt(stopband / count) < .005,
+              "downsampling keeps the 3 kHz tone and suppresses the alias of the 30 kHz tone");
+    }
+}
+
+void suspended(const std::filesystem::path &folder) {
+    const auto source = folder / "while-suspended.wav", replacement = folder / "after-suspend.wav";
+    wav(source, .25f, -.125f, 262144); // More than the playback queue can hold without a callback.
+    wav(replacement, -.5f, .75f, 8192);
+    SamplePreview preview;
+    preview.play(source);
+    check(await([&] { return static_cast<bool>(preview.status().waveform); }) && preview.status().phase == Phase::Loading,
+          "waveform finishes while playback waits for output space");
+    preview.stop();
+    preview.play(replacement);
+    Block block;
+    check(await([&] {
+        block.render(preview);
+        return block.pcm[0].front() != 0.f;
+    }) && block.pcm[0].front() == -.5f && block.pcm[1].front() == .75f,
+          "Stop and a new preview release the suspended request and play only replacement PCM");
+}
+
 void compressed() {
     const auto source = media::pathFromUtf8(ADI_PREVIEW_DECODE_FIXTURES) / "tone16.flac";
     audio::WavReader reference(media::pathFromUtf8(ADI_PREVIEW_DECODE_FIXTURES) / "src16.wav");
@@ -256,6 +315,8 @@ int main() {
             throw std::runtime_error("set isolated preview app data");
         native(folder);
         transitions(folder);
+        downsampling(folder);
+        suspended(folder);
         compressed();
         check(allocations == 0 && frees == 0 && audio::callbackFileIo == 0,
               "preview callback allocates, frees and reads files zero times");
