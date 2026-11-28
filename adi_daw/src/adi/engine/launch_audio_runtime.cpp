@@ -656,10 +656,12 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         auto& call = *static_cast<Context*>(state);
         if (!call.media->stored()) return true;
         const auto physical = target.physicalFrames > 0;
+        const auto scheduled = cueAdmission == LaunchCueAdmission::Scheduled;
+        const auto readyOnly = cueAdmission == LaunchCueAdmission::ReadyOnly || cueAdmission == LaunchCueAdmission::HeldRepeat;
         if (physical ? !needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))
-                     : cueAdmission != LaunchCueAdmission::Scheduled) return true;
+                     : !scheduled && !readyOnly) return true;
         const auto* pcm = call.media->clip(target.clip);
-        auto* nativePages = pcm ? pcm->warpPageReader() : nullptr;
+        auto* nativePages = scheduled && pcm ? pcm->warpPageReader() : nullptr;
         if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache()) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
@@ -704,7 +706,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         // wrap or phase change; reserve the outer callback's remaining PCM.
         const auto remaining = call.frames - call.offset - offset;
         if (physical) {
-            const auto requestAhead = cueAdmission == LaunchCueAdmission::Scheduled || cueAdmission == LaunchCueAdmission::Linked;
+            const auto requestAhead = scheduled || cueAdmission == LaunchCueAdmission::Linked;
             if (!pages->reserveCue(target.clip,frame,remaining,requestAhead,
                                    cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
         } else {

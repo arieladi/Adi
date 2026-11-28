@@ -631,7 +631,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         if (pending.repeat) {
             repeatTick = repeatAtSourceEnd ? add(tick,sourceEnd(*target) - cue.tick)
                 : launch_quantize::nextGridTick(add(tick,1),pending.grid,block.meters).value_or(lastTick);
-            if (pending.grid != LaunchQuantization::None && repeatTick > tick && repeatTick != lastTick)
+            if (repeatTick > tick && repeatTick != lastTick)
                 cue.repeat = LaunchSourceCue::ScheduledRepeat{repeatTick,launchSourceTick(*target,nullptr,0)};
         }
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
