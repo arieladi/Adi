@@ -72,6 +72,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
@@ -106,6 +109,13 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // yet: these are ADI's until they are.
     static constexpr const char *kNoMatchesIn = "No matches in ";
     static constexpr const char *kNoMatchesWhileIndexing = "No matches yet: the library is still being indexed";
+    // SC-145: the line between the left list and the content pane drags, as Live's does. The grip
+    // takes the gap between the panes and the left list's last pixels; the content pane keeps a
+    // least width. Live's own limits are not read yet: these are named guesses.
+    static constexpr int kDividerGrip = 3, kContentMinWidth = 80;
+    juce::Rectangle<int> sidebarDividerArea() const noexcept;
+    // Sets the left list's width, kept inside its limits; `keep` saves it with the program.
+    void setSidebarWidth(int, bool keep = false);
     juce::TextEditor search;
     BrowserList list;
     class PreviewToggle final : public juce::Button {
@@ -303,6 +313,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     settings::AppSettings *labelSettings_ = nullptr;
     std::string pendingLabel_;
     double sidebarScroll_ = 0.;
+    int sidebarWidth_ = kSidebarWidth;
+    std::optional<int> dividerDragFrom_;
     bool addFolderFocused_ = false;
     bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;

@@ -482,6 +482,9 @@ void catalogueSettings(std::vector<Setting>& r) {
         };
         r.push_back(std::move(marks));
     }
+    r.push_back(ranged(kBrowserSidebarWidthKey, Type::Int, "", "Browser sidebar width",
+                       "The width of the Browser's left list, set by dragging the line beside it.",
+                       kBrowserSidebarWidthDefault, kBrowserSidebarWidthMin, kBrowserSidebarWidthMax));
     r.push_back(make(kBrowserPreviewEnabledKey, Type::Bool, "", "Browser Preview",
                      "Play an audio file when it is selected in the Browser.", kBrowserPreviewStartsEnabled));
     r.push_back(ranged(kStandalonePreviewLevelKey, Type::Real, "", "Preview level without a song",

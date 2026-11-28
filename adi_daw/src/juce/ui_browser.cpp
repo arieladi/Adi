@@ -424,6 +424,11 @@ int BrowserPanel::findLabel(std::string_view key) const {
 void BrowserPanel::restoreLabel(settings::AppSettings &settings) {
     labelSettings_ = &settings;
     loadFavoriteMarks();
+    // The kept width; the layout narrows what it shows when the Browser is narrower, not the kept value.
+    if (const auto width = labelSettings_->get(settings::kBrowserSidebarWidthKey); width.is_number_integer()) {
+        sidebarWidth_ = std::clamp(width.get<int>(), settings::kBrowserSidebarWidthMin, settings::kBrowserSidebarWidthMax);
+        resized();
+    }
     const auto saved = settings.get(kLastLabel).get<std::string>();
     selected_ = findLabel(saved.empty() ? kFirstLabel : std::string_view(saved));
     pendingLabel_.clear();
@@ -1471,7 +1476,10 @@ void BrowserPanel::resized() {
     const int top = kBarHeight, bottom = r.getHeight() - (previewRowShown_ ? kBarHeight : 0) - edge;
     const bool keepInView = selected_ >= 0 &&
         (sidebarArea_.isEmpty() || sidebarArea_.intersects(sidebarRowBounds(selected_)));
-    sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
+    // SC-145: the left list keeps its dragged width while the content pane keeps its least width.
+    const int widest = std::max(settings::kBrowserSidebarWidthMin, r.getWidth() - 2 * edge - 2 - kContentMinWidth);
+    sidebarArea_ = {edge, top, std::clamp(sidebarWidth_, settings::kBrowserSidebarWidthMin, widest),
+                    std::max(0, bottom - top)};
     setSidebarScroll(sidebarScroll_);
     if (keepInView)
         revealSidebarSelection();
@@ -1620,7 +1628,44 @@ void BrowserPanel::revealSidebarSelection() {
     const double minimumScroll = top + std::min(height, kRowHeight) - height;
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
 }
+juce::Rectangle<int> BrowserPanel::sidebarDividerArea() const noexcept {
+    if (sidebarArea_.isEmpty())
+        return {};
+    return {sidebarArea_.getRight() - kDividerGrip, sidebarArea_.getY(), kDividerGrip + 2, sidebarArea_.getHeight()};
+}
+void BrowserPanel::setSidebarWidth(int width, bool keep) {
+    const int widest = std::max(settings::kBrowserSidebarWidthMin,
+                                getWidth() - 2 * look::border - 2 - kContentMinWidth);
+    const int next = std::clamp(width, settings::kBrowserSidebarWidthMin,
+                                std::min(widest, settings::kBrowserSidebarWidthMax));
+    if (std::exchange(sidebarWidth_, next) != next) {
+        resized();
+        repaint();
+    }
+    if (!keep || !labelSettings_ || labelSettings_->get(settings::kBrowserSidebarWidthKey) == next)
+        return;
+    std::string why;
+    if (!labelSettings_->set(settings::kBrowserSidebarWidthKey, next, {}, why) || !labelSettings_->save(why))
+        root_.say(std::move(why));
+}
+void BrowserPanel::mouseMove(const juce::MouseEvent &e) {
+    setMouseCursor(sidebarDividerArea().contains(e.getPosition()) ? juce::MouseCursor::LeftRightResizeCursor
+                                                                  : juce::MouseCursor::NormalCursor);
+}
+void BrowserPanel::mouseDrag(const juce::MouseEvent &e) {
+    if (dividerDragFrom_)
+        setSidebarWidth(*dividerDragFrom_ + e.getDistanceFromDragStartX());
+}
+void BrowserPanel::mouseUp(const juce::MouseEvent &e) {
+    if (const auto from = std::exchange(dividerDragFrom_, std::nullopt))
+        setSidebarWidth(*from + e.getDistanceFromDragStartX(), true);
+}
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
+    dividerDragFrom_.reset();
+    if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu() && sidebarDividerArea().contains(e.getPosition())) {
+        dividerDragFrom_ = sidebarArea_.getWidth();
+        return;
+    }
     if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu()) {
         if (hideButtonArea().contains(e.getPosition())) {
             root_.command(AppCommands::ToggleBrowser);

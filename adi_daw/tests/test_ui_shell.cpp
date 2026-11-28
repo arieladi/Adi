@@ -4196,6 +4196,83 @@ void browserSidebarScroll(AppCommands &commands, const std::filesystem::path &di
               viewport.contains(browser.sidebarRowBounds(browser.selected())),
           "SC-124: removing folders clamps the sidebar to its shorter extent");
 }
+void browserSidebarResize(const std::filesystem::path &dir) {
+    const auto settingsFile = dir / "browser-sidebar-width.json";
+    settings::AppSettings settings(appdata::App::Daw, settingsFile);
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-sidebar-width.adi", true, {}, error);
+    check(document != nullptr, "SC-145: a project for the Browser's pane divider");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "browser-sidebar-width");
+    auto &browser = root->browser;
+    browser.setSize(308, 443); // The Browser column in a 1200×720 Compact window with Info shown.
+    browser.restoreLabel(settings);
+    const auto saved = [&] { return settings.get(settings::kBrowserSidebarWidthKey).get<int>(); };
+    const auto grip = browser.sidebarDividerArea();
+    check(browser.sidebarArea() == juce::Rectangle<int>(4, 27, 113, 412) &&
+              grip == juce::Rectangle<int>(114, 27, 5, 412) && browser.contentArea().getX() == 119 &&
+              !browser.list.getBounds().intersects(grip) && !browser.search.getBounds().intersects(grip) &&
+              saved() == 113,
+          "SC-145: the left list starts at Live's 113 px and the line beside it belongs to the Browser");
+    const auto down = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+    const auto start = grip.getCentre().toFloat();
+    browser.mouseMove(pressAt(browser, start));
+    const bool cursor = browser.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+    browser.mouseMove(pressAt(browser, browser.contentArea().getCentre().toFloat()));
+    check(cursor && browser.getMouseCursor() == juce::MouseCursor::NormalCursor,
+          "SC-145: the pointer shows the drag over the line only");
+    const int selected = browser.selected();
+    browser.mouseDown(pressAt(browser, start, down));
+    browser.mouseDrag(dragAt(browser, start, start.translated(40.f, 0.f), down));
+    check(browser.sidebarArea().getWidth() == 153 && browser.contentArea().getX() == 159 &&
+              browser.list.getX() == 159 && browser.contentArea().getRight() == 304 &&
+              browser.sidebarRowBounds(0).getWidth() == 153 && browser.selected() == selected && saved() == 113,
+          "SC-145: a drag widens the left list and narrows the content pane, saving waits for release");
+    browser.mouseUp(dragAt(browser, start, start.translated(40.f, 0.f), down));
+    check(saved() == 153, "SC-145: the width is kept with the program on release");
+    browser.mouseDown(pressAt(browser, start.translated(40.f, 0.f), down));
+    browser.mouseDrag(dragAt(browser, start.translated(40.f, 0.f), start.translated(1000.f, 0.f), down));
+    browser.mouseUp(dragAt(browser, start.translated(40.f, 0.f), start.translated(1000.f, 0.f), down));
+    check(browser.contentArea().getWidth() == BrowserPanel::kContentMinWidth &&
+              browser.sidebarArea().getWidth() == 308 - 8 - 2 - BrowserPanel::kContentMinWidth,
+          "SC-145: the content pane keeps its least width");
+    const auto wide = browser.sidebarDividerArea().getCentre().toFloat();
+    browser.mouseDown(pressAt(browser, wide, down));
+    browser.mouseUp(dragAt(browser, wide, wide.translated(-1000.f, 0.f), down));
+    check(browser.sidebarArea().getWidth() == settings::kBrowserSidebarWidthMin &&
+              saved() == settings::kBrowserSidebarWidthMin,
+          "SC-145: the left list stops at its least width");
+    const auto narrow = browser.sidebarDividerArea().getCentre().toFloat();
+    browser.mouseDown(pressAt(browser, narrow, down));
+    browser.mouseUp(dragAt(browser, narrow, narrow.translated(90.f, 0.f), down));
+    check(saved() == settings::kBrowserSidebarWidthMin + 90, "SC-145: a drag back keeps the new width");
+    browser.setSize(160, 443);
+    check(browser.contentArea().getWidth() == BrowserPanel::kContentMinWidth && saved() == settings::kBrowserSidebarWidthMin + 90,
+          "SC-145: a narrower Browser narrows the shown left list, not the kept width");
+    root.reset();
+    auto again = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                   document->views(), document->sessionState(), "browser-sidebar-width");
+    again->browser.setSize(308, 443);
+    again->browser.restoreLabel(settings);
+    check(again->browser.sidebarArea().getWidth() == settings::kBrowserSidebarWidthMin + 90 &&
+              again->browser.contentArea().getX() == again->browser.sidebarArea().getRight() + 2,
+          "SC-145: a new window opens the left list at the kept width");
+    auto &panel = again->browser;
+    const auto samples = std::ranges::find(panel.sidebar(), true, &BrowserPanel::Entry::samples);
+    const int samplesRow = static_cast<int>(samples - panel.sidebar().begin());
+    const auto row = panel.sidebarRowBounds(samplesRow);
+    const int before = panel.selected();
+    panel.mouseDown(pressAt(panel, juce::Point<int>(row.getRight() - 1, row.getCentreY()).toFloat(), down));
+    panel.mouseUp(pressAt(panel, juce::Point<int>(row.getRight() - 1, row.getCentreY()).toFloat(), down));
+    const bool gripKeepsLabel = panel.selected() == before && samplesRow != before;
+    panel.mouseDown(pressAt(panel, row.withWidth(40).getCentre().toFloat(), down));
+    check(samples != panel.sidebar().end() && gripKeepsLabel && panel.selected() == samplesRow &&
+              panel.sidebarArea().getWidth() == settings::kBrowserSidebarWidthMin + 90,
+          "SC-145: a press on the line does not choose the label under it; a click away from it does");
+}
 void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
     std::string why;
     const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
@@ -33219,6 +33296,7 @@ int main(int argc, char **argv) {
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
     trace("browserSidebarScroll", [&] { browserSidebarScroll(commands, temp.path()); });
+    trace("browserSidebarResize", [&] { browserSidebarResize(temp.path()); });
     trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });

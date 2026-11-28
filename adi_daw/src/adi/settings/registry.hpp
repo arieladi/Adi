@@ -74,6 +74,9 @@ inline constexpr char kNewMidiInputTrackKey[] = "midi.trackOnForNewInputs";
 inline constexpr char kBrowserFavoriteMarksKey[] = "browser.favoriteMarks";
 inline constexpr char kBrowserPreviewEnabledKey[] = "browser.previewEnabled";
 inline constexpr bool kBrowserPreviewStartsEnabled = false;
+/// SC-145: the width of the Browser's left list, kept with the program as Live keeps its Browser.
+inline constexpr char kBrowserSidebarWidthKey[] = "browser.sidebarWidth";
+inline constexpr int kBrowserSidebarWidthDefault = 113, kBrowserSidebarWidthMin = 60, kBrowserSidebarWidthMax = 2000;
 inline constexpr char kStandalonePreviewLevelKey[] = "audio.standalonePreviewLevelDb";
 inline constexpr double kStandalonePreviewLevelDb = -12.;
 
