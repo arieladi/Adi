@@ -74,6 +74,8 @@ public:
     // a promise about plugin-owned samples. Muted/unopened clips are absent.
     // Immutable for this generation's lifetime; callback use returns empty.
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
+    /// Owner-only check of the original native-rate WAV reader.
+    [[nodiscard]] bool readsNativePcm(std::int64_t clipId) const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});

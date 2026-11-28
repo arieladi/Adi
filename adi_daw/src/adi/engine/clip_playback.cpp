@@ -1103,7 +1103,10 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
     }
     if (playback.readErrors() || playback.underrunSamples())
         throw std::runtime_error("Session clip playback preparation could not read all pages");
-    return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm));
+    const auto& audio = project->rows.audioClips.front();
+    const bool directPcm = !audio.warpEnabled && !audio.reverse && audio.transposeSemis == 0 && audio.formantShift == 0 &&
+        playback.readsNativePcm(authored.id);
+    return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm), directPcm);
 }
 
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
@@ -1315,6 +1318,13 @@ void ClipPlayback::appendExportBlockingProblems(std::vector<std::string>& out) c
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
     if(audio::onAudioThread)return {};
     return impl_->externalSources;
+}
+bool ClipPlayback::readsNativePcm(std::int64_t clipId) const noexcept {
+    if (audio::onAudioThread) return false;
+    const auto found = std::ranges::find_if(impl_->clips, [&](const auto& clip) { return clip->clipId == clipId; });
+    if (found == impl_->clips.end()) return false;
+    const auto& clip = **found;
+    return !clip.warp && !clip.progressive && clip.sourceRate == clip.rate && clip.reader && !clip.reader->file.pinned;
 }
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {

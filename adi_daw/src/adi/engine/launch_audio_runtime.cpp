@@ -29,10 +29,12 @@ bool positiveAscending(const std::vector<std::int64_t>& ids) {
 } // namespace
 
 LaunchAudioClip LaunchAudioClip::fromSamples(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
-                                             std::vector<float> pcm) {
+                                             std::vector<float> pcm, bool directPcm) {
     if (clip <= 0 || rate == 0 || channels == 0 || pcm.empty() || pcm.size() % channels != 0)
         throw std::invalid_argument("invalid prepared Session clip audio");
-    return {clip, 0, rate, channels, std::move(pcm)};
+    LaunchAudioClip result{clip, 0, rate, channels, std::move(pcm)};
+    result.directPcm_ = directPcm;
+    return result;
 }
 
 LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, std::vector<std::int64_t> tracks,
@@ -531,7 +533,7 @@ void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
-    const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm && !pcm->pageReader() && fade < 0 &&
+    const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm && pcm->hasDirectPcm() && fade < 0 &&
         section.velocity == 1.0f && source >= 0 &&
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
         static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);

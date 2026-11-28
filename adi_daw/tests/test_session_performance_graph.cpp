@@ -4,6 +4,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_update_rate.hpp"
 #include "adi/engine/launch_capture.hpp"
@@ -363,6 +364,67 @@ void fractionalRawLoop() {
     std::puts("PASS -- raw Session loop wraps at frames 126, 150 and 175 replay bit-for-bit");
 }
 
+void authoredWarpLoopWithPcmTape() {
+    Project project;
+    std::array<float, 2048> waveform{};
+    for (std::size_t index = 0; index < waveform.size(); ++index)
+        waveform[index] = static_cast<float>(index % 61) / 128.0f - 0.25f;
+    project.media("warp-loop.wav", 4, waveform);
+    const auto warp = audio::writeWarpMap(std::array<WarpMarker, 2>{{{0, 0}, {2048, 600600}}}, 2048);
+    require(static_cast<bool>(warp), "encode a nonidentity Warp map for the fixed-clock loop");
+    {
+        auto& db = project.store->db();
+        db.exec("UPDATE clips SET length_ticks=240240,loop_enabled=1,loop_start_ticks=0,loop_len_ticks=60060 WHERE id=11;"
+                "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(11,1);");
+        SQLite::Statement audioRow(db, "UPDATE audio_clips SET media_id=4,warp_enabled=1,"
+                                       "warp_mode='re-pitch',warp_markers=? WHERE clip_id=11");
+        audioRow.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+        audioRow.exec();
+    }
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    std::array<LaunchTransition, 4> events{};
+    LaunchCaptureBuffer edgesOnly(events);
+    std::int64_t endTick = 0;
+    const auto expected = render(*project.store, &edgesOnly, &endTick, true);
+    constexpr auto start = 100, loop = 250;
+    require(std::equal(expected.begin() + start, expected.begin() + start + loop, expected.begin() + start + loop) &&
+            *std::min_element(expected.begin() + start, expected.begin() + start + loop) < -0.1f &&
+            *std::max_element(expected.begin() + start, expected.begin() + start + loop) > 0.1f,
+            "the resident Warp clip plays a nonconstant loop at its exact integral wrap");
+    const auto authoredPlan = planLaunchCapture(edgesOnly, {0, 0}, {frames, endTick}, {});
+    constexpr SessionPerformanceAudio proof{Precision::Float32, true};
+    const auto authored = prepareSessionPerformance(*project.store, *source, authoredPlan, sampleRate, std::nullopt, proof);
+    require(authored.ok, "the performed loop is already representable by its authored Warp map " + authored.error);
+
+    std::array<LaunchCapturedPcmRange, 8> pcm{};
+    std::array<LaunchPcmTrackCursor, 1> tracks{{{.track = 1}}};
+    LaunchCaptureBuffer tape(events, pcm, tracks);
+    require(render(*project.store, &tape, &endTick, true) == expected,
+            "enabling raw trace storage does not change the performed Warp waveform");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {frames, endTick}, {});
+    const auto prepared = prepareSessionPerformance(*project.store, *source, plan, sampleRate, std::nullopt, proof);
+    require(prepared.ok, "an optional raw tape must not refuse an exactly reconstructible Warp loop " + prepared.error);
+    require(plan.pcmRanges.empty(), "prepared Warp samples never enter the raw file-offset tape");
+    const auto arrangementBefore = render(*project.store);
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    require(committed.ok, committed.error);
+    require(render(*project.store, nullptr, nullptr, false, nullptr, 127) == expected,
+            "the captured Warp loop replays all 1000 samples at another callback width");
+    require(History(*project.store).undo().ok && render(*project.store) == arrangementBefore &&
+            History(*project.store).redo().ok && render(*project.store) == expected,
+            "one Undo and Redo restore the captured Warp loop");
+    require(project.store->close(), "close the captured Warp loop project");
+    project.store.reset();
+    StoreError openError{};
+    project.store = Store::open(project.file, openError, true);
+    require(project.store && render(*project.store, nullptr, nullptr, false, nullptr, 127) == expected,
+            "reopening the project preserves the exact Warp loop");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0, "the Warp loop capture stays callback-safe");
+    std::puts("PASS -- optional PCM tape keeps an authored Warp loop replayable at exact integral wraps");
+}
+
 void liveRawRegion() {
     Project project;
     std::array<float, 2048> signal{};
@@ -591,6 +653,7 @@ int main() {
         proof(true);
         followThroughGraph();
         fractionalRawLoop();
+        authoredWarpLoopWithPcmTape();
         liveRawRegion();
         liveRawGain<float>();
         liveRawGain<double>();
