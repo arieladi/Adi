@@ -4,8 +4,62 @@
 
 #include "juce/device_core.hpp"
 #include "adi/audio/floating_point_control.hpp"
+#include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace adi::device {
+
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<double>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
+
+std::int64_t DeviceCore::monotonicNow() noexcept {
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void DeviceCore::publishCallbackLoad(CallbackLoad load, bool ready) noexcept {
+    loadSequence_.fetch_add(1);
+    loadCurrent_.store(load.current);
+    loadAverage_.store(load.average);
+    loadOverBudget_.store(load.overBudget);
+    loadReady_.store(ready);
+    loadSequence_.fetch_add(1);
+}
+
+std::optional<CallbackLoad> DeviceCore::callbackLoad() const noexcept {
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto first = loadSequence_.load();
+        if (first & 1u)
+            continue;
+        const bool ready = loadReady_.load();
+        const CallbackLoad result{loadCurrent_.load(), loadAverage_.load(), loadOverBudget_.load()};
+        if (first == loadSequence_.load())
+            return ready ? std::optional{result} : std::nullopt;
+    }
+    return {};
+}
+
+void DeviceCore::measureCallback(std::int64_t begin, std::int64_t end,
+                                 std::int32_t frames) noexcept {
+    if (end < begin)
+        return;
+    const auto elapsed = static_cast<std::uint64_t>(end) - static_cast<std::uint64_t>(begin);
+    const double budget = static_cast<double>(frames) * 1e9 / sampleRate_;
+    const double ratio = static_cast<double>(elapsed) / budget;
+    const double current = std::isfinite(ratio) ? ratio : std::numeric_limits<double>::max();
+    // Weight by audio time so the average responds at the same pace across
+    // physical block sizes. The first sample seeds an otherwise empty meter.
+    constexpr double averageTimeNs = 250e6;
+    const double weight = -std::expm1(-budget / averageTimeNs);
+    const double average = loadReady_.load(std::memory_order_relaxed)
+        ? std::lerp(loadAverage_.load(std::memory_order_relaxed), current, weight) : current;
+    auto overBudget = loadOverBudget_.load(std::memory_order_relaxed);
+    if (current > 1 && overBudget != std::numeric_limits<std::uint64_t>::max())
+        ++overBudget;
+    publishCallbackLoad({current, average, overBudget}, true);
+}
 
 OpenResult DeviceCore::open(engine::BlockProcessor& proc, double sampleRate,
                             std::int32_t requested, std::int32_t granted) {
@@ -18,8 +72,8 @@ OpenResult DeviceCore::open(engine::BlockProcessor& proc, double sampleRate,
         r.error = "driver granted a block size of zero or less";
         return r;
     }
-    if (sampleRate <= 0.0) {
-        r.error = "driver granted a sample rate of zero or less";
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0) {
+        r.error = "driver granted an invalid sample rate";
         return r;
     }
 
@@ -58,8 +112,8 @@ OpenResult DeviceCore::changeBlockSize(double sampleRate, std::int32_t requested
         r.error = "driver granted a block size of zero or less";
         return r;
     }
-    if (sampleRate <= 0.0) {
-        r.error = "driver granted a sample rate of zero or less";
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0) {
+        r.error = "driver granted an invalid sample rate";
         return r;
     }
 
@@ -93,6 +147,7 @@ void DeviceCore::close() {
     granted_ = 0;
     requested_ = 0;
     sampleRate_ = 0.0;
+    publishCallbackLoad({}, false);
 }
 
 bool DeviceCore::setProcessor(engine::BlockProcessor& next) {
@@ -139,7 +194,9 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
     io.outputChannels = outputs;
 
     const audio::ScopedFlushDenormals flush;
+    const auto begin = now_();
     proc_->process(io);
+    measureCallback(begin, now_(), frames);
 
     streamTime_ += frames;
     ++callbacks_;
