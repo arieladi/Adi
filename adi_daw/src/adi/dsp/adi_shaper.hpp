@@ -7,6 +7,7 @@
 #include "adi/dsp/adi_shaper_noise.hpp"
 #include "adi/dsp/adi_shaper_reverb.hpp"
 #include "adi/dsp/adi_shaper_follower.hpp"
+#include "adi/dsp/adi_shaper_follower_filter.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
@@ -37,6 +38,7 @@ class AdiShaper {
     static constexpr int reverbBandParameterCount = modBandParameterCount - 1 + 6;
     static constexpr int timeBandParameterCount = 14;
     static constexpr int followerParameterCount = 9;
+    static constexpr int HoldFollowerCount = 9;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -55,6 +57,9 @@ class AdiShaper {
                  FilterLowOffset = 849, FilterMidOffset, FilterHighOffset,
                  SweepLowOffset = 852, SweepMidOffset, SweepHighOffset,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 HoldFollowerLow = 876, HoldFollowerSourceLow = HoldFollowerLow + 3 * HoldFollowerCount,
+                 HoldHighPassLow = HoldFollowerSourceLow + 3, HoldLowPassLow = HoldHighPassLow + 3,
+                 HoldHighLowPass = HoldLowPassLow + 2,
                  FilterLowPeak = 912, FilterMidPeak, FilterHighPeak,
                  FilterLowSteep = 915, FilterMidSteep, FilterHighSteep,
                  PanLowTransfer = 918, PanMidTransfer, PanHighTransfer,
@@ -75,6 +80,19 @@ class AdiShaper {
     static constexpr Param followerParam(Band band, FollowerControl control) noexcept {
         return static_cast<Param>(WidthFollowerLow + followerParameterCount * static_cast<int>(band)
                                   + static_cast<int>(control));
+    }
+    static constexpr Param holdFollowerParam(Band band, AdiShaperFollower::Control control) noexcept {
+        return static_cast<Param>(HoldFollowerLow + HoldFollowerCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
+    static constexpr Param holdFollowerSourceParam(Band band) noexcept {
+        return static_cast<Param>(HoldFollowerSourceLow + static_cast<int>(band));
+    }
+    static constexpr Param holdHighPassParam(Band band) noexcept {
+        return static_cast<Param>(HoldHighPassLow + static_cast<int>(band));
+    }
+    static constexpr Param holdLowPassParam(Band band) noexcept {
+        return static_cast<Param>(HoldLowPassLow + static_cast<int>(band));
     }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -113,6 +131,7 @@ class AdiShaper {
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= FilterLowOffset && id <= FilterHighOffset)
             || (id >= SweepLowOffset && id <= SweepHighOffset)
+            || (id >= HoldFollowerLow && id <= HoldHighLowPass)
             || (id >= FilterLowPeak && id <= FilterHighSteep)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
             || (id >= PanLowTransfer && id <= PanHighGainLaw)
@@ -292,6 +311,9 @@ class AdiShaper {
     std::array<ReverbSettings, 3> reverbSettings_{};
     std::array<AdiShaperTime, 3> times_;
     std::array<double, 3> timeSpans_{};
+    std::array<AdiShaperFollower, 3> holdFollowers_;
+    std::array<bool, 3> holdUsesFullInput_{};
+    std::array<AdiShaperFollowerFilter, 3> holdInputFilters_;
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;

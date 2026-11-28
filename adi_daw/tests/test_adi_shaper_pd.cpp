@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -845,7 +846,8 @@ void panGainLawState(DeviceInstance& device) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false, bool noiseOn = false, bool reverbOn = false, bool followerOn = false) {
+                  bool crushOn = false, bool noiseOn = false, bool reverbOn = false, bool followerOn = false,
+                  bool holdOn = false, unsigned holdSources = 0, bool filtered = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -853,6 +855,7 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
     constexpr int frames = 4096;
     const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn && !reverbOn && !followerOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
+    std::vector<std::pair<Shaper::Param, float>> oracleSends;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
     const auto decl = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
@@ -866,6 +869,7 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         path.bindParameters(decl);
         auto send = [&](Shaper::Param id, float natural) {
             check(path.sendParameter(static_cast<int>(id) + 1, natural), "modulation message accepted");
+            if (holdOn && i == 0) oracleSends.emplace_back(id, natural);
         };
         if (followerOn) {
             send(Shaper::WidthBands, 3);
@@ -952,6 +956,35 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
                 send(Shaper::reverbParam(band, Shaper::RoomClearTails), 1);
             }
         }
+        if (holdOn) {
+            send(static_cast<Shaper::Param>(Shaper::CrushOn + 1), 3);
+            if (holdSources != 0) {
+                send(static_cast<Shaper::Param>(Shaper::CrushOn + 2), 400);
+                send(static_cast<Shaper::Param>(Shaper::CrushOn + 3), 2000);
+                for (int j = 0; j < 8; ++j)
+                    send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
+            }
+            for (int b = 0; b < 3; ++b) {
+                const auto band = static_cast<Shaper::Band>(b);
+                using Control = adi::dsp::AdiShaperFollower::Control;
+                const float index = static_cast<float>(b);
+                if (holdSources != 0) {
+                    send(Shaper::holdFollowerSourceParam(band), (holdSources & (1U << b)) != 0 ? 1.f : 0.f);
+                    for (int j = 0; j < 8; ++j)
+                        send(Shaper::modParam(Stage::Crush, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
+                             25.f + 12.5f * index);
+                }
+                if (filtered) {
+                    send(Shaper::holdHighPassParam(band), 10.f + 29.f * index);
+                    send(Shaper::holdLowPassParam(band), 30.f + 18.f * index);
+                }
+                const std::array controls{1.f, b == 1 ? 1.f : 0.f, 25.f + 22.f * index, index,
+                                          60.f - 12.f * index, 1.f + 3.f * index, 3.f + index,
+                                          7.f + index, 15.f + index};
+                for (std::size_t n = 0; n < controls.size(); ++n)
+                    send(Shaper::holdFollowerParam(band, static_cast<Control>(n)), controls[n]);
+            }
+        }
     }
     check(native.isNative() && !pd.isNative() && native.adapterLatencySamples() == 0
           && pd.adapterLatencySamples() == 64, "automatic dispatch selects native and buffered edited paths");
@@ -959,6 +992,10 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
     for (int f = 0; f < frames; ++f) {
         input[0][static_cast<std::size_t>(f)] = static_cast<float>(.35 * std::sin(.071 * f));
         input[1][static_cast<std::size_t>(f)] = static_cast<float>(.17 * std::cos(.133 * f));
+        if (holdSources != 0) {
+            input[0][static_cast<std::size_t>(f)] += static_cast<float>(.32 * std::sin(.012 * f));
+            input[1][static_cast<std::size_t>(f)] += static_cast<float>(.28 * std::sin(1.53 * f));
+        }
     }
     constexpr std::array segments{7, 61, 19, 97};
     for (int f = 0, block = 0; f < frames; ++block) {
@@ -1003,6 +1040,57 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
     }
     check(effectPeak > 0.02 && errorPeak < 1.0e-6, "curved stereo modulation agrees across irregular native and Pd blocks");
+    if (holdOn) {
+        using Capture = std::array<std::array<float, frames>, 2>;
+        const auto bands = {Shaper::Band::Low, mid, Shaper::Band::High};
+        // The device owns its Time history and cannot be copied, so each comparison
+        // replays the sends the native path received into a fresh core.
+        const auto renderWith = [&](auto&& adjust) {
+            auto capture = std::make_unique<Capture>();
+            auto rack = std::make_unique<Shaper>();
+            rack->prepare(48000);
+            for (const auto& [param, value] : oracleSends) rack->set(param, value);
+            adjust(*rack);
+            rack->process(input[0].data(), input[1].data(), (*capture)[0].data(), (*capture)[1].data(), frames);
+            return capture;
+        };
+        const auto peakFromDirect = [&](const Capture& capture) {
+            double peak = 0;
+            for (std::size_t ch = 0; ch < 2; ++ch)
+                for (std::size_t f = 0; f < frames; ++f)
+                    peak = std::max(peak, static_cast<double>(std::abs(capture[ch][f] - direct[ch][f])));
+            return peak;
+        };
+        if (filtered) {
+            const auto unfiltered = renderWith([&](Shaper& core) {
+                for (auto band : bands) {
+                    core.set(Shaper::holdHighPassParam(band), 0);
+                    core.set(Shaper::holdLowPassParam(band), 100);
+                }
+            });
+            const double difference = peakFromDirect(*unfiltered);
+            if (holdSources == 0) check(difference < 1e-6, "stored detector cutoffs are dormant on linked bands");
+            else check(difference > .001, "active detector filtering reaches the registered audio");
+        }
+        const auto oracle = renderWith([](Shaper&) {});
+        const auto plain = renderWith([&](Shaper& core) {
+            for (auto band : bands) core.set(Shaper::holdFollowerParam(band, adi::dsp::AdiShaperFollower::Control::On), 0);
+        });
+        if (holdSources != 0) {
+            const auto linked = renderWith([&](Shaper& core) {
+                for (auto band : bands) core.set(Shaper::holdFollowerSourceParam(band), 0);
+            });
+            check(peakFromDirect(*linked) > .001, "selecting the full stereo source changes the registered audio for this band");
+        }
+        double movement = 0;
+        for (std::size_t ch = 0; ch < 2; ++ch) {
+            for (std::size_t f = 0; f < frames; ++f) {
+                check(std::abs((*oracle)[ch][f] - direct[ch][f]) < 1.e-6f, "native controls produce the direct Hold follower response");
+                movement = std::max(movement, static_cast<double>(std::abs((*oracle)[ch][f] - (*plain)[ch][f])));
+            }
+        }
+        check(movement > .02, "the signed Hold followers change the rendered audio");
+    }
     if (driveOn) {
         const float* in[]{input[0].data(), input[1].data()};
         float* out[]{direct[0].data(), direct[1].data()};
@@ -1017,6 +1105,58 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             check(latency[i].latencySamples() == 0, "disabling Drive publishes zero latency on delivery");
         }
     }
+}
+
+void holdFollowerRecall() {
+    constexpr std::array defaults{0., 0., 50., 0., 50., 0., 10., 0., 20.};
+    auto source = open();
+    set(*source, 341, 1);  // An earlier project can already have Crush active.
+    auto earlier = adi::Payload::from_cbor(source->saveState("state"));
+    std::array<double, 27> expected{};
+    for (int b = 0; b < 3; ++b) {
+        for (int n = 0; n < 9; ++n) {
+            const int offset = 9 * b + n, id = 877 + offset;
+            const auto key = std::to_string(id);
+            const auto* descriptor = source->paramAt(724 + offset);
+            check(descriptor && descriptor->id == key && std::abs(source->getParam(key).real - defaults[static_cast<std::size_t>(n)]) < 1.e-5,
+                  "each band's nine controls have stable IDs and the manual detector defaults");
+            for (const auto* group : {"params", "real"})
+                if (earlier.contains(group)) earlier.at(group).erase(key);
+            const double normalized = n < 2 ? 1. : n == 3 ? (b == 0 ? .5 : 1.) : (.17 + .17 * b + .023 * n);
+            set(*source, id, normalized);
+            expected[static_cast<std::size_t>(offset)] = source->getParam(key).real;
+            check(std::abs(source->getParam(key).real - defaults[static_cast<std::size_t>(n)]) > .01,
+                  "every new control was moved before project recall");
+        }
+    }
+    auto manualOnly = adi::Payload::from_cbor(source->saveState("state"));
+    for (int band = 0; band < 3; ++band) {
+        const auto id = std::to_string(904 + band);
+        const auto* descriptor = source->paramAt(751 + band);
+        check(descriptor && descriptor->id == id && source->getParam(id).real == 0, "three stable Hold source selectors default to linked");
+        for (auto* payload : {&earlier, &manualOnly})
+            for (const auto* group : {"params", "real"})
+                if (payload->contains(group)) payload->at(group).erase(id);
+        set(*source, 904 + band, band == 1 ? 0. : 1.);
+    }
+    auto restored = open();
+    check(restored->loadState("state", source->saveState("state")), "restore 27 Hold follower settings");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        check(std::abs(restored->getParam(std::to_string(877 + i)).real - expected[i]) < 1.e-5,
+              "all follower settings round-trip through registered device state");
+    check(restored->getParam("904").real == 1 && restored->getParam("905").real == 0 && restored->getParam("906").real == 1,
+          "each Hold source selection recalls independently");
+    set(*restored, 905, 1.);
+    check(restored->loadState("state", adi::Payload::to_cbor(manualOnly)), "restore an earlier manual-follower project");
+    for (int band = 0; band < 3; ++band)
+        check(restored->getParam(std::to_string(904 + band)).real == 0
+              && restored->getParam(std::to_string(877 + 9 * band)).real == 1,
+              "all previous manual followers remain active on their own linked band");
+    check(restored->loadState("state", adi::Payload::to_cbor(earlier)) && restored->getParam("341").real == 1,
+          "an earlier sparse project restores over an active Hold follower");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        check(std::abs(restored->getParam(std::to_string(877 + i)).real - defaults[i % 9]) < 1.e-5,
+              "a missing follower restores disabled with original defaults in every band");
 }
 
 void automatedCrossoverPd(const std::string& editedDir) {
@@ -1546,7 +1686,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 724, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 760, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -1861,6 +2001,37 @@ int main() try {
     panDelayBlend(editedDir, true);
     stereoSweepPd(ADI_SHAPER_PATCH_DIR, false);
     stereoSweepPd(editedDir, true);
+    holdFollowerRecall();
+    {
+        auto recalled = open();
+        set(*recalled, 905, 1);  // Earlier session with a full-stage middle-band detector.
+        auto earlier = adi::Payload::from_cbor(recalled->saveState("state"));
+        std::array<double, 6> physical{};
+        for (int n = 0; n < 6; ++n) {
+            const auto id = std::to_string(907 + n);
+            const auto* descriptor = recalled->paramAt(754 + n);
+            check(descriptor && descriptor->id == id && recalled->getParam(id).real == (n < 3 ? 0 : 100),
+                  "each new detector edge defaults to open");
+            for (const auto* group : {"params", "real"}) earlier.at(group).erase(id);
+            set(*recalled, 907 + n, .12 + .123 * n);
+            physical[static_cast<std::size_t>(n)] = recalled->getParam(id).real;
+        }
+        auto restored = open();
+        check(restored->loadState("state", recalled->saveState("state")), "restore six detector cutoffs");
+        for (int n = 0; n < 6; ++n)
+            check(std::abs(restored->getParam(std::to_string(907 + n)).real - physical[static_cast<std::size_t>(n)]) < 1e-5,
+                  "the physical cutoff survives recall");
+        check(restored->loadState("state", adi::Payload::to_cbor(earlier)) && restored->getParam("905").real == 1,
+              "the earlier full-stage detector still reads the same source");
+        for (int n = 0; n < 6; ++n)
+            check(restored->getParam(std::to_string(907 + n)).real == (n < 3 ? 0 : 100),
+                  "reopening an older full-input session removes both filter edges");
+    }
+    modulationPd(editedDir, false, false, false, true, false, false, false, true);
+    for (const unsigned mask : {1U, 2U, 4U})
+        modulationPd(editedDir, false, false, false, true, false, false, false, true, mask);
+    modulationPd(editedDir, false, false, false, true, false, false, false, true, 0, true);
+    modulationPd(editedDir, false, false, false, true, false, false, false, true, 7, true);
     driveShapeState(*open());
     driveShapeCanvas(ADI_SHAPER_PATCH_DIR, false);
     driveShapeCanvas(editedDir, true);

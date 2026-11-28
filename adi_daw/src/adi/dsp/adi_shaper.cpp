@@ -204,6 +204,8 @@ void AdiShaper::prepareStages(double sampleRate) noexcept {
     for (auto& room : reverb_) (void)room.prepare(sampleRate);
     for (auto& time : times_) time.reset();
     updateTimeRanges();
+    for (auto& follower : holdFollowers_) follower.prepare(sampleRate);
+    for (auto& detectorFilter : holdInputFilters_) detectorFilter.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
     // At unusually high rates the lowest cutoff can place a float pole on
@@ -712,7 +714,11 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
     if (kind == Stage::Reverb) for (auto& room : reverb_) room.reset();
-    if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
+    if (kind == Stage::Crush) {
+        for (auto& crusher : crush_) crusher.reset();
+        for (auto& follower : holdFollowers_) follower.reset();
+        for (auto& detectorFilter : holdInputFilters_) detectorFilter.reset();
+    }
     if (kind == Stage::Noise) for (auto& noise : noise_) noise.reset();
     if (kind == Stage::Time) for (auto& time : times_) time.reset();
     if (kind == Stage::Drive) {
@@ -892,6 +898,23 @@ void AdiShaper::setTrigger(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (!hasParameter(id) || !std::isfinite(value)) return;
+    if (id >= HoldFollowerLow && id <= HoldHighLowPass) {
+        if (id >= HoldLowPassLow) {
+            holdInputFilters_[static_cast<std::size_t>(id - HoldLowPassLow)].setLowPass(value);
+        } else if (id >= HoldHighPassLow) {
+            holdInputFilters_[static_cast<std::size_t>(id - HoldHighPassLow)].setHighPass(value);
+        } else if (id >= HoldFollowerSourceLow) {
+            holdUsesFullInput_[static_cast<std::size_t>(id - HoldFollowerSourceLow)] = value >= .5f;
+        } else {
+            const auto local = id - HoldFollowerLow;
+            const auto index = static_cast<std::size_t>(local / HoldFollowerCount);
+            auto& follower = holdFollowers_[index];
+            const bool wasEnabled = follower.enabled();
+            follower.set(static_cast<AdiShaperFollower::Control>(local % HoldFollowerCount), value);
+            if (wasEnabled != follower.enabled()) holdInputFilters_[index].reset();
+        }
+        return;
+    }
     if (id >= SweepLowOffset && id <= SweepHighOffset) {
         sweeps_[static_cast<std::size_t>(id - SweepLowOffset)].setStereoOffset(value * .01f);
         return;
@@ -1245,7 +1268,21 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Time) {
                 times_[index].processStereo(l, r, timeDistance(index, primary), band.primary.linear && !band.primary.constant);
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
+                float holdHeight = band.secondary.at(p);
+                // A constant Hold contour may take the flat capture; a followed one moves.
+                bool flatHold = band.secondary.constant;
+                auto& follower = holdFollowers_[index];
+                if (follower.enabled()) {
+                    flatHold = false;
+                    if (holdUsesFullInput_[index]) {
+                        float detectorL = inL[i], detectorR = inR[i];
+                        holdInputFilters_[index].process(detectorL, detectorR);
+                        holdHeight = follower.apply(detectorL, detectorR, holdHeight);
+                    } else {
+                        holdHeight = follower.apply(l, r, holdHeight);
+                    }
+                }
+                crush_[index].processStereo(l, r, primary, holdHeight, flatHold);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if constexpr (kind == Stage::Reverb) {
