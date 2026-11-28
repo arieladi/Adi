@@ -160,6 +160,14 @@ void clipPlaybackClock() {
     check(octave && !octave.data->gainCurves.empty() && octave.data->gainCurves.front().points.size() == 42,
           "unwarped transpose leaves amplitude windows indexed in the 48 kHz source");
 
+    f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=5765760 WHERE id=11");
+    const auto legacy = projectPitchMidi(*f.store, f.analysis, {}, options);
+    check(octave && legacy && legacy.data->notes.size() == octave.data->notes.size() &&
+          legacy.data->notes.back().start_ticks == octave.data->notes.back().start_ticks &&
+          legacy.data->notes.back().dur_ticks == octave.data->notes.back().dur_ticks,
+          "a legacy unwarped loop outside the transposed window projects the audible single pass");
+    f.store->db().exec("UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id=11");
+
     f.store->db().exec("UPDATE audio_clips SET transpose_semis=7 WHERE clip_id=11");
     const auto rounded = projectPitchMidi(*f.store, f.analysis, {}, options);
     const auto effectiveCents = 1200 * std::log2(std::round(48000 * std::exp2(7.0 / 12)) / 48000);
@@ -784,6 +792,85 @@ void channelBendExtraction() {
           "channel bend uses the captured Warp contour and exact clip-end reset");
 }
 
+void nativeChannelBendExtraction() {
+    Fixture f;
+    f.warp();
+    const std::vector<float> pcm(48000, 0.25f);
+    PitchMidiOptions options;
+    options.velocitySource = pcm;
+    options.volumeMode = PitchMidiVolumeMode::ChannelController;
+    options.volumeController = 11;
+    options.channelBend = PitchMidiBendMode::Static;
+    const auto before = digestProject(*f.store).text;
+    const auto steady = preparePitchMidi(*f.store, f.analysis, options);
+    check(steady && steady.data->projection.channelBendCurve &&
+          steady.data->projection.notes.front().tuning_cents == 27.5f &&
+          digestProject(*f.store).text == before,
+          "native static bend automatically captures tuning and prepares without writes");
+    if (!steady || !steady.data->projection.channelBendCurve) return;
+    const auto& staticPoints = steady.data->projection.channelBendCurve->points;
+    check(staticPoints.size() >= 2 && staticPoints.front().time == 0 &&
+          std::lround(controllers::pitchBendWordExact(staticPoints.front().value)) == 9318 &&
+          staticPoints[1].time == quarter / 2 && staticPoints[1].value == 0.5,
+          "static attack overwrites initial center at tick zero and the rest starts centered");
+    const auto placed = commitPitchMidi(*f.store, *steady.data);
+    if (!placed.ok) std::printf("Native pitch bend commit: %s\n", placed.error.c_str());
+    const auto baseClip = engine::readClipDetails(*f.store, steady.data->midiClip, true, true);
+    const auto held = controllers::readLanes(*f.store, steady.data->midiClip);
+    const auto bendLane = std::find_if(held.lanes.begin(), held.lanes.end(), [](const auto& lane) {
+        return lane.controller == controllers::kPitchBend;
+    });
+    check(placed.ok && baseClip.clip && baseClip.clip->notes.size() == 3 &&
+          baseClip.clip->notes.front().tuningCents == 0 && baseClip.clip->noteExpressions.curves.empty() &&
+          held.ok && held.lanes.size() == 2 && bendLane != held.lanes.end() && bendLane->channel == 0 &&
+          bendLane->points.size() == staticPoints.size() &&
+          bendLane->points.front().value == staticPoints.front().value,
+          "new-track Capture stores untuned ANOT, an exact wheel, and the separate volume CC");
+    if (!placed.ok) return;
+    const auto after = digestProject(*f.store).text;
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before &&
+          History(*f.store).redo().ok && digestProject(*f.store).text == after &&
+          History(*f.store).undo().ok && digestProject(*f.store).text == before,
+          "one Undo and Redo restore exact wheel and volume stream bytes");
+
+    installPitchSchema(*f.store);
+    f.store->db().exec("UPDATE tracks SET kind='instrument' WHERE id=2");
+    f.analysis.analysis.notes[1].curve = {{4800, 5700}, {9600, 5750}, {14399, 5700}};
+    options.channelBend = PitchMidiBendMode::Continuous;
+    options.volumeMode = PitchMidiVolumeMode::NoteGain;
+    options.destinationTrack = 2;
+    const auto moving = preparePitchMidi(*f.store, f.analysis, options);
+    check(moving && moving.data->projection.channelBendCurve &&
+          moving.data->projection.pitchCurves.size() == 3,
+          "native continuous bend captures the analyzed contour and keeps detached pitch data");
+    if (!moving || !moving.data->projection.channelBendCurve) return;
+    const auto& motion = moving.data->projection.channelBendCurve->points;
+    const auto knot = std::find_if(motion.begin(), motion.end(), [](const auto& point) { return point.time == quarter / 4; });
+    check(knot != motion.end() && std::lround(controllers::pitchBendWordExact(knot->value)) == 10240 &&
+          std::all_of(motion.begin(), motion.end(), [&moving](const auto& point) {
+              return point.time < moving.data->projection.lengthTicks &&
+                     point.curve == static_cast<std::uint8_t>(Curve::Hold);
+          }), "continuous bend stores exact wire movement as clip-local, half-open Hold points");
+    const auto committed = commitPitchMidi(*f.store, *moving.data);
+    const auto expressive = engine::readClipDetails(*f.store, moving.data->midiClip, true, true);
+    check(committed.ok && expressive.clip && expressive.clip->noteExpressions.curves.size() == 3 &&
+          std::all_of(expressive.clip->noteExpressions.curves.begin(), expressive.clip->noteExpressions.curves.end(),
+              [](const auto& curve) { return curve.dimension == static_cast<int>(ExpressionDim::Gain); }),
+          "selected-track wheel extraction stores per-note Gain without duplicate Pitch expression");
+    const auto copied = copyPitchMidi(*f.store, f.analysis, options);
+    check(copied && copied.data->image.at("children").at("event_streams").size() == 2 &&
+          copied.data->image.at("children").at("event_streams").back().at("stream_kind") == "pitchbend" &&
+          copied.data->image.at("children").at("event_streams").back().at("controller").is_null(),
+          "clipboard image keeps the standard channel-only bend stream address");
+
+    f.analysis.analysis.notes[1].curve[1].cents = 6000;
+    const auto prior = digestProject(*f.store).text;
+    const auto impossible = preparePitchMidi(*f.store, f.analysis, options);
+    check(impossible.problem == PitchMidiProblem::Edits && !impossible.data && impossible.detail &&
+          digestProject(*f.store).text == prior,
+          "an out-of-range contour refuses the native extraction before replacing an earlier output");
+}
+
 void callback() {
     Fixture f;
     unsigned allocations = callbackAllocations.load();
@@ -808,7 +895,7 @@ int main() {
     try {
         projection(); clipPlaybackClock(); journal(); expressionAndDestinations(); analyzedMelody(); extractionLineage();
         markFirstSelectedExtraction(); unfinishedExtractionSchema(); durableEdits(); durableGeometry();
-        amplitudeExtraction(); channelBendExtraction(); callback();
+        amplitudeExtraction(); channelBendExtraction(); nativeChannelBendExtraction(); callback();
     }
     catch (const std::exception& error) { check(false, error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -5,6 +5,7 @@
 #include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/clip_image.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_rows.hpp"
 #include "adi/edit_time.hpp"
@@ -174,25 +175,33 @@ struct Clock {
         if (clip.loopEnabled) {
             const auto begin = clip.loopStartTicks;
             const auto length = clip.loopLengthTicks.value_or(0);
-            if (begin < 0 || length <= 0)
-                throw CaptureError{PitchMidiProblem::Source, "invalid source loop extent"};
-            if (!warped() && source.loopBeginNs && source.loopEndNs) {
-                loopBegin = *source.loopBeginNs;
-                loopEnd = *source.loopEndNs;
-            } else {
-                loopBegin = musical(begin);
-                loopEnd = musical(edit::addTime(begin, length));
+            if (begin >= 0 && length >= 0 && length <= std::numeric_limits<std::int64_t>::max() - begin) {
+                try {
+                    const auto first = !warped() && source.loopBeginNs ? *source.loopBeginNs : musical(begin);
+                    const auto last = !warped() && source.loopEndNs ? *source.loopEndNs : musical(begin + length);
+                    if (first >= 0 && first < last && last <= sourceEnd) {
+                        loopBegin = first;
+                        loopEnd = last;
+                    }
+                } catch (const std::runtime_error&) {
+                    if (warped()) throw;
+                }
             }
-            if (loopBegin < 0 || loopBegin >= loopEnd || loopEnd > sourceEnd)
+            // The unwarped player falls back to one pass when its effective
+            // rate puts legacy Loop bounds beyond the source window.
+            if (warped() && loopEnd == 0)
                 throw CaptureError{PitchMidiProblem::Source, "the source loop extends beyond the audio window"};
-        } else if (!warped() && source.endNs) {
-            sourceEnd = std::min(sourceEnd, *source.endNs);
-        } else if (clip.endMarkerLocal && clip.endMarkerTicks) {
-            auto end = musical(*clip.endMarkerTicks);
-            if (!warped() && clip.timeBase == 1 && !source.offsetNs &&
-                *clip.endMarkerTicks == edit::addTime(contentOffset, lengthTicks))
-                end = edit::addTime(offset, span);
-            sourceEnd = std::min(sourceEnd, end);
+        }
+        if (loopEnd == 0) {
+            if (!warped() && source.endNs) {
+                sourceEnd = std::min(sourceEnd, *source.endNs);
+            } else if (clip.endMarkerLocal && clip.endMarkerTicks) {
+                auto end = musical(*clip.endMarkerTicks);
+                if (!warped() && clip.timeBase == 1 && !source.offsetNs &&
+                    *clip.endMarkerTicks == edit::addTime(contentOffset, lengthTicks))
+                    end = edit::addTime(offset, span);
+                sourceEnd = std::min(sourceEnd, end);
+            }
         }
     }
 
@@ -513,6 +522,35 @@ void appendController(PitchMidiProjection& result, std::span<const Event::Point>
     projectCurve(source, note, begin, end, timeline, clock, stop, add);
 }
 
+PitchMidiChannelBend channelBend(const PitchMidiProjection&, PitchMidiBendMode, int, std::stop_token);
+
+PitchMidiProjection::ChannelBendCurve nativeChannelBend(const PitchMidiProjection& midi, PitchMidiBendMode mode,
+                                                         std::stop_token stop) {
+    const auto bends = channelBend(midi, mode, static_cast<int>(engine::kChannelBendSemitones), stop);
+    PitchMidiProjection::ChannelBendCurve result{bends.channel, {}};
+    const auto remaining = maxRecords - midi.notes.size() - (midi.volumeCurve ? midi.volumeCurve->points.size() : 0);
+    for (const auto& bend : bends.events) {
+        cancellation(stop);
+        // The engine resets a wheel whose playback ownership ends. Within the
+        // clip, the lane gives the effective state after events at this tick.
+        if (bend.tick == midi.lengthTicks) continue;
+        const auto value = controllers::pitchBendFromWord(bend.word);
+        if (!result.points.empty() && result.points.back().time == bend.tick) {
+            result.points.back().value = value;
+        } else {
+            if (result.points.size() == remaining)
+                throw CaptureError{PitchMidiProblem::Edits, "MIDI channel bend exceeds the native stream budget"};
+            AutomationPoint point{};
+            point.point_id = result.points.size() + 1;
+            point.time = bend.tick;
+            point.value = value;
+            point.curve = static_cast<std::uint8_t>(Curve::Hold);
+            result.points.push_back(point);
+        }
+    }
+    return result;
+}
+
 PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
                             const media::ClipPitchAnalysis& analysis, const audio::PitchAnalysis& notes,
                             const audio::PitchEditState& edited,
@@ -524,7 +562,12 @@ PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
         throw CaptureError{PitchMidiProblem::Edits, "pitch MIDI requires valid, nonoverlapping edits"};
     const Clock clock(source, time, analysis.analysis.sampleRate,
                       analysis.sourceEndFrame - analysis.sourceStartFrame);
-    const auto events = collectNotes(analysis, notes, edits, options, clock);
+    auto capture = options;
+    if (options.channelBend) {
+        capture.keepTuning = true;
+        capture.includePitchCurve = *options.channelBend == PitchMidiBendMode::Continuous;
+    }
+    const auto events = collectNotes(analysis, notes, edits, capture, clock);
     PitchMidiProjection result{clock.positionTicks, clock.lengthTicks, {}, {}, {}, {}};
     if (options.volumeMode == PitchMidiVolumeMode::ChannelController)
         result.volumeCurve.emplace(PitchMidiProjection::ControllerCurve{options.volumeController, {}});
@@ -592,6 +635,7 @@ PitchMidiProjection project(const Source& source, const edit::TimeMap& time,
         }
     }
     if (result.notes.empty()) throw CaptureError{PitchMidiProblem::Empty, "no pitched notes in the selected clip range"};
+    if (options.channelBend) result.channelBendCurve = nativeChannelBend(result, *options.channelBend, options.stop);
     cancellation(options.stop);
     return result;
 }
@@ -620,8 +664,20 @@ Payload binary(std::span<const std::byte> bytes) {
     return Payload::binary(std::move(image));
 }
 
-Payload controllerData(const PitchMidiProjection::ControllerCurve& curve) {
-    const auto bytes = writeStream<AutomationPoint>(FourCC::Controller, curve.points, 1, StreamFlags::SortedByTime);
+Payload controllerData(std::span<const AutomationPoint> points) {
+    const auto bytes = writeStream<AutomationPoint>(FourCC::Controller, points, 1, StreamFlags::SortedByTime);
+    return binary(bytes);
+}
+
+Payload notesData(const PitchMidiProjection& midi) {
+    auto notes = std::span(midi.notes);
+    std::vector<NoteRecord> untuned;
+    if (midi.channelBendCurve) {
+        untuned = midi.notes;
+        for (auto& note : untuned) note.tuning_cents = 0;
+        notes = untuned;
+    }
+    const auto bytes = writeStream<NoteRecord>(FourCC::Notes, notes, 1, StreamFlags::SortedByTime);
     return binary(bytes);
 }
 
@@ -631,12 +687,11 @@ Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t tr
     const auto row = edit::defaultRow(db, "clips",
         {{"id", clip}, {"track_id", track}, {"kind", "midi"}, {"name", title},
          {"pos_ticks", midi.positionTicks}, {"length_ticks", midi.lengthTicks}});
-    const auto noteBytes = writeStream<NoteRecord>(FourCC::Notes, midi.notes, 1, StreamFlags::SortedByTime);
     auto children = Payload::object();
     for (const auto& child : childTables()) children[child.table] = Payload::array();
     if (markExtraction) children[extractionTable].push_back({{"clip_id", clip}});
     children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams",
-        {{"id", stream}, {"clip_id", clip}, {"stream_kind", "notes"}, {"data", binary(noteBytes)}})});
+        {{"id", stream}, {"clip_id", clip}, {"stream_kind", "notes"}, {"data", notesData(midi)}})});
     const auto expression = [&children, &ids, clip](std::span<const PitchMidiProjection::NoteCurve> curves,
                                                     ExpressionDim dimension) {
         for (const auto& curve : curves) {
@@ -645,13 +700,19 @@ Payload midiImage(Store& store, const PitchMidiProjection& midi, std::int64_t tr
                 {"note_id", curve.noteId}, {"dimension", static_cast<int>(dimension)}, {"data", binary(bytes)}});
         }
     };
-    expression(midi.pitchCurves, ExpressionDim::Pitch);
+    if (!midi.channelBendCurve) expression(midi.pitchCurves, ExpressionDim::Pitch);
     expression(midi.gainCurves, ExpressionDim::Gain);
     if (midi.volumeCurve) {
         children["event_streams"].push_back(edit::defaultRow(db, "event_streams",
             {{"id", ids.next("event_streams")}, {"clip_id", clip}, {"stream_kind", "cc"},
              {"channel", 0}, {"controller", midi.volumeCurve->controller},
-             {"data", controllerData(*midi.volumeCurve)}}));
+             {"data", controllerData(midi.volumeCurve->points)}}));
+    }
+    if (midi.channelBendCurve) {
+        children["event_streams"].push_back(edit::defaultRow(db, "event_streams",
+            {{"id", ids.next("event_streams")}, {"clip_id", clip}, {"stream_kind", "pitchbend"},
+             {"channel", midi.channelBendCurve->channel}, {"controller", nullptr},
+             {"data", controllerData(midi.channelBendCurve->points)}}));
     }
     return {{"id", clip}, {"row", row}, {"children", std::move(children)}, {"alias_links", Payload::array()}};
 }
@@ -749,17 +810,20 @@ std::vector<OpRequest> requestsFor(Store& store, const Source& source, const Pit
         {{"id", track}, {"kind", "midi"}, {"name", title},
          {"parent", parent ? Payload(*parent) : Payload(nullptr)}, {"index", index}},
         label, "track", track);
-    if (!markExtraction && midi.pitchCurves.empty() && midi.gainCurves.empty()) {
-        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, midi.notes, 1, StreamFlags::SortedByTime);
-        auto controllers = Payload::array();
+    if (!markExtraction && (midi.pitchCurves.empty() || midi.channelBendCurve) && midi.gainCurves.empty()) {
+        auto controllerPackets = Payload::array();
         if (midi.volumeCurve) {
-            controllers.push_back({{"id", ids.next("event_streams")}, {"channel", 0},
-                {"controller", midi.volumeCurve->controller}, {"bytes", controllerData(*midi.volumeCurve)}});
+            controllerPackets.push_back({{"id", ids.next("event_streams")}, {"channel", 0},
+                {"controller", midi.volumeCurve->controller}, {"bytes", controllerData(midi.volumeCurve->points)}});
+        }
+        if (midi.channelBendCurve) {
+            controllerPackets.push_back({{"id", ids.next("event_streams")}, {"channel", midi.channelBendCurve->channel},
+                {"controller", controllers::kPitchBend}, {"bytes", controllerData(midi.channelBendCurve->points)}});
         }
         addRequest(requests, "capture.createMidi",
             {{"clip", {{"id", clip}, {"track", track}, {"kind", "midi"}, {"name", title},
                        {"pos", midi.positionTicks}, {"length", midi.lengthTicks}}},
-             {"controllers", std::move(controllers)}, {"notes", {{"id", stream}, {"bytes", binary(bytes)}}}},
+             {"controllers", std::move(controllerPackets)}, {"notes", {{"id", stream}, {"bytes", notesData(midi)}}}},
             label, "clip", clip);
     } else {
         edit::RowEdits rows(store.db());

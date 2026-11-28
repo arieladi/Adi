@@ -18,6 +18,7 @@ namespace adi::clip_edit {
 
 enum class PitchMidiContent { EditedPitch, DetectedMelody };
 enum class PitchMidiVolumeMode { Velocity, NoteGain, ChannelController };
+enum class PitchMidiBendMode { Static, Continuous };
 
 struct PitchMidiOptions {
     PitchMidiContent content = PitchMidiContent::EditedPitch;
@@ -39,6 +40,9 @@ struct PitchMidiOptions {
     // ordinary channel controller uses channel zero and a CC from 0 to 119.
     PitchMidiVolumeMode volumeMode = PitchMidiVolumeMode::Velocity;
     std::uint8_t volumeController = 7;
+    // Native channel wheel at MIDI's default ±2 semitones. The wheel carries
+    // pitch in saved clips. Volume mode and attack velocity are independent.
+    std::optional<PitchMidiBendMode> channelBend{};
 };
 
 enum class PitchMidiProblem { None, Realtime, Cancelled, Source, Edits, Empty, Storage };
@@ -61,6 +65,13 @@ struct PitchMidiProjection {
     };
     // Native ACTL (channel zero, clip-relative ticks and normalized values).
     std::optional<ControllerCurve> volumeCurve;
+    struct ChannelBendCurve {
+        std::uint8_t channel;
+        std::vector<AutomationPoint> points;
+    };
+    // Native ACTL pitchbend. The source tuning and pitch curves above are
+    // available to a detached exporter and omitted from a native clip image.
+    std::optional<ChannelBendCurve> channelBendCurve{};
 };
 
 template<class Data>
@@ -72,8 +83,6 @@ struct PitchMidiResult {
         return problem == PitchMidiProblem::None && data.has_value();
     }
 };
-
-enum class PitchMidiBendMode { Static, Continuous };
 
 struct PitchMidiBendEvent {
     enum class Kind { InitialCenter, Attack, Movement, ReleaseCenter };
