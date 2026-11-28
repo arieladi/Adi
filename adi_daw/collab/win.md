@@ -6,6 +6,20 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-28, noon — the director's second test: 31 rows and a queue
+
+**He tested again on his Mac** and dictated what he found: recording, notes, saving and reopening, edits, the built-in devices, automation, the analysers, export. What works he said so (it is listed at the foot of the queue). What is wrong is SC-447 to SC-477, with a note on SC-347, and one session works the functional rows from `collab/prompts/2026-11-28-directors-test-2.md`, a take with parts cut first (SC-447).
+
+**Three sheets are owed before anything of theirs is built** (ADR-0243): the built-in devices' panels, which he wants laid out as Live's (SC-455: "it should look like Ableton utility, please"); the Analysers page (SC-463 to SC-466); the Export page (SC-471). Four lists against the plan are owed too: SC-456, SC-473, SC-474, SC-477.
+
+**Asked of him:** how far a clip can be drawn out (SC-476), whether playback stops for an export (SC-470), and the two questions parked in the integrator's log (the encoders for MP3 and FLAC; backups on a timer).
+
+**He had not handed the night's pastes on,** so the integrator has not started on the review's findings and the finished rows on the edit, safety and routing branches wait for it.
+
+**Next free:** ADR-0266; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-478.
+
+---
+
 ## 2026-11-28, before dawn — #830 on main: the tenth stack and the fixes for the director's own test
 
 **Landed:** #830, 25 checks green on the three systems. Two more faults showed on GitHub after the entry below and were fixed on the stack. Linux: the acceptance walk's four-bar recording was cut short, because its driver runs as fast as the engine renders and, since a new song has no returns (SC-437), outran the recorder's writer and filled its two-second ring; the driver now gives the writer a turn while a take is recorded. A device cannot do this, it calls once per block of real time. macOS: the two faults named below. #831: the entry below.
