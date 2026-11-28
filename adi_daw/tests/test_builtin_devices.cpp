@@ -882,9 +882,16 @@ void samplerSavedBefore() {
     std::printf("METRIC Sampler, the state of 28 November:");
     for(const double probe:probes)std::printf(" %.9g",probe);
     std::printf("\n");
-    bool finite=true;
-    for(const double probe:probes)finite=finite && std::isfinite(probe);
-    check(finite && probes[24]>1 && probes[25]>1,"the saved project sounds");
+    // The build of 28 November's own output (commit 84528d456, its voice engine
+    // untouched), printed by this test there: left and right at the twelve
+    // frames, then the sum of each channel's magnitudes.
+    constexpr std::array<double,26> before{-0.051183261,0.0700366497,0.0803205445,0.147935227,0.363915831,0.0757773072,
+        0.205181196,-0.0187439024,0.362917006,0.0700166225,0.454627156,0.337199152,0.0149431955,-0.127875209,
+        -0.0547002591,-0.0968506336,0.173784733,0.180861965,0.0746602491,0.0105240801,-0.137863502,-0.141326934,
+        -0.00354569964,-0.0105004665,691.380065,740.780633};
+    bool same=true;
+    for(std::size_t i=0;i<probes.size();++i)same=same && std::abs(probes[i]-before[i])<=1e-6*std::max(1.,std::abs(before[i]));
+    check(same,"a project saved on 28 November opens and sounds as it did: 26 probes of its render, within 1e-6");
 }
 // SC-483: the hosted Sampler takes its zone table as the state stream "zones",
 // plays by it, saves it, and a project keeps it through reopening and Undo.
