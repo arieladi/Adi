@@ -9586,6 +9586,28 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
           "Cmd+5 switches the Note Editor between fixed and adaptive grids");
     check(!editor.time.grid.fixed && editor.gridTicks() == beat / 4 && panel.readings().grid == "1/16",
           "the adaptive Note Editor has a sixteenth grid at 64 px per quarter");
+    const auto header = panel.headerArea();
+    const auto gridBox = panel.gridBox();
+    check(gridBox == juce::Rectangle<int>(header.getRight() - 48, header.getY() + 2, 44, 13),
+          "SC-452: the grid chooser is inset in the upper-right of the Note Editor header");
+    const auto gridIsPainted = [&] {
+        juce::Image rendered(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics paint(rendered);
+            panel.paint(paint);
+        }
+        return rendered.getPixelAt(gridBox.getCentreX(), gridBox.getY()) == look::buttonEdge &&
+               rendered.getPixelAt(gridBox.getCentreX(), gridBox.getBottom() - 2) == look::buttonRest;
+    };
+    check(gridIsPainted(), "SC-452: the sixteenth appears in a painted grid chooser");
+    const auto arrangementGrid = geometry.grid;
+    const auto command = juce::ModifierKeys::commandModifier;
+    check(editor.keyPressed(juce::KeyPress('1', command, 0)) && editor.gridTicks() == beat / 8 &&
+              panel.readings().grid == "1/32" && gridIsPainted(),
+          "SC-452: Cmd/Ctrl+1 changes the visible chooser to 1/32, matching the editor grid");
+    check(editor.keyPressed(juce::KeyPress('2', command, 0)) && editor.gridTicks() == beat / 4 &&
+              panel.readings().grid == "1/16" && gridIsPainted() && geometry.grid == arrangementGrid,
+          "SC-452: Cmd/Ctrl+2 restores the visible 1/16 while keeping the Arrangement grid");
     const auto notes = editor.notesArea();
     editor.mouseDoubleClick(pressAt(editor, {static_cast<float>(notes.getX() + 34),
                                             static_cast<float>(notes.getY() + 3)}));
@@ -9598,7 +9620,6 @@ void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &
               panel.details()->notes[0].startTicks == 3 * beat / 4,
           "Right moves the selected note 16 px by one sixteenth");
     editor.time.zoom(2., 0.);
-    const auto command = juce::ModifierKeys::commandModifier;
     check(panel.readings().grid == "1/32" && panel.quantizeGrid() == beat / 8 &&
               editor.keyPressed(juce::KeyPress('e', command, 0)) && panel.details()->notes.size() == 2 &&
               panel.details()->notes[0].durationTicks == beat / 8 && panel.details()->notes[1].durationTicks == beat / 8,

@@ -4170,7 +4170,7 @@ void ClipViewPanel::keepSettings() {
     root.persist();
 }
 juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
-    return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
+    return midi() ? headerArea().reduced(4, 2).removeFromRight(44) : juce::Rectangle<int>();
 }
 juce::PopupMenu ClipViewPanel::gridMenu(int idOffset) const {
     using Geometry = ArrangementGeometry;
@@ -6765,7 +6765,16 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto propertiesArea = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
         text(r.sampleProperties, propertiesArea, juce::Justification::centredLeft, look::text, look::fontLabel);
     }
-    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
+    if (const auto grid = gridBox(); !grid.isEmpty()) {
+        controls::chooser(g, grid.toFloat(), {});
+        const auto value = grid.withTrimmedLeft(4).withTrimmedRight(14);
+        labels_.push_back(value);
+        g.setColour(look::text);
+        g.setFont(look::font(look::fontSmall));
+        g.drawFittedText(r.grid, value, juce::Justification::centredLeft, 1, .65f);
+    } else if (!midi()) {
+        text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
+    }
     if (!problem_.empty())
         text(juce::String(problem_), metadata, juce::Justification::centredLeft, look::text, look::fontLabel);
     if (!midi() && !audio()) {
