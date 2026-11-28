@@ -478,14 +478,14 @@ Outcome duplicateSlots(const Model& m) {
     out.label = "Duplicate";
     // The copies are selected, as the selection stood, one height lower.
     auto next = m.selection();
-    const auto move = [&](std::int64_t scene) {
+    const auto lower = [&](std::int64_t scene) {
         const auto r = m.rowOf(scene);
         return r && *r >= box.r0 && *r <= box.r1 ? copyScene(*r) : scene;
     };
-    next.scene = move(next.scene);
-    next.anchorScene = move(next.anchorScene);
+    next.scene = lower(next.scene);
+    next.anchorScene = lower(next.anchorScene);
     for (auto& p : next.picks)
-        p.scene = move(p.scene);
+        p.scene = lower(p.scene);
     out.selection = next;
     return out;
 }
@@ -575,7 +575,7 @@ Outcome paste(const Model& m, const Context& ctx) {
             return added[r - m.sceneCount()];
         return std::nullopt;
     };
-    auto far = std::pair{box.c0, box.r0};
+    auto corner = std::pair{box.c0, box.r0};
     for (const auto& clip : board->clips) {
         const auto c = box.c0 + clip.column;
         const auto r = box.r0 + clip.row;
@@ -583,7 +583,7 @@ Outcome paste(const Model& m, const Context& ctx) {
         if (c >= m.columnCount() || m.column(c).kind != ColumnKind::Clips || m.column(c).midi != clip.midi || !scene)
             continue; // a track that does not take the clip's kind is passed by
         out.copies.push_back({clip.clip, m.column(c).track, *scene, std::nullopt, out.edits.size()});
-        far = {std::max(far.first, c), std::max(far.second, r)};
+        corner = {std::max(corner.first, c), std::max(corner.second, r)};
     }
     if (out.copies.empty()) {
         out.edits.clear();
@@ -595,8 +595,8 @@ Outcome paste(const Model& m, const Context& ctx) {
     pasted.focus = Focus::Slot;
     pasted.anchorTrack = m.column(box.c0).track;
     pasted.anchorScene = *sceneOfRow(box.r0);
-    pasted.track = m.column(far.first).track;
-    pasted.scene = *sceneOfRow(far.second);
+    pasted.track = m.column(corner.first).track;
+    pasted.scene = *sceneOfRow(corner.second);
     out.selection = pasted;
     return out;
 }

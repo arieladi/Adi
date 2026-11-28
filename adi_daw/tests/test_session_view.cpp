@@ -729,7 +729,7 @@ void slotCommands() {
     make.nextClipId = 500;
     const auto midi = run(Command::InsertMidiClip, slotSelected(C, 10), make);
     check(midi.edits.size() == 3 && midi.edits[0].opType == "clip.create" && midi.edits[0].payload.at("id") == 500 &&
-              midi.edits[0].payload.at("kind") == "midi" && midi.edits[0].payload.at("length") == 4 * textproj::kPPQ &&
+              midi.edits[0].payload.at("kind").get_ref<const std::string&>() == "midi" && midi.edits[0].payload.at("length") == 4 * textproj::kPPQ &&
               midi.edits[1].opType == "clip.setLoop" && midi.edits[2].opType == "session.setSlotClip" &&
               midi.edits[2].payload.at("scene") == 10 && midi.edits[2].payload.at("clip") == 500 && editsValid(midi) &&
               midi.selection == Selection{Focus::Slot, C, 10, C, 10, {}},
@@ -778,7 +778,7 @@ void slotCommands() {
 
     const auto scene = run(Command::Duplicate, sceneSelected(10), ctx());
     const auto& create = scene.edits[0];
-    check(create.opType == "scene.create" && create.payload.at("id") == 41 && create.payload.at("name") == "Intro" &&
+    check(create.opType == "scene.create" && create.payload.at("id") == 41 && create.payload.at("name").get_ref<const std::string&>() == "Intro" &&
               scene.edits[1].opType == "scene.setTempo" && scene.edits[1].payload.at("bpm") == 128.0 &&
               scene.edits[2].opType == "scene.setEnabled" && scene.edits[2].payload.at("tempo") == true &&
               scene.edits.back().opType == "scene.reorder" && scene.copies.size() == 2 &&
@@ -864,8 +864,8 @@ void slotCommands() {
           "the palette colours the selected clips");
     const auto track = recolour(selected({Focus::Track, A, 0, 0, 0, {}}), 5);
     check(track.edits.empty(), "a track already in the colour takes no edit");
-    const auto keys = recolour(selected({Focus::Track, C, 0, 0, 0, {}}), 5);
-    check(keys.edits.size() == 1 && keys.edits[0].opType == "track.setColor" && editsValid(keys), "and the selected tracks");
+    const auto titles = recolour(selected({Focus::Track, C, 0, 0, 0, {}}), 5);
+    check(titles.edits.size() == 1 && titles.edits[0].opType == "track.setColor" && editsValid(titles), "and the selected tracks");
     check(!recolour(sceneSelected(10), 3).refusal.empty(), "a scene's colour waits for its op");
 }
 
