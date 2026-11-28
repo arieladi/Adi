@@ -273,6 +273,95 @@ void verifyHandover(Store& store) {
     std::printf("PASS -- paired banks preserve the 192-frame fade at 96000, including graph rebuild, then play Warp at 140 BPM\n");
 }
 
+void verifyResidentTempoHistory(Store& store) {
+    constexpr auto firstStep = 4 * quarter;
+    constexpr auto secondStep = 8 * quarter;
+    constexpr auto nextStep = 12 * quarter;
+    constexpr std::int64_t firstCut = 96'000, secondCut = 178'286;
+    store.db().exec("INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(40,3,160,1),(50,4,120,1)");
+    store.db().exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    const auto stamp = session.launchIncarnation();
+    const auto audit = [&](const char* operation, std::int64_t scene) {
+        OpRequest message;
+        message.opType = operation;
+        message.payload = {{"scene",scene},{"incarnation",stamp}};
+        require(OpJournal(store).commit(message).ok, "commit the scene audit");
+    };
+    const auto tempoAt = [&](std::int64_t tick) { return session.beginRender().bpmAtTick(tick); };
+    session.transport().play();
+    Render render{session};
+    render.runThrough(0);
+    audit("session.launchScene",20);
+    render.runThrough(firstCut);
+    require(render.count == 1 && render.scenes[0].sample == firstCut && render.scenes[0].tick == firstStep,
+        "the first resident bank changes on the audited 140 BPM boundary");
+
+    audit("session.launchScene",40);
+    render.runThrough(secondCut);
+    require(render.count == 2 && render.scenes[1].sample == secondCut && render.scenes[1].tick == secondStep &&
+        tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160,
+        "two audited tempo changes retain their exact whole-tick performed history");
+    audit("session.launchScene",50);
+    require(tempoAt(nextStep) == 120, "a later scene can prepare a previous resident tempo");
+    audit("session.cancelSceneLaunch",50);
+    require(tempoAt(nextStep) == 160, "withdrawing the later scene restores the complete clock and bank history");
+
+    const auto hear = [&](std::int64_t start) {
+        constexpr std::array<std::int64_t,2> offsets{9500,11'000};
+        std::array<float,offsets.size()> result{};
+        session.transport().locate(start);
+        const std::array requests{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,stamp}};
+        require(session.postLaunchGesture(requests), "launch the same Warp clip after seeking to a retained tempo");
+        while (session.transport().position() <= start + offsets.back()) {
+            const auto first = session.transport().position();
+            render.runThrough(first);
+            for (std::size_t index = 0; index < offsets.size(); ++index) {
+                const auto sample = start + offsets[index];
+                if (sample >= first && sample < first + blockSize)
+                    result[index] = render.left[static_cast<std::size_t>(sample - first)];
+            }
+        }
+        return result;
+    };
+    const auto matches = [](auto actual, float first, float second) {
+        return std::abs(actual[0] - first) < 0.0005f && std::abs(actual[1] - second) < 0.0005f;
+    };
+    require(matches(hear(1000),-0.25f,-0.25f) && matches(hear(firstCut+1000),-0.25f,0.375f) &&
+        matches(hear(secondCut+1000),0.375f,0.375f), "seek selects the physical Warp projection for each of three resident tempos");
+    store.db().exec("UPDATE clips SET gain_db=6.020599913279624 WHERE id=102");
+    require(!session.prepareSceneLaunch(store,50,nextStep) && tempoAt(nextStep) == 160,
+        "a stale launch source refuses the new clock and keeps the prior publication");
+    require(session.refresh(store), "publish one newly authored source image for all three tempos");
+    require(matches(hear(1000),-0.50f,-0.50f) && matches(hear(firstCut+1000),-0.50f,0.75f) &&
+        matches(hear(secondCut+1000),0.75f,0.75f), "each retained tempo adopts the same new source image");
+
+    const auto writeSource = [&](float first, float second) {
+        std::vector<float> pcm(12000,first);
+        std::fill(pcm.begin()+6000,pcm.end(),second);
+        audio::WavWriter wave(store.path().parent_path()/"warped.wav",48000,1,audio::WavFormat::Float32);
+        wave.write(pcm.data(),static_cast<std::uint32_t>(pcm.size()));
+        wave.close();
+    };
+    writeSource(0.125f,-0.0625f); // The Store rows and media hash still describe the original path.
+    require(!session.prepareSceneLaunch(store,50,nextStep) && tempoAt(nextStep) == 160,
+        "a changed file revision refuses reuse even when all Store rows are identical");
+    require(session.refresh(store), "reprepare all audio projections from the new file revision");
+    require(matches(hear(1000),0.25f,0.25f) && matches(hear(firstCut+1000),0.25f,-0.125f) &&
+        matches(hear(secondCut+1000),-0.125f,-0.125f), "all three tempos adopt the same externally edited audio file");
+    require(!session.setExternalTempoAt(store,135,nextStep,[] { return false; }) && tempoAt(nextStep) == 160 &&
+        matches(hear(1000),0.25f,0.25f), "a failed external tempo publication preserves retained audio and clock history");
+    require(session.setExternalTempoAt(store,135,nextStep) && tempoAt(nextStep) == 135,
+        "ordinary external tempo changes can replace a retained scene clock after rollback");
+    require(render.count == 2 && allocations == 0 && audio::callbackFileIo == 0,
+        "retained bank seeks neither perform new scenes nor add driver allocation or file access");
+    writeSource(-0.25f,0.375f);
+    store.db().exec("UPDATE clips SET gain_db=0 WHERE id=102");
+    std::printf("PASS -- audited 120/140/160 BPM banks survive rollback, seeks and a source refresh at exact frames\n");
+}
+
 void audioHandover() {
     test::TempDirectory folder{"scene_audio_clock", "project"};
     StoreError error{};
@@ -306,6 +395,7 @@ void audioHandover() {
     warp.exec();
 
     verifyHandover(*store);
+    verifyResidentTempoHistory(*store);
     stopPreparedScenes(*store);
 }
 

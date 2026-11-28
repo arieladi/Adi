@@ -984,41 +984,91 @@ Node* Session::TimingView::inputMonitorSource(std::int64_t track) const noexcept
     return found == inputMonitors->tracks.end() ? nullptr : found->second.get();
 }
 
+bool Session::sceneTempoBanksFit(const TempoMap& clock) const noexcept {
+    if (!sceneTempoBanks_) return false;
+    const auto& periods = sceneTempoBanks_->periods;
+    for (std::size_t i = 0; i < periods.size(); ++i) {
+        const auto& period = periods[i];
+        const auto next = i+1 < periods.size() ? periods[i+1].posTicks : std::numeric_limits<std::int64_t>::max();
+        if (clock.bpmAt(period.posTicks) != period.bpm || std::ranges::any_of(clock.events,[&](const TempoEvent& event) {
+                return event.posTicks > period.posTicks && event.posTicks < next && event.bpm != period.bpm;
+            })) return false;
+    }
+    return true;
+}
+
+std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& timing, const rows::Model& model) {
+    const auto& periods = sceneTempoBanks_->periods;
+    const auto* previous = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!previous || previous->sampleRate != timing.sampleRate || previous->spec.channels != timing.spec.channels ||
+        previous->spec.maxFrames != timing.spec.maxFrames)
+        throw std::runtime_error("a prepared Session tempo handover needs its original audio format");
+    const bool reuse = previous->launchAudio && previous->launchSource &&
+        sameLaunchSource(*previous->launchSource,*clipProject_);
+    if (!reuse && sceneClockPending())
+        throw std::runtime_error("a Session scene clock needs its current launch source image");
+    const auto* audible = reuse ? previous->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get() : nullptr;
+    const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
+    const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
+    auto budget = kSessionResidentPcmBudget;
+    auto diagnostics = model.slotProblems;
+    std::map<double,std::shared_ptr<const LaunchAudioProject>> prepared;
+    std::vector<LaunchTempoBank> result;
+    result.reserve(periods.size());
+    for (std::size_t i = 0; i < periods.size(); ++i) {
+        const auto& period = periods[i];
+        // Page-backed handovers retain just their last pair, as before. For
+        // resident history periods the first tick is always zero.
+        const auto sample = i == 0 ? 0 : timing.sampleForTick(period.posTicks);
+        if ((!result.empty() && sample <= result.back().startSample) || sample == std::numeric_limits<std::int64_t>::max())
+            throw std::runtime_error("Session tempo bank boundaries need distinct samples");
+        auto& bank = prepared[period.bpm];
+        if (!bank) {
+            if (reuse) bank = previous->launchAudio->bankAtTempo(period.bpm);
+            if (!bank) {
+                const TempoMap clock{{{0,period.bpm,0}}};
+                bank = prepareStoredLaunchProject(*clipProject_,clock,rate,channels,timing.spec.maxFrames,
+                    storedLaunchIncarnation_,diagnostics,budget);
+            }
+            if (!bank || bank->residentBytes() > budget || std::ranges::any_of(model.slotClips,[&](const rows::Clip& clip) {
+                    return clip.kind == "audio" && !clip.muted && (!audible || audible->clip(clip.id)) && !bank->clip(clip.id);
+                })) throw std::runtime_error("cannot prepare the complete Session media banks within the resident audio budget");
+            if (bank->view().tracks.size() > kMaximumStoredLaunchTracks)
+                throw std::runtime_error("Session launch track capacity exceeded");
+            if (periods.size() > 2 && bank->hasPagedAudio())
+                throw std::runtime_error("retained Session tempo history needs resident audio banks");
+            budget -= bank->residentBytes();
+        }
+        result.push_back({sample,bank});
+    }
+    if (!launchFilesCurrent(*clipProject_))
+        throw std::runtime_error("Session media changed during tempo bank preparation");
+    return result;
+}
+
 void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, ClipPlayback& clips) {
     if (!timing.spec.performanceState || timing.spec.exporting || !launchAudioDriver_)
         return;
     launchAudioDriver_->collectSourceEdit();
     auto project = timing.spec.launchAudio;
-    std::shared_ptr<const LaunchAudioProject> beforeClock;
-    std::int64_t clockSample = 0;
+    std::vector<LaunchTempoBank> banks;
     if (!project && clipProject_ && storedLaunchIncarnation_ != 0) {
         const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
         const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
-        auto mediaClock = timing.tempo;
-        auto budget = kSessionResidentPcmBudget;
-        if (sceneTempoBanks_ && timing.tempo.bpmAt(sceneTempoBanks_->tick) == sceneTempoBanks_->bpm &&
-            std::ranges::none_of(timing.tempo.events, [&](const TempoEvent& event) {
-                return event.posTicks > sceneTempoBanks_->tick && event.bpm != sceneTempoBanks_->bpm;
-            })) {
-            beforeClock = sceneTempoBanks_->before;
-            if (!beforeClock->supportsRate(timing.sampleRate) || channels != storedLaunchChannels_ ||
-                timing.spec.maxFrames != storedLaunchBlockFrames_)
-                throw std::runtime_error("a prepared Session tempo handover needs its original audio format");
-            clockSample = timing.sampleForTick(sceneTempoBanks_->tick);
-            mediaClock.events = {{0, sceneTempoBanks_->bpm, 0}};
-            budget -= beforeClock->residentBytes();
-        }
-        if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
-            storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != mediaClock.events) {
+        const bool keepBanks = sceneTempoBanksFit(timing.tempo);
+        if (sceneTempoBanks_ && !keepBanks && sceneClockPending())
+            throw std::runtime_error("a committed Session scene needs its prepared tempo map");
+        if (keepBanks) {
+            banks = prepareSceneTempoBanks(timing,model);
+            project = banks.back().media;
+        } else if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
+            storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events) {
             auto diagnostics = model.slotProblems;
-            auto prepared = prepareStoredLaunchProject(*clipProject_, mediaClock, rate, channels, timing.spec.maxFrames,
-                storedLaunchIncarnation_, diagnostics, budget);
+            auto prepared = prepareStoredLaunchProject(*clipProject_,timing.tempo,rate,channels,timing.spec.maxFrames,
+                storedLaunchIncarnation_,diagnostics);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
-            if (beforeClock && (!prepared || std::ranges::any_of(prepared->view().slots, [&](const LaunchSlot& slot) {
-                    return beforeClock->clip(slot.clip) && !prepared->clip(slot.clip);
-                }))) throw std::runtime_error("cannot prepare the complete Session media bank at the scene tempo");
-            storedLaunchTempo_ = mediaClock.events;
+            storedLaunchTempo_ = timing.tempo.events;
             storedLaunchSource_ = clipProject_;
             storedLaunchRate_ = rate;
             storedLaunchChannels_ = channels;
@@ -1026,7 +1076,8 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             storedLaunchProject_ = std::move(prepared);
             launchProblems_ = std::move(diagnostics);
         }
-        project = storedLaunchProject_;
+        if (!keepBanks) project = storedLaunchProject_;
+        if (keepBanks || launchFilesCurrent(*clipProject_)) timing.launchSource = clipProject_;
     }
     const bool timedScenePending = preparedScene_ && preparedScene_->token > launchAudioDriver_->performedSceneToken();
     if (!project || !project->supportsRate(timing.sampleRate) || (!project->stored() &&
@@ -1045,7 +1096,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
              !frozenGroupChildren_.contains(id) && !frozenSources_.contains(id))
             tracks.push_back(id);
     }
-    timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock, clockSample);
+    timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, std::move(banks));
     if (timedScenePending) {
         if (!timing.launchAudio->hasScene(preparedScene_->scene))
             throw std::runtime_error("a committed Session scene must remain available until launch");
@@ -1054,7 +1105,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
     for (const auto id : tracks) {
         const bool createAudioSource = !project->isMidiTrack(id) ||
             std::ranges::any_of(project->view().slots, [&](const LaunchSlot& slot) {
-                return slot.track == id && (project->clip(slot.clip) || (beforeClock && beforeClock->clip(slot.clip)));
+                return slot.track == id && project->clip(slot.clip);
             });
         clips.attachLaunchAudio(id, timing.launchAudio, createAudioSource);
     }
@@ -1611,6 +1662,7 @@ bool Session::rebuild() {
         midi_ = std::move(nextMidi);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     prepareMidiInput(*timing, model_, *midi_);
+    const bool retainedSceneBanks = timing->launchAudio && timing->launchAudio->hasTempoBanks();
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -1618,6 +1670,10 @@ bool Session::rebuild() {
     if (!ok) error_ = devices_.lastRebuildError();
     else {
         live_ = true; // durable audio publication; later auxiliary work cannot undo it
+        if (retainedSceneBanks) {
+            storedLaunchProject_.reset();
+            storedLaunchSource_.reset();
+        } else sceneTempoBanks_.reset();
         gestureAudio_->publishedGeneration(gestureGeneration);
         presentationPending_=!cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
     }
@@ -2610,7 +2666,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 });
                 return cell != view.slots.end() && (cell->clip ? cell->legato : !cell->hasStop);
             };
-            const auto since = sceneTempoBanks_ ? sceneTempoBanks_->tick : 0;
+            const auto since = nextBanks ? nextBanks->periods.back().posTicks : 0;
             if (!before->stored() || (since && origin.sample < timing->sampleForTick(since)) ||
                 std::ranges::any_of(timing->tempo.events, [&](const TempoEvent& event) {
                     return event.posTicks > since && event.posTicks < tick && event.bpm != before->bpm();
@@ -2618,7 +2674,9 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 error_ = "a tempo scene needs fixed-tempo source audio and a Stop or non-legato clip on each audio track";
                 return false;
             }
-            nextBanks = SceneTempoBanks{before, tick, *bpm};
+            if (nextBanks && nextBanks->periods.front().posTicks == 0 && !before->hasPagedAudio())
+                nextBanks->periods.push_back({tick,*bpm,0});
+            else nextBanks = SceneTempoBanks{{{since,before->bpm(),0},{tick,*bpm,0}}};
         }
     } else if (bpm) {
         nextBanks.reset();

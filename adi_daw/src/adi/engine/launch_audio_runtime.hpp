@@ -40,6 +40,7 @@ public:
     [[nodiscard]] LaunchView view() const noexcept { return {tracks_, slots_, scenes_}; }
     [[nodiscard]] bool supportsRate(double rate) const noexcept;
     [[nodiscard]] std::uint64_t residentBytes() const noexcept;
+    [[nodiscard]] bool hasPagedAudio() const noexcept;
     [[nodiscard]] const LaunchAudioClip* clip(std::int64_t id) const noexcept;
     [[nodiscard]] const LaunchFollowPlayer* followPlayer() const noexcept { return follow_.get(); }
     [[nodiscard]] std::uint64_t followSeed() const noexcept { return followSeed_; }
@@ -176,8 +177,14 @@ private:
     std::int64_t nextTimelineSample_ = -1, loopBegin_ = -1, loopEnd_ = -1;
     std::uint64_t transportRevision_ = 0;
     double lastMediaBpm_ = 0.0;
+    std::uint64_t lastMediaRevision_ = 0;
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     std::atomic<std::uint64_t> performedScene_{0};
+};
+
+struct LaunchTempoBank {
+    std::int64_t startSample;
+    std::shared_ptr<const LaunchAudioProject> media;
 };
 
 /// Scratch belonging to one published graph. The driver fills the current
@@ -188,6 +195,8 @@ public:
                        std::int32_t maxFrames,
                        std::shared_ptr<const LaunchAudioProject> beforeClock = {},
                        std::int64_t clockSample = 0);
+    LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>, std::vector<std::int64_t> tracks,
+                       std::int32_t maxFrames, std::vector<LaunchTempoBank>);
 
     void startIfQueued(LaunchAudioDriver&, LaunchBlock, Transport&) const noexcept;
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
@@ -212,6 +221,8 @@ public:
     [[nodiscard]] bool postSourceEdit(LaunchAudioDriver&, const LaunchClipSourceEdit&,
                                       std::unique_ptr<LaunchAudioClip>&) const noexcept;
     [[nodiscard]] const std::shared_ptr<const LaunchAudioProject>& mediaAt(std::int64_t sample) const noexcept;
+    [[nodiscard]] std::shared_ptr<const LaunchAudioProject> bankAtTempo(double bpm) const noexcept;
+    [[nodiscard]] bool hasTempoBanks() const noexcept { return !tempoBanks_.empty(); }
     [[nodiscard]] bool hasTrack(std::int64_t track) const noexcept;
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 
@@ -242,10 +253,11 @@ private:
     void add(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
              std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
     [[nodiscard]] std::uint64_t gainRevision() const noexcept;
+    [[nodiscard]] const LaunchAudioProject* mediaByRevision(std::uint64_t) const noexcept;
 
     std::shared_ptr<const LaunchAudioProject> project_;
-    std::shared_ptr<const LaunchAudioProject> beforeClock_;
-    std::int64_t clockSample_;
+    std::vector<LaunchTempoBank> tempoBanks_;
+    std::vector<const LaunchAudioProject*> bankRevisions_;
     std::vector<std::int64_t> tracks_;
     std::vector<TrackRanges> ranges_;
     std::int32_t maxFrames_;
