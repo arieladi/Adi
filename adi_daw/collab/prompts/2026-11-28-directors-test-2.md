@@ -46,8 +46,10 @@ the system's way.
    text; over empty space in the Arrangement or the Browser the analyser stays. The analyser has no
    "Spectrogram" title and no empty row: it uses the whole box.
 8. **SC-469, SC-470: Export.** It starts with no dither. When it is done the Status Bar names the file,
-    with a way to show it in its folder. Do not change whether playback stops for an export: that is his
-    to choose and he has been asked.
+   with a button that shows it in Explorer or Finder. Playback keeps running during an export: his
+   choice (ADR-0266 d4). Do not change that.
+   Then **SC-476: a clip stops at the end of its audio.** His choice, as Live: a clip that does not
+   loop cannot be drawn out past the end of its audio; a looped clip can, and repeats (SC-448).
 9. **SC-452: the Note Editor shows its grid,** where Live writes it, following Cmd/Ctrl+1 and +2.
 10. **SC-458: the lane follows the control I touch** in automation mode, as Live's does.
 11. **SC-347: Alt and drag bends a segment.** "Option does nothing." Look on main first: #830 carried the
@@ -79,8 +81,7 @@ The look is settled from pictures before it is built (ADR-0243). Win draws these
 director; build none of them until a sheet is agreed. SC-454 (EQ Eight opens as the empty panel of a hosted
 plug-in) went to the devices seat, which owns that file. The sheets: SC-455 (the built-in devices' panels, as Live's),
 SC-464 to SC-466 and SC-463 (the Analysers page: the Classic Scope, one level meter panel, a window of
-its own, the colours), SC-471 (the Export page). SC-476 (how far a clip can be drawn out) is his to
-decide. SC-456, SC-473, SC-474 and SC-477 are lists win makes against the plan.
+its own, the colours), SC-471 (the Export page). SC-456, SC-473, SC-474 and SC-477 are lists win makes against the plan.
 
 ## What he said works
 
