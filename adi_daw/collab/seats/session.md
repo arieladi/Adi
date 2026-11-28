@@ -60,6 +60,7 @@ Session engine seat taken on 27 November 2026.
 | Main follow-up | Merged the documentation-only PR #836 at `c0d22ae45` while the full code build ran (`8bcbb2ac3`). | The tree delta from the queued engine head is one entry in `docs/SANITY-CHECK.md`. | Pushed. Full headless rerun pending. |
 | TM-SV-04 seek fixture correction | Used the reserved `launch_quant` column in the persisted Warp-off seek fixture (`b7640b334`). | The scene-clock fixture reaches the native raw seek in both directions and checks exact source frames and one retained run. | Pushed. Full headless rerun pending. |
 | TM-SV-04 clock launch beyond the loop | Ported the companion clock admission rule using the published driver loop bounds and projected Loop End (`0ae2bfff4`). | The persisted native suite checks the exact End and beyond, the active loop, short preparation lead, and loop settings that the driver is still adopting. | Pushed. Full headless rerun pending. |
+| TM-SV-03 prepared resident source replacement | Added an explicit engine entry point for one same-shape Fade-off resident source. It switches at Clip Update Rate, retires across stop or bank change, and counts both buffers against the resident budget (`3c4f0e32a`). | The native graph tests exercise independent gain and PCM cuts at frames 3,000 and 6,000, six short loop laps, run identity, capture refusal, racing stop, and owner reclamation after device release. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
