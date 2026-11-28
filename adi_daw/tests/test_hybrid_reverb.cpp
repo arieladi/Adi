@@ -152,6 +152,138 @@ void testDenseConvolution() {
         }
     }
 }
+// Item 10: the impulse past its 2,048-sample head runs in longer stages
+// (blocks of 1,024 from 2,048, of 4,096 from 8,192). Impulses that cross both
+// stage edges, with taps planted on every edge, against an independent direct
+// convolution; the same bits at every callback size; and plants that drop a
+// stage. The oracle walks only the source's nonzero samples, so a 60,000-tap
+// impulse stays fast in a debug build.
+void testStagedConvolution() {
+    for (std::size_t length : std::array<std::size_t, 6>{2049, 3072, 8191, 8193, 20000, 60000}) {
+        std::vector<float> impulse(length);
+        for (std::size_t i = 0; i < length; ++i) {
+            const int code = static_cast<int>((i * 89 + 7) % 241) - 120;
+            impulse[i] = static_cast<float>(code) / (400.f * static_cast<float>(length)) *
+                         static_cast<float>(std::exp(-3.0 * static_cast<double>(i) / static_cast<double>(length)));
+        }
+        for (std::size_t edge : std::array<std::size_t, 10>{0, 2047, 2048, 3071, 3072, 8191, 8192, 12287, 12288, 16384}) {
+            if (edge < length) {
+                impulse[edge] += edge % 2 ? -.05f : .0625f;
+            }
+        }
+        impulse.back() = .1f;
+
+        constexpr std::size_t activeFrames = 769;
+        std::vector<float> source(activeFrames + length + 256 + 64);
+        for (std::size_t i = 0; i < activeFrames; ++i) {
+            const int code = static_cast<int>((i * 47 + 31) % 257) - 128;
+            source[i] = static_cast<float>(code) / 512.f;
+        }
+        for (std::size_t edge : std::array<std::size_t, 4>{0, 255, 256, 768}) {
+            source[edge] = edge % 2 ? -.5f : .75f;
+        }
+        std::vector<double> expected(source.size());
+        for (std::size_t j = 0; j < activeFrames; ++j) {
+            if (source[j] == 0.f) {
+                continue;
+            }
+            for (std::size_t k = 0; k < length && j + 256 + k < expected.size(); ++k) {
+                expected[j + 256 + k] += static_cast<double>(impulse[k]) * source[j];
+            }
+        }
+        double sumAbsoluteImpulse = 0, peakSource = 0;
+        for (float value : impulse) {
+            sumAbsoluteImpulse += std::abs(static_cast<double>(value));
+        }
+        for (float value : source) {
+            peakSource = std::max(peakSource, std::abs(static_cast<double>(value)));
+        }
+        // The dense test's budget: 64 float epsilons of the amplitude bound.
+        const double tolerance = 64.0 * static_cast<double>(std::numeric_limits<float>::epsilon()) * peakSource *
+                                 sumAbsoluteImpulse;
+        HybridReverb device;
+        device.set(HybridReverb::Mix, 100);
+        device.set(HybridReverb::Route, 3);
+        const auto ir = prepareHybridImpulse(impulse, 1, 48000);
+        const auto actual = render(device, &ir, 64, source);
+        const double error = maximumError(actual, expected);
+        std::printf("METRIC staged IR %zu max_abs %.9g tolerance %.9g\n", length, error, tolerance);
+        check(error <= tolerance, "a staged impulse matches the independent direct convolution");
+        bool identical = true;
+        for (int block : {1, 63, 256, 1000, 4096, 4097}) {
+            identical = identical && render(device, &ir, block, source) == actual;
+        }
+        check(identical, "a staged impulse renders the same bits at every callback size");
+        // Plants: the impulse cut at a stage's edge loses that stage.
+        for (std::size_t edge : std::array<std::size_t, 2>{2048, 8192}) {
+            if (length > edge) {
+                const auto cut = prepareHybridImpulse(std::span(impulse).first(edge), 1, 48000);
+                check(maximumError(render(device, &cut, 64, source), expected) > tolerance,
+                      "plant: an impulse without its later stage fails the oracle");
+            }
+        }
+    }
+}
+// An impulse that arrives during the render (nothing, or a short impulse,
+// before it): from the next boundary of each stage the new impulse applies
+// to the whole history, as the head's rule is. What a stage summed before the
+// arrival A is heard as it was, up to A + B + S of its block B and offset S
+// (A + 3,072 for the 1,024 stage); after that the output is the full
+// convolution of every input with the new impulse. The last stage's first
+// period ends after A, so its share must be there from conv time 8,192 (a
+// found gap: a stage that had no impulse skipped its next period).
+void testImpulseArrives() {
+    constexpr std::size_t length = 30000, arrival = 5000;
+    std::vector<float> impulse(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        const int code = static_cast<int>((i * 61 + 11) % 233) - 116;
+        impulse[i] = static_cast<float>(code) / (300.f * static_cast<float>(length));
+    }
+    impulse[8192] += .05f;
+    impulse[9000] -= .04f;
+    std::vector<float> source(arrival + length + 256 + 64);
+    for (std::size_t i = 0; i < 769; ++i) {
+        const int code = static_cast<int>((i * 47 + 31) % 257) - 128;
+        source[i] = static_cast<float>(code) / 512.f;
+    }
+    std::vector<double> expected(source.size());
+    for (std::size_t j = 0; j < 769; ++j) {
+        for (std::size_t k = 0; k < length && j + 256 + k < expected.size(); ++k) {
+            expected[j + 256 + k] += static_cast<double>(impulse[k]) * source[j];
+        }
+    }
+    double sumAbsoluteImpulse = 0, peakSource = 0;
+    for (float value : impulse) {
+        sumAbsoluteImpulse += std::abs(static_cast<double>(value));
+    }
+    for (float value : source) {
+        peakSource = std::max(peakSource, std::abs(static_cast<double>(value)));
+    }
+    const double tolerance = 64.0 * static_cast<double>(std::numeric_limits<float>::epsilon()) * peakSource *
+                             sumAbsoluteImpulse;
+    const auto ir = prepareHybridImpulse(impulse, 1, 48000);
+    const auto shortIr = prepareHybridImpulse(std::span(impulse).first(1000), 1, 48000);
+    for (const HybridImpulse *before : {static_cast<const HybridImpulse *>(nullptr), &shortIr}) {
+        HybridReverb device;
+        device.set(HybridReverb::Mix, 100);
+        device.set(HybridReverb::Route, 3);
+        device.prepare(48000);
+        std::vector<float> l(source.size()), r(source.size());
+        for (std::size_t at = 0; at < source.size(); at += 64) {
+            const auto n = std::min<std::size_t>(64, source.size() - at);
+            device.process(source.data() + at, source.data() + at, l.data() + at, r.data() + at, n,
+                           at < arrival ? before : &ir);
+        }
+        double error = 0;
+        for (std::size_t i = arrival + 2048 + 1024 + 256; i < source.size(); ++i) {
+            error = std::max(error, std::abs(static_cast<double>(l[i]) - expected[i]));
+        }
+        std::printf("METRIC arriving IR (%s before) max_abs %.9g tolerance %.9g\n", before ? "short" : "none", error,
+                    tolerance);
+        check(error <= tolerance,
+              "an impulse arriving mid-render applies to the whole history from each stage's next boundary");
+    }
+}
 int main() {
     HybridReverb d;
     d.set(HybridReverb::Mix, 100);
@@ -239,6 +371,8 @@ int main() {
     }
     check(refused, "invalid impulse refused before audio");
     testDenseConvolution();
+    testStagedConvolution();
+    testImpulseArrives();
     {
         // DEV-22: Live 12.4's Hybrid Reverb at its default Dry/Wet 50 % puts the
         // dry impulse out at 0.7071 (the research's default render): sin/cos.
