@@ -2167,7 +2167,7 @@ void DevicePanelView::endParameterReorder(const std::string &parameter, juce::Po
         current->resolved.configured != drag->configured ||
         !std::equal(current->resolved.entries.begin(), current->resolved.entries.end(),
                     drag->order.begin(), drag->order.end(),
-                    [](const panel::Record &entry, const auto &parameterId) { return entry.id == parameterId; }))
+                    [](const panel::Entry &entry, const auto &parameterId) { return entry.id == parameterId; }))
         return;
     auto &order = drag->order;
     const auto from = std::find(order.begin(), order.end(), drag->parameter);
