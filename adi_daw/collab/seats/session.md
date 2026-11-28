@@ -51,6 +51,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-04 Float64 raw gain | Admitted the exact native-rate raw Float64 path with matching widened samples, unity authored gain and a dB value that rounds to the performed multiplier (`65e2643d1`). | The native graph test compares 1,000 samples at two callback widths and through Undo, Redo and reopen. Multichannel Fold with different rounding is refused. | Pushed. Full headless rerun pending. |
 | TM-SV-03 immediate paged Legato | Retained the reachable phase window before publication when it fits the source cache of eight pages (`e5ad57203`). | The native fixture holds the page worker through a same-callback takeover at frame 45,232 and compares every stereo sample. Longer cold sources still need a queued read-ahead window. | Pushed. Full headless rerun pending. |
 | TM-SV-04 outgoing Fade receipts | Latched whether an outgoing Fade tail reaches the driver capture, including tails originating before its first block (`eebb7ee77`). | The native test rejects capture at frames 300 and 400 and accepts a tape at frame 500 after the tail expires.  | Pushed. Full headless rerun pending. |
+| TM-SV-03 retained paged region edits | Admitted a live region edit when the prepared page bank covers the full authored window and let the scheduler own the edited loop phase (`3114192e4`). | The persisted test pauses the disk worker, compares stereo PCM across frame 48,000 and rejects cold or oversized ranges and a stale edit under a cold replacement bank. | Pushed. Full headless rerun pending. |
 
 ## Readings owed
 
