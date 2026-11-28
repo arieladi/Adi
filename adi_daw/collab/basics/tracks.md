@@ -1,8 +1,8 @@
 # Basics tracks
 
-**Newest branch** `basics/sc-301-device-chain-end` at `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb`. The consolidated `basics/tracks-chain` is at `6aeeed1b`. All 28 item heads are on main through #830. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-301-device-chain-end) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+**Newest branch** `basics/sc-301-device-chain-end` at `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb`. The consolidated `basics/tracks-chain` is at `e0ecd002`. All 28 item heads are on main through #830. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-301-device-chain-end) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
-The chain fast-forwarded to main on 28 November. The full local Linux headless run is in progress. Each row preserves the checks recorded when the item was published.
+Linux Debug with warnings as errors passed all 295 non-performance tests at `6aeeed1b` with `ctest -LE performance` and both display variables unset. The chain fast-forwarded to `e0ecd002` with documentation changes after that run. Each row preserves the checks recorded when the item was published.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -61,6 +61,6 @@ SC-174 baseline for the edit owner. In the app on Xvfb, I dragged a time range i
 
 - SC-288 Group needs the rack playback and structural operations in DEV-01 and DEV-03. The current engine skips rack children. Both feature branches conflict with the landing stack, and DEV-01 still needs the ADR-0253 playback corrections. I recommend wiring Group after those revisions land so grouping an instrument or effect keeps it audible.
 
-- SC-281 needs a portable default track that carries devices, plug-in state, and media into another project. I recommend defining how it maps sends before applying it at track creation. Sample settings already save by content hash under TM-MD-04. I recommend wiring Clip View Save and both import paths there while keeping ordinary drops atomic.
+- SC-281 needs a portable default track that carries devices, plug-in state, and media into another project. I recommend defining how it maps sends before applying it at track creation. The sample-default half is on main through SC-212 and TM-MD-04 (`f476ed62`, `02bf7226`).
 
 - SC-298 needs a ruling on whether a built-in’s inactive A/B bank survives reopening and which bank P should select after Undo. I recommend document-local banks initially, one Undo for a changed switch, and the existing automation override for changed values only.
