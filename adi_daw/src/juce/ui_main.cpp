@@ -1357,7 +1357,7 @@ class AdiApplication final : public juce::JUCEApplication,
             open.path = pathFromUtf8(file.getFullPathName().toStdString());
             if (!testLaunch()) {
                 openProgress_ = std::make_unique<ProjectProgressWindow>("Open ADI Project", file, window_.get());
-                openProgress_->showStage("Reading the project…");
+                openProgress_->showStage("Reading the project...");
             }
             std::string catalogueError;
             (void)loader_.hydrateCatalogue(catalogueError);
@@ -1429,13 +1429,13 @@ class AdiApplication final : public juce::JUCEApplication,
             if (openProgress_) {
                 const auto complete = job->completedDevices(), total = job->totalDevices();
                 const auto count = "Loading devices " + juce::String(static_cast<juce::int64>(complete)) +
-                                   " of " + juce::String(static_cast<juce::int64>(total)) + "…";
+                                   " of " + juce::String(static_cast<juce::int64>(total)) + "...";
                 openProgress_->showStage(count, total ? static_cast<double>(complete) / static_cast<double>(total) : -1.0);
             }
             break;
         case Phase::buildingGraph:
             if (openProgress_)
-                openProgress_->showStage("Building the playback graph…");
+                openProgress_->showStage("Building the playback graph...");
             break;
         case Phase::failed:
             openFailed(job->error());
