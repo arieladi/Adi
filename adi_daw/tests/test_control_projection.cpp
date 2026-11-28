@@ -378,6 +378,75 @@ void testLevel2(const rows::Model& m) {
           "past the note cap: the cap's worth, and notesTruncated");
 }
 
+void testAutomationPoints(const rows::Model& base) {
+    section("level 1: each lane's streams and points, the point cap, nextPoint past it, an unreadable stream");
+    check(base.automationData.empty() && projectLevel(base, 0, ReadScope{}, std::nullopt, "song")
+                                                 .at("nextIds").at("automationData") == 1,
+          "no stream yet: nextIds.automationData is 1");
+    auto m = base;
+    // Lane 5 (Keys volume): one arrangement stream past the cap, its top id last.
+    std::vector<AutomationPoint> many;
+    for (std::size_t i = 0; i <= kMaxPointsPerRead; ++i) {
+        AutomationPoint p{};
+        p.time = static_cast<std::int64_t>(i) * Q;
+        p.value = -6.0;
+        p.curve = 1;
+        p.point_id = static_cast<std::uint64_t>(i) + 1;
+        many.push_back(p);
+    }
+    many.back().point_id = 70000;
+    rows::AutomationData big;
+    big.id = 40;
+    big.laneId = 5;
+    big.blob = writeStream<AutomationPoint>(FourCC::Automation, many);
+    // Lane 6 (the device in the rack): bytes that are not a stream.
+    rows::AutomationData broken;
+    broken.id = 41;
+    broken.laneId = 6;
+    broken.blob = std::vector<std::byte>(3, std::byte{0});
+    m.automationData = {big, broken};
+
+    const auto p = projectLevel(m, 1, ReadScope{}, std::nullopt, "song");
+    check(p.at("nextIds").at("automationData") == 42, "nextIds.automationData is one past the highest stream id");
+    check(p.value("pointsTruncated", false), "past the point cap: pointsTruncated");
+    const auto* volume = byId(p.at("automationLanes"), 5);
+    check(volume && volume->at("timeBase") == "ticks" && volume->at("data").size() == 1, "lane 5 has its one stream");
+    if (volume && volume->at("data").size() == 1) {
+        const auto& s = volume->at("data").at(0);
+        check(s.at("id") == 40 && s.at("clip").is_null() && s.at("points").size() == kMaxPointsPerRead,
+              "the stream by its id, the arrangement's, cut at the cap");
+        check(s.at("nextPoint") == 70001, "nextPoint counts the ids past the cap: 70001, not the cap's");
+        const auto& first = s.at("points").at(0);
+        check(first.at("id") == 1 && first.at("time") == 0 && first.at("at") == "1|1|0" && first.at("value") == -6.0 &&
+                  first.at("curve") == 1 && first.at("tension") == 0.0,
+              "a point: id, time, bar|beat|tick, value, curve, tension");
+    }
+    const auto* rack = byId(p.at("automationLanes"), 6);
+    check(rack && rack->at("data").size() == 1 && rack->at("data").at(0).value("unreadable", false) &&
+              !rack->at("data").at(0).contains("points"),
+          "a stream that does not decode says unreadable, with no points");
+
+    std::vector<AutomationPoint> two(2);
+    two[0].time = 0;
+    two[0].point_id = 1;
+    two[1].time = Q;
+    two[1].value = 1.0;
+    two[1].point_id = 2;
+    rows::AutomationData envelope;
+    envelope.id = 7;
+    envelope.laneId = 5;
+    envelope.clipId = 11;
+    envelope.blob = writeStream<AutomationPoint>(FourCC::Automation, two);
+    m.automationData = {envelope};
+    const auto small = projectLevel(m, 1, tracksScope({2}), std::nullopt, "song");
+    const auto* lane = byId(small.at("automationLanes"), 5);
+    check(!small.contains("pointsTruncated") && lane && lane->at("data").size() == 1 &&
+              lane->at("data").at(0).at("clip") == 11 && lane->at("data").at(0).at("points").size() == 2 &&
+              !lane->at("data").at(0).at("points").at(0).contains("at") &&
+              lane->at("data").at(0).at("nextPoint") == 3,
+          "a clip's envelope: its clip, both points, no arrangement position, nextPoint 3");
+}
+
 void testEmptyTracks() {
     section("SC-438: a project with an empty group and then only Main");
     test::TempDirectory temp("control_projection", "empty-tracks");
@@ -547,6 +616,7 @@ int runAll() {
     testLevel0(m);
     testLevel1(m);
     testLevel2(m);
+    testAutomationPoints(m);
     testEmptyTracks();
     testTicksAtBar(m);
     testNoteName();
