@@ -12,9 +12,12 @@
 ## Where it stands
 
 Round 1 (28 November): step 1 (the survey) done. Step 2: 22 of the 28 stack tops are merged into
-`held/engine-chain` (head `51910ac1`); one (TM-IC-02) turned out to be on the base already; five are
-**not merged yet**, each a port onto code the base rewrote since 22 November, not a plain merge (the
-list and why, under step 2). Step 3: the first core check runs on slot 15.
+`held/engine-chain` (head `b9716587`, with three fix commits); one (TM-IC-02) turned out to be on the
+base already; five are **not merged yet**, each a port onto code the base rewrote since 22 November,
+not a plain merge (the list and why, under step 2). Step 3: the chain **builds** under MSVC Debug /WX;
+294 of 300 core suites pass; three failures are likely the merges' (clap, link playback, MIDI capture),
+one is the base's own (ui_document), two look like parallel-load flakes (scan cache, library). Details
+and the next steps under step 3. The `all` check has not run yet.
 
 **The next session starts here:** read "Not merged yet" under step 2, then step 3. Merge the base into
 the chain first (`git fetch`, then the BASE rule of the mission).
@@ -217,6 +220,15 @@ round 1; nothing of them is on the chain.
 
 | Check | Chain head | Result |
 |---|---|---|
+| core | c5574cd4 | build failed: three merge joins left two functions under one closing brace (test_device_ops, test_note_diff; test_graph had the same); EX-02's `RenderSilence` filled float with an int zero (MSVC C4244 under /WX, the seat's own, fixed plainly). Fixed in e525ec05 |
+| core | e525ec05 | build failed: `tests/test_midi_clips.cpp` (main's audition test) used `pluginNoteId`, which DEV-17 removed. It now compares the whole runtime IDs (b9716587) |
+| core | **b9716587** | **build OK** (MSVC Debug, /WX); ctest -LE performance: 294 of 300 pass. Failing: `adi_clap_tests` (3: "CLAP volume uses the authored linear amplitude above unity", "the switch sends all 128 original releases before all 16 new-wire attacks", "the next segment first sends the pending release on its original wire, then the new attack"), `adi_link_playback_tests` (10, the native performance generation and restarted Warp tempo checks), `adi_midi_capture_tests` (3: "stored ANOT retains original full uint64 identities…", "native Capture validates binary records, addresses, IDs…"), `adi_scan_cache_tests` (1, cancellation reaps the child), `adi_library_tests` (timeout), `adi_ui_document_tests` (1, "opening yields to the owner between slow plug-in loads") |
+| the six alone, on the base | 16064c0a (base) | only `adi_ui_document_tests` fails, the same check: **on the base already, not the chain's**. scan_cache and library pass alone on the base; on the chain they ran in the full parallel run, where the library timeout is a known parallel-only one (win's wincheck). They need a run alone on the chain before they are counted as the chain's |
+
+**What the next session does in step 3** (in this order):
+1. Run the three real failures alone on the chain: `slot.sh run 15 origin/held/engine-chain core '^(adi_clap_tests|adi_link_playback_tests|adi_midi_capture_tests|adi_scan_cache_tests|adi_library_tests)$'`, and read the lines with `slot.sh grep 15 core.ctest 'FAIL' 2`.
+2. Likely causes, to confirm by reading: clap and midi_capture touch note identity and wire IDs, which DEV-17 changed (shared event-source prefix, per-instance wire maps) while main's MI-08 units, DF-E56 release queue and Capture's full-ID records landed after it was written; link_playback's performance generation is touched by the graph's device clock (DEV-13 quantum, DEV-19 scale timing) or the merged `addNode` arguments. A merge mistake is fixed on the chain; a fault of a seat's branch that its own branch already had is logged with the test name and left for the seat.
+3. Then `all` (core and the window suites).
 
 ## Step 4 — the account
 
