@@ -6625,17 +6625,17 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(clipsOn(1) == clipsBeforeLoad, "Undo restores the audio track before the drop fixtures");
         browser.choose(user);
-        const auto drums = std::ranges::find_if(browser.rows(), [](const auto &row) {
+        const auto drumsRow = std::ranges::find_if(browser.rows(), [](const auto &row) {
             return row.folder != nullptr && row.folder->name == "Drums";
         });
-        check(drums != browser.rows().end() && browser.shown().size() == 1 &&
+        check(drumsRow != browser.rows().end() && browser.shown().size() == 1 &&
                   std::ranges::any_of(browser.rows(), [](const auto &row) {
                       return row.folder != nullptr && row.folder->name == "Clips";
                   }),
               "the User Library lists root files, empty folders and collapsed sample folders from disk");
-        if (drums == browser.rows().end())
+        if (drumsRow == browser.rows().end())
             return;
-        check(browser.load(static_cast<int>(drums - browser.rows().begin())) && browser.shown().size() == 2,
+        check(browser.load(static_cast<int>(drumsRow - browser.rows().begin())) && browser.shown().size() == 2,
               "opening Drums shows Clap.wav beside the User Library's top-level file");
         browser.choose(addedSamples);
         check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
@@ -25397,22 +25397,22 @@ int main(int argc, char **argv) {
             {
                 auto *container = canvas.findKeyboardFocusContainer();
                 auto traverser = canvas.createKeyboardFocusTraverser();
-                std::vector<juce::Component *> all;
+                std::vector<juce::Component *> focusOrder;
                 if (container != nullptr && traverser != nullptr)
-                    all = traverser->getAllComponents(container);
+                    focusOrder = traverser->getAllComponents(container);
                 const juce::KeyPress backTab(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0);
                 bool wrapped = false, stays = false, staysBack = false, off = false;
-                if (all.size() > 1 && peer != nullptr && integrated.isParentOf(all.back()) &&
-                    integrated.isParentOf(all.front())) {
-                    all.back()->grabKeyboardFocus();
+                if (focusOrder.size() > 1 && peer != nullptr && integrated.isParentOf(focusOrder.back()) &&
+                    integrated.isParentOf(focusOrder.front())) {
+                    focusOrder.back()->grabKeyboardFocus();
                     wrapped = commands.wrapTabNavigation() && peer->handleKeyPress(tab) &&
-                              all.front()->hasKeyboardFocus(false);
+                              focusOrder.front()->hasKeyboardFocus(false);
                     off = integrated.command(AppCommands::WrapTabNavigation) && !commands.wrapTabNavigation() &&
                           settings.get("lookfeel.wrapTabNavigation") == false;
-                    all.back()->grabKeyboardFocus();
-                    stays = peer->handleKeyPress(tab) && all.back()->hasKeyboardFocus(false);
-                    all.front()->grabKeyboardFocus();
-                    staysBack = peer->handleKeyPress(backTab) && all.front()->hasKeyboardFocus(false);
+                    focusOrder.back()->grabKeyboardFocus();
+                    stays = peer->handleKeyPress(tab) && focusOrder.back()->hasKeyboardFocus(false);
+                    focusOrder.front()->grabKeyboardFocus();
+                    staysBack = peer->handleKeyPress(backTab) && focusOrder.front()->hasKeyboardFocus(false);
                     integrated.command(AppCommands::WrapTabNavigation);
                 }
                 check(wrapped, "with Wrap Tab Navigation on, Live's default, Tab from the last control goes to the first");

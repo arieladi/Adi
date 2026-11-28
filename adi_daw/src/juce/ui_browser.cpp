@@ -1532,10 +1532,10 @@ int BrowserPanel::sidebarCursor() const noexcept {
     return addFolderFocused_ ? static_cast<int>(sidebar_.size()) - 1 : selected_;
 }
 void BrowserPanel::revealSidebarSelection() {
-    const int cursor = sidebarCursor();
-    if (cursor < 0 || sidebarArea_.isEmpty())
+    const int row = sidebarCursor();
+    if (row < 0 || sidebarArea_.isEmpty())
         return;
-    const int top = 1 + cursor * kRowHeight;
+    const int top = 1 + row * kRowHeight;
     const int height = sidebarArea_.getHeight();
     const double minimumScroll = top + std::min(height, kRowHeight) - height;
     setSidebarScroll(std::clamp(sidebarScroll_, minimumScroll, static_cast<double>(top)));
