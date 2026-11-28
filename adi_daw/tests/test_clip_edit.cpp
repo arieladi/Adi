@@ -4,6 +4,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/blob.hpp"
+#include "adi/digest.hpp"
 #include "adi/engine/automation.hpp"
 #include "adi/store_rows.hpp"
 #include "adi/engine/snapshot.hpp"
@@ -578,6 +579,60 @@ void pureLoopAndCut() {
         catch(const std::exception&){rejected=true;}
         check(rejected,"schema refuses a retained fade begin without its end");
     }
+}
+
+// The Loop switch and the loop brace are transport commands: they write the
+// saved loop and leave no Undo step. A time edit that moved the brace must
+// still undo and redo after one of them.
+void loopSetAfterTimeEdit() {
+    Project p;auto& db=p.store->db();
+    db.exec("DELETE FROM clips WHERE id<>8;UPDATE clips SET length_ticks=1000 WHERE id=8");
+    const std::int64_t bar=5765760;
+    const auto loop=[&] {
+        return Payload::parse(db.execAndGet("SELECT value FROM session_state WHERE key='transport.loop'").getString());
+    };
+    const auto loopIs=[&](bool on,std::int64_t start,std::int64_t end) {
+        const auto value=loop();
+        return value.at("on")==on && value.at("start")==start && value.at("end")==end;
+    };
+    const auto setLoop=[&](Payload payload) {
+        OpRequest request;request.opType="transport.setLoop";request.payload=std::move(payload);
+        return OpJournal(*p.store).commit(request).ok;
+    };
+    check(setLoop({{"on",true},{"start",bar},{"end",2*bar}}) && loopIs(true,bar,2*bar),"the loop brace is set by its transport command");
+    const auto before=digestProject(*p.store).text;
+    const auto silence=clip_edit::prepareInsertSilence(*p.store,0,bar,48000);
+    check(silence.ok && clip_edit::commitPrepared(*p.store,silence).ok && loopIs(true,2*bar,3*bar) &&
+          db.execAndGet("SELECT pos_ticks FROM clips WHERE id=8").getInt64()==bar,"Insert Silence moves the clip and the loop brace");
+    const auto after=digestProject(*p.store).text;
+
+    check(setLoop({{"on",false}}) && loopIs(false,2*bar,3*bar),"the Loop switch goes off with no Undo step");
+    const auto undone=History(*p.store).undo();
+    check(undone.ok,("Undo of the time edit goes through after the Loop switch: "+undone.error).c_str());
+    check(digestProject(*p.store).text==before,"Undo restores every project row after the Loop switch");
+    check(loopIs(false,bar,2*bar),"Undo puts the brace back and leaves the switch as it was set");
+    const auto redone=History(*p.store).redo();
+    check(redone.ok,("Redo of the time edit goes through after the Loop switch: "+redone.error).c_str());
+    check(digestProject(*p.store).text==after,"Redo repeats the time edit after the Loop switch");
+    check(loopIs(false,2*bar,3*bar),"Redo moves the brace again and leaves the switch as it was set");
+
+    check(setLoop({{"on",true},{"start",4*bar},{"end",6*bar}}),"the brace is dragged elsewhere with no Undo step");
+    const auto undoneMoved=History(*p.store).undo();
+    check(undoneMoved.ok,("Undo of the time edit goes through after the brace was dragged: "+undoneMoved.error).c_str());
+    check(digestProject(*p.store).text==before && loopIs(true,4*bar,6*bar),
+          "Undo restores the rows and leaves a brace the user placed since");
+    const auto redoneMoved=History(*p.store).redo();
+    check(redoneMoved.ok,("Redo of the time edit goes through after the brace was dragged: "+redoneMoved.error).c_str());
+    check(digestProject(*p.store).text==after && loopIs(true,4*bar,6*bar),
+          "Redo repeats the rows and leaves a brace the user placed since");
+
+    // A new edit prepared before the loop changed is still stale.
+    check(History(*p.store).undo().ok,"back before the time edit");
+    const auto stale=clip_edit::prepareInsertSilence(*p.store,0,bar,48000);
+    const auto rows=digestProject(*p.store).text;
+    check(stale.ok && setLoop({{"on",false}}) && !clip_edit::commitPrepared(*p.store,stale).ok &&
+          digestProject(*p.store).text==rows && loopIs(false,4*bar,6*bar),
+          "an edit prepared before the loop changed is refused whole");
 }
 
 void reusedMediaIds() {
@@ -1372,4 +1427,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();sparseClipboardAutomation();rangeMoveRefusalsAndNoOps();rangeMoveAutomation();consolidateMidi();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();sparseClipboardAutomation();rangeMoveRefusalsAndNoOps();rangeMoveAutomation();consolidateMidi();clockSharing();pureLoopAndCut();loopSetAfterTimeEdit();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
