@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <functional>
 using namespace adi::audio;
 namespace {
 // std::getenv, with MSVC's C4996 silenced at ONE site -- the same helper as
@@ -100,9 +101,92 @@ void metadata(const std::filesystem::path& p) {
  auto b=load(p);auto ext=chunk(b,"bext"),xml=chunk(b,"iXML");
  check(le(b,ext+4,4)==602 && le(b,ext+8+338,8)==m.timeReference,"bext size and time reference");
  check(std::memcmp(b.data()+ext+8,m.description.data(),m.description.size())==0 && std::memcmp(b.data()+ext+264,m.originator.data(),m.originator.size())==0,"bext text fields");
+ Bytes legacy(602,0);std::copy(m.description.begin(),m.description.end(),legacy.begin());
+ std::copy(m.originator.begin(),m.originator.end(),legacy.begin()+256);set(legacy,338,m.timeReference,8);
+ check(std::equal(legacy.begin(),legacy.end(),b.begin()+static_cast<std::ptrdiff_t>(ext+8)) && ext==96 && xml==706 && chunk(b,"data")==720,
+       "legacy four-field metadata keeps every v0 bext byte, reserved byte and chunk offset");
  check(le(b,xml+4,4)==m.ixml.size() && std::memcmp(b.data()+xml+8,m.ixml.data(),m.ixml.size())==0 && b[xml+8+m.ixml.size()]==0,"iXML odd padding");
  WavReader r(p);check(r.frames()==1 && r.channels()==6,"metadata skips to data");
  auto bad=b;set(bad,chunk(bad,"fmt ")+36,1,1);refuses(p,bad,"invalid extensible GUID refused");
+}
+void metadataV2(const std::filesystem::path& p) {
+ const std::array<std::uint16_t,5> codes{0xf727,0x04fd,0xff8f,0xd8f1,0x270f};
+ for(const auto threshold:{std::uint64_t{1}<<32,std::uint64_t{1}})for(const auto* history:{"A=PCM\r\n","A=PCM,T=xx\r\n"}) {
+  WavMetadata m{std::string(256,'d'),std::string(32,'o'),0x123456789abcdef0ULL,"<x/> "};
+  m.bwfV2.emplace();auto& v=*m.bwfV2;
+  v.originatorReference=std::string(32,'r');v.originationDate="2024-02-29";v.originationTime="23:59:58";
+  for(std::size_t i=0;i<v.umid.size();++i)v.umid[i]=static_cast<std::uint8_t>(i);
+  v.codingHistory=history;v.loudnessValue=-22.645;v.loudnessRange=12.765;v.maxTruePeakLevel=-1.125;
+  v.maxMomentaryLoudness=-99.99;v.maxShortTermLoudness=99.99;
+  Bytes expected(602,0);
+  std::fill_n(expected.begin(),256,static_cast<unsigned char>('d'));std::fill_n(expected.begin()+256,32,static_cast<unsigned char>('o'));
+  std::fill_n(expected.begin()+288,32,static_cast<unsigned char>('r'));
+  std::copy(v.originationDate.begin(),v.originationDate.end(),expected.begin()+320);
+  std::copy(v.originationTime.begin(),v.originationTime.end(),expected.begin()+330);
+  set(expected,338,m.timeReference,8);set(expected,346,2,2);std::copy(v.umid.begin(),v.umid.end(),expected.begin()+348);
+  for(std::size_t i=0;i<codes.size();++i)set(expected,412+i*2,codes[i],2);
+  expected.insert(expected.end(),v.codingHistory.begin(),v.codingHistory.end());
+  const std::array<float,3> input{-0.5f,0.25f,0.0f};
+  {WavWriter w(p,48000,1,WavFormat::Pcm24,&m,threshold);m.description="changed after construction";v.loudnessValue=0;w.write(input.data(),3);w.close();}
+  const auto bytes=load(p);const auto ext=chunk(bytes,"bext"),xml=chunk(bytes,"iXML"),data=chunk(bytes,"data");
+  check(le(bytes,ext+4,4)==expected.size() && std::equal(expected.begin(),expected.end(),bytes.begin()+static_cast<std::ptrdiff_t>(ext+8)),
+        "v2 complete fixed prefix/history encodes supplied provenance, high/low time, UMID, signed loudness and reserved zeros");
+  check(xml==ext+8+expected.size()+(expected.size()&1U) && (!(expected.size()&1U) || bytes[xml-1]==0) && data==xml+14,
+        "odd/even BWF history size excludes its RIFF pad and retains following odd iXML/data alignment");
+  check(id(bytes,0,threshold==1?"RF64":"RIFF") && (threshold!=1 || le(bytes,20,8)==bytes.size()-8),"BWF variable chunk layout participates in RIFF/RF64 final sizing");
+  WavReader reader(p);std::array<float,3> output{};
+  check(reader.frames()==3 && reader.read(output.data(),3)==3 && input==output,"BWF v2 metadata leaves actual audio samples/length unchanged");
+ }
+ WavMetadata m{"unknown","adi",0,{}};m.bwfV2.emplace();
+ auto fields=std::array{&m.bwfV2->loudnessValue,&m.bwfV2->loudnessRange,&m.bwfV2->maxTruePeakLevel,
+                        &m.bwfV2->maxMomentaryLoudness,&m.bwfV2->maxShortTermLoudness};
+ for(std::size_t chosen=0;chosen<=fields.size();++chosen) {
+  for(auto* field:fields)field->reset();
+  if(chosen<fields.size())*fields[chosen]=chosen==1?0.125:-0.125;
+  {WavWriter writer(p,48000,1,WavFormat::Pcm16,&m);writer.close();}
+  const auto bytes=load(p);const auto ext=chunk(bytes,"bext");bool exact=true;
+  for(std::size_t i=0;i<fields.size();++i)exact&=le(bytes,ext+8+412+2*i,2)==(i==chosen?(chosen==1?13U:0xfff3U):0x7fffU);
+  check(exact && le(bytes,ext+4,4)==602 && le(bytes,ext+8+346,2)==2,"each missing loudness field independently encodes 0x7fff, while signed half ties round away from zero");
+  check(std::all_of(bytes.begin()+static_cast<std::ptrdiff_t>(ext+8+288),bytes.begin()+static_cast<std::ptrdiff_t>(ext+8+338),[](auto x){return x==0;}),
+        "absent provenance date/time/reference stays zero-filled without inventing a clock or identifier");
+ }
+ // The older path deliberately keeps its original truncation/raw-byte behavior.
+ WavMetadata old{std::string(300,'x'),std::string(40,'y'),7,{}};old.description[1]=static_cast<char>(0xff);
+ {WavWriter writer(p,48000,1,WavFormat::Pcm16,&old);writer.close();}
+ const auto bytes=load(p);const auto ext=chunk(bytes,"bext");
+ check(le(bytes,ext+4,4)==602 && le(bytes,ext+8+346,2)==0 && bytes[ext+9]==0xff && bytes[ext+8+255]=='x' && bytes[ext+8+287]=='y',
+       "opting out of v2 preserves legacy long/raw text acceptance and v0 layout");
+}
+void invalidMetadataV2(const std::filesystem::path& p) {
+ using Edit=std::function<void(WavMetadata&)>;
+ const std::vector<Edit> edits{
+  [](auto& m){m.description=std::string(257,'x');},[](auto& m){m.originator=std::string(33,'x');},
+  [](auto& m){m.bwfV2->originatorReference=std::string(33,'x');},[](auto& m){m.description=std::string("a\0b",3);},
+  [](auto& m){m.originator="caf\xc3\xa9";},[](auto& m){m.bwfV2->originationDate="2023-02-29";},
+  [](auto& m){m.bwfV2->originationDate="2024-04-31";},[](auto& m){m.bwfV2->originationDate="2024-13-01";},
+  [](auto& m){m.bwfV2->originationDate="2024-01-00";},[](auto& m){m.bwfV2->originationDate="2024-1-01";},
+  [](auto& m){m.bwfV2->originationDate="202x-01-01";},[](auto& m){m.bwfV2->originationTime="24:00:00";},
+  [](auto& m){m.bwfV2->originationTime="12:60:00";},[](auto& m){m.bwfV2->originationTime="12:00:60";},
+  [](auto& m){m.bwfV2->originationTime="1:00:00";},[](auto& m){m.bwfV2->originationTime="1x:00:00";},
+  [](auto& m){m.bwfV2->codingHistory="row\n";},[](auto& m){m.bwfV2->codingHistory="row\r";},
+  [](auto& m){m.bwfV2->codingHistory="row\r\nnext";},[](auto& m){m.bwfV2->codingHistory=std::string("a\0b\r\n",5);},
+  [](auto& m){m.bwfV2->codingHistory="caf\xc3\xa9\r\n";},[](auto& m){m.bwfV2->loudnessRange=-0.01;}};
+ const Bytes original{'k','e','e','p'};
+ const auto rejected=[&](const WavMetadata& metadata) {
+  save(p,original);bool refused=false;
+  try{WavWriter writer(p,48000,1,WavFormat::Pcm16,&metadata);}catch(const std::invalid_argument&){refused=true;}
+  check(refused && load(p)==original,"invalid v2 metadata is refused before opening or truncating an existing output");
+ };
+ for(const auto& edit:edits){WavMetadata m;m.bwfV2.emplace();edit(m);rejected(m);}
+ for(std::size_t field=0;field<5;++field)for(const auto value:{100.0,-100.0,std::numeric_limits<double>::infinity(),
+       -std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+  WavMetadata m;m.bwfV2.emplace();auto& v=*m.bwfV2;
+  const auto fields=std::array{&v.loudnessValue,&v.loudnessRange,&v.maxTruePeakLevel,&v.maxMomentaryLoudness,&v.maxShortTermLoudness};
+  *fields[field]=value;rejected(m);
+ }
+ const auto missing=p.parent_path()/"refused.wav";WavMetadata bad;bad.bwfV2.emplace();bad.bwfV2->loudnessValue=100.0;
+ bool refused=false;try{WavWriter writer(missing,48000,1,WavFormat::Pcm16,&bad);}catch(const std::invalid_argument&){refused=true;}
+ check(refused && !std::filesystem::exists(missing),"invalid metadata never creates an absent output");
 }
 void doubleQuantization(const std::filesystem::path& p) {
  for(const auto format:{WavFormat::Pcm16,WavFormat::Pcm24}) {
@@ -175,7 +259,7 @@ void big(const std::filesystem::path& p) {
 }
 }
 int main() {
- try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);doubleQuantization(p);dither(p);big(p);}
+ try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);metadataV2(p);invalidMetadataV2(p);doubleQuantization(p);dither(p);big(p);}
  catch(const std::exception& e){check(false,e.what());}
  std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }
