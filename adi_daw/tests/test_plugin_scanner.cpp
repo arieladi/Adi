@@ -112,6 +112,41 @@ void protocol() {
     large+="]}";
     check(large.size()<kMaximumPacket && !decodeMetadata(large,format,path,f.error),"65537 valid unique descriptors refuse as a whole despite fitting the byte budget");
 }
+void vst3ClassIds() {
+    Fixture f;
+    const auto path=utf8(f.temp.path()/"classes.vst3");
+    auto first=value();first.id="legacy-one";first.data="native description one";
+    auto second=first;second.id="legacy-two";second.data="native description two";
+    const auto legacy=encodeMetadata("vst3",path,{first,second},f.error);
+    if(!legacy)throw std::runtime_error(f.error);
+    const auto old=decodeMetadata(*legacy,"vst3",path,f.error);
+    check(old && old->size()==2 && old->front().id==first.id && old->front().classId.empty() &&
+          Json::parse(*legacy)["schema"]==kPacketSchema,
+          "legacy VST3 packets retain their existing UID and empty class ID");
+    first.classId="00112233445566778899aabbccddeeff";
+    second.classId="ffeeddccbbaa99887766554433221100";
+    const auto next=encodeMetadata("vst3",path,{first,second},f.error);
+    if(!next)throw std::runtime_error(f.error);
+    const auto parsed=Json::parse(*next);
+    const auto newer=decodeMetadata(*next,"vst3",path,f.error);
+    check(newer && newer->size()==2 && newer->at(0).id==first.id && newer->at(1).id==second.id &&
+          newer->at(0).classId==first.classId && newer->at(1).classId==second.classId &&
+          parsed["schema"]==kVst3ClassIdPacketSchema,
+          "a VST3 module packet retains distinct class IDs beside its legacy UIDs");
+    auto malformed=parsed;malformed["plugins"][0]["class_id"]="0022";
+    auto absent=parsed;absent["plugins"][0].erase("class_id");
+    auto duplicate=parsed;duplicate["plugins"][1]["class_id"]=first.classId;
+    check(!decodeMetadata(malformed.dump(),"vst3",path,f.error) &&
+          !decodeMetadata(absent.dump(),"vst3",path,f.error) &&
+          !decodeMetadata(duplicate.dump(),"vst3",path,f.error),
+          "class-ID packets reject malformed, missing and duplicate IDs as a whole");
+    second.classId.clear();
+    check(!encodeMetadata("vst3",path,{first,second},f.error),
+          "the scanner cannot publish a partial set of class IDs");
+    first.data.clear();
+    const auto clap=utf8(f.temp.path()/"classes.clap");
+    check(!encodeMetadata("clap",clap,{first},f.error),"VST3 class IDs cannot enter a CLAP packet");
+}
 int fakeHelper(const std::vector<std::string>& args) {
     const auto mode=native(args[3]).stem().u8string();const std::string name(mode.begin(),mode.end());
     if(name=="unsupported")return 78;
@@ -301,7 +336,7 @@ void hostAndFailurePolicy() {
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==4 && arguments[1]=="--scan")return fakeHelper(arguments);
     if(arguments.size()!=1)return 64;
-    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();helperStartFailures();hostAndFailurePolicy();}
+    try {protocol();vst3ClassIds();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();helperStartFailures();hostAndFailurePolicy();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

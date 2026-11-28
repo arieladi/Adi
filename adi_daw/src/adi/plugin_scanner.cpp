@@ -6,6 +6,7 @@
 #include "adi/scan_stamp.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/windows_shortcut.hpp"
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
 #include <array>
@@ -47,10 +48,18 @@ bool identity(const std::string& format,const std::string& path) {
     return (format=="clap" || format=="vst3") && !path.empty() && text(path) &&
         std::filesystem::path(std::u8string(path.begin(),path.end())).is_absolute();
 }
-void plugin(const Plugin& value,const std::string& format) {
+void plugin(const Plugin& value,const std::string& format,bool classIds) {
     require(!value.id.empty() && text(value.id) && text(value.name) && text(value.vendor) &&
         text(value.version) && text(value.features) && text(value.data),"invalid scanner descriptor text");
     require(format=="clap" ? value.data.empty() : !value.data.empty(),"invalid format-specific scanner data");
+    if(!classIds) {
+        require(value.classId.empty(),"legacy scanner descriptors cannot carry VST3 class IDs");
+        return;
+    }
+    require(format=="vst3" && value.classId.size()==32 &&
+        std::all_of(value.classId.begin(),value.classId.end(),[](char ch) {
+            return (ch>='0' && ch<='9') || (ch>='a' && ch<='f');
+        }),"invalid canonical VST3 class ID");
 }
 void preflight(std::string_view packet) {
     require(!packet.empty() && packet.size()<=kMaximumPacket,"scanner packet byte bound");
@@ -76,6 +85,7 @@ void fields(const Json& object,const std::set<std::string>& expected) {
 }
 const std::set<std::string> rootFields{"schema","format","path","plugins"};
 const std::set<std::string> pluginFields{"id","name","vendor","version","features","instrument","data"};
+const std::set<std::string> vst3ClassFields{"id","name","vendor","version","features","instrument","data","class_id"};
 // nlohmann's DOM callback parser scans the growing parent array for discarded
 // values after EVERY object: quadratic even when the callback keeps everything.
 // A streaming duplicate-key pass plus the ordinary DOM parser remains linear
@@ -92,7 +102,7 @@ struct UniqueKeys final : nlohmann::json_sax<Json> {
     bool start_object(std::size_t) override{objects.emplace_back();return objects.size()<=2;}
     bool key(Json::string_t& value) override {
         if(objects.empty())return false;
-        const auto& allowed=objects.size()==1?rootFields:pluginFields;
+        const auto& allowed=objects.size()==1?rootFields:vst3ClassFields;
         return allowed.contains(value) && objects.back().insert(value).second;
     }
     bool end_object() override{if(objects.empty())return false;objects.pop_back();return true;}
@@ -125,16 +135,22 @@ std::optional<std::vector<Plugin>> decodeMetadata(std::string_view packet,
         UniqueKeys keys;require(Json::sax_parse(packet,&keys),"invalid/duplicate scanner fields");
         const auto document=Json::parse(packet);
         fields(document,rootFields);
-        require(document.at("schema").is_number_integer() && document.at("schema")==kPacketSchema,"unsupported scanner schema");
+        const auto& schema=document.at("schema");
+        const bool classIds=schema==kVst3ClassIdPacketSchema && format=="vst3";
+        require(schema.is_number_integer() && (schema==kPacketSchema || classIds),"unsupported scanner schema");
         require(string(document,"format")==format && string(document,"path")==path,"scanner reply identity mismatch");
         const auto& rows=document.at("plugins");
         require(rows.is_array() && rows.size()<=kMaximumPlugins,"scanner descriptor count");
-        std::vector<Plugin> result;result.reserve(rows.size());std::set<std::string> ids;
+        std::vector<Plugin> result;result.reserve(rows.size());std::set<std::string> ids,classes;
         for(const auto& row:rows) {
-            fields(row,pluginFields);require(row.at("instrument").is_boolean(),"scanner instrument is not boolean");
+            fields(row,classIds?vst3ClassFields:pluginFields);
+            require(row.at("instrument").is_boolean(),"scanner instrument is not boolean");
             Plugin value;value.id=string(row,"id");value.name=string(row,"name");value.vendor=string(row,"vendor");
             value.version=string(row,"version");value.features=string(row,"features");value.data=string(row,"data");
-            value.instrument=row.at("instrument").get<bool>();plugin(value,format);
+            value.instrument=row.at("instrument").get<bool>();
+            if(classIds)value.classId=string(row,"class_id");
+            plugin(value,format,classIds);
+            if(classIds)require(classes.insert(value.classId).second,"duplicate VST3 class ID in module");
             require(ids.insert(value.id).second,"duplicate scanner descriptor identity");result.push_back(std::move(value));
         }
         return result;
@@ -147,15 +163,19 @@ std::optional<std::string> encodeMetadata(const std::string& format,const std::s
     error.clear();
     try {
         require(identity(format,path) && plugins.size()<=kMaximumPlugins,"invalid scanner metadata identity/count");
-        Json rows=Json::array();std::set<std::string> ids;std::size_t bytes=path.size();
+        const bool classIds=std::any_of(plugins.begin(),plugins.end(),[](const Plugin& value) {return !value.classId.empty();});
+        Json rows=Json::array();std::set<std::string> ids,classes;std::size_t bytes=path.size();
         for(const auto& value:plugins) {
-            plugin(value,format);require(ids.insert(value.id).second,"duplicate scanner descriptor identity");
-            const auto added=value.id.size()+value.name.size()+value.vendor.size()+value.version.size()+value.features.size()+value.data.size();
+            plugin(value,format,classIds);
+            require(ids.insert(value.id).second,"duplicate scanner descriptor identity");
+            if(classIds)require(classes.insert(value.classId).second,"duplicate VST3 class ID in module");
+            const auto added=value.id.size()+value.name.size()+value.vendor.size()+value.version.size()+value.features.size()+value.data.size()+value.classId.size();
             require(added<=kMaximumPacket-bytes,"scanner metadata byte bound");bytes+=added;
             rows.push_back({{"id",value.id},{"name",value.name},{"vendor",value.vendor},{"version",value.version},
                 {"features",value.features},{"instrument",value.instrument},{"data",value.data}});
+            if(classIds)rows.back()["class_id"]=value.classId;
         }
-        auto result=Json{{"schema",kPacketSchema},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
+        auto result=Json{{"schema",classIds?kVst3ClassIdPacketSchema:kPacketSchema},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
         // Escapes/field overhead count in the actual packet, not just authored
         // text. Keep encoder and decoder bounds identical before child output.
         preflight(result);return result;

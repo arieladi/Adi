@@ -11,12 +11,14 @@ namespace adi::scan {
 struct Plugin {
     std::string id, name, vendor, version, features, data;
     bool instrument = false;
+    std::string classId{}; // exact, canonical VST3 class ID, empty for legacy packets
 };
 inline constexpr std::size_t kMaximumPlugins = 65536;
 inline constexpr std::size_t kMaximumPacket = 8U * 1024U * 1024U;
 inline constexpr unsigned kPacketSchema = 1;
+inline constexpr unsigned kVst3ClassIdPacketSchema = 2;
 
-/// Owner protocol APIs: strict schema 1, exact format/path, no duplicate keys,
+/// Owner protocol APIs: legacy schema 1 or VST3 class-ID schema 2, exact format/path, no duplicate keys,
 /// ids or unknown fields, bounded tokens/depth/string bytes. No partial result.
 std::optional<std::vector<Plugin>> decodeMetadata(std::string_view packet,
     const std::string& format, const std::string& path, std::string& error);
