@@ -653,7 +653,6 @@ private:
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
         std::uint64_t midiHardwareRouting = 0;
-        std::vector<PlayTempoPoint> playQuantizeTempo;
         std::uint32_t playQuantizeRate = 0;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;

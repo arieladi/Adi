@@ -1013,6 +1013,50 @@ void musicalRamp() {
               "the transport and real MIDI playback agree at the independent Bezier midpoint sample");
     }
 }
+void livePlayQuantizeRamp() {
+    struct Reading {
+        double rate;
+        std::int64_t linear, bezier, step;
+    };
+    // Independent integral of 60 / BPM over two quarters, rounded up for Play-Q.
+    constexpr std::array readings{
+        Reading{44100, 45055, 56877, 58800},
+        Reading{48000, 49040, 61907, 64000},
+        Reading{96000, 98079, 123814, 128000},
+    };
+    for (const auto& reading : readings) {
+        for (const bool bezier : {false, true}) {
+            Fixture f(reading.rate, 64);
+            f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1; DELETE FROM tempo_map");
+            f.store->db().exec(bezier
+                ? "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0)"
+                : "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,1,0),(23063040,210,0,0)");
+            OpRequest setting;
+            setting.opType = "track.setPlayQuantize";
+            setting.payload = {{"id", 1}, {"on", true}, {"grid", "1/4"}, {"forgivenessMs", 0.0}};
+            if (!OpJournal(*f.store).commit(setting).ok)
+                throw std::runtime_error("enable Play-Q for the live tempo ramp");
+            f.load();
+            const auto expected = bezier ? reading.bezier : reading.linear;
+            f.clock = expected - 64;
+            f.session.transport().locate(f.clock);
+            check(f.session.enqueueMidiInput(expected - 8, {0, EventType::NoteOn, 0, 66, 1, 0, .75}) &&
+                  f.session.enqueueMidiInput(expected + 5, {0, EventType::NoteOff, 0, 66, 1, 0, 0}),
+                  "queue a monitored note and release across the integrated grid line");
+            while (f.clock < reading.step + 64) f.render();
+            const auto& on = f.instrument->heard[0];
+            const auto& off = f.instrument->heard[1];
+            std::printf("Play-Q %s %.0f Hz: attack %lld, release %lld, expected %lld/%lld\n",
+                        bezier ? "Bezier" : "linear", reading.rate,
+                        static_cast<long long>(on.clock), static_cast<long long>(off.clock),
+                        static_cast<long long>(expected), static_cast<long long>(expected + 13));
+            check(f.instrument->count == 2 && on.e.type == EventType::NoteOn &&
+                  off.e.type == EventType::NoteOff && on.e.dim == 66 && off.e.dim == 66 &&
+                  on.e.noteId == off.e.noteId && on.clock == expected && off.clock == expected + 13,
+                  "monitored MIDI follows the integrated Play-Q grid and retains note duration");
+        }
+    }
+}
 void activeFlag() {
     Fixture f(48000,128);f.clip(1,0,240240,5765760);
     auto mute = [&] {
@@ -2068,6 +2112,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "play-quantize-ramp") livePlayQuantizeRamp(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }
