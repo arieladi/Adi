@@ -343,7 +343,10 @@ public:
             [](void* context, EventList& out, std::int32_t frame) noexcept {
                 auto& source = *static_cast<Source*>(context);
                 if (!source.releaseControls(out,frame)) return false;
-                for (auto& control : source.state->controls) control.requestedValid = false;
+                // The Arrangement may take over in this same callback. Share
+                // its pending neutral so it does not enqueue a second reset.
+                for (auto& control : source.state->controls)
+                    if (!control.releaseDesired || !control.pending) control.requestedValid = false;
                 return true;
             }};
     }

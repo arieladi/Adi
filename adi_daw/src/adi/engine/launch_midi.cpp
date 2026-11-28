@@ -4,6 +4,7 @@
 
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/curves.hpp"
+#include "adi/engine/midi_controllers.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -184,12 +185,12 @@ std::optional<LaunchMidiClip> LaunchMidiClip::prepare(
     for (const auto* row : controllers) {
         if (!row || row->clipId != clipId) continue;
         if (!row->error.empty() || !row->channel || !row->controller ||
-            *row->channel < 0 || *row->channel > 15 || *row->controller < 0 || *row->controller > 127) {
+            *row->channel < 0 || *row->channel > 15 || !controllers::validController(*row->controller)) {
             report(row->error.empty() ? "invalid controller channel/address" : row->error);
             continue;
         }
         if (row->points.empty()) continue;
-        const auto address = static_cast<std::uint16_t>(*row->channel * 128 + *row->controller);
+        const auto address = controllerAddress(static_cast<int>(*row->channel), static_cast<int>(*row->controller));
         std::set<std::uint64_t> pointIds;
         if (row->points.size() > maximumPoints - clip.controlKnots_.size() || addresses.contains(address) ||
             std::any_of(row->points.begin(),row->points.end(),[&](const auto& point) {

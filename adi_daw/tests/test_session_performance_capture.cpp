@@ -554,6 +554,36 @@ void heldControllerCapture() {
         "reopened Arrangement matches the literal CC performance and one Undo and Redo");
 }
 
+void slotPitchWheel() {
+    Project project;
+    prepareMidiProbe(project, 0.0f);
+    const std::array points{controllers::Point{1, 0, 0.25}, controllers::Point{2, tick(493), 0.75}};
+    for (const auto address : {7, static_cast<int>(controllers::kPitchBend)}) {
+        const auto wheel = controllers::prepareWrite(*project.store, 51, 3, address, points);
+        require(wheel.ok && controllers::commitPrepared(*project.store, wheel).ok,
+                "store independently addressed CC7 and pitch wheel in the slot");
+    }
+    std::array<LaunchTransition, 8> edges{};
+    LaunchCaptureBuffer tape(edges);
+    const auto heard = renderMidi(*project.store, &tape);
+    const auto wheel = static_cast<std::uint32_t>(controllers::kPitchBend);
+    require(heard.size() == 7 &&
+        heard[0] == HeardNote{55, EventType::Controller, 3, 0, 7, 0.25} &&
+        heard[1] == HeardNote{55, EventType::Controller, 3, 0, wheel, 0.25} &&
+        heard[2].sample == 75 && heard[2].type == EventType::NoteOn &&
+        heard[3] == HeardNote{548, EventType::Controller, 3, 0, 7, 0.75} &&
+        heard[4] == HeardNote{548, EventType::Controller, 3, 0, wheel, 0.75} &&
+        heard[5].sample == 730 && heard[5].type == EventType::NoteOff &&
+        heard[6] == HeardNote{730, EventType::Controller, 3, 0, wheel, 0.5},
+        "Session chases the stored wheel on launch and releases it at the Arrangement handoff");
+    project.db().exec("DELETE FROM event_streams WHERE clip_id=51 AND stream_kind='cc'");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1 &&
+        !prepareSessionPerformance(*project.store, project.freeze(), plan, 48000).ok,
+        "performance capture refuses an unproven pitch wheel release even without ordinary CC");
+    std::puts("PASS -- Session plays and releases its native pitch wheel lane");
+}
+
 void multipleHeldControllersCapture() {
     Project project;
     prepareMidiProbe(project, 0.0f);
@@ -634,6 +664,7 @@ int main() {
                                 Curve::SCurve, Curve::Bezier})
             expressionCapture(shape);
         heldControllerCapture();
+        slotPitchWheel();
         multipleHeldControllersCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {

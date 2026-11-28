@@ -79,7 +79,7 @@ ControllerOwners readControllerOwners(SQLite::Database& db) {
     SQLite::Statement rows(db,
         "SELECT t.id,c.id,e.id FROM main.event_streams e JOIN main.clips c ON c.id=e.clip_id "
         "JOIN main.tracks t ON t.id=c.track_id "
-        "WHERE e.stream_kind='cc' AND t.kind='midi' AND t.monitor_mode=0 AND t.record_armed=0 "
+        "WHERE e.stream_kind IN ('cc','pitchbend') AND t.kind='midi' AND t.monitor_mode=0 AND t.record_armed=0 "
         "ORDER BY t.id,c.id,e.id");
     while (rows.executeStep())
         owners[rows.getColumn(0).getInt64()].emplace_back(rows.getColumn(1).getInt64(), rows.getColumn(2).getInt64());
@@ -274,7 +274,8 @@ const Payload* firstChild(const Payload& image, const char* table) {
 }
 
 bool isController(const Payload& row) {
-    return row.at("stream_kind") == "cc";
+    const auto& kind = row.at("stream_kind");
+    return kind == "cc" || kind == "pitchbend";
 }
 
 const Payload* firstController(const Payload& image) {
