@@ -7,17 +7,27 @@ Mission (round 1, 28 November): the Session View's window side as far as it goes
 (ADR-0243): (1) the view's model, free of drawing; (2) Live's commands and keys through the session seat's ops;
 (3) headless tests for both; (4) the list of what the picture must settle.
 
+Round 2 (28 November, later): merge BASE (now `origin/main`: `land/basics-1128c` is an ancestor of it) and both
+session branches again, rerun "all", then the remaining Session commands: Insert MIDI Clip, Toggle Follow
+Actions, Create Follow Action Chain, Duplicate, copy/paste and drag of clips and scenes, Ctrl+click picks, Edit
+Info Text, colour. Wiring the shell still waits for the agreed picture.
+
 ## How to continue (for the next session, with no memory of this one)
 
 - BASE is `origin/land/basics-1128c` until it is an ancestor of `origin/main`, then `origin/main`. The chain was
   made from BASE with `origin/seats/session-chain` and `origin/wincheck/seats/session-chain` merged in (one
   conflict, `src/adi/store.cpp` at the end of `Store::open`: both sides kept, the project UUID write first, then
   `lastError_ = essentialExtensionProblem()`). Merge BASE and both session branches again before each push.
-- The work is three files and one suite, all new, no shared file touched but `CMakeLists.txt` (five lines after
+- The work is four files and one suite, all new, no shared file touched but `CMakeLists.txt` (six lines after
   the session seat's suites):
   - `src/adi/ui/session_view_model.hpp/.cpp` — `adi::ui::session_view::Model`.
-  - `src/adi/ui/session_view_commands.hpp/.cpp` — keys, commands, `Outcome`.
+  - `src/adi/ui/session_view_commands.hpp/.cpp` — keys, commands, mouse paths, `Outcome`, `Clipboard`.
+  - `src/adi/ui/session_view_edits.hpp/.cpp` — the store side of clip copies (`prepareEdit`,
+    `snapshotClipboard`), round 2.
   - `tests/test_session_view.cpp` — `adi_session_view_tests` (core leg, no JUCE).
+- If `git switch held/session-window-chain` says the branch is used by another worktree (a finished round's),
+  make a local branch from `origin/held/session-window-chain` under another name and push it with
+  `git push origin <local>:held/session-window-chain`. Round 2 did so (`sw2-chain`, `sw2-log`).
 - Build on the build PC slot 18 with `/d/adibuild-tools/slot.sh` (see the mission prompt). Quick turn:
   `run 18 origin/held/session-window-chain core 'adi_session_view_tests'`.
 - Nothing is wired into `src/juce/ui_shell.cpp` yet, on purpose: there is no view to switch to until the
@@ -29,6 +39,8 @@ Mission (round 1, 28 November): the Session View's window side as far as it goes
 |---|---|---|---|---|
 | merge | `5151798de` | BASE `origin/land/basics-1128c` + `origin/seats/session-chain` + `origin/wincheck/seats/session-chain`. | the full check below | pushed |
 | 1-3 | `ec19b7e56`, `bbb025515` | The model, the commands and keys, the suite (`bbb025515`: two portability spellings in the suite). | Build PC slot 18, MSVC Debug, warnings as errors, at `bbb025515` ("all"): core built, 312 of 314 suites passed, `adi_session_view_tests` among them; ui built, the four window suites passed; five validators passed. The two failures, `adi_agent_log_tests` (three child processes appending) and `adi_link_playback_tests` (4 of 139), touch nothing of this chain and both passed when rerun alone on the same head: load on the shared PC. Linux and macOS not yet run (CI, later). | pushed |
+| merge 2 | `e6e2b5315` | Round 2: BASE is now `origin/main` (`land/basics-1128c` is its ancestor); main merged, no conflict; both session branches already in (no new commits). | slot 18 "all" at `e6e2b5315`: CHECK_PENDING_MERGE | pushed |
+| round 2 | `7383664e2` | Ctrl+click picks in the model; Insert MIDI Clip, Toggle Follow Actions, Create Follow Action Chain, Duplicate (clips and scenes), Copy/Cut/Paste, clicks, rubber band, drops of clips and scenes, colour; the store side of clip copies (`session_view_edits`). | CHECK_PENDING_ROUND2 | pushed |
 
 ## What was built
 
@@ -85,6 +97,49 @@ against the launch operations' own descriptors and each edit against the op regi
 Deactivate, moving scenes, Delete Scene and the three renames, each committed as one batch where ONE Undo puts
 the scenes, slots, launch settings, clips and tracks back exactly.
 
+### Round 2
+
+**Picks** (manual 7.1, 7.2, 41.5). `Selection.picks` holds the items picked with Ctrl+click (slots, scenes or
+track titles, by identity, sorted). With picks the selection is exactly them and the focus is the last one
+clicked; the model keeps them as masks sized by `rebuild`, so `slotSelected`/`sceneSelected`/`trackSelected` stay
+allocation-free (the suite counts it); a rebuild drops a pick whose track or scene went. `selectedRange()` is
+then the picks' box; the commands read `selectedSlots()`, `selectedScenes()`, `selectedTracks()`. An arrow key
+leaves the picks for the rectangle. `Model::select` is no longer `noexcept` (it may allocate; message thread).
+The model also carries each track's kind (`Column.midi`), each clip's kind (`SlotFacts.midiClip`) and each
+clip's and scene's whole Follow Action (`followSettings`), so a toggle keeps the rest of it.
+
+**Mouse paths**: `click(Model, Click)` (plain: one item; Shift: from the anchor; Ctrl: pick in or out; a click
+on another kind starts anew), `rubberBand` (7.4: from an empty slot), `dropSlots(grab, to, copy)` (7.4; Ctrl
+(Alt on a Mac) copies, 41.15), `dropScenes(beforeRow)` (7.2: nonadjacent scenes collapse), `recolour(colour)`.
+
+**Commands and keys added**
+
+| Key | Command | Through |
+|---|---|---|
+| Ctrl+Shift+M | Insert MIDI Clip: a one-bar looped MIDI clip in each selected empty slot of a MIDI track, the first selected | `clip.create`, `clip.setLoop`, `session.setSlotClip`; one Undo step. The caller gives `Context.nextClipId` and `barTicks` |
+| Shift+Enter | Toggle Follow Actions for the selected clips (the focus clip leads, as Deactivate does) | `session.setFollowAction` with the clip's whole stored Follow Action, only `enabled` changed |
+| Ctrl+Shift+Enter | Create Follow Action Chain: per track, each selected clip Jumps to the next selected clip's scene at 100 %, the last back to the first | `session.setFollowAction` |
+| Ctrl+D | Duplicate: clips the selection's height below (scenes inserted for them where a slot there is taken); scenes below the selection with name, colour, tempo, signature, Follow Action, clips and removed Stop buttons; a track's is the track commands' | `scene.create` (+ `.setTempo`, `.setSignature`, `.setEnabled`, `session.setFollowAction`, `scene.reorder`), clip copies, `session.setStopButton` |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy, Cut (copy, then Delete as one step), Paste: clips at the selected slot by their places (a track of the other kind passes them by; scenes added at the end where the paste reaches past the last), scenes below the selection | as Duplicate |
+| (mouse) | drop along a track: the clip moves itself, lowest first; to another track: its place cleared, then its copy; Ctrl: copies; every clip must land on a track of its kind or the drop is refused | `session.setSlotClip`, `session.clearSlot`, clip copies |
+| (menu) | colour palette: clips and tracks | `clip.setColor`, `track.setColor`; a scene is refused (no op, see Reserve) |
+
+**Clip copies.** A copy needs the clip's rows, so a command names it (`SlotCopy{clip, track, scene, stop,
+before}`) and `prepareEdit(Store&, Outcome, Clipboard*)` builds it on the owner thread, as
+`prepareCaptureAndInsertScene` does: the clip's image cloned under new identities (`clip_edit::cloneImage`,
+moved to the destination track), `clip.duplicate`, `session.setSlotClip`, the Stop button a copied scene's slot
+lacked, and the clip's launch settings (mode, quantization, Legato, velocity, Fade, RAM, Follow Action), all in
+place among the command's own edits; commit with `clip_edit::commitPrepared`: one batch, one Undo. A Cut's clips
+are gone once it commits, so the window calls `snapshotClipboard(Store&, Clipboard&)` before committing a Cut,
+and a paste copies from those images.
+
+**The suite, round 2**: every new key; picks (adding, taking out, Shift after picks, Ctrl after a rectangle,
+another kind, track titles, a rebuild dropping a pick, zero allocations asking); moving, deleting and stopping
+picked items; each new command's outcome against the op registry; and on a real project Insert MIDI Clip, Toggle
+Follow Actions, Create Follow Action Chain, Duplicate of a clip (its launch mode copied) and of a scene, Paste,
+Cut then Paste from the images, drops along a track, to another track and with Ctrl, dropping scenes and
+colouring clips, each ONE step of Undo that puts the project back exactly.
+
 ## Decisions taken (and why)
 
 - **Files of its own, under `src/adi/ui/`**, beside the other drawing-free models (`stack_model`,
@@ -101,6 +156,21 @@ the scenes, slots, launch settings, clips and tracks back exactly.
   `enterLaunchesFocusOnly`; reading owed below).
 - **F3 toggles the view beside Tab** because TM-SV-05 names "(F3, Tab)" and the shell holds F3 free for it
   (`ui_shell.cpp`, next to F4 for the Mix View). Named constant `f3TogglesSessionView`.
+- **Round 2: clip copies are prepared on the store side, not in the commands.** The commands stay free of the
+  store and of drawing; the rows a copy needs are read once by `prepareEdit`, beside the engine's own capture.
+  A drop to another track goes as a copy because `session.setSlotClip` moves a clip along its own track only.
+- **Duplicate never overwrites**: where a slot the copies would take holds a clip, or the grid ends, it inserts
+  as many scenes as the selection is high below it (`duplicateInsertsScenes`). A paste does overwrite what is
+  under it (a slot's clip is replaced, as `session.setSlotClip` does), and adds scenes at the end where it
+  reaches past the last (`pasteAddsScenes`).
+- **A drop is all or nothing**: if any dragged clip would land off the grid or on a track of the other kind,
+  nothing moves (refusal "Those clips do not fit there.").
+- **Create Follow Action Chain uses Jump**: ADI's Follow Actions jump to a scene by identity, so a chain through
+  nonadjacent clips (16.7.2 allows it) is a Jump from each to the next; a track with one selected clip jumps to
+  itself. Each clip keeps its Follow time (`chainKeepsFollowTime`).
+- **Ctrl+click on another kind** (a slot while scenes are selected) starts a new selection of that kind.
+- **Edit Info Text is not built**: its op is RE-03's (`info.setText`, ADR-0228), neither built nor reserved;
+  the name editor path (`rename`) is the model for it once the op exists. See Reserve.
 
 ## Engine gaps (for the session seat; not mine to change)
 
@@ -122,12 +192,35 @@ the scenes, slots, launch settings, clips and tracks back exactly.
   the model offers `SceneLive.playing` against `SceneFacts.occupied` and `triggered`.
 - Enter's release edge for a Gate or Repeat clip launched from the computer keyboard.
 - What Right from a scene reaches (Live: the Scene Tempo and Signature fields, 7.2.1) once they are shown.
+- Round 2: Duplicate on clips when the slot below is taken (`duplicateInsertsScenes`: ADI inserts scenes); where
+  a duplicated slot range's copies go; whether Duplicate on several scenes puts each copy under its scene or all
+  of them under the last (ADI: under the last); whether a scene's copy keeps its name (`sceneCopyKeepsName`).
+- Paste past the last scene (`pasteAddsScenes`) and paste of clips onto a track of the other kind (ADI passes
+  them by).
+- What Create Follow Action Chain sets exactly: the action, its chance, the Follow time, what a track with one
+  selected clip gets (`chainKeepsFollowTime`).
+- Toggle Follow Actions on a clip whose Follow Action is "No Action": whether Live sets an action.
+- The length and name of the clip Insert MIDI Clip makes in a slot (`newSlotClipBars` = 1, unnamed).
+- Ctrl+click on a slot while scenes are selected (ADI: a new selection).
+- Whether a drop onto an occupied slot replaces its clip (ADI: yes) and whether a drag below the last scene adds
+  scenes (ADI: refused).
 
 ## Reserve
 
-Nothing: no op name, schema minor, ADR number or register id was needed. The chain uses only the session
-seat's ops (`scene.*`, `session.*`, the six launch ops) and existing ones (`clip.setName`, `clip.setMute`,
-`track.rename`).
+Round 1 needed nothing. The chain uses only the session seat's ops (`scene.*`, `session.*`, the six launch ops)
+and existing ones (`clip.setName`, `clip.setMute`, `track.rename`; round 2: `clip.create`, `clip.setLoop`,
+`clip.duplicate`, `clip.setColor`, `track.setColor`).
+
+Round 2 asks for two names, neither taken:
+
+- **Reserve: `scene.setColor`** (an edit, `{id, color}` with `color` a palette index 0 to 69 or null, as
+  `scene.create` takes it), for the session seat to add beside `scene.rename`: Live's scene context menu has a
+  colour palette (7.2) and there is no op to change a scene's colour after it is made. `recolour` refuses a
+  scene until it exists.
+- **Reserve: `info.setText`** is already named by RE-03 (ADR-0228: Live's Edit Info Text as a side table with
+  one op) but not in `collab/RESERVATIONS.md`. Edit Info Text on clips, scenes and tracks waits for it; whoever
+  builds RE-03 builds the op, and this chain adds the command (open the editor as `rename` does, commit through
+  the op).
 
 ## For the director
 
@@ -193,19 +286,35 @@ manual chapters 7, 16 and 19; the numbers marked "measure" are to be read from L
     its title bar for one or several scenes.
 32. The Clip View's launch panel (mode, quantization, Legato, velocity, Follow Actions) for a Session clip.
 
+**Round 2 adds**
+33. The context menus of a clip, an empty slot, a scene and a track title in the Session View: their items and
+    order (Cut, Copy, Paste, Duplicate, Delete, Rename, Edit Info Text, Insert MIDI Clip, Create Follow Action
+    Chain, Add/Remove Stop Button, Deactivate, the colour palette), and which are greyed when.
+34. The colour palette in those menus: the number of swatches, their layout, the mark on the current colour;
+    for several clips or scenes at once.
+35. Picks (Ctrl+click): how a picked slot or scene differs from a rectangle's, and the focus among picks.
+36. A drag of clips: what follows the pointer (the clips' outline, a count), the drop target's mark, a refused
+    drop (another kind of track, off the grid), the Ctrl (Alt on a Mac) copy mark on the pointer.
+37. A drag of scenes: the insertion line between scenes; nonadjacent scenes collapsing.
+38. The rubber band's rectangle while it is dragged from an empty slot.
+39. Follow Actions toggled off: how the striped launch button (16) shows a clip whose Follow Action is set but
+    off.
+
 **Colours** (each to be read from Live's theme and set beside ADI's palette): playing green, queued blink,
 record red, selection, the empty slot's grid colour, the Stop button grey, the group shading's tint, the
 deactivated grey.
 
 ## Next
 
-1. Merge BASE and both session branches again; rerun "all" on slot 18. (Round 1 ended with the chain at
-   `bbb025515`, checked as above.)
+1. Merge BASE and both session branches again before each push; rerun "all" on slot 18 after a merge that
+   brings new commits. (Round 2 ended with the chain at the head in Steps.)
 2. Wire the shell once the picture is agreed: a `SessionViewPanel` that owns a `Model`, rebuilds on the
    `ProjectView` generation and polls `Session::readLaunchStatus` on its timer; the keys through
-   `commandForKey`; `Outcome.edits` through the window's `OpSubmitter`, `launches` through
-   `dispatchLaunchOperations`, `capture` through the engine's capture.
-3. Commands left for a later round: Insert MIDI Clip (Ctrl+Shift+M: `clip.create` then
-   `session.setSlotClip`), Toggle Follow Actions (Shift+Enter: `session.setFollowAction`), Create Follow Action
-   Chain (Ctrl+Shift+Enter), Duplicate (Ctrl+D), copy/paste and drag of clips and scenes, Ctrl+click picks,
-   track moves (Ctrl+Left/Right, the track commands'), Edit Info Text, colour.
+   `commandForKey`; `Outcome.edits` through the window's `OpSubmitter` when `copies` is empty, else through
+   `prepareEdit` and `clip_edit::commitPrepared`; `launches` through `dispatchLaunchOperations`, `capture`
+   through the engine's capture; `clipboard` kept by the window (after `snapshotClipboard` for a Cut);
+   `Context.nextClipId` from the snapshot (`audio_drop_detail::newClipId`) and `barTicks` from the meter.
+3. Left for a later round: Edit Info Text (waits for RE-03's `info.setText`), a scene's colour (waits for
+   `scene.setColor`), renaming several selected clips in turn (7.1: "rename several selected clips at once"),
+   track moves (Ctrl+Left/Right, the track commands'), Cut/Copy/Paste and Duplicate of track titles (the track
+   commands'), drags between the Session and the Arrangement (7.5, the second window).
