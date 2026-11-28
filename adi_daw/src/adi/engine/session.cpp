@@ -2635,10 +2635,14 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     }
     const auto grid = timing->settings.launchQuantization.value_or(timing->launchAudio->globalQuantization());
     const auto sample = timing->sampleForTick(tick);
+    const auto arrangementLoops = [&](const DriverClock& position) {
+        return position.loopEnd > position.loopBegin ||
+            (timing->settings.hasLoop && timing->settings.loopEnabled && position.sample < timing->loopEnd);
+    };
     DriverClock origin;
     if (launch_quantize::nextGridTick(tick, grid, timing->signatures) != tick ||
         sample == std::numeric_limits<std::int64_t>::max() || !readDriverClock(origin) ||
-        origin.sample > sample || (timing->settings.hasLoop && timing->settings.loopEnabled)) {
+        origin.sample > sample || arrangementLoops(origin)) {
         error_ = "the Session scene boundary must be reachable on the current Global grid without an Arrangement loop";
         return false;
     }
@@ -2772,7 +2776,7 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         }
         DriverClock latest;
         return readDriverClock(latest) && latest.revision == origin.revision && latest.sample <= sample &&
-            (!latest.playing || sample - latest.sample >= maxFrames);
+            !arrangementLoops(latest) && (!latest.playing || sample - latest.sample >= maxFrames);
     };
     const auto previousScene = preparedScene_;
     const auto previousBanks = sceneTempoBanks_;

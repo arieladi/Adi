@@ -148,6 +148,42 @@ void persisted(Fixture& fixture) {
                 "0 callback allocations/file calls\n", static_cast<long long>(render.edges[1].sample));
 }
 
+void tempoSceneFromArrangementLoop(bool startsAtEnd) {
+    constexpr auto loopEnd = 2 * textproj::kPPQ;
+    Fixture fixture;
+    fixture.store->db().exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+    OpRequest loop;
+    loop.opType = "transport.setLoop";
+    loop.payload = {{"on", true}, {"start", 0}, {"end", loopEnd}};
+    require(OpJournal(*fixture.store).commit(loop).ok, "save the Arrangement Loop brace");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*fixture.store, {}, {2, 48'000, blockSize})) throw std::runtime_error(session.error());
+    {
+        auto block = session.beginRender();
+        require(block.startPlayback(startsAtEnd ? loopEnd : loopEnd - textproj::kPPQ, false),
+            "use the Arrangement playback entry point");
+    }
+    Render render{session};
+    render.block();
+    require(session.transport().looping() != startsAtEnd, "observe the effective loop after starting playback");
+    const auto launch = scene(20, session.launchIncarnation());
+    require(OpJournal(*fixture.store).commit(launch).ok, "submit a saved tempo scene");
+    const auto end = (startsAtEnd ? barFrames / 2 : barFrames) + 1024;
+    while (render.stream < end) render.block();
+    if (startsAtEnd) {
+        require(render.size == 1 && render.edges[0].sample == barFrames && render.edges[0].newClip == 102 &&
+            std::abs(render.left.back() + 0.25f) < 0.0005f,
+            "bypassed Loop brace permits an audible tempo scene on the next bar");
+        require(session.beginRender().bpmAtTick(4 * textproj::kPPQ) == 140, "scene clock performs at the bar");
+    } else {
+        require(render.size == 0 && session.transport().looping() &&
+            session.beginRender().bpmAtTick(4 * textproj::kPPQ) == 120,
+            "active Loop brace keeps its clock when the scene bar is unreachable");
+    }
+}
+
 void pagedLegato(Fixture& fixture) {
     constexpr std::uint32_t rate = 48'000;
     constexpr std::int64_t targetId = 105;
@@ -323,6 +359,8 @@ int main() {
         Fixture fixture;
         persisted(fixture);
         ramModes(fixture);
+        tempoSceneFromArrangementLoop(false);
+        tempoSceneFromArrangementLoop(true);
         Fixture legato;
         pagedLegato(legato);
     } catch (const std::exception& error) {
