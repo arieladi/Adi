@@ -152,5 +152,18 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
+| SC-449 | `basics/test-chain-2` at `5cdad58fe` | Refresh the native Edit menu when Redo becomes available. Window and edit seats. | The peerless menu fixture follows real Undo and Redo and uses the platform chord. Physical macOS key delivery remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
+
+#### SC-449 Redo on macOS
+
+The macOS default already registered Cmd+Shift+Z. JUCE's native menu validation reads the enabled flag captured when the menu item was built. ADI's menu model did not observe command-state changes, so it could keep the disabled entry after Undo made Redo available.
+
+The menu model now follows the command manager. Undo, Redo and history restores signal state changes. Querying an already-active project's menu does not schedule another update. Menu headings retain their existing shortcut feedback, and each platform keeps its registered keymap. Live uses Cmd+Shift+Z on macOS and Ctrl+Y on Linux and Windows.
+
+Redo is still item 2 of Edit. There are no added controls or position changes. A peerless fixture builds the Edit menu data and exercises real history edits and mapped keys. It tests the Linux Live chord and shifted Z through the Cubase preset, and will test the native Live chord when built on macOS. No desktop or native menus are required.
+
+The linked Debug fixture passed seven of nine checks against the baseline and all nine against the fix with DISPLAY unset. The separate isolated message-loop probe held an Edit menu cache and made no manual menu reads between actions. The baseline delivered zero updates. The fix delivered one after a normal rename, one after Undo and one after Redo. Cached Undo and Redo availability followed the history, and querying the menu during its callback did not schedule a second refresh. Native keyboard delivery on macOS remains a runner check.
+
+The first full Redo run tripped the unchanged History List wall-time ratio. A solo run passed all 79 checks at 8.05 ms for 2,000 retained operations and 60.12 ms for 8,000. The subsequent full runs schedule that timing test on its own while retaining it in the same headless set.
