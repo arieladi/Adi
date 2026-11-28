@@ -133,6 +133,13 @@ PhysicalLap physicalLap(const LaunchSlot* slot, bool wrapped) noexcept {
             wrapped ? slot->loopStartTick : slot->startTick,slot->loopEndTick};
 }
 
+PhysicalLap cuedPhysicalLap(const LaunchSlot* slot, std::uint64_t completedLoops, std::int64_t cue) noexcept {
+    // A Legato cue in the repeated region can precede the authored Start.
+    const bool wrapped = cue < 0 ? completedLoops != 0
+        : slot && slot->physicalLoopEndFrame && cue >= slot->physicalLoopBeginFrame;
+    return physicalLap(slot,wrapped).withCue(cue);
+}
+
 std::int64_t wrapSource(const LaunchSlot& slot, std::int64_t position) noexcept {
     if (loops(slot) && position >= slot.loopEndTick)
         return slot.loopStartTick + (position - slot.loopEndTick) % (slot.loopEndTick - slot.loopStartTick);
@@ -154,18 +161,23 @@ std::int64_t launchSourceTick(const LaunchSlot& target, const LaunchSlot* previo
 LaunchSourceCue launchSourceCue(const LaunchSlot& target, const LaunchSlot* previous,
                                 std::int64_t previousTick, std::int64_t previousFrame = -1) noexcept {
     const auto tick = launchSourceTick(target,previous,previousTick);
-    if (!target.legato || target.physicalLoopEndFrame) return {tick,-1};
-    const auto lap = physicalLap(&target,false);
-    if (lap.startFrame < 0) return {tick,-1};
-    std::int64_t elapsed = 0;
+    if (!target.legato) return {tick,-1};
+    const auto first = physicalLap(&target,false);
+    if (first.startFrame < 0) return {tick,-1};
+    const auto loop = physicalLap(&target,true);
+
+    auto frame = first.startFrame;
     if (previous && previous->clip != target.clip && previousFrame >= 0 && previous->physicalStartFrame >= 0) {
-        const auto relative = legatoUsesPreviousClipRelativePosition
-            ? previousFrame - previous->physicalStartFrame : previousFrame - lap.startFrame;
-        if (relative >= 0 && relative < lap.length()) elapsed = relative;
-    } else if (tick > lap.startTick) {
-        elapsed = std::min(lap.length()-1,lap.frameAt(tick)-lap.startFrame);
+        frame = legatoUsesPreviousClipRelativePosition
+            ? add(first.startFrame,std::max<std::int64_t>(0,previousFrame - previous->physicalStartFrame))
+            : std::max(first.startFrame,previousFrame);
+        if (frame >= first.endFrame)
+            frame = target.physicalLoopEndFrame ? loop.startFrame + (frame - loop.endFrame) % loop.length() : first.startFrame;
+    } else {
+        const auto& mapping = target.physicalLoopEndFrame && tick >= loop.startTick ? loop : first;
+        frame = std::min(mapping.endFrame - 1,mapping.frameAt(tick));
     }
-    return {lap.tickAt(elapsed),lap.startFrame+elapsed};
+    return {cuedPhysicalLap(&target,0,frame).tickAt(0),frame};
 }
 
 bool validRegion(const LaunchClipRegion& region) noexcept {
@@ -599,8 +611,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
     LaunchSlot oldGeometry;
     const auto* oldSlot = previous.clip
         ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,previous.physicalRegion,oldGeometry) : nullptr;
-    const auto oldLap = physicalLap(oldSlot,previous.completedLoops != 0 && previous.physicalCueFrame < 0)
-        .withCue(previous.physicalCueFrame);
+    const auto oldLap = cuedPhysicalLap(oldSlot,previous.completedLoops,previous.physicalCueFrame);
     const auto elapsed = previous.frames - previous.pcmAnchorFrame;
     if (pending.action == Action::Start) {
         track.stopSuppressesFollow = false;
@@ -663,8 +674,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,track.run.physicalRegion,regionGeometry);
         const auto elapsed = track.run.frames - track.run.pcmAnchorFrame;
-        const auto lap = physicalLap(slot,track.run.completedLoops != 0 && track.run.physicalCueFrame < 0)
-            .withCue(track.run.physicalCueFrame);
+        const auto lap = cuedPhysicalLap(slot,track.run.completedLoops,track.run.physicalCueFrame);
         if (lap.startFrame >= 0) {
             track.run.pcmAnchorTick = lap.tickAt(0);
             track.run.sourceTick = lap.tickAt(elapsed);
@@ -1096,8 +1106,7 @@ std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& trac
     const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample) const noexcept {
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
-    const auto lap = physicalLap(current,run.completedLoops != 0 && run.physicalCueFrame < 0)
-        .withCue(run.physicalCueFrame);
+    const auto lap = cuedPhysicalLap(current,run.completedLoops,run.physicalCueFrame);
     const auto physicalSample = [&](const Pending& event) {
         if (event.physicalLaps > 0 && lap.startFrame >= 0) {
             const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
@@ -1167,8 +1176,7 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         slot = findSlot(view,track.id,run.scene);
         if (!slot || slot->clip != run.clip) slot = findClip(view,track.id,run.clip);
         slot = effectiveSlot(slot,run.region,run.physicalRegion,regionGeometry);
-        const auto lap = physicalLap(slot,run.completedLoops != 0 && run.physicalCueFrame < 0)
-            .withCue(run.physicalCueFrame);
+        const auto lap = cuedPhysicalLap(slot,run.completedLoops,run.physicalCueFrame);
         const auto elapsed = run.frames - run.pcmAnchorFrame;
         if (lap.startFrame >= 0) status.sourceTick = lap.tickAt(elapsed);
         if (slot && loops(*slot)) {

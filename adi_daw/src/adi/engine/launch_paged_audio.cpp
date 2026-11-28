@@ -9,6 +9,13 @@
 
 namespace adi::engine {
 
+namespace {
+std::int64_t physicalWindowStart(const LaunchPagedSource& source) noexcept {
+    return source.loopEndFrame > source.loopBeginFrame ? std::min(source.firstFrame,source.loopBeginFrame)
+                                                       : source.firstFrame;
+}
+}
+
 LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
                                   std::span<const LaunchPagedSource> sources, std::uint32_t sampleRate,
                                   std::int32_t channels, std::int32_t maxFrames)
@@ -22,9 +29,8 @@ LaunchPagedAudio::LaunchPagedAudio(std::shared_ptr<const ClipProject> project,
         if (source.clip <= 0 || source.sourceTrack <= 0 || source.firstFrame < 0 || source.endFrame < 0 ||
             source.loopBeginFrame < 0 || source.loopEndFrame < source.loopBeginFrame)
             throw std::invalid_argument("invalid Session paged source");
-        const auto window = source.endFrame - source.firstFrame;
-        if (source.warmPhysicalWindow && (window <= 0 || window > 3 * ClipPlayback::readAheadFrames(sampleRate) ||
-            source.loopEndFrame != source.loopBeginFrame))
+        const auto window = source.endFrame - physicalWindowStart(source);
+        if (source.warmPhysicalWindow && (window <= 0 || window > 3 * ClipPlayback::readAheadFrames(sampleRate)))
             throw std::invalid_argument("invalid unwarped Session page window");
         const auto nodes = pages_.sourcesFor(source.sourceTrack);
         if (nodes.size() == 1) {
@@ -51,14 +57,18 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         // A small worker R3 slot can admit every phase in its unrolled
         // window. Keep that request at launch preparation, including phases
         // skipped by the slot's normal start point or loop head.
-        first.loop(source.loopBeginFrame, source.loopEndFrame, looping && !entry.primesAllPhases);
+        // Physical Legato can enter any frame in the loop, including a
+        // loop head before the authored Start. Prime the unrolled window.
+        const auto firstFrame = source.warmPhysicalWindow ? physicalWindowStart(source) : source.firstFrame;
+        first.loop(source.loopBeginFrame, source.loopEndFrame,
+                   looping && !entry.primesAllPhases && !source.warmPhysicalWindow);
         loop.loop(source.loopBeginFrame, source.loopEndFrame, looping);
-        first.locate(entry.primesAllPhases ? 0 : source.firstFrame);
+        first.locate(entry.primesAllPhases ? 0 : firstFrame);
         first.play();
         loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
         loop.play();
         const auto ready = source.warmPhysicalWindow
-            ? pages_.primeTrackWindow(source.sourceTrack,first,static_cast<std::int32_t>(source.endFrame - source.firstFrame),timeout)
+            ? pages_.primeTrackWindow(source.sourceTrack,first,static_cast<std::int32_t>(source.endFrame - firstFrame),timeout)
             : pages_.primeTrackAt(source.sourceTrack,first,loop,timeout);
         if (ready) return false;
         problems_.push_back("Session clips#" + std::to_string(source.clip) + (source.warmPhysicalWindow

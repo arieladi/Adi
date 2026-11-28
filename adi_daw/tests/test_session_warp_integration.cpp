@@ -1600,6 +1600,115 @@ void physicalOneShotLinkedFollow(std::string_view action, bool ram, bool retime)
             "linked physical Follow performs no callback allocation or file I/O");
 }
 
+void physicalLegatoLoopFollowsExternalTempo() {
+    enum class Entry { PastTargetEnd, AtOutgoingWrap, AtTargetEnd, FarCueAfterEdit };
+    constexpr auto due = 22286;
+    constexpr auto shortLoopEnd = 19200;
+    constexpr auto manualStop = 84000;
+    for (const bool ram : {true,false}) {
+        for (const auto kind : {Entry::PastTargetEnd,Entry::AtOutgoingWrap,Entry::AtTargetEnd,Entry::FarCueAfterEdit}) {
+            const bool editLegato = kind == Entry::FarCueAfterEdit;
+            if (ram && editLegato) continue;
+            const auto tag = kind == Entry::PastTargetEnd ? "past-end"
+                : kind == Entry::AtOutgoingWrap ? "outgoing-wrap"
+                : editLegato ? "exact-grid-saved-edit" : "target-wrap";
+            const auto token = ram ? std::string(tag) : std::string(tag) + "-paged";
+            test::TempDirectory folder{"physical_loop_legato",token.c_str()};
+            auto store = physicalLegatoProject(folder.path(),ram);
+            auto& db = store->db();
+            const bool stopByFollow = kind != Entry::AtTargetEnd;
+            const auto start = kind == Entry::AtTargetEnd ? 9600 : 4800;
+            const auto loopBegin = kind == Entry::AtTargetEnd ? 3600 : editLegato ? 6000 : 9600;
+            const auto loopEnd = kind == Entry::AtTargetEnd ? start + due : editLegato ? 40000 : shortLoopEnd;
+            const auto cue = editLegato ? start + due : kind == Entry::AtOutgoingWrap ? start + 2400
+                : loopBegin + (start + due - loopEnd) % (loopEnd - loopBegin);
+            const auto wrap = due + loopEnd - cue;
+            const auto stop = stopByFollow ? wrap + 2 * (loopEnd - loopBegin) : manualStop;
+            const auto nanoseconds = [](std::int64_t frame) {
+                return (frame * 1000000000 + rate / 2) / rate;
+            };
+            const auto setLoop = [&](int clip, int begin, int end) {
+                db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=5765760 WHERE id=" +
+                        std::to_string(clip));
+                SQLite::Statement update(db, "UPDATE clip_playback_details SET loop_begin_ns=?,loop_end_ns=? WHERE clip_id=?");
+                update.bind(1,nanoseconds(begin)); update.bind(2,nanoseconds(end)); update.bind(3,clip); update.exec();
+            };
+            if (kind == Entry::AtTargetEnd)
+                db.exec("UPDATE clip_playback_details SET content_offset_ns=200000000,source_end_ns=1083333333 WHERE clip_id=102");
+            setLoop(102,loopBegin,loopEnd);
+            if (editLegato) db.exec("UPDATE clip_launch SET legato=0 WHERE clip_id=102");
+            if (kind == Entry::AtOutgoingWrap) setLoop(101,4800,2400+due);
+            if (stopByFollow)
+                db.exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1 WHERE clip_id=102");
+            store.reset();
+            StoreError openError{};
+            store = Store::open(folder.path() / "song.adi",openError);
+            require(static_cast<bool>(store),"reopen the saved physical Legato loop");
+
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+            std::vector<float> pcm(static_cast<std::size_t>(stop+blockFrames));
+            Playback playback{session,pcm};
+            playback.paged = !ram;
+            scene(*store,session,10);
+            playback.through(6000);
+            require(session.setExternalTempoAt(*store,140,quarter / 2),"perform the clock change before loop Legato");
+            if (editLegato) {
+                playback.through(6001);
+                OpRequest edit;
+                edit.opType = "session.setLaunchSettings";
+                edit.payload = {{"clip",102},{"legato",true}};
+                require(OpJournal(*store).commit(edit).ok && session.refresh(*store),
+                        "publish saved Legato for an idle paged loop");
+                // The cue's page lies past both normal Start and loop-head
+                // read-ahead, and the launch gives no earlier phase hint.
+                playback.through(due);
+            } else {
+                playback.through(16000);
+            }
+            const LaunchRequest launch{LaunchRequestKind::SlotPress,1,20,102,session.launchIncarnation()};
+            require(session.postLaunchGesture(std::array{launch}),"queue Legato into the physical loop");
+            if (!editLegato) playback.through(16000+blockFrames);
+            const auto forecast = trackState(session).queued;
+            playback.through(wrap);
+            const auto first = trackState(session);
+            playback.through(wrap+1);
+            const auto wrapped = trackState(session);
+            if (!stopByFollow) {
+                const LaunchRequest halt{LaunchRequestKind::StopTrack,1,{},{},session.launchIncarnation()};
+                require(session.postLaunchGesture(std::array{halt}),"queue manual Stop after the cued loop wraps");
+            }
+            playback.through(static_cast<std::int64_t>(pcm.size()));
+
+            audio::WavReader source(folder.path() / "102.wav");
+            std::vector<float> raw(static_cast<std::size_t>(loopEnd));
+            require(source.read(raw.data(),static_cast<std::uint32_t>(raw.size())) == raw.size(),
+                    "read original PCM for the comparison");
+            bool identical = true;
+            auto read = cue;
+            for (auto sample = due; sample < stop; ++sample) {
+                identical &= pcm[static_cast<std::size_t>(sample)] == raw[static_cast<std::size_t>(read++)];
+                if (read == loopEnd) read = loopBegin;
+            }
+            const auto actualStop = playback.count == 3 ? playback.edges[2].sample : -1;
+            std::printf("Physical Legato loop %s %s: forecast %lld, cue %d, attack %.6f, wrap %d, stop %lld/%d, exact PCM %d\n",
+                tag,ram ? "RAM" : "paged",static_cast<long long>(forecast.legatoSourceFrame.value_or(-1)),
+                cue,static_cast<double>(pcm[due]),wrap,static_cast<long long>(actualStop),stop,identical);
+            for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+            const bool matchedCue = editLegato ? pcm[due] == -.7f : forecast.legatoSourceFrame == cue;
+            require(matchedCue && playback.count == 3 && playback.edges[1].sample == due &&
+                    playback.edges[1].newClip == 102 && first.clip == 102 && first.run == wrapped.run &&
+                    first.completedLoops == 0 && wrapped.completedLoops == 1 && playback.edges[2].newClip == 0 &&
+                    actualStop == stop && identical && session.problems().empty() &&
+                    std::all_of(pcm.begin()+stop,pcm.end(),[](float sample) { return sample == 0; }),
+                    "physical Legato uses the exact inherited sample, lap boundaries, and Stop");
+        }
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "physical loop Legato performs no callback allocation or file I/O");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -1692,6 +1801,7 @@ int main() {
         pinnedLiveRegionEdit("end",true,true);
         physicalLegatoOneShotFollowsExternalTempo();
         physicalLegatoRebasesItsCueOnLaterBank();
+        physicalLegatoLoopFollowsExternalTempo();
         pinnedRepeatUsesItsLaunchClock();
         longPagedRepeatKeepsStart();
         residentModeRamp("beats", 12);
