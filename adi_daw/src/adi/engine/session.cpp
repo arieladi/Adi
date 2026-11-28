@@ -1118,9 +1118,9 @@ std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId
 std::vector<Node*> Session::graphTrackChain(std::int64_t track, const TimingView& timing) {
     auto chain = trackChain(track);
     if (const auto output = timing.midiHardware.find(track); output != timing.midiHardware.end()) {
-        const auto instrument = std::find_if(chain.begin(), chain.end(),
-            [](const Node* node) { return node->eventFlow() == EventFlow::Consume; });
-        chain.insert(instrument, output->second.get());
+        const auto stopsMidi = std::find_if(chain.begin(), chain.end(),
+            [](const Node* node) { return node->eventFlow() != EventFlow::Through; });
+        chain.insert(stopsMidi, output->second.get());
     }
     return chain;
 }
@@ -1143,9 +1143,10 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model, const TimingView& 
                 output = found->second.get();
             bool through = true;
             for (auto* node : chainFor(trackId)) {
-                if (output && node->eventFlow() == EventFlow::Consume) break;
+                const bool passesMidi = node->eventFlow() == EventFlow::Through;
+                if (output && !passesMidi) break;
                 result.push_back(node);
-                if (node->eventFlow() != EventFlow::Through) { through = false; break; }
+                if (!passesMidi) { through = false; break; }
             }
             if (!through) continue;
             if (output) {
@@ -1221,7 +1222,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     };
     const auto firstMidiEffect = [this](std::int64_t track, Node* output) {
         const auto chain = chainFor(track);
-        return !chain.empty() && chain.front()->eventFlow() != EventFlow::Consume ? chain.front() : output;
+        return !chain.empty() && chain.front()->eventFlow() == EventFlow::Through ? chain.front() : output;
     };
     decltype(midiHistories_) histories;
     const bool validPlayRate = std::isfinite(timing.sampleRate) && timing.sampleRate >= 1 &&

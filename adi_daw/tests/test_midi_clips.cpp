@@ -59,11 +59,12 @@ struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
+    EventFlow flow = EventFlow::Consume;
     bool audible=false;int voices=0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     bool processesDouble()const noexcept override{return true;}
-    EventFlow eventFlow()const noexcept override{return EventFlow::Consume;}
+    EventFlow eventFlow()const noexcept override{return flow;}
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
@@ -101,6 +102,7 @@ struct Fixture {
     test::TempDirectory dir{"midi_clips","session"};
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;Instrument* otherInstrument=nullptr;
     double rate;int block;Precision width;std::int64_t clock=0;
+    EventFlow firstDeviceFlow = EventFlow::Consume;
     explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
@@ -111,7 +113,18 @@ struct Fixture {
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
-    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();(request.device->id==3?otherInstrument:instrument)=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
+    void load() {
+        session.graph().setFadeFrames(0);
+        const auto loader = [this](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.device->id == 2) return std::make_unique<LatencyEffect>();
+            auto instance = std::make_unique<Instrument>();
+            if (request.device->id == 1) instance->flow = firstDeviceFlow;
+            (request.device->id == 3 ? otherInstrument : instrument) = instance.get();
+            return instance;
+        };
+        if (!session.load(*store, loader, {2, rate, block, width})) throw std::runtime_error(session.error());
+        session.transport().play();
+    }
     void render(int n=0, std::span<double> capture={}, const MidiHardwareSink* hardware=nullptr,
                 bool exporting=false){
         if(!n)n=block;
@@ -146,8 +159,11 @@ void unavailableClip() {
           "a fresh playback generation clears the recovered MIDI clip's diagnostic");
 }
 
-void hardwareMidiOutput() {
+void hardwareMidiOutput(EventFlow localFlow) {
     Fixture f(48000, 64);
+    f.firstDeviceFlow = localFlow;
+    if (localFlow == EventFlow::Stop)
+        f.store->db().exec("UPDATE plugin_refs SET subtype='effect' WHERE id=1");
     f.clip(1, 0, 24024);
     const std::array<controllers::Point, 1> values{{{0, 0, 0.5, 0, 0, 0}}};
     const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
@@ -179,8 +195,10 @@ void hardwareMidiOutput() {
                            [&](const Received::Word& item) { return item.sample == sample && item.value == word; });
     };
     check(has(0, 0x20963c5du) && has(0, 0x20b60140u) && has(100, 0x20863c25u),
-          "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
-    check(f.instrument->count == 0, "hardware routing takes MIDI before the local instrument");
+          localFlow == EventFlow::Stop
+              ? "MIDI To sends arranged notes and controllers before a local effect that stops MIDI"
+              : "MIDI To sends arranged notes, releases and controller values on the selected hardware channel");
+    check(f.instrument->count == 0, "hardware routing takes MIDI before the first local device that stops it");
     const auto before = received.size;
     f.session.transport().locate(0);
     f.render(64, {}, &sink, true);
@@ -2045,7 +2063,12 @@ int main(int argc,char** argv){
     catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
-    try { if (only == "all" || only == "hardware") hardwareMidiOutput(); }
+    try {
+        if (only == "all" || only == "hardware") {
+            hardwareMidiOutput(EventFlow::Consume);
+            hardwareMidiOutput(EventFlow::Stop);
+        }
+    }
     catch (const std::exception& error) { check(false, error.what()); }
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }
