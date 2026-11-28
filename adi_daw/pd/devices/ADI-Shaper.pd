@@ -1540,6 +1540,12 @@
 #X msg 8810 111 p 868 \$1;
 #X obj 8810 148 adi.param \$0 870 0 100 100 % lin Crush_High_Treble;
 #X msg 8810 175 p 869 \$1;
+#X obj 9085 20 adi.param \$0 871 0 100 0 % lin Crush_Low_Jitter;
+#X msg 9085 47 p 870 \$1;
+#X obj 9085 84 adi.param \$0 872 0 100 0 % lin Crush_Mid_Jitter;
+#X msg 9085 111 p 871 \$1;
+#X obj 9085 148 adi.param \$0 873 0 100 0 % lin Crush_High_Jitter;
+#X msg 9085 175 p 872 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -3082,3 +3088,9 @@
 #X connect 1538 0 1 0;
 #X connect 1539 0 1540 0;
 #X connect 1540 0 1 0;
+#X connect 1541 0 1542 0;
+#X connect 1542 0 1 0;
+#X connect 1543 0 1544 0;
+#X connect 1544 0 1 0;
+#X connect 1545 0 1546 0;
+#X connect 1546 0 1 0;

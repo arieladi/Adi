@@ -51,6 +51,7 @@ static_assert(Shaper::FilterLowSteep == 915 && Shaper::FilterHighSteep == 917);
 static_assert(Shaper::SweepLowOffset + 1 == 853 && Shaper::SweepHighOffset + 1 == 855);
 static_assert(Shaper::CrushLowBias + 1 == 865 && Shaper::CrushHighBias + 1 == 867);
 static_assert(Shaper::CrushLowTreble + 1 == 868 && Shaper::CrushHighTreble + 1 == 870);
+static_assert(Shaper::CrushLowJitter + 1 == 871 && Shaper::CrushHighJitter + 1 == 873);
 static_assert(Shaper::holdFollowerParam(Band::Low, Control::On) == 876);
 static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::HoldFollowerSourceLow);
 static_assert(Shaper::holdFollowerSourceParam(Band::Low) == 903 && Shaper::holdFollowerSourceParam(Band::High) + 1 == 906);

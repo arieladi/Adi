@@ -16,6 +16,7 @@ public:
     void setDither(bool enabled) noexcept { dither_ = enabled; }
     void setBias(float normalized) noexcept;
     void setTreble(float normalized) noexcept;
+    void setJitter(float normalized) noexcept;
     void processStereo(float& left, float& right, float bitsHeight,
                        float resampleHeight, bool flatHold = true) noexcept;
     bool finishBlock() noexcept;
@@ -25,16 +26,19 @@ private:
     void updateResolution(float height) noexcept;
     void updateQuantizerGain() noexcept;
     void updateClock(float height) noexcept;
-    double noise() noexcept;
+    static double noise(std::uint32_t& seed) noexcept;
     void quantize(Stereo& sample, double previousLevels, double codeScale) noexcept;
     void hold(Stereo& sample, bool flatHold) noexcept;
+    void jitteredHold(Stereo& sample, bool flatHold) noexcept;
 
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;
     double levels_ = 1, quantizedGain_ = 1, period_ = 1;
     double biasInput_ = 0, previousPerturbation_ = 0, treblePole_ = 0;
-    float step_ = 1, phase_ = 0, bits_ = -1, clock_ = -1, bias_ = 0, treble_ = 1;
+    double uncappedStep_ = 1, jitterScale_ = 0, jitterOffset_ = 1;
+    float step_ = 1, phase_ = 0, bits_ = -1, clock_ = -1, bias_ = 0, treble_ = 1, jitter_ = 0;
     Stereo previousQuantInput_{}, previousCode_{}, previousHoldInput_{}, held_{}, low_{}, trebleState_{};
-    std::uint32_t seed_ = 0x297a04b3u;
+    static constexpr std::uint32_t initialSeed = 0x297a04b3u;
+    std::uint32_t seed_ = initialSeed, jitterSeed_ = initialSeed;
     bool dither_ = false;
 };
 

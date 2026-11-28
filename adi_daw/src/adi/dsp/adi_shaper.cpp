@@ -923,6 +923,10 @@ void AdiShaper::set(Param id, float value) noexcept {
         crush_[static_cast<std::size_t>(id - CrushLowTreble)].setTreble(value * .01f);
         return;
     }
+    if (id >= CrushLowJitter && id <= CrushHighJitter) {
+        crush_[static_cast<std::size_t>(id - CrushLowJitter)].setJitter(value * .01f);
+        return;
+    }
     if (id >= SweepLowOffset && id <= SweepHighOffset) {
         sweeps_[static_cast<std::size_t>(id - SweepLowOffset)].setStereoOffset(value * .01f);
         return;

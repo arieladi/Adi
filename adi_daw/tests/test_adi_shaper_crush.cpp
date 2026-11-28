@@ -441,6 +441,124 @@ void trebleHistory() {
          activeMeter.decode(mono(active, -.65f, 0.f, 1.f)), 2e-6, "neutral treble retains filter memory");
 }
 
+void jitterStatistics() {
+    // Capture intervals measured on a stationary 644 Hz contour, averaged over
+    // many cycles. Each generator can use its own reproducible sequence.
+    struct Reading { float jitter; double mean, deviation; };
+    constexpr Reading readings[]{{.25f, 1.01, .26}, {.5f, 1.045, .92},
+                                  {.75f, .987, 1.36}, {1.f, 1.056, 1.88}};
+    constexpr double nominal = 74.497;
+    for (const auto& reading : readings) {
+        Crush band;
+        band.prepare(48000);
+        band.setJitter(reading.jitter);
+        UndoHighPass inverse(48000);
+        double previous = 0., sum = 0., squares = 0.;
+        int last = -1, intervals = 0;
+        bool changing = false;
+        for (int i = 0; i < 192000; ++i) {
+            const float ramp = static_cast<float>(i % 4093 - 2046) / 4096.f;
+            const double sample = inverse.decode(mono(band, ramp, 1, .25f));
+            const bool changed = std::abs(sample - previous) > 2.e-6;
+            if (changed && !changing) {
+                if (last >= 0) {
+                    const double frames = i - last;
+                    sum += frames;
+                    squares += frames * frames;
+                    ++intervals;
+                }
+                last = i;
+            }
+            previous = sample;
+            changing = changed;
+        }
+        check(intervals > 2000, "enough jitter captures");
+        const double mean = sum / intervals;
+        near(mean / nominal, reading.mean, .022, "jitter interval mean");
+        near(std::sqrt((squares / intervals - mean * mean) / nominal),
+             reading.deviation, .095, "jitter interval spread");
+    }
+}
+
+void jitterCap() {
+    // A high-rate frame passes its stereo inputs but stores an interpolated
+    // capture. The following zero-rate frame exposes that private held value.
+    // These markers pin ADI's own repeatable seed and the fractional clock.
+    struct Marker { int rate; float height; int frame; double left, right; };
+    constexpr Marker cases[]{{32000, .99f, 16, .302016, -.373488},
+                             {44100, .95f, 3, .687959, -.084031},
+                             {48000, .95f, 3, .632062, -.125953},
+                             {96000, .95f, 3, .316031, -.362977}};
+    for (const auto& m : cases) {
+        Crush band;
+        band.setJitter(1);
+        band.prepare(m.rate);
+        UndoHighPass left(m.rate), right(m.rate);
+        for (int k = 0; k <= m.frame + 1; ++k) {
+            float l = k == m.frame - 1 ? .8f : 0.f;
+            float r = k == m.frame ? -.6f : 0.f;
+            band.processStereo(l, r, 1, m.height);
+            const double a = left.decode(l), b = right.decode(r);
+            if (k == m.frame) {
+                near(a, 0., .00001, "saturated left passes");
+                near(b, -.6, .00001, "saturated right passes");
+            } else if (k == m.frame + 1) {
+                near(a, m.left, .00001, "saturated left capture");
+                near(b, m.right, .00001, "saturated right capture");
+            }
+        }
+    }
+}
+
+void jitterBypass() {
+    Crush a;
+    a.prepare(48000);
+    a.setJitter(1);
+    for (int i = 0; i < 113; ++i) mono(a, 0, 1, .45f);
+    auto resumed = a;
+    for (int i = 0; i < 1024; ++i)
+        near(mono(a, 0, 1, 1), 0, 0, "flat full-height bypass");
+    for (int i = 0; i < 2048; ++i) {
+        const float input = static_cast<float>((i * 29) % 113 - 56) / 113.f;
+        near(mono(a, input, 1, .45f), mono(resumed, input, 1, .45f), 0,
+             "flat full-height pauses the hold phase and timing draws");
+    }
+    a.reset();
+    resumed.prepare(48000);
+    Crush moving = a;
+    bool differs = false;
+    for (int i = 0; i < 256; ++i) {
+        const float x = i % 3 == 0 ? .6f : -.25f;
+        float l = x, r = x, l2 = x, r2 = x;
+        moving.processStereo(l, r, 1, 1, false);
+        resumed.processStereo(l2, r2, 1, 1, false);
+        const float flat = mono(a, x, 1, 1);
+        differs = differs || l != flat;
+        check(l == l2 && r == r2, "reset and reprepare repeat the clock stream");
+    }
+    check(differs, "active contour jitters through the full-height plateau");
+}
+
+void jitterAndDither() {
+    Crush both, quantizerOnly, clockOnly;
+    both.prepare(48000);
+    quantizerOnly.prepare(48000);
+    clockOnly.prepare(48000);
+    both.setJitter(.75f);
+    clockOnly.setJitter(.75f);
+    UndoHighPass beforeHold(48000);
+    for (int i = 0; i < 8192; ++i) {
+        const bool dithered = i < 512 || i >= 2048;
+        both.setDither(dithered);
+        quantizerOnly.setDither(dithered);
+        const float height = i >= 3072 && i < 4096 ? 1.f : .45f;
+        const float input = static_cast<float>((i * 79) % 253 - 126) / 180.f;
+        const float quantized = static_cast<float>(beforeHold.decode(mono(quantizerOnly, input, .1f, 1)));
+        near(mono(both, input, .1f, height), mono(clockOnly, quantized, 1, height),
+             .000003, "timing and dither retain their separate positions");
+    }
+}
+
 std::array<float, 2> endpointMarker(int offset) {
     constexpr std::array<std::array<float, 2>, 3> markers{{
         {.8f, -.1f}, {-.25f, .6f}, {.16f, -.42f}}};
@@ -520,6 +638,7 @@ int main() try {
     band.reset();
     quantizer(band);movingResolution();clock(band);longClock(band);sustainedStereoClock();combined(band);dither(band);quantizerBias();
     trebleSteps();trebleContours();trebleTransfer();trebleHistory();
+    jitterStatistics(); jitterCap(); jitterBypass(); jitterAndDither();
     fullRatePlateau(); flatOrCappedHold();
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");
