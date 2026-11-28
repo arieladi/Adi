@@ -142,6 +142,7 @@ private:
         const LaunchAudioClip* pcm;
         std::int64_t sourceFrame;
         float velocity;
+        bool useAuthoredLoop = true;
         std::int64_t fadeElapsed;
     };
     struct TrackRanges {

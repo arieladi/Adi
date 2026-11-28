@@ -110,13 +110,13 @@ std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
 
 void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip* clip, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames) noexcept {
+                       std::int64_t fadeElapsedFrames, bool useAuthoredLoop) noexcept {
     if (offset < 0 || offset >= io.frames || frames <= 0)
         return;
     const auto count = std::min(frames, io.frames - offset);
     const auto fadeLength = clip && fadeElapsedFrames >= 0 ? launchFadeFrames(clip->rate()) : 0;
     auto* pages = clip ? clip->pageReader() : nullptr;
-    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count);
+    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count, useAuthoredLoop);
     for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
         auto* narrow = io.out ? io.out[channel] : nullptr;
         auto* wide = io.out64 ? io.out64[channel] : nullptr;

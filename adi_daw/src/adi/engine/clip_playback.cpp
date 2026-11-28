@@ -1437,6 +1437,13 @@ bool ClipPlayback::primeTrackAt(std::int64_t track, const Transport& first, cons
             if (clip->track == track) clip->retainUnrolledPages(*retainFromFrame);
     return primeTargets(first, &loop, timeout, true, {}, track);
 }
+std::optional<ClipPlayback::SampleRange> ClipPlayback::retainedTrackRange(std::int64_t track) const noexcept {
+    for (const auto& clip : impl_->clips) {
+        if (clip->track == track && clip->retainedPages)
+            return SampleRange{clip->retainedPages->front() * clip->pageFrames, std::min(clip->end, clip->length)};
+    }
+    return {};
+}
 bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout,
                                 bool waitForPendingWarp,std::stop_token stop,std::optional<std::int64_t> track) {
     if(audio::onAudioThread || timeout.count()<0)return false;

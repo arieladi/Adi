@@ -21,6 +21,7 @@ struct LaunchSlot {
     std::optional<LaunchQuantization> quantization; // absent means Global
     float velocityAmount = 0.0f;
     bool legato = false, fade = false, hasStop = true;
+    bool liveRegionSupported = true; // the prepared bank can render an entire authored source window
 };
 
 struct LaunchView {
@@ -199,6 +200,8 @@ private:
         std::uint64_t completedLoops = 0;
         bool fade = false;
         std::optional<LaunchClipRegion> region{};
+
+        bool moveSource(std::int64_t source, std::int64_t tick) noexcept;
     };
     struct RegionPending {
         LaunchClipRegionEdit edit;

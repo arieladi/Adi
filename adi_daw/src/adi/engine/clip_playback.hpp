@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <utility>
@@ -102,6 +103,8 @@ public:
     /// fits the existing page slots, starting at retainFromFrame.
     bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
                       std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame = {});
+    /// Owner query after successfully priming a private unrolled clip.
+    [[nodiscard]] std::optional<SampleRange> retainedTrackRange(std::int64_t track) const noexcept;
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }

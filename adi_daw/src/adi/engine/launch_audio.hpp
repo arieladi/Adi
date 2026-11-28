@@ -55,9 +55,10 @@ private:
 /// or silence. The host calls this only for non-Arrangement launch sections.
 /// Buffer and PCM ownership stays with the host. Rendering is callback-safe.
 /// Supply the elapsed run frames to apply the clip's launch-in Fade.
+/// A driver-sliced live region reads native source frames without the authored page loop.
 void renderLaunchAudio(const AudioIo&, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip*, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames = -1) noexcept;
+                       std::int64_t fadeElapsedFrames = -1, bool useAuthoredLoop = true) noexcept;
 
 /// Duration of the provisionally measured Session launch-edge fade.
 [[nodiscard]] std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept;

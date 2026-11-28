@@ -124,7 +124,8 @@ bool validRegion(const LaunchClipRegion& region) noexcept {
 }
 
 bool regionFits(const LaunchSlot* prepared, const LaunchClipRegion& region) noexcept {
-    return occupied(prepared) && region.start >= prepared->startTick && region.end <= prepared->endTick;
+    return occupied(prepared) && prepared->liveRegionSupported &&
+        region.start >= prepared->startTick && region.end <= prepared->endTick;
 }
 
 const LaunchSlot* effectiveSlot(const LaunchSlot* prepared, const std::optional<LaunchClipRegion>& region,
@@ -144,6 +145,14 @@ float launchVelocity(const LaunchSlot& slot, float velocity) noexcept {
     return 1.0f - amount * (1.0f - std::clamp(velocity,0.0f,1.0f));
 }
 } // namespace
+
+bool Launcher::Run::moveSource(std::int64_t source, std::int64_t tick) noexcept {
+    if (source == sourceTick) return false;
+    sourceTick = anchorSourceTick = pcmAnchorTick = source;
+    anchorTick = tick;
+    pcmAnchorFrame = frames;
+    return true;
+}
 
 Launcher::Launcher(std::size_t maximumTracks)
     : tracks_(maximumTracks), scratch_(maximumTracks),
@@ -553,6 +562,14 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 track.run.fade = preparedSlot->fade;
             }
         }
+        if (track.run.region && !regionFits(preparedSlot,*track.run.region)) {
+            track.run.region.reset();
+            if (occupied(preparedSlot)) {
+                const auto start = preparedSlot->startTick;
+                const auto position = wrapSource(*preparedSlot,std::max(track.run.sourceTick,start));
+                phaseChangedAtCursor |= track.run.moveSource(position < sourceEnd(*preparedSlot) ? position : start,tick);
+            }
+        }
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,regionGeometry);
         auto sourceOffset = block.frames;
@@ -659,13 +676,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             } else if (revisedPosition >= region.end) {
                 revisedPosition = region.start;
             }
-            if (revisedPosition != track.run.sourceTick) {
-                track.run.sourceTick = track.run.anchorSourceTick = revisedPosition;
-                track.run.anchorTick = edgeTick;
-                track.run.pcmAnchorTick = revisedPosition;
-                track.run.pcmAnchorFrame = track.run.frames;
-                phaseChangedAtCursor = true;
-            }
+            phaseChangedAtCursor |= track.run.moveSource(revisedPosition,edgeTick);
         } else if (occupied(slot) && loops(*slot)) {
             track.run.sourceTick = track.run.anchorSourceTick = slot->loopStartTick;
             track.run.anchorTick = nextTick;

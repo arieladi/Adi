@@ -72,7 +72,7 @@ LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, st
 
     auto previous = std::pair<std::int64_t, std::int64_t>{0, 0};
     std::unordered_set<std::int64_t> occupied;
-    for (const auto& slot : slots_) {
+    for (auto& slot : slots_) {
         const auto key = std::pair{slot.track, slot.scene};
         const bool invalidPlayback = slot.startTick < 0 || slot.endTick <= slot.startTick ||
             slot.loopStartTick < 0 || slot.loopEndTick < slot.loopStartTick ||
@@ -84,6 +84,10 @@ LaunchAudioProject::LaunchAudioProject(std::uint64_t incarnation, double bpm, st
             (slot.clip > 0 && (invalidPlayback || (!stored_ && !isMidiTrack(slot.track) && !clip(slot.clip)) ||
                               !occupied.insert(slot.clip).second)))
             throw std::invalid_argument("invalid Session audio slot or missing prepared PCM");
+        if (const auto* pcm = clip(slot.clip); pcm && pcm->pageReader()) {
+            slot.liveRegionSupported = pcm->pageReader()->retainsRange(slot.clip,
+                pcm->frameForTick(slot.startTick,bpm_),pcm->frameForTick(slot.endTick,bpm_));
+        }
         previous = key;
     }
 }
@@ -139,7 +143,16 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
     if (pcm) {
         const auto last = std::max(edit.region.end, edit.region.loop ? edit.region.loop->end : std::int64_t{0});
         const auto lastFrame = pcm->frameForTick(last, prepared.bpm());
-        if (pcm->pageReader() || lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
+        if (lastFrame < 0 || static_cast<std::uint64_t>(lastFrame) > pcm->frames()) return false;
+        if (const auto* pages = pcm->pageReader()) {
+            const auto slots = prepared.view().slots;
+            const auto slot = std::ranges::find_if(slots,[&](const LaunchSlot& item) {
+                return item.track == edit.track && item.clip == edit.clip;
+            });
+            if (slot == slots.end() || !slot->liveRegionSupported || edit.region.start < slot->startTick ||
+                last > slot->endTick || !pages->retainsRange(edit.clip,
+                    pcm->frameForTick(edit.region.start,prepared.bpm()),lastFrame)) return false;
+        }
     } else if (!prepared.isMidiTrack(edit.track)) return false;
     return driver.launcher_.postRegionEdit(edit);
 }
@@ -351,7 +364,7 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, tail.sourceFrame));
     const auto length = static_cast<std::int32_t>(std::min<std::int64_t>(frames, duration - tail.elapsed));
     ranges.tails.data()[ranges.tailCount++] = {
-        {offset, length, pcm, source, tail.velocity, tail.elapsed}, tail.fadeInAtExit};
+        {offset, length, pcm, source, tail.velocity, false, tail.elapsed}, tail.fadeInAtExit};
     if (capture && tail.velocity != 0.0f && tail.fadeInAtExit != 0 && pcm->frames() != 0)
         capture->markFadeTail();
     tail.elapsed += length;
@@ -402,7 +415,7 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     const auto addRange = [&](std::int32_t skip, std::int32_t frames, std::int64_t firstSource,
                               float multiplier, std::int64_t fadeElapsed) noexcept {
         ranges.items.data()[ranges.size++] = {base + section.offset + skip, frames, pcm, firstSource,
-            section.velocity * multiplier, fadeElapsed};
+            section.velocity * multiplier, !section.regionIsLiveEdit, fadeElapsed};
         if (tapePcm) {
             const auto first = block.sample + section.offset + skip;
             (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + frames, firstSource,
@@ -464,7 +477,7 @@ void LaunchAudioRuntime::overlay(std::int64_t track, const NodeIo& node) const n
         const auto fadeElapsed = range->fadeElapsed < 0 ? -1 : range->fadeElapsed +
             std::min<std::int64_t>(advance, std::numeric_limits<std::int64_t>::max() - range->fadeElapsed);
         renderLaunchAudio(io, start, finish - start, available ? range->pcm : nullptr,
-                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed);
+                          available ? range->sourceFrame + advance : 0, range->velocity, fadeElapsed, range->useAuthoredLoop);
     }
     for (std::size_t index = 0; index < ranges.tailCount; ++index) {
         const auto& tail = ranges.tails.data()[index];

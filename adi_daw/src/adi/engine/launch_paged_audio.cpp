@@ -48,6 +48,8 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         problems_.push_back("Session clips#" + std::to_string(source.clip) + ": page preparation did not fill the start and loop windows");
         return true;
     });
+    for (auto& entry : sources_)
+        if (entry.source.legato) entry.retained = pages_.retainedTrackRange(entry.source.sourceTrack);
     return !sources_.empty();
 }
 
@@ -61,6 +63,12 @@ const LaunchPagedAudio::Entry* LaunchPagedAudio::find(std::int64_t clip) const n
 
 bool LaunchPagedAudio::hasClip(std::int64_t clip) const noexcept {
     return find(clip) != nullptr;
+}
+
+bool LaunchPagedAudio::retainsRange(std::int64_t clip, std::int64_t first, std::int64_t end) const noexcept {
+    const auto* entry = find(clip);
+    return entry && entry->retained && first >= entry->retained->first &&
+        end >= first && end <= entry->retained->second;
 }
 
 void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {
