@@ -1156,8 +1156,12 @@ std::optional<std::size_t> Launcher::planTimedSceneStarts(const LaunchBlock& blo
             if (endTick != lastTick && block.sampleAtTick(block.clock,endTick) <= block.sample)
                 sourceTick = sourceEnd(*previous);
         }
-        result[count++] = {track.id,target.clip,run.clip,run.serial,
-            cueFromPrevious(target,previous,lap,run.frames-run.pcmAnchorFrame,sourceTick)};
+        auto cue = cueFromPrevious(target,previous,lap,run.frames-run.pcmAnchorFrame,sourceTick);
+        // An idle track opens its first physical lap at saved Start. Keep
+        // that exact aperture in the plan even when no phase was inherited.
+        if (run.clip == 0 && run.serial == 0 && target.physicalFrames > 0)
+            cue.physicalFrame = target.physicalStartFrame;
+        result[count++] = {track.id,target.clip,run.clip,run.serial,cue};
     }
     return count;
 }

@@ -555,6 +555,51 @@ void exercise(std::string_view mode) {
             audio::callbackFileIo.load() == initialFileIo,
             "the cut leaves saved tempo intact with no callback allocation or file reads");
 }
+void exerciseIdleSavedStart() {
+    const Clock clock;
+    constexpr auto sourceA = Clock{}.cut - 8000;
+    constexpr auto end = Clock{}.cut + 3 * blockFrames;
+    test::TempDirectory folder{"physical_legato_tempo_cut","idle"};
+    auto store = persistedProject(folder,clock);
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    session.transport().play();
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session,pcm,clock};
+    const auto initialAllocations = test::sceneClockCallbackAllocations();
+    const auto initialFileIo = audio::callbackFileIo.load();
+    playback.through(sourceA);
+    startSource(*store,session,0);
+    playback.through(clock.prepareAt());
+    const auto old = trackStates(session);
+    require(old[0].clip == clips[0] && old[0].run != 0 && old[1].clip == 0 && old[1].run == 0,
+            "A is running while B has no outgoing Session phase");
+    require(session.prepareSceneLaunch(*store,20,bar),"stage the warm saved-Start cut");
+    playback.through(end);
+    const auto selected = trackStates(session);
+    require(playback.crossed && playback.openCrossingBpm == clock.before &&
+            playback.transitionCount == 3 && playback.sceneCount == 1 &&
+            playback.scenes[0].sample == clock.cut && session.beginRender().bpmAtTick(bar) == clock.after &&
+            playback.transitions[1].sample == clock.cut && playback.transitions[1].oldClip == clips[0] &&
+            playback.transitions[1].newClip == clips[2] && selected[0].clip == clips[2] &&
+            playback.transitions[2].sample == clock.cut && playback.transitions[2].oldClip == 0 &&
+            playback.transitions[2].newClip == clips[3] && selected[1].clip == clips[3],
+            "the inherited A and idle B starts share the selected cut and clock");
+    for (auto sample = sourceA; sample < end; ++sample) {
+        const bool switched = sample >= clock.cut;
+        const auto clipA = switched ? 2u : 0u;
+        const auto expected = signal(clipA,sample - sourceA + starts[clipA]) +
+            (switched ? signal(3,sample - clock.cut + starts[3]) : 0.0f);
+        require(pcm[static_cast<std::size_t>(sample)] == expected,
+                "idle B uses exact saved Start with inherited A PCM");
+    }
+    require(test::sceneClockCallbackAllocations() == initialAllocations && audio::callbackFileIo.load() == initialFileIo,
+            "saved-Start cut uses no driver allocation or file reads");
+    std::printf("Idle raw Scene track starts at saved frame %lld, inherited track and clock switch at %lld\n",
+                static_cast<long long>(starts[3]),static_cast<long long>(clock.cut));
+}
+
 void exerciseExpiredRenderHandle() {
     const Clock clock;
     test::TempDirectory folder{"physical_legato_tempo_cut","expired_handle"};
@@ -616,6 +661,7 @@ void runTimedRawSceneTests() {
     for (const auto mode : {"warm","opening","cold","stop","cancel","supersede","locate","alternate","fractional","fade","structural","reuse"})
         exercise(mode);
     exerciseTicketBeforeReceipt();
+    exerciseIdleSavedStart();
     exerciseExpiredRenderHandle();
 }
 } // namespace adi::test

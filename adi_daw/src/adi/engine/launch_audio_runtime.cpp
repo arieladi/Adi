@@ -665,14 +665,15 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
     std::array<TimedSceneStart,2> starts{};
     const auto count = driver.launcher_.planTimedSceneStarts(candidate,after,*candidate.preparedScene,starts);
-    if (!count || *count != starts.size()) return false;
+    if (!count || *count != starts.size() || (starts[0].outgoingRun == 0 && starts[1].outgoingRun == 0))
+        return false;
 
-    for (const auto& action : std::span(starts).first(*count)) {
+    for (const auto& action : starts) {
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto* ranges = trackRanges(action.track);
-        if (!reader || !ranges || ranges->cuePages || action.outgoingRun == 0 || action.outgoingClip == action.clip ||
-            action.cue.physicalFrame < 0 ||
+        if (!reader || !ranges || ranges->cuePages || (action.outgoingRun == 0) != (action.outgoingClip == 0) ||
+            action.outgoingClip == action.clip || action.cue.physicalFrame < 0 ||
             !reader->reserveCue(action.clip,action.cue.physicalFrame,candidate.frames,false,false)) {
             finish();
             return false;
