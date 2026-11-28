@@ -474,6 +474,29 @@ Preview preview(Store& store, const Changeset& cs, const Limits& limits) {
     return p;
 }
 
+std::string undoStepName(std::string_view request) {
+    std::string name;
+    name.reserve(std::min(request.size(), kUndoStepNameBytes));
+    bool space = false;
+    for (const char c : request) {
+        // Line breaks and other control bytes read as one space; never leading.
+        if (static_cast<unsigned char>(c) < 0x20u || c == ' ') {
+            space = !name.empty();
+            continue;
+        }
+        if (space) name += ' ';
+        space = false;
+        name += c;
+    }
+    if (name.size() <= kUndoStepNameBytes) return name;
+    std::size_t cut = kUndoStepNameBytes - 3;   // room for the ellipsis's three bytes
+    while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0u) == 0x80u) --cut;
+    while (cut > 0 && name[cut - 1] == ' ') --cut;
+    name.resize(cut);
+    name += "\xE2\x80\xA6";
+    return name;
+}
+
 ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
     ApplyResult r;
     if ((r.refusal = screen(cs, limits, r.error)) != Refusal::None) return r;
@@ -501,6 +524,11 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
             q.actor = Actor::Agent;
             q.actorDetail = cs.actorDetail;
             if (q.label.empty()) q.label = q.opType;
+        }
+        // AGT-12: the undo step is named from the request. History names a
+        // step by its first op's label; the other ops keep their own.
+        if (!reqs.empty()) {
+            if (auto name = undoStepName(cs.request); !name.empty()) reqs.front().label = std::move(name);
         }
         CommitOptions options;
         options.expectHead = cs.baseHead;

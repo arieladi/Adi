@@ -403,12 +403,44 @@ void testApplyIsOneStep() {
           "the agent_requests row: the request, the model, the time passed in (6.8)");
 
     History h(s);
+    const auto step = h.nextUndo();
+    check(step && step->label == "make the bass sit lower and cut the EQ" && step->actor == "agent" &&
+              step->actorDetail == "model-x 1.0" && step->opCount == 3,
+          "the undo step is named from the request and says who made it (AGT-12)");
+    check(count(s, "SELECT COUNT(*) FROM ops WHERE label IN ('Rename Bass', 'EQ gain 0.25')") == 2,
+          "the ops after the first keep their own labels");
     check(h.undo().ok, "one Ctrl-Z");
     check(count(s, "SELECT COUNT(*) FROM tracks WHERE name = 'Bass'") == 1 &&
               count(s, "SELECT volume_db FROM mixer_strip WHERE track_id = 2") == 0 &&
               count(s, "SELECT normalized_value * 100 FROM plugin_params WHERE device_id = 7") == 50,
           "undoes all of it");
     check(!h.canUndo() || h.nextUndo()->actor != "agent", "and the step before it is not the agent's");
+}
+
+void testUndoStepName() {
+    section("the undo step's name: one line, cut on a character boundary (AGT-12)");
+    check(undoStepName("  tighten\nthe drums\r\n  in the chorus ") == "tighten the drums in the chorus",
+          "line breaks and runs of spaces read as one space, none leading or trailing");
+    check(undoStepName("").empty() && undoStepName(" \n").empty(), "an empty request names nothing");
+    const std::string exact(kUndoStepNameBytes, 'a');
+    check(undoStepName(exact) == exact, "a request of exactly the limit is kept whole");
+    // Two-byte letters straddle the cut: the name ends on a whole character.
+    std::string hebrew;
+    for (int i = 0; i < 40; ++i) hebrew += "\xD7\xA9";
+    const auto cut = undoStepName(hebrew);
+    check(cut.size() <= kUndoStepNameBytes && cut.ends_with("\xE2\x80\xA6") &&
+              (cut.size() - 3) % 2 == 0 && cut.starts_with("\xD7\xA9"),
+          "a long request is cut at a character boundary and ends with an ellipsis");
+
+    Fixture f("undo-name");
+    if (!f.store) return;
+    Store& s = *f.store;
+    Changeset cs = begin(s, std::string(200, 'x'), "model-x 1.0", kT0);
+    cs.ops.push_back(op("track.rename", {{"id", 1}, {"name", "Keys (agent)"}}, "Rename Keys"));
+    check(apply(s, cs).ok, "a one-op changeset with a long request applies");
+    const auto step = History(s).nextUndo();
+    check(step && step->label == undoStepName(cs.request) && step->label.size() <= kUndoStepNameBytes,
+          "its undo step carries the cut name, not the op's label");
 }
 
 void testStale() {
@@ -703,6 +735,7 @@ int runAll() {
     testBulkClipImpact();
     testDescribeByContent();
     testApplyIsOneStep();
+    testUndoStepName();
     testStale();
     testRequestRowIsInTheTransaction();
     testMediaUnlinkLeavesTheFile();

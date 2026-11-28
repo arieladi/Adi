@@ -111,7 +111,16 @@ struct ApplyResult {
 
 /// Commits the whole changeset as one transaction, actor `agent`, with its
 /// agent_requests row in that same transaction; or refuses and writes nothing.
+/// The undo step it makes is named from the request (AGT-12, undoStepName).
 [[nodiscard]] ApplyResult apply(Store&, const Changeset&, const Limits& = {});
+
+/// The longest undo-step name, in bytes, an applied request gets.
+inline constexpr std::size_t kUndoStepNameBytes = 64;
+
+/// What the History list and the Edit menu call an applied changeset: the
+/// request on one line, line breaks read as spaces, cut on a character
+/// boundary with an ellipsis past kUndoStepNameBytes. Empty for an empty request.
+[[nodiscard]] std::string undoStepName(std::string_view request);
 
 /// The allowlist. Project edits only (Scope::Edit, not ephemeral), and of
 /// the media ops only those that change a reference, never a file. Never an
