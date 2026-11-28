@@ -162,6 +162,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-469, SC-470 | `basics/test-chain-2` at `1ec5604c0` | Default to No Dither and offer Show File in the completion message. Export and window seats. | The peerless export fixture checks the actual rendered file, reveal action, cancellation and a vanished file. The preferences probe and 341 settings checks passed. Playback still uses its existing path. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-476 | `basics/test-chain-2` at `be0ee3193` | Clamp unlooped audio extension to the source endpoint in the gesture and journal. Clips, edit and engine seats. | The edit tests cover source mapping and history. The peerless resize checks the ghost and saved edge, and the corrected legacy fixture preserves the silent waveform tail. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-452 | `basics/test-chain-2` at `eda879365` | Show the Note Editor grid in its boxed header chooser. Clip and look seats. | The chooser geometry and actual Cmd/Ctrl+1 and +2 were checked independently of the Arrangement grid. The software reference changes only at the new readout. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-458 | `basics/test-chain-2` at `aa1575ca5` | Select the automation lane when a supported control is touched. Automation, device and mixer seats. | The peerless regression exercises explicit control interaction in and out of Automation Mode. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -284,3 +285,15 @@ Candidate `6ca28fdcf`. A focused JUCE probe compiled the exact baseline and curr
 Ninja-derived Debug syntax checks with warnings as errors passed for the implementation and shell regression. The complete suite remains the integration-chain gate.
 
 The 1060 × 278 px Clip View software reference changes only around the new grid chooser. Exactly 683 changed pixels are within x980–1055 and y0–14. The fitted words and their 2 px overhang stay blacked out in the 30 × 17 px comparison mask. The chooser frame, arrow and tested bounds account for the visual change.
+
+#### SC-458 Follow touched controls in Automation Mode
+
+SC-338 at `9853e1296` already selected the overlay on ordinary mixer and device parameter mouse presses. The remaining manual paths omitted it. A parameter gesture could bypass the device's direct MouseDown listener, the Device Activator and parameter-page enable controls have their own handlers, and a new send's first edit only gets an automation address when its routing row is committed.
+
+These paths now share the root's existing per-track lane selector. The slot follows an accepted parameter begin, the two device-button paths, and the newly committed send target. The selector gates on Automation Mode, restores an explicitly hidden overlay and skips a lane already selected. Playback presentations and gesture updates do not change the selection. A device touch only chooses the window's envelope view, so the existing ADR-0162 manual value, override and undo handling remains with the edit or playback authorities.
+
+The companion shell regression exercises a real mixer strip, two device controls with a fake parameter authority, a real document and send operation, and a playback publication. Its sequence is Volume with the mode off, Cutoff after its press, still Cutoff after a playback update on Resonance, Resonance after its manual Begin, Pan after a mixer press, the Device Activator after its toggle, and finally the new send's routing gain after the first -12 dB level edit. It verifies one normal undo step for the authored switch and the send edit, and that choosing lanes creates no automation records.
+
+The change is behavioral and adds no control or lane geometry. The existing overlay position for the selected track is reused.
+
+Candidate `bf9766610`. A focused JUCE probe with `DISPLAY` unset compiled the exact gesture handling, mode gate, and send commit bodies with production target and route helpers. Before, a gesture Begin left Volume selected and a first send edit left Pan selected. After, they select Resonance (`8`) and the send's `gain_db` respectively. Both send edits still submit one batch and land at −12 dB. The probe also sent an accepted manual Begin and End with the mode off, and Value and End with it on, holding the previous lane in those cases.
