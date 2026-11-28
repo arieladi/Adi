@@ -345,14 +345,14 @@ void BrowserPanel::enterList() {
 }
 int BrowserPanel::firstItem() const {
     for (std::size_t i = 0; i < rows_.size(); ++i)
-        if (rows_[i].heading.isEmpty())
+        if (rows_[i].selectable())
             return static_cast<int>(i);
     return -1;
 }
 void BrowserPanel::selectedRowsChanged(int row) {
     if (restoringListSelection_)
         return;
-    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].selectable()) {
         lastSelected_ = row;
         updatePreviewSelection();
         if (labelSettings_)
@@ -362,12 +362,12 @@ void BrowserPanel::selectedRowsChanged(int row) {
     // Past the heading, the way the selection moved; at the list's top, down to the first entry.
     const int step = row < lastSelected_ ? -1 : 1;
     for (int r = row + step; r >= 0 && r < static_cast<int>(rows_.size()); r += step)
-        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+        if (rows_[static_cast<std::size_t>(r)].selectable()) {
             list.selectRow(r);
             return;
         }
     for (int r = row - step; r >= 0 && r < static_cast<int>(rows_.size()); r -= step)
-        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+        if (rows_[static_cast<std::size_t>(r)].selectable()) {
             list.selectRow(r);
             return;
         }
@@ -929,6 +929,22 @@ void BrowserPanel::refillRows() {
         addPresets(presets, depth + 1);
         return true;
     };
+    // SC-147: with no search, Audio Effects' and Plug-Ins' headings are folders that open and close,
+    // closed until opened, as Live's. A typed search shows what it finds under fixed headings, as a
+    // Place's search is flat (SC-126); All and Hot-Swap keep their fixed headings.
+    const bool foldGroups = !hotSwap_ && query.empty() && (chosen.glyph == AudioFx || chosen.glyph == PlugIns);
+    const auto addGroup = [&](juce::String name, std::string key, int depth) {
+        if (!foldGroups) {
+            rows_.push_back({nullptr, nullptr, std::move(name), nullptr, depth});
+            return true;
+        }
+        const bool open = openGroups_.contains(key);
+        Row row{nullptr, nullptr, std::move(name), nullptr, depth};
+        row.folderOpen = open;
+        row.group = std::move(key);
+        rows_.push_back(std::move(row));
+        return open;
+    };
     if (swappingDevices || all || chosen.glyph == AudioFx) {
         for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
                                    "Reverb & Resonance", "Utilities"}) {
@@ -937,6 +953,12 @@ void BrowserPanel::refillRows() {
                 if (d.category == "Audio Effects" && d.group == folder)
                     in.push_back(&d);
             std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+            if (foldGroups) {
+                if (!in.empty() && addGroup(folder, std::string("effects:") + folder, 0))
+                    for (const auto *d : in)
+                        addBuiltin(*d, 1);
+                continue;
+            }
             const char *heading = folder;
             for (const auto *d : in)
                 if (addBuiltin(*d, 1, heading))
@@ -961,6 +983,7 @@ void BrowserPanel::refillRows() {
     if (showPlugins) {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
+        bool formatOpen = true, vendorOpen = true;
         for (const auto &group : pluginGroups(pluginScan_.listing, {})) {
             bool showVendor = true;
             for (const auto *p : group.entries) {
@@ -979,11 +1002,14 @@ void BrowserPanel::refillRows() {
                 if (showVendor) {
                     if (group.format != format) {
                         format = group.format;
-                        rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
+                        formatOpen = addGroup(juce::String(formatFolder(format)), "format:" + format, 0);
                     }
-                    rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
+                    vendorOpen = formatOpen && addGroup(juce::String::fromUTF8(group.vendor.c_str()),
+                                                        "vendor:" + format + '\n' + group.vendor, 1);
                     showVendor = false;
                 }
+                if (!vendorOpen)
+                    continue;
                 rows_.push_back({nullptr, nullptr, {}, p, 2});
                 addPresets(presets, 3);
             }
@@ -1067,8 +1093,8 @@ int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 juce::String BrowserPanel::getNameForRow(int row) {
     if (row >= 0 && row < getNumRows()) {
         const auto &item = rows_[static_cast<std::size_t>(row)];
-        if (item.folder != nullptr)
-            return juce::String::fromUTF8(item.folder->name.c_str()) + (item.folderOpen ? ", expanded" : ", collapsed");
+        if (item.folds())
+            return rowName(item) + (item.folderOpen ? ", expanded" : ", collapsed");
         if (item.file != nullptr)
             return juce::String::fromUTF8(item.file->name.c_str());
     }
@@ -1086,9 +1112,9 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return;
     const auto &r = rows_[static_cast<std::size_t>(row)];
-    if (selected && r.heading.isEmpty())
+    if (selected && r.selectable())
         g.fillAll(look::selection);
-    if (r.folder != nullptr) {
+    if (r.folds()) {
         const int in = kFolderIndent * r.depth;
         const float x = 8.f + static_cast<float>(in), y = static_cast<float>(height) / 2.f;
         juce::Path chevron;
@@ -1099,8 +1125,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         g.setColour(look::text);
         g.fillPath(chevron);
         g.setFont(look::font(look::fontHeading));
-        g.drawText(juce::String::fromUTF8(r.folder->name.c_str()), 24 + in, 0, width - 28 - in, height,
-                   juce::Justification::centredLeft, true);
+        g.drawText(rowName(r), 24 + in, 0, width - 28 - in, height, juce::Justification::centredLeft, true);
         return;
     }
     if (r.heading.isNotEmpty()) {
@@ -1310,7 +1335,7 @@ bool BrowserPanel::load(int row) {
     const auto &entry = rows_[static_cast<std::size_t>(row)];
     if (hotSwap_)
         return loadHotSwap(entry);
-    if (entry.folder != nullptr)
+    if (entry.folds())
         return toggleFolder(row);
     if (const auto *saved = entry.savedPreset) {
         if (!loadDevicePreset) {
@@ -1381,6 +1406,14 @@ bool BrowserPanel::load(int row) {
 }
 bool BrowserPanel::toggleFolder(int row) {
     const auto &entry = rows_[static_cast<std::size_t>(row)];
+    if (!entry.group.empty()) {
+        if (entry.folderOpen)
+            openGroups_.erase(entry.group);
+        else
+            openGroups_.insert(entry.group);
+        refill(row);
+        return true;
+    }
     auto &open = openFolders_[sidebar_[static_cast<std::size_t>(selected_)].place];
     if (entry.folderOpen)
         open.erase(entry.folder->path);
@@ -1393,10 +1426,10 @@ bool BrowserPanel::folderArrow(int row, bool right) {
     if (row < 0 || row >= getNumRows())
         return false;
     const auto &entry = rows_[static_cast<std::size_t>(row)];
-    if (entry.folder != nullptr && entry.folderOpen != right)
+    if (entry.folds() && entry.folderOpen != right)
         return toggleFolder(row);
     if (right) {
-        if (entry.folder == nullptr)
+        if (!entry.folds())
             return false;
         if (row + 1 < getNumRows() && rows_[static_cast<std::size_t>(row + 1)].depth > entry.depth)
             list.selectRow(row + 1);
@@ -1406,7 +1439,7 @@ bool BrowserPanel::folderArrow(int row, bool right) {
         for (int parent = row - 1; parent >= 0; --parent) {
             const auto &candidate = rows_[static_cast<std::size_t>(parent)];
             if (candidate.depth < entry.depth) {
-                if (candidate.folder == nullptr)
+                if (!candidate.folds())
                     return false;
                 list.selectRow(parent);
                 return true;
@@ -1420,7 +1453,7 @@ bool BrowserPanel::hitFolderDisclosure(int row, int x) const {
         return false;
     const auto &entry = rows_[static_cast<std::size_t>(row)];
     const int indent = kFolderIndent * entry.depth;
-    return entry.folder != nullptr && x >= indent && x < indent + kFolderDisclosureWidth;
+    return entry.folds() && x >= indent && x < indent + kFolderDisclosureWidth;
 }
 void BrowserPanel::listBoxItemClicked(int row, const juce::MouseEvent &event) {
     if (event.getNumberOfClicks() != 1)

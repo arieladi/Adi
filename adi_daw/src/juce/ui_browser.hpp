@@ -165,6 +165,11 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         juce::String tooltip{};
         const BrowserLibrarySnapshot::Folder *folder = nullptr;
         bool folderOpen = false;
+        // SC-147: a heading of Audio Effects or Plug-Ins (a group, a format, a maker) that folds, as
+        // Live's folders do: its key, and `heading` its name. Empty for a fixed heading or notice.
+        std::string group{};
+        bool selectable() const noexcept { return heading.isEmpty() || !group.empty(); }
+        bool folds() const noexcept { return folder != nullptr || !group.empty(); }
     };
     std::function<void(juce::PopupMenu &, const Row &)> appendFavoritesToMenu;
     const std::vector<Row> &rows() const noexcept { return rows_; }
@@ -294,6 +299,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::shared_ptr<const BrowserLibrarySnapshot> projectLibrary_;
     std::optional<LibraryFile> revealedSample_;
     std::map<std::string, std::set<std::filesystem::path>> openFolders_;
+    std::set<std::string, std::less<>> openGroups_;
     bool ready_ = false;
     PluginScan pluginScan_;
     bool pluginsShown() const;

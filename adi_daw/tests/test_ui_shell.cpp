@@ -673,6 +673,19 @@ juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::Modifi
     return {juce::Desktop::getInstance().getMainMouseSource(), at, mods, 1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, at,
             now, 1, false};
 }
+// SC-147: opens every closed heading of Audio Effects or Plug-Ins, as a user's clicks would.
+bool openBrowserGroups(BrowserPanel &browser) {
+    for (int guard = 0; guard < 1000; ++guard) {
+        const auto closed = std::ranges::find_if(browser.rows(), [](const BrowserPanel::Row &row) {
+            return !row.group.empty() && !row.folderOpen;
+        });
+        if (closed == browser.rows().end())
+            return true;
+        if (!browser.load(static_cast<int>(closed - browser.rows().begin())))
+            return false;
+    }
+    return false;
+}
 // The mouse at `at` in a drag that began at `from`.
 juce::MouseEvent dragAt(juce::Component &c, juce::Point<float> from, juce::Point<float> at, juce::ModifierKeys mods = {}) {
     const auto now = juce::Time::getCurrentTime();
@@ -4505,6 +4518,52 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             plugIns = static_cast<int>(i);
     }
     browser.choose(audioEffects);
+    {
+        // SC-147: the seven folders start closed, as Live's; a click on the triangle, a double-click,
+        // Enter and the arrows open and close one.
+        const auto &rows = browser.rows();
+        const bool allClosed = rows.size() == 7 && std::ranges::all_of(rows, [](const BrowserPanel::Row &row) {
+            return !row.group.empty() && !row.folderOpen && row.depth == 0 && row.selectable();
+        });
+        check(allClosed, "SC-147: Audio Effects starts as Live's seven closed folders");
+        auto *model = browser.list.getListBoxModel();
+        model->listBoxItemClicked(0, pressAt(browser.list, {10.f, 9.f}));
+        const auto opened = rows.size() > 1 && rows[0].folderOpen && rows[1].device != nullptr && rows[1].depth == 1;
+        const auto openRows = rows.size();
+        model->listBoxItemClicked(0, pressAt(browser.list, {10.f, 9.f}));
+        check(opened && openRows > 7 && rows.size() == 7 && !rows[0].folderOpen,
+              "SC-147: a click on a folder's triangle opens and closes it");
+        model->listBoxItemClicked(1, pressAt(browser.list, {60.f, 28.f}));
+        check(rows.size() == 7 && !rows[1].folderOpen, "SC-147: a click on a folder's name does not open it");
+        browser.list.selectRow(1);
+        check(browser.list.getSelectedRow() == 1, "SC-147: a folder is a row the keyboard can select");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && rows[1].folderOpen &&
+                  browser.list.getSelectedRow() == 1,
+              "SC-147: Right opens the selected folder");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && browser.list.getSelectedRow() == 2 &&
+                  rows[2].device != nullptr,
+              "SC-147: Right on an open folder steps to its first device");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && browser.list.getSelectedRow() == 1 &&
+                  rows[1].folderOpen,
+              "SC-147: Left on a device steps to its folder");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && !rows[1].folderOpen &&
+                  rows.size() == 7,
+              "SC-147: Left closes the open folder");
+        model->returnKeyPressed(1);
+        const bool enterOpens = rows[1].folderOpen;
+        model->listBoxItemDoubleClicked(1, pressAt(browser.list, {60.f, 28.f}));
+        check(enterOpens && !rows[1].folderOpen, "SC-147: Enter and a double-click open and close a folder too");
+        check(model->getNameForRow(1).endsWith(", collapsed"), "SC-147: a folder says whether it is open");
+        browser.search.setText("reverb", false);
+        browser.search.onTextChange();
+        check(std::ranges::none_of(rows, [](const BrowserPanel::Row &row) { return !row.group.empty(); }) &&
+                  std::ranges::any_of(rows, [](const BrowserPanel::Row &row) { return row.device != nullptr; }),
+              "SC-147: a search shows what it finds under fixed headings");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        check(rows.size() == 7, "SC-147: clearing the search shows the folders as they were");
+    }
+    check(openBrowserGroups(browser), "SC-147: open every Audio Effects folder");
     std::vector<juce::String> folders;
     bool dimmedRight = true;
     int rowOf = -1;
@@ -4624,6 +4683,28 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         scan.candidates = 0;
         scan.listing = found;
         browser.setPluginScan(scan);
+        {
+            // SC-147: the formats start closed; a format opens to its makers, closed in turn.
+            const auto &rows = browser.rows();
+            check(rows.size() == 3 && rows[0].group == "format:clap" && rows[1].group == "format:vst3" &&
+                      rows[0].heading == "CLAP" && !rows[0].folderOpen && rows[2].group.empty() &&
+                      rows[2].heading.startsWith("Scan failed"),
+                  "SC-147: Plug-Ins starts as one closed folder per format, the scan failure below them");
+            check(browser.load(0) && rows.size() == 4 && rows[1].group == "vendor:clap\nNorthwind Audio" &&
+                      rows[1].depth == 1 && !rows[1].folderOpen,
+                  "SC-147: an open format shows its makers, closed");
+            check(browser.load(1) && rows.size() == 6 && rows[2].plugin && rows[3].plugin && rows[3].depth == 2,
+                  "SC-147: an open maker shows its plug-ins");
+            browser.list.selectRow(3);
+            check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && browser.list.getSelectedRow() == 1 &&
+                      browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && rows.size() == 4 &&
+                      browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && browser.list.getSelectedRow() == 0 &&
+                      browser.list.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) && rows.size() == 3,
+                  "SC-147: Left steps from a plug-in to its maker, closes it, steps to the format and closes that");
+            check(browser.load(0) && rows.size() == 4 && !rows[1].folderOpen,
+                  "SC-147: a reopened format keeps its makers as they were");
+        }
+        check(openBrowserGroups(browser), "SC-147: open every Plug-Ins folder");
         std::vector<std::pair<juce::String, int>> layout;
         for (const auto &r : browser.rows())
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
@@ -4815,6 +4896,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                                    {"vst3", "d", "Hum", "", "1", "/d.vst3"},
                                    {"vst3", "e", "Fizz", "other", "1", "/e.vst3"}};
         browser.setPluginScan(spelled);
+        openBrowserGroups(browser);
         layout.clear();
         for (const auto &r : browser.rows())
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
@@ -4912,6 +4994,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                                 {"vst3", "fixture.shell", "First Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 12},
                                 {"vst3", "fixture.shell", "Second Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 34}};
         browser.setPluginScan(scan);
+        openBrowserGroups(browser);
         const auto linked = [&](std::string_view name, std::string_view parent) {
             const int row = presetRow(name);
             if (row <= 0)
@@ -8461,7 +8544,7 @@ void browserFavorites(const std::filesystem::path &dir) {
                            {"vst3", "sc133.plugin", "Unmarked", "Test Vendor", "1", "other.vst3",
                             PluginEntry::Kind::Effect}};
     browser.setPluginScan(scan);
-    check(choose(browser, "Plug-Ins") && select(browser, [](const auto &row) {
+    check(choose(browser, "Plug-Ins") && openBrowserGroups(browser) && select(browser, [](const auto &row) {
               return row.plugin && row.plugin->format == "clap";
           }) && browser.list.keyPressed(juce::KeyPress('7')),
           "SC-133: a plug-in can be marked independently of a matching UID in another format");
@@ -8701,6 +8784,7 @@ void browserContextMenus(AppCommands &commands, const std::filesystem::path &dir
               invoke("Show in File Manager") && revealed == presetPath && loads == 0,
           "SC-129: the preset popup uses its actual path and does not load the preset");
     choose("Plug-Ins");
+    openBrowserGroups(browser);
     check(rowMenu([](const auto &row) { return row.plugin != nullptr; }) &&
               invoke("Show in File Manager") && revealed == plug,
           "SC-129: a plug-in popup reveals the discovered bundle");
@@ -17024,6 +17108,7 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         for (std::size_t i = 0; i < root.browser.sidebar().size(); ++i)
             if (root.browser.sidebar()[i].name == "Plug-Ins")
                 root.browser.choose(static_cast<int>(i));
+        openBrowserGroups(root.browser);
         for (std::size_t i = 0; i < root.browser.rows().size(); ++i)
             if (root.browser.rows()[i].plugin != nullptr && root.browser.rows()[i].plugin->name == "Arc Synth")
                 root.browser.list.selectRow(static_cast<int>(i));
