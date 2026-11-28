@@ -23,5 +23,16 @@ struct PreparedSampleAssignment {
 [[nodiscard]] PreparedSampleAssignment prepareSampleInstrument(Store&, std::int64_t track,
     const std::filesystem::path&, double engineRate, std::int64_t importedUtc,
     audio::DecodeCache* = nullptr, std::int64_t retainedDeviceId = 0);
+// SC-482: Simpler's Reverse and Crop for OneShot's sample. Each makes a changed
+// copy of the slot's sample (reversed; or cut to the region between Start and
+// End), writes it as a new file under the project's Samples/Processed/Reverse
+// or Samples/Processed/Crop, and prepares its assignment: one Undo step that
+// imports the copy and replaces the slot, the original's media row untouched.
+// Crop also moves Start to 0 % and End to 100 %, so the same region plays.
+// Off the audio thread; nothing is journalled until the commit.
+[[nodiscard]] PreparedSampleAssignment prepareSampleReverse(Store&, std::int64_t device,
+    std::int32_t slot, double engineRate, std::int64_t importedUtc);
+[[nodiscard]] PreparedSampleAssignment prepareSampleCrop(Store&, std::int64_t device,
+    std::int32_t slot, double engineRate, std::int64_t importedUtc);
 [[nodiscard]] CommitResult commitSampleAssignment(Store&,const PreparedSampleAssignment&,Actor=Actor::User);
 }

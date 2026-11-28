@@ -11,6 +11,7 @@
 #include "juce/builtin_samples.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -120,6 +121,101 @@ void assignmentAndPlayback() {
     }
     check(audio::callbackFileIo.load(std::memory_order_relaxed)==0,"all live processing and undo/redo perform no callback file IO");
 }
+// SC-482: the floats OneShot's slot holds now, interleaved.
+std::vector<float> slotAudio(Store& store, std::int64_t device) {
+    SQLite::Statement row(store.db(), "SELECT state_hash FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    row.bind(1, device);
+    if (!row.executeStep()) return {};
+    const auto blob = store.getStateBlob(row.getColumn(0).getString());
+    if (!blob) return {};
+    std::vector<std::uint8_t> bytes;
+    for (const auto b : *blob) bytes.push_back(static_cast<std::uint8_t>(b));
+    const auto state = Payload::from_cbor(bytes);
+    const auto& raw = state.at("source_f32le").get_binary();
+    std::vector<float> values(raw.size() / 4);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        std::uint32_t bits = 0;
+        for (unsigned k = 0; k < 4; ++k) bits |= static_cast<std::uint32_t>(raw[i * 4 + k]) << (8 * k);
+        values[i] = std::bit_cast<float>(bits);
+    }
+    return values;
+}
+double storedParam(Store& store, std::int64_t device, const char* id) {
+    SQLite::Statement row(store.db(), "SELECT normalized_value FROM plugin_params WHERE device_id=? AND param_id=?");
+    row.bind(1, device);
+    row.bind(2, id);
+    return row.executeStep() ? row.getColumn(0).getDouble() : -1;
+}
+// SC-482: Simpler's Reverse and Crop make a changed copy of OneShot's sample, a
+// new file beside the original, each one Undo step.
+void reverseAndCrop() {
+    test::TempDirectory directory{"sample_slots", "processed"};
+    StoreError error{};
+    auto store = Store::create(directory.path() / "song.adi", error);
+    if (!store) throw std::runtime_error(toString(error));
+    auto& db = store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'midi','Keys'),(9,'master','Main')");
+    // A stereo ramp, 400 frames: left rises, right falls.
+    const auto file = directory.path() / "Ramp.wav";
+    {
+        std::vector<float> ramp(800);
+        for (std::size_t i = 0; i < 400; ++i) {
+            ramp[2 * i] = static_cast<float>(i) / 400.f;
+            ramp[2 * i + 1] = -static_cast<float>(i) / 400.f;
+        }
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Float32);
+        writer.write(ramp.data(), 400);
+        writer.close();
+    }
+    const auto loaded = prepareSampleInstrument(*store, 1, file, 48000, 7);
+    if (!loaded.ok) std::printf("load: %s\n", loaded.error.c_str());
+    check(loaded.ok && commitSampleAssignment(*store, loaded).ok, "OneShot loads a stereo ramp");
+    const auto device = loaded.deviceId;
+    const auto original = slotAudio(*store, device);
+    check(original.size() == 800, "its slot holds both channels");
+    const auto reversed = prepareSampleReverse(*store, device, 1, 48000, 8);
+    if (!reversed.ok) std::printf("reverse: %s\n", reversed.error.c_str());
+    check(reversed.ok && commitSampleAssignment(*store, reversed).ok &&
+              History(*store).nextUndo()->label == "Reverse Sample",
+          "Reverse is one Undo step");
+    const auto backward = slotAudio(*store, device);
+    bool mirrored = backward.size() == original.size();
+    for (std::size_t f = 0; mirrored && f < 400; ++f)
+        mirrored = backward[2 * f] == original[2 * (399 - f)] && backward[2 * f + 1] == original[2 * (399 - f) + 1];
+    check(mirrored, "Reverse turns the sample around, each channel its own");
+    check(std::filesystem::exists(directory.path() / "Samples" / "Processed" / "Reverse" / "Ramp Reverse.wav") &&
+              std::filesystem::exists(file) && db.execAndGet("SELECT count(*) FROM media_files").getInt() == 2,
+          "the copy is a new file in Samples/Processed/Reverse; the original and its media row stay");
+    check(History(*store).undo().ok && slotAudio(*store, device) == original, "Undo brings the original back");
+    // Crop: Start 25 % and End 75 % are frames 100 to 300.
+    std::vector<OpRequest> region(2);
+    for (std::size_t i = 0; i < 2; ++i) {
+        region[i].opType = "device.setParam";
+        region[i].label = "Region";
+        region[i].targetKind = "device";
+        region[i].targetId = device;
+        region[i].payload = {{"dev", device}, {"param", i == 0 ? "2" : "3"}, {"norm", i == 0 ? .25 : .75},
+                             {"real", i == 0 ? 25. : 75.}};
+    }
+    check(OpJournal(*store).commit(region, CommitOptions{}).ok, "Start 25 % and End 75 %");
+    const auto cropped = prepareSampleCrop(*store, device, 1, 48000, 9);
+    if (!cropped.ok) std::printf("crop: %s\n", cropped.error.c_str());
+    check(cropped.ok && commitSampleAssignment(*store, cropped).ok &&
+              History(*store).nextUndo()->label == "Crop Sample",
+          "Crop is one Undo step");
+    const auto cut = slotAudio(*store, device);
+    check(cut.size() == 400 && cut.front() == original[200] && cut[1] == original[201] &&
+              cut[398] == original[598] && cut[399] == original[599],
+          "Crop keeps the region between Start and End");
+    check(storedParam(*store, device, "2") == 0 && storedParam(*store, device, "3") == 1,
+          "and moves Start to 0 % and End to 100 %, so the same region plays");
+    check(std::filesystem::exists(directory.path() / "Samples" / "Processed" / "Crop" / "Ramp Crop.wav"),
+          "the cropped copy is a new file in Samples/Processed/Crop");
+    check(History(*store).undo().ok && slotAudio(*store, device) == original &&
+              storedParam(*store, device, "2") == .25 && storedParam(*store, device, "3") == .75,
+          "Undo brings the whole sample and its region back");
+    check(!prepareSampleReverse(*store, 999, 1, 48000, 10).ok, "a missing device refuses");
+}
 #endif
 void callbackRefusal() {
     bool refused=false;audio::CallbackScope callback;
@@ -130,5 +226,6 @@ void callbackRefusal() {
 int main(){try{
 #if ADI_WITH_PD
 assignmentAndPlayback();
+reverseAndCrop();
 #endif
 callbackRefusal();}catch(const std::exception& exception){countAllocations=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
