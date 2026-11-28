@@ -252,11 +252,13 @@ void channelPitchHistory() {
           "MIDI memory preserves the plain channel wheel and the MPE member pitch");
     if (source.events.size() != 7)
         return;
+    const auto rowsBefore = digestProject(*fixture.store).text;
     const auto prepared = capture::prepareMidi(*fixture.store, source, spec(), error);
     check(prepared && prepared->controllerLanes == 3 && capture::commitMidi(*fixture.store, *prepared).ok,
           "retrospective Capture commits both channel wheels beside the original CC");
     if (!prepared)
         return;
+    const auto rowsAfter = digestProject(*fixture.store).text;
     const auto controllerRows = controllers::readLanes(*fixture.store, 7);
     const auto& lanes = controllerRows.lanes;
     check(controllerRows.ok && lanes.size() == 3 && lanes[0].controller == 7 && lanes[0].points.size() == 1 &&
@@ -274,6 +276,11 @@ void channelPitchHistory() {
     check(history.undo().ok && controllers::readLanes(*fixture.store, 7).lanes.empty() &&
               history.redo().ok && controllers::readLanes(*fixture.store, 7).lanes == lanes,
           "Capture pitch lanes revert and replay atomically with the clip");
+    // The wheels landed beside notes, a CC and an MPE expression stream: every stored row, both ways.
+    check(history.undo().ok && digestProject(*fixture.store).text == rowsBefore,
+          "one Undo of a Capture with channel wheels restores every project row");
+    check(history.redo().ok && digestProject(*fixture.store).text == rowsAfter,
+          "Redo of a Capture with channel wheels repeats every project row");
 }
 
 void liveHistoryConsumption() {
