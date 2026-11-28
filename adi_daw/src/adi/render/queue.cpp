@@ -711,21 +711,60 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
     return result;
 }
 
+namespace {
+constexpr std::string_view pinnedPrefix = ".adi-export-";
+void removePinnedFiles(const fs::path& path) noexcept {
+    for (const char* suffix : {"", "-journal", "-wal", "-shm"}) {
+        auto file = path;
+        file += suffix;
+        std::error_code ignored;
+        fs::remove(file, ignored);
+    }
+}
+// A copy no export holds: its export ended without removing it. Each one is
+// removed under an exclusive lease, which no live export's copy grants.
+void sweepPinnedCopies(const fs::path& folder) noexcept {
+    std::vector<fs::path> found;
+    try {
+        std::error_code error;
+        for (fs::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+            const auto name = media::pathUtf8(it->path().filename());
+            if (name.size() > pinnedPrefix.size() + 4 && name.starts_with(pinnedPrefix) && name.ends_with(".adi"))
+                found.push_back(it->path());
+        }
+    } catch (...) {
+        return; // a name that is not text is not one of ours
+    }
+    for (const auto& path : found) {
+        std::error_code error;
+        if (const auto held = media::ProjectFileLease::openExclusive(path, error))
+            removePinnedFiles(path);
+    }
+}
+} // namespace
+
 std::shared_ptr<const PinnedProject> PinnedProject::capture(Store& live) {
     const auto folder = media::projectFolder(live);
+    sweepPinnedCopies(folder);
     static std::atomic<std::uint64_t> sequence{0};
-    fs::path path;
-    for (unsigned attempt = 0; attempt < 128 && path.empty(); ++attempt) {
-        auto candidate = folder / (".adi-export-" +
+    // Owned from the moment the file exists, so a failed copy leaves nothing
+    // behind; held under its lease, so another export's sweep keeps it.
+    std::shared_ptr<PinnedProject> pinned;
+    for (unsigned attempt = 0; attempt < 128 && !pinned; ++attempt) {
+        auto candidate = folder / (std::string(pinnedPrefix) +
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
             std::to_string(sequence.fetch_add(1)) + ".adi");
-        if (!occupiedNative(candidate)) path = std::move(candidate);
+        if (occupiedNative(candidate)) continue;
+        std::error_code error;
+        auto lease = media::ProjectFileLease::createShared(candidate, error);
+        if (!lease) continue;
+        pinned.reset(new PinnedProject(std::move(candidate)));
+        pinned->lease_ = std::move(lease);
     }
-    if (path.empty()) throw std::runtime_error("the song could not be copied for the export");
-    // Owned before the file exists, so a failed copy leaves nothing behind.
-    std::shared_ptr<const PinnedProject> pinned(new PinnedProject(path));
+    if (!pinned) throw std::runtime_error("the song could not be copied for the export");
+    const auto& path = pinned->path();
     {
-        SQLite::Database copy(media::pathUtf8(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        SQLite::Database copy(media::pathUtf8(path), SQLite::OPEN_READWRITE);
         {
             SQLite::Backup backup(copy, live.db());
             if (backup.executeStep() != SQLITE_DONE)
@@ -737,12 +776,8 @@ std::shared_ptr<const PinnedProject> PinnedProject::capture(Store& live) {
     return pinned;
 }
 PinnedProject::~PinnedProject() {
-    for (const char* suffix : {"", "-journal", "-wal", "-shm"}) {
-        auto file = path_;
-        file += suffix;
-        std::error_code ignored;
-        fs::remove(file, ignored);
-    }
+    lease_.reset(); // a held lease keeps the file open where it cannot be removed
+    removePinnedFiles(path_);
 }
 
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,

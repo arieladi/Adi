@@ -81,6 +81,9 @@ struct Job {
 // never the files. The copy is a hidden file beside the project, so its media
 // resolve exactly as the project's do; it is removed when the last holder lets
 // go of it. Taking it reads the whole project file once.
+// The copy is held under a shared lease while it lives. A copy that an export
+// left when it never ended (the app was killed, the power went) is held by
+// nobody; the next capture in that folder removes it.
 class PinnedProject {
 public:
     // Throws when no copy can be made; nothing is left behind then.
@@ -92,6 +95,7 @@ public:
 private:
     explicit PinnedProject(std::filesystem::path path) : path_(std::move(path)) {}
     std::filesystem::path path_;
+    std::shared_ptr<media::ProjectFileLease> lease_;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;

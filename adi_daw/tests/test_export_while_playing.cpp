@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <new>
@@ -240,6 +241,31 @@ void editDuringExport() {
     check(f.clean(), "the export's copy of the song is removed when the export lets go of it");
 }
 
+// A copy left by an export that never ended (the app was killed, the power
+// went) holds the whole song beside the project. The next export in that
+// folder removes it, and never a copy that a running export holds.
+void staleCopies() {
+    Fixture f;
+    const auto stale = f.dir.path() / ".adi-export-1-0.adi";
+    auto staleJournal = stale;
+    staleJournal += "-journal";
+    { std::ofstream(stale, std::ios::binary) << "left by an export that never ended"; }
+    { std::ofstream(staleJournal, std::ios::binary) << "its journal"; }
+    const auto unrelated = f.dir.path() / ".adi-export-notes.txt";
+    { std::ofstream(unrelated, std::ios::binary) << "not a copy of the song"; }
+    auto held = PinnedProject::capture(*f.store);
+    check(held && !fs::exists(stale) && !fs::exists(staleJournal),
+          "a copy no export holds is removed, with its journal, when the next export starts");
+    auto second = PinnedProject::capture(*f.store);
+    check(second && fs::exists(held->path()) && fs::exists(second->path()) && held->path() != second->path(),
+          "a copy that a running export holds is never removed by another export's start");
+    check(fs::exists(unrelated), "a file that is not an export's copy of the song is left alone");
+    fs::remove(unrelated);
+    held.reset();
+    second.reset();
+    check(f.clean(), "both exports' copies are removed when they end");
+}
+
 // A plug-in that plays but cannot be loaded a second time is named.
 void secondInstance() {
     Fixture f; f.effect();
@@ -382,6 +408,7 @@ void secondSetMemory() {
 int main() {
     try {
         editDuringExport();
+        staleCopies();
         secondInstance();
         twoEngines();
         secondSetMemory();
