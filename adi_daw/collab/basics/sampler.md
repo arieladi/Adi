@@ -52,6 +52,16 @@ seat's.
 | SC-483, rows 11, 42, 51, 52, 54, 55, 56 | `basics/sampler-chain` 8c27325aa | Sustain loop with its own end, forward or forward and back; after note-off: stay in the loop, play on, release loop forward or forward and back, with its own crossfade (zone fields `loopEnd`, `pingPong`, `release`, `releaseLoop`, `releaseFade`). Parameter 26: loop fades constant-power or linear. Parameter 25: Reverse, taken at note-on. | Tests written: `slotLoops` in `tests/test_sampler.cpp` (every mode read off the ramp frame by frame; both fade laws; Reverse whole, trimmed, through a loop, latched). NOT RUN YET. | pushed, unproved |
 | SC-483, rows 17, 18 | `basics/sampler-chain` 4eae49e4b | Round Robin: parameter 27 on/off, 28 Forward, Backward, Random, Other. | Tests written: `slotRoundRobin` in `tests/test_sampler.cpp`. NOT RUN YET. | pushed, unproved |
 
+## Round 2 (28 November 2026, a second session)
+
+The row numbers count the SC-483 table's features from 1, its section rows (Zone Tab, Sample Tab and
+so on) not counted, as round 1 did.
+
+| SC | Branch and head | What changed | How it was proved | State |
+|---|---|---|---|---|
+| SC-483, rows 43, 57, 58 | `basics/sampler-chain` 66fb9006a | Zone fields `loopDetune`, `releaseDetune` (cents, -50 to 50): the pitch inside the sustain loop and inside the release loop, the attack untouched. Parameter 29 Interpolation: None, Normal (the straight line of before, the default), Good (a four-point Catmull-Rom cubic). Parameter 30 Snap: start, end, loop start, loop end and release-loop start move to the next zero crossing. | Tests written: `slotQuality` in `tests/test_sampler.cpp` (each detune read off a ramp; a parabola read at half speed: None holds the frame below, Normal the straight line, Good lands on the curve; a sample whose sign turns every 100 frames for Snap). NOT RUN YET. | pushed, unproved |
+| SC-483, rows 66, 68, 69 | `basics/sampler-chain` 043f9958e | Parameter 31 Detune (the instrument's cents, added to each zone's), 32 Spread (two voices a note, the lower left, the higher right, 25 cents from the note at 100 %), 33 Zone shift (-48 to 48 st: the note chooses zones as that key, keeps its pitch). A Spread pair's second voice does not retrigger the first (`partner` on OneShot's note ticket). | Tests written: `slotPitch` in `tests/test_sampler.cpp` (both channels of `renderSlots` now). NOT RUN YET. | pushed, unproved |
+
 ### State of the builds
 
 Slot 9 was asked for its first build at the start of the round and stood at "waiting for a build
@@ -80,6 +90,21 @@ yet. The order to run, once the slot is free:
 - **Release modes act only when the sustain loop is on**, as Live's manual says.
 - **The loop crossfade** keeps ADI's shape (the end of the loop blended with what follows the loop's
   start, over up to half the loop). Forward-and-back loops have no crossfade: there is no join.
+- **Round 2. A loop's Detune acts while the voice is inside that loop** (from its first pass over the
+  loop's start), so the attack before the loop keeps the sample's pitch. Live's manual says the control
+  corrects the loop's pitch; when exactly it starts is not written there.
+- **Interpolation's default is Normal**, ADI's straight line, because a project saved before must sound
+  the same and a missing parameter takes its default. If Live's default for a new Sampler is Good, a
+  new instrument would need a different start value than an old project's: that is a question below.
+- **Snap and Interpolation are instrument-wide parameters**, as Live shows them; Snap acts on all of a
+  zone's points (Live's per-marker snap is an editor's gesture, not built).
+- **Spread's law is ADI's**: 25 cents each way at 100 %, the two voices hard left and right (with the
+  layer pan law, sqrt(2) on the voice's side). Named `Sampler::kSpreadCents`. A pair uses two of the
+  Voices.
+- **Detune, Spread and Zone shift are read once a block**, as the other Sampler-own parameters are.
+- **The parameter arrays** (`values_`, `modulation_`, `initial`) are sized `OneShot::Count` (41). The
+  Sampler has 33 now: the envelopes will pass 41, and the next session must give the Sampler its own
+  size first (see "Next").
 
 ## For the director
 
@@ -92,6 +117,13 @@ yet. The order to run, once the slot is free:
 3. **Round Robin's reset interval (row 19)** is not built. It needs the song position in the device.
    Recommendation: next round, as a parameter "Round Robin reset" (Off, 1/16 to 4 bars), reset on the
    transport's bar grid.
+4. **Round 2 adds five more controls to the generic card:** Interpolation, Snap, Detune, Spread, Zone
+   shift. Recommendation: keep; they move to the Pitch/Osc and Sample sections when the sheet is built.
+5. **Readings owed from Live** (each is one named constant or one line): Interpolation's menu words and
+   the default of a new Sampler; Spread's detune at 100 % (`kSpreadCents`) and whether the two voices are
+   fully apart; Zone shift's range and direction (built: +12 makes a key choose the zones an octave up);
+   whether a loop's Detune also acts before the voice reaches the loop. Recommendation: one Live session
+   with a ramp sample answers all of them.
 
 ## Reserve
 
@@ -101,11 +133,13 @@ yet. The order to run, once the slot is free:
 
 ## Next (in the mission's order)
 
-1. Prove the four items above (see "State of the builds"), then run `all` once: the window suites have
-   not seen the four new parameters on the generic card.
-2. Still in "one sample": loop detune and release-loop detune (row 57), Snap for the Sampler (row 43),
-   interpolation (row 58), the Link of start and loop start (row 53, an editor's convenience).
+1. Prove the items above (see "State of the builds"), then run `all` once: the window suites have
+   not seen the new parameters on the generic card.
+2. Still in "one sample": the zone's Scale (row 46, key tracking in percent), the Link of start and loop
+   start (row 53, an editor's convenience).
 3. Zones: Round Robin's reset interval (row 19); the instrument-wide Lin/Pow of the zone fades (row
-   16: today a field of each zone); key-zone shift (row 69).
-4. Then the pitch, filter and auxiliary envelopes; three LFOs with destinations; the filter's circuits
-   and its shaper; the modulation oscillator; MIDI routing and MPE last.
+   16: today a field of each zone).
+4. Give the Sampler its own parameter count (`values_`, `modulation_` and the `initial` arrays in
+   `sampler.hpp/.cpp` are `OneShot::Count` = 41 long), then the pitch, filter and auxiliary envelopes
+   (rows 65, 78, 90, 91); three LFOs with destinations; Glide (row 70); the filter's circuits and its
+   shaper; the modulation oscillator; MIDI routing and MPE last.
