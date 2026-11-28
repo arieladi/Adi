@@ -91,9 +91,22 @@ bool retainsTrack(const LaunchView& view, std::int64_t track, std::int64_t scene
     return cell && !cell->clip && !cell->hasStop;
 }
 
-bool fixedNativeOneShot(const LaunchAudioProject& media, const rows::Clip& clip) noexcept {
-    const auto* pcm = media.clip(clip.id);
-    return pcm && pcm->hasDirectPcm() && !clip.loopEnabled;
+bool unpinnedNativeOneShot(const LaunchAudioProject& media, const LaunchSlot& slot) noexcept {
+    if (!slot.nativePcmClock || slot.physicalFrames > 0 || slot.legato || slot.loopEndTick > slot.loopStartTick)
+        return false;
+    const auto* pcm = media.clip(slot.clip);
+    return pcm && pcm->hasDirectPcm();
+}
+
+bool sameNativeOneShotWindow(const LaunchAudioProject& before, const LaunchSlot& oldSlot,
+                             const LaunchAudioProject& after, const LaunchSlot* newSlot) noexcept {
+    if (!newSlot || newSlot->clip != oldSlot.clip || !unpinnedNativeOneShot(before,oldSlot) ||
+        !unpinnedNativeOneShot(after,*newSlot)) return false;
+    const auto* oldPcm = before.clip(oldSlot.clip);
+    const auto* newPcm = after.clip(newSlot->clip);
+    return oldPcm->sameResidentSourceShape(*newPcm) &&
+        oldPcm->frameForTick(oldSlot.startTick,before.bpm()) == newPcm->frameForTick(newSlot->startTick,after.bpm()) &&
+        oldPcm->frameForTick(oldSlot.endTick,before.bpm()) == newPcm->frameForTick(newSlot->endTick,after.bpm());
 }
 
 std::string deviceRef(const rows::Device& row) {
@@ -1137,13 +1150,7 @@ std::vector<LaunchTempoBank> Session::prepareSceneTempoBanks(const TimingView& t
             const auto oldSlot = std::ranges::find(from.slots,clip.id,&LaunchSlot::clip);
             if (oldSlot == from.slots.end())
                 throw std::runtime_error("a retained Session clip needs a prepared source window");
-            const auto* newSlot = sceneCell(to,clip.trackId,oldSlot->scene);
-            const auto* oldPcm = before.clip(clip.id);
-            const auto* newPcm = after.clip(clip.id);
-            if (!newSlot || newSlot->clip != clip.id || !oldPcm || !newPcm || !newPcm->hasDirectPcm() ||
-                !oldPcm->sameResidentSourceShape(*newPcm) ||
-                oldPcm->frameForTick(oldSlot->startTick,before.bpm()) != newPcm->frameForTick(newSlot->startTick,after.bpm()) ||
-                oldPcm->frameForTick(oldSlot->endTick,before.bpm()) != newPcm->frameForTick(newSlot->endTick,after.bpm()))
+            if (!sameNativeOneShotWindow(before,*oldSlot,after,sceneCell(to,clip.trackId,oldSlot->scene)))
                 throw std::runtime_error("a retained Session clip needs the same native frame window across tempo banks");
         }
     }
@@ -2938,6 +2945,10 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
     std::vector<std::int64_t> continuingWarp;
     std::vector<std::int64_t> retainedWarp;
     std::vector<std::int64_t> retainedPinned;
+    std::vector<std::int64_t> retainedNative;
+    std::vector<std::int64_t> nativeTracks;
+    bool changedNative = false;
+    bool missingNative = false;
     std::optional<std::int64_t> missingWarp;
     std::optional<std::int64_t> changedWarp;
     std::optional<std::int64_t> missingPin;
@@ -2974,6 +2985,11 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                             retainedPinned.push_back(clip.id);
                             return false;
                         }
+                        if (old != view.slots.end() && unpinnedNativeOneShot(*before,*old)) {
+                            retainedNative.push_back(clip.id);
+                            nativeTracks.push_back(clip.trackId);
+                            return false;
+                        }
                         if (!continuesWarp(clip.id)) return true;
                         retainedWarp.push_back(clip.id);
                         return false;
@@ -3006,40 +3022,29 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
                 // Retain clock history for ordinary resident clips. A paged,
                 // continuing Warp, worker, or physical Legato run instead
                 // needs the exact outgoing source and phase across the cut.
-                const auto nativeRetain = [&](std::int64_t id) {
-                    const auto slot = std::ranges::find(view.slots,id,&LaunchSlot::clip);
-                    const auto clip = std::ranges::find(model_.slotClips,id,&rows::Clip::id);
-                    return slot != view.slots.end() && !slot->legato && clip != model_.slotClips.end() &&
-                        fixedNativeOneShot(*before,*clip);
-                };
                 const bool retainHistory = !before->hasPagedAudio() && continuingWarp.empty() &&
-                    workerLegatoTargets.empty() && std::ranges::all_of(retainedPinned,nativeRetain) &&
+                    workerLegatoTargets.empty() && retainedPinned.empty() &&
                     std::ranges::none_of(view.slots, [&](const LaunchSlot& slot) { return pinnedLegatoTarget(slot,scene); });
-                if (retainHistory) {
-                    std::vector<std::int64_t> retainedTracks;
-                    for (const auto id : retainedPinned) {
-                        const auto slot = std::ranges::find(view.slots,id,&LaunchSlot::clip);
-                        retainedTracks.push_back(slot->track);
+                if (!nativeTracks.empty()) {
+                    if (launchAudioDriver_->sourceEditReserved()) {
+                        error_ = "a tempo scene cannot retain a clip while a live source replacement is reserved";
+                        return false;
                     }
-                    if (!retainedTracks.empty()) {
-                        if (launchAudioDriver_->sourceEditReserved()) {
-                            error_ = "a tempo scene cannot retain a clip while a live source replacement is reserved";
+                    LaunchStatusHeader status;
+                    if (!launchAudioDriver_->regionEditsSettled(status,nativeTracks)) {
+                        std::vector<LaunchTrackStatus> tracks(kMaximumStoredLaunchTracks);
+                        if (!readLaunchStatus(tracks,status) || status.incarnation != before->incarnation() ||
+                            !launchAudioDriver_->regionEditsSettled(status,nativeTracks) ||
+                            std::ranges::any_of(std::span(tracks).first(status.trackCount),[&](const auto& track) {
+                                return track.hasLiveRegion && before->clip(track.clip) &&
+                                    std::ranges::find(nativeTracks,track.track) != nativeTracks.end();
+                            })) {
+                            error_ = "a tempo scene needs unedited playback bounds on retained Session clips";
                             return false;
                         }
-                        LaunchStatusHeader status;
-                        if (!launchAudioDriver_->regionEditsSettled(status,retainedTracks)) {
-                            std::vector<LaunchTrackStatus> tracks(kMaximumStoredLaunchTracks);
-                            if (!readLaunchStatus(tracks,status) || status.incarnation != before->incarnation() ||
-                                !launchAudioDriver_->regionEditsSettled(status,retainedTracks) ||
-                                std::ranges::any_of(std::span(tracks).first(status.trackCount),[&](const auto& track) {
-                                    return track.hasLiveRegion && before->clip(track.clip) &&
-                                        std::ranges::find(retainedTracks,track.track) != retainedTracks.end();
-                                })) {
-                                error_ = "a tempo scene needs unedited playback bounds on retained Session clips";
-                                return false;
-                            }
-                        }
                     }
+                }
+                if (retainHistory) {
                     auto periods = nextBanks && !nextBanks->periods.empty() && nextBanks->periods.front().posTicks == 0
                         ? nextBanks->periods : std::vector<TempoEvent>{{since,before->bpm(),0}};
                     periods.push_back({tick,*bpm,0});
@@ -3072,6 +3077,21 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
             if (!target || !target->allWarpPhasesPrimed()) {
                 missingWarp = id;
                 return false;
+            }
+        }
+        if (mixedBefore && !retainedNative.empty()) {
+            changedNative = !timing->launchSource || !storedLaunchSource_ ||
+                !sameLaunchSource(*timing->launchSource,*storedLaunchSource_) || !launchFilesCurrent(*storedLaunchSource_);
+            if (changedNative || !storedLaunchProject_) return false;
+            const auto from = mixedBefore->view();
+            const auto to = storedLaunchProject_->view();
+            for (const auto id : retainedNative) {
+                const auto oldSlot = std::ranges::find(from.slots,id,&LaunchSlot::clip);
+                if (oldSlot == from.slots.end() || !sameNativeOneShotWindow(*mixedBefore,*oldSlot,*storedLaunchProject_,
+                        sceneCell(to,oldSlot->track,oldSlot->scene))) {
+                    missingNative = true;
+                    return false;
+                }
             }
         }
         if (mixedBefore && (!retainedWarp.empty() || !retainedPinned.empty())) {
@@ -3152,6 +3172,8 @@ bool Session::prepareSceneLaunch(const Store& store, std::int64_t scene, std::in
         preparedScene_ = previousScene;
         sceneTempoBanks_ = previousBanks;
         if (missingWorkerLegato) error_ = legatoReadinessError;
+        else if (changedNative) error_ = "a Session scene clock needs its current launch source image";
+        else if (missingNative) error_ = "a retained Session clip needs the same native frame window across tempo banks";
         else if (missingWarp) error_ = "Session clips#" + std::to_string(*missingWarp) +
                                        ": a continuing tempo scene needs the same Warp region and warm source pages";
         else if (changedWarp) error_ = "Session clips#" + std::to_string(*changedWarp) +
@@ -4314,8 +4336,11 @@ bool Session::postLaunchClipRegionEdit(const LaunchClipRegionEdit& edit) noexcep
         if (cut > 0) {
             const auto& before = audio.mediaAt(cut-1);
             const auto& after = audio.mediaAt(cut);
-            if (before->bpm() != after->bpm() && before->clip(edit.clip) &&
-                retainsTrack(before->view(),edit.track,timing->preparedScene->scene)) return false;
+            const auto view = before->view();
+            const auto slot = std::ranges::find(view.slots,edit.clip,&LaunchSlot::clip);
+            if (before->bpm() != after->bpm() && slot != view.slots.end() && slot->track == edit.track &&
+                unpinnedNativeOneShot(*before,*slot) && retainsTrack(view,edit.track,timing->preparedScene->scene))
+                return false;
         }
     }
     return audio.postRegionEdit(*launchAudioDriver_,edit,clock.sample);
