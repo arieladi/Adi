@@ -860,8 +860,12 @@ add_library(adi_settings STATIC
     src/adi/settings/channel_config.cpp
     src/adi/settings/device_grant.cpp
     src/adi/settings/bundle.cpp
-    src/adi/settings/catalogue.cpp)
+    src/adi/settings/catalogue.cpp
+    src/adi/settings/project_sync_folder.cpp)
 target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)
+if(WIN32)
+    target_link_libraries(adi_settings PRIVATE shell32 ole32 uuid)
+endif()
 
 add_executable(adi_settings_tests tests/test_settings.cpp)
 target_link_libraries(adi_settings_tests PRIVATE adi_settings adi_core adi_miniz adi_warnings)

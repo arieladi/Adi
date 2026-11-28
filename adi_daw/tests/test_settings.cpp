@@ -15,6 +15,7 @@
 #include "adi/settings/catalogue.hpp"
 #include "adi/settings/channel_config.hpp"
 #include "adi/settings/device_grant.hpp"
+#include "adi/settings/project_sync_folder.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -1463,6 +1464,39 @@ void testCatalogue() {
                 answeredRows().size(), absentRows().size());
 }
 
+void testProjectSyncFolder() {
+    section("PD-08: classify project locations without opening the project file");
+    const adi::test::TempDirectory temp("settings", "project_sync_folder");
+    const auto oneDrive = temp.path() / "OneDrive";
+    const auto iCloud = oneDrive / "CloudDocs";
+    const auto child = oneDrive / "A" / "B";
+    const auto sibling = temp.path() / "OneDrive - outside";
+    for (const auto& directory : {iCloud, child, sibling}) {
+        fs::create_directories(directory);
+    }
+    const auto roots = std::vector<SyncRoot>{{SyncProvider::OneDrive, oneDrive},
+                                            {SyncProvider::ICloudDrive, iCloud},
+                                            {SyncProvider::ICloudDrive, temp.path() / "absent"},
+                                            {SyncProvider::ICloudDrive, "relative"}};
+    check(projectSyncProvider(oneDrive / "set.adi", roots) == SyncProvider::OneDrive,
+          "match a project directly under a known root");
+    check(projectSyncProvider(child / "set.adi", roots) == SyncProvider::OneDrive,
+          "recognize a nested project and a destination file yet to exist");
+    check(projectSyncProvider(iCloud / "set.adi", roots) == SyncProvider::ICloudDrive,
+          "choose the nearest known ancestor for nested roots");
+    check(!projectSyncProvider(sibling / "set.adi", roots),
+          "a sibling whose name shares a prefix is outside the root");
+    check(!projectSyncProvider(oneDrive / ".." / sibling.filename() / "set.adi", roots),
+          "resolve traversal to the actual project location");
+    check(!projectSyncProvider(oneDrive / "missing-child" / "set.adi", roots),
+          "an absent project directory has no sync status");
+    check(!projectSyncProvider({}, roots) && !projectSyncProvider(child / "set.adi", {}),
+          "empty project or empty roots have no sync status");
+    const auto native = knownProjectSyncRoots();
+    check(std::ranges::all_of(native, [](const SyncRoot& root) { return root.directory.is_absolute(); }),
+          "native discovery yields only absolute configured roots");
+}
+
 int runAll() {
     std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203, ADR-0214, ADR-0232\n\n");
     testRegistry();
@@ -1488,6 +1522,7 @@ int runAll() {
     testPortableSettingsPublication();
     testBundlePublication();
     testBundleSchemas();
+    testProjectSyncFolder();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
