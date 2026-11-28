@@ -426,7 +426,8 @@ bool Session::setHearDifference(std::int64_t deviceId) {
         graph_.setDifferenceNode(nullptr);
         return true;
     }
-    auto* node = nodeFor(deviceId);
+    const Entry* entry = entryFor(deviceId);
+    auto* node = entry != nullptr && !entry->retired && !entry->parked ? nodeFor(deviceId) : nullptr;
     if (node == nullptr) return false;
     hearDifference_ = deviceId;
     graph_.setDifferenceNode(node);
@@ -1594,7 +1595,9 @@ bool Session::rebuild() {
     // MX-38: Hear Difference follows its device into the graph about to play,
     // and ends with it when the device is gone.
     if (hearDifference_ != 0) {
-        const auto* listened = nodeFor(hearDifference_);
+        // A removed device's entry is kept, retired, with its instance: gone all the same.
+        const Entry* entry = entryFor(hearDifference_);
+        const auto* listened = entry != nullptr && !entry->retired && !entry->parked ? nodeFor(hearDifference_) : nullptr;
         if (listened == nullptr) hearDifference_ = 0;
         graph_.setDifferenceNode(listened);
     }
