@@ -102,8 +102,10 @@ class ParameterFeed {
     // Empty demand removes the consumer; identity/mixer rows remain published.
     bool setDemand(const void *consumer, std::vector<std::int64_t> devices);
     std::shared_ptr<const ParameterPublication> current() const noexcept { return current_; }
-    void touched(std::int64_t id, const std::string &param) {
-        touched_[{id, param}] = panel::Source::Mouse;
+    // Who last moved a parameter (SRF-01; the panel's `lastTouchedBy`): ADI's own controls by default, a control
+    // surface with `Source::Surface`. Read at the next publish.
+    void touched(std::int64_t id, const std::string &param, panel::Source source = panel::Source::Mouse) {
+        touched_[{id, param}] = source;
     }
 
   private:
