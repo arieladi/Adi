@@ -1,4 +1,4 @@
-Integrating basics/integrate-4 at `650063b8ce8387a684a8d51e257be674de2a8417`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
+Integrating basics/integrate-4 at `4c1091f187f89ab7602621d32d6fadc776c420ef`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
@@ -29,7 +29,9 @@ At the Session checkpoint, Slot Commit, Arrangement Isolation, Performance Captu
 
 The first full test attempt stopped when workspace storage filled. After freeing space, `6ae9defb5` passed 379 of 381 headless suites, all 18 display-free window suites, and all three acceptance suites. All four Session regressions passed on the integrated head. The two failures exposed the old-server identity fixture and a PCM mismatch between live and flattened Re-Pitch playback. `8502ca99` recreates an unprovisioned legacy project and reopens it read-only. The refusal fixture passed all 27 checks, including that resolution, consent and processor construction each stay unused.
 
-The later verified Stretcher tip `e0d72128bdfe0ed17a2af1006b136c4202c94063` passed all 312 owner suites. Merge `e6b8b89d` resolved three runtime and launcher conflicts and kept the separate raw-clock, pinned-source and linked-cue paths. Director tip `865d1d9bb615dceba6e4031829ec0ae540e8679c` adds the tested compact Control Bar in SC-446. Merge `058e38c2` keeps the shell pixel helper and blacks out the same new text area in each software image before comparing. `650063b8` syncs the documentation-only main update `629a4834`. The next gate will include the Pitch playback repair. [Stretcher log](https://github.com/arieladi/Adi/blob/401e611753b453108598b26f0debd32935a9f1aa/adi_daw/collab/seats/stretcher.md) [Director test log](https://github.com/arieladi/Adi/blob/866043f26bcfa7b993bffb223c5d9aa4734c0c17/adi_daw/collab/basics/test.md)
+The later verified Stretcher tip `e0d72128bdfe0ed17a2af1006b136c4202c94063` passed all 312 owner suites. Merge `e6b8b89d` resolved three runtime and launcher conflicts and kept the separate raw-clock, pinned-source and linked-cue paths. Director tip `865d1d9bb615dceba6e4031829ec0ae540e8679c` adds the tested compact Control Bar in SC-446. Merge `058e38c2` keeps the shell pixel helper and blacks out the same new text area in each software image before comparing. `650063b8` syncs the documentation-only main update `629a4834`. The exact checkpoint passed the display-free Shell, plug-in admission and Session Warp Integration suites. [Stretcher log](https://github.com/arieladi/Adi/blob/401e611753b453108598b26f0debd32935a9f1aa/adi_daw/collab/seats/stretcher.md) [Director test log](https://github.com/arieladi/Adi/blob/866043f26bcfa7b993bffb223c5d9aa4734c0c17/adi_daw/collab/basics/test.md)
+
+`4c1091f1` keeps active Pitch correction on the same native-rate Re-Pitch clock used after flattening. The isolated fixture reached all 27 original checks and matched 49,152 compared stereo samples exactly. Pitch Playback, Pitch Compare, and Streaming Warp passed, including the added live crossfade check and the existing zero-allocation, zero-file-I/O and zero-mutex checks. The fixture still treats fatal playback errors as failures and the nonblocking Warp advisory remains visible. The final all-target build and complete CTest gate are running at this head. All six validators and the landing-check tests passed.
 
 ## Integrate-3
 
