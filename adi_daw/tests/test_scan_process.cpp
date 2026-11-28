@@ -2,6 +2,7 @@
 #include "adi/scan_process.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "temp_directory.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <thread>
@@ -44,6 +46,7 @@ namespace {
 using namespace adi::scan;
 using namespace std::chrono_literals;
 namespace fs = std::filesystem;
+constexpr std::uint64_t streamedBytes = 12U*1024U*1024U+137U;
 fs::path fromUtf8(const std::string& value) {return fs::path(std::u8string(value.begin(),value.end()));}
 int checks = 0, failures = 0;
 void check(bool ok, const char* label) {++checks;if(!ok){++failures;std::printf("FAIL: %s\n",label);}}
@@ -160,6 +163,25 @@ int fixture(int argc, char** argv) {
     if(mode=="echo") {for(int i=3;i<argc;++i)std::printf("%zu:%s\n",std::strlen(argv[i]),argv[i]);return 0;}
     if(mode=="binary") {const std::array<unsigned char,5> data{0,1,127,128,255};std::fwrite(data.data(),1,data.size(),stdout);return 0;}
     if(mode=="large") {const std::string bytes(2U*1024U*1024U,'z');return std::fwrite(bytes.data(),1,bytes.size(),stdout)==bytes.size()?0:93;}
+    if(mode=="stream-large") {
+        std::array<unsigned char,4093> bytes{};
+        for(std::uint64_t offset=0;offset<streamedBytes;) {
+            const auto count=static_cast<std::size_t>(std::min<std::uint64_t>(bytes.size(),streamedBytes-offset));
+            for(std::size_t i=0;i<count;++i)bytes[i]=static_cast<unsigned char>((offset+i)%251U);
+            if(std::fwrite(bytes.data(),1,count,stdout)!=count)return 93;
+            offset+=count;
+        }
+        return 0;
+    }
+    if(mode=="stream-handshake") {
+        std::printf("first");std::fflush(stdout);
+        const auto until=std::chrono::steady_clock::now()+3s;
+        while(!fs::exists(fromUtf8(argv[3]))) {
+            if(std::chrono::steady_clock::now()>=until)return 96;
+            std::this_thread::sleep_for(2ms);
+        }
+        std::printf("last");return 0;
+    }
     if(mode=="stdin") {std::printf("%s",std::getchar()==EOF?"eof":"unexpected");return 0;}
     if(mode=="closed-stdio") {
         for(int fd=0;fd<3;++fd) {
@@ -172,8 +194,12 @@ int fixture(int argc, char** argv) {
         const auto result=runProcess(fs::absolute(fromUtf8(argv[0])),{"--fixture","echo","nested"});
         return result.succeeded() && result.output=="6:nested\n"?0:94;
     }
-    if(mode=="exit") return 23;
-    if(mode=="crash") {
+    if(mode=="binary-exit" || mode=="binary-crash") {
+        const std::array<unsigned char,5> bytes{0,1,127,128,255};
+        std::fwrite(bytes.data(),1,bytes.size(),stdout);std::fflush(stdout);
+    }
+    if(mode=="exit" || mode=="binary-exit") return 23;
+    if(mode=="crash" || mode=="binary-crash") {
 #if defined(_WIN32)
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         TerminateProcess(GetCurrentProcess(),0xC0000005UL);
@@ -322,6 +348,135 @@ void contract(const fs::path& self) {
     check(remaining==-1 && errno==ECHILD,"all directly spawned children are reaped, including failed runs");
 #endif
 }
+void streamedContract(const fs::path& self) {
+    ProcessStreamOptions options;options.maximumOutput=5;
+    std::vector<std::byte> bytes;
+    const ProcessOutputConsumer collect=[&](std::span<const std::byte> chunk) {
+        bytes.insert(bytes.end(),chunk.begin(),chunk.end());return true;
+    };
+    const std::vector<std::byte> expected{std::byte{0},std::byte{1},std::byte{127},std::byte{128},std::byte{255}};
+    const auto binary=runProcessStream(self,{"--fixture","binary"},collect,options);
+    check(binary.succeeded() && binary.bytesDelivered==5 && bytes==expected,"stream preserves binary/NUL bytes at the exact byte bound");
+    bytes.clear();options.maximumOutput=4;
+    const auto over=runProcessStream(self,{"--fixture","binary"},collect,options);
+    check(over.status==ProcessStatus::OutputLimit && over.bytesDelivered<=4 && bytes.size()==over.bytesDelivered,"crossing stream chunk is not delivered past its byte bound");
+    unsigned calls=0;
+    const ProcessOutputConsumer counted=[&](std::span<const std::byte>) {++calls;return true;};
+    options.maximumOutput=0;
+    bool invalid=runProcessStream(self,{"--fixture","binary"},counted,options).status==ProcessStatus::Invalid;
+    options.maximumOutput=5;
+    invalid=invalid && runProcessStream(self,{},ProcessOutputConsumer{},options).status==ProcessStatus::Invalid;
+    invalid=invalid && runProcessStream("relative-program",{},counted,options).status==ProcessStatus::Invalid;
+    invalid=invalid && runProcessStream(self,{std::string("bad\0argument",12)},counted,options).status==ProcessStatus::Invalid;
+    for(const auto timeout:std::array{0ms,300001ms}) {
+        options.timeout=timeout;
+        invalid=invalid && runProcessStream(self,{},counted,options).status==ProcessStatus::Invalid;
+    }
+    check(invalid && calls==0,"stream rejects empty consumer/zero budget and preserves argument/deadline validation");
+    options={};options.maximumOutput=std::numeric_limits<std::uint64_t>::max();
+    check(runProcessStream(self,{"--fixture","binary"},counted,options).succeeded(),"stream byte budget is explicit uint64 without signed narrowing");
+    options.maximumOutput=streamedBytes;
+    std::uint64_t received=0;bool pattern=true,nonempty=true;std::size_t largest=0;
+    const auto large=runProcessStream(self,{"--fixture","stream-large"},[&](std::span<const std::byte> chunk) {
+        nonempty=nonempty && !chunk.empty();largest=std::max(largest,chunk.size());
+        for(const auto byte:chunk) {pattern=pattern && std::to_integer<unsigned>(byte)==received%251U;++received;}
+        return true;
+    },options);
+    check(large.succeeded() && received==streamedBytes && large.bytesDelivered==received && pattern && nonempty && largest<=4096,"more than 8 MiB streams in bounded chunks with exact byte order and no aggregate consumer buffer");
+    options.maximumOutput=4096;received=0;
+    const auto limited=runProcessStream(self,{"--fixture","flood"},[&](std::span<const std::byte> chunk) {received+=chunk.size();return true;},options);
+    check(limited.status==ProcessStatus::OutputLimit && limited.bytesDelivered==received && received<=4096,"continuous streamed output stops at the total budget without accumulating it");
+    options.maximumOutput=std::numeric_limits<std::uint64_t>::max();options.timeout=80ms;
+    const auto floodStart=std::chrono::steady_clock::now();
+    const auto flood=runProcessStream(self,{"--fixture","flood"},counted,options);
+    check(flood.status==ProcessStatus::TimedOut && std::chrono::steady_clock::now()-floodStart<2s,"continuous streamed output cannot starve the deadline check");
+    options.timeout=30s;
+    adi::test::TempDirectory temp("scanner","stream");
+    const auto handshake=temp.path()/"consumer acknowledgement";
+    std::string fragments;
+    options.maximumOutput=64;
+    const auto incremental=runProcessStream(self,{"--fixture","stream-handshake",utf8(handshake)},[&](std::span<const std::byte> chunk) {
+        fragments.append(reinterpret_cast<const char*>(chunk.data()),chunk.size());
+        if(fragments=="first") {std::ofstream out(handshake);out<<"received before child exit";if(!out)return false;}
+        return true;
+    },options);
+    check(incremental.succeeded() && fragments=="firstlast" && incremental.bytesDelivered==9,"consumer receives output while the child is still running, before it can produce its tail");
+#if defined(_WIN32)
+    DWORD handlesBefore=0;GetProcessHandleCount(GetCurrentProcess(),&handlesBefore);
+#endif
+    bool failuresContained=true;
+    std::array<fs::path,3> markers;
+    for(unsigned mode=0;mode<markers.size();++mode) {
+        markers[mode]=temp.path()/("consumer failure "+std::to_string(mode));
+        unsigned invoked=0;
+        const auto start=std::chrono::steady_clock::now();
+        const auto result=runProcessStream(self,{"--fixture","tree",utf8(markers[mode])},[&](std::span<const std::byte>) -> bool {
+            ++invoked;
+            if(mode==1)throw std::runtime_error("owned consumer failure");
+            if(mode==2)throw 7;
+            return false;
+        },options);
+        failuresContained=failuresContained && result.status==ProcessStatus::ConsumerFailed &&
+            result.bytesDelivered==0 && invoked==1 && std::chrono::steady_clock::now()-start<2s;
+    }
+    std::this_thread::sleep_for(600ms);
+    for(const auto& marker:markers)failuresContained=failuresContained && !fs::exists(marker);
+    check(failuresContained,"refusal and standard/nonstandard consumer exceptions kill/wait child and contain descendants");
+    options.maximumOutput=streamedBytes;received=0;unsigned accepted=0;
+    const auto partial=runProcessStream(self,{"--fixture","stream-large"},[&](std::span<const std::byte> chunk) {
+        if(accepted==3)return false;
+        ++accepted;received+=chunk.size();return true;
+    },options);
+    check(partial.status==ProcessStatus::ConsumerFailed && accepted==3 && received>0 && partial.bytesDelivered==received,"failure retains only whole acknowledged chunks, never claims provisional bytes are complete");
+    options.maximumOutput=64;
+    for(const auto* mode:std::array{"binary-exit","binary-crash"}) {
+        bytes.clear();const auto result=runProcessStream(self,{"--fixture",mode},collect,options);
+        const auto wanted=std::strcmp(mode,"binary-exit")==0?ProcessStatus::Exited:ProcessStatus::Crashed;
+        check(result.status==wanted && !result.succeeded() && result.bytesDelivered==5 && bytes==expected,
+              "delivered bytes remain provisional after nonzero exit or real crash");
+    }
+    std::atomic<bool> cancel{true};options.cancel=&cancel;calls=0;
+    check(runProcessStream(self,{"--fixture","binary"},counted,options).status==ProcessStatus::Cancelled && calls==0,"pre-cancelled stream does not launch or call consumer");
+    cancel=false;
+    const auto during=runProcessStream(self,{"--fixture","binary"},[&](std::span<const std::byte>) {cancel=true;return true;},options);
+    check(during.status==ProcessStatus::Cancelled && during.bytesDelivered==5,"cancellation set during consumer is checked before successful completion");
+    cancel=false;std::thread cancellation([&]{std::this_thread::sleep_for(40ms);cancel=true;});
+    const auto waiting=runProcessStream(self,{"--fixture","sleep"},counted,options);cancellation.join();
+    check(waiting.status==ProcessStatus::Cancelled && waiting.bytesDelivered==0,"stream cancellation while waiting terminates and waits for its child");
+    options.cancel=nullptr;options.timeout=100ms;
+    const auto slow=runProcessStream(self,{"--fixture","binary"},[](std::span<const std::byte>) {std::this_thread::sleep_for(150ms);return true;},options);
+    check(slow.status==ProcessStatus::TimedOut,"stream deadline is checked after cooperative consumer returns");
+    options.timeout=30s;
+    const auto exitMarker=temp.path()/"stream exit marker";
+    fragments.clear();
+    const auto exitTree=runProcessStream(self,{"--fixture","exit-tree",utf8(exitMarker)},[&](std::span<const std::byte> chunk) {
+        fragments.append(reinterpret_cast<const char*>(chunk.data()),chunk.size());return true;
+    },options);
+    std::this_thread::sleep_for(600ms);
+    check(exitTree.succeeded() && fragments=="ready" && !fs::exists(exitMarker),"stream normal exit drains output then contains descendants holding inherited stdout");
+    const auto allocated=allocations.load(),io=adi::audio::callbackFileIo.load();calls=0;
+    const std::vector<std::string> args{"--fixture","binary"};
+    {adi::audio::CallbackScope callback;const auto result=runProcessStream(self,args,counted,options);if(result.status!=ProcessStatus::CallbackRefused)++failures;}
+    check(allocations==allocated && adi::audio::callbackFileIo==io && calls==0,"stream callback refusal performs no allocation, I/O or consumer call");
+    std::array<bool,4> independent{};std::array<std::thread,4> owners;
+    for(std::size_t index=0;index<owners.size();++index)owners[index]=std::thread([&,index]{
+        independent[index]=true;
+        for(unsigned turn=0;turn<6;++turn) {
+            std::vector<std::byte> actual;
+            const auto result=runProcessStream(self,{"--fixture","binary"},[&](std::span<const std::byte> chunk) {actual.insert(actual.end(),chunk.begin(),chunk.end());return true;},options);
+            independent[index]=independent[index] && result.succeeded() && actual==expected && result.bytesDelivered==5;
+        }
+    });
+    for(auto& owner:owners)owner.join();
+    check(independent[0] && independent[1] && independent[2] && independent[3],"concurrent stream owners keep delivery and process ownership independent");
+#if defined(_WIN32)
+    DWORD handlesAfter=0;GetProcessHandleCount(GetCurrentProcess(),&handlesAfter);
+    check(handlesBefore==handlesAfter,"stream successes/failures/exceptions retain no process/thread/pipe/job handles");
+#else
+    int status=0;errno=0;const auto remaining=waitpid(-1,&status,WNOHANG);
+    check(remaining==-1 && errno==ECHILD,"stream children, including consumer failures, are all reaped");
+#endif
+}
 } // namespace
 int entry(int argc,char** argv) {
     if(argc>1 && std::strcmp(argv[1],"--fixture")==0)return fixture(argc,argv);
@@ -336,7 +491,7 @@ int entry(int argc,char** argv) {
     }
 #endif
     if(argc>1)return 95;
-    try {contract(fs::absolute(fromUtf8(argv[0])));}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
+    try {const auto self=fs::absolute(fromUtf8(argv[0]));contract(self);streamedContract(self);}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }
 

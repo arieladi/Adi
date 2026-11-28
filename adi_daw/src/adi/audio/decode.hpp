@@ -82,6 +82,7 @@ inline constexpr std::uint32_t kMaxDecodeChannels = 64;
 /// The registry keys (Settings > File & Folder > Decoding Cache), in MB.
 inline constexpr const char* kCacheMaxSizeKey = "cache.maxSizeMb";
 inline constexpr const char* kCacheMinFreeKey = "cache.minFreeSpaceMb";
+inline constexpr const char* kCacheFolderKey = "cache.folder";
 inline constexpr std::uint64_t kCacheMaxSizeMbDefault = 20480;   // 20 GB (ADR-0203)
 inline constexpr std::uint64_t kCacheMinFreeMbDefault = 2048;    // 2 GB
 
@@ -180,10 +181,20 @@ private:
     std::vector<std::string> problems_;
 };
 
-/// The process's cache: appdata::pathsFor(App::Daw).cache / "decoded" -- the
-/// cache folder all three applications share (ADR-0149). Default limits
-/// until the application applies its settings with setLimits.
+/// The process's cache in the selected root's decoded subfolder. By default
+/// this is the shared app cache from ADR-0149. Default limits apply until
+/// the application provides its settings.
 [[nodiscard]] DecodeCache& defaultDecodeCache();
+/// Selects the parent of the decoded and analysed caches before either first
+/// use. Empty selects the app cache root. Relative paths and active-cache
+/// relocation are refused. Configuration creates no directories.
+[[nodiscard]] bool setDefaultMediaCacheRoot(std::filesystem::path root);
+/// Off-callback resolution of the process root. First use fixes the path for
+/// the lifetime of the caches without creating any directory.
+[[nodiscard]] std::filesystem::path defaultMediaCacheRoot();
+/// Updates the process cache's limits without creating its folder or trimming.
+/// The next cache operation uses the new limits. Owner thread only.
+void setDefaultDecodeCacheLimits(DecodeCacheLimits);
 
 /// defaultDecodeCache().playable(source), except that a WAV the reader plays
 /// is returned without constructing the cache: the clip worker's one call.

@@ -1,5 +1,15 @@
 # Decode cache admission, hint recovery and cancellation (DF-E28, DF-E34 b/c)
 
+The desktop applies the maximum-size and minimum-free-space preferences at
+startup and when settings change. Applying them leaves cache creation and
+cleanup to normal cache operations. Updates retain the same cache object
+and its live pins. The desktop reads Cache Folder on launch. Decoded PCM uses
+the `decoded` child and waveform analysis uses the `analysed` child of the
+selected absolute path. Both use the app cache parent by default. Each child
+is created only when its cache is needed. Changing the setting takes effect
+on the next launch so existing readers keep their files. Budgets remain
+separate.
+
 Before evicting any existing file for a new complete decode, `DecodeCache`
 refuses an individual estimated Float32 size above its maximum. The estimate
 is the existing `frames * channels * 4 + 4096` reservation. The error is
@@ -72,6 +82,11 @@ and acquires no pin. The complete, counted PCM remains available for a later hit
 or ordinary eviction. Cancellation does not delete a published target or undo
 another caller's pin. On-disk index persistence is still optional; scanning real
 files recovers it after restart.
+
+If the completed file goes missing before size accounting, the caller receives a
+cache write error. The failed read adds no use stamp, byte total or pin. A later
+decode can rebuild the missing file. The warm-hit path checks its size before
+updating its entry too.
 
 `DecodeCacheHooks::afterPublish` is an empty-by-default test seam immediately
 after successful publication/adoption and before bookkeeping. It runs outside

@@ -2,19 +2,30 @@
 //
 // ADR-0156: one decoder for imported audio, into the decoding cache.
 // Fixtures: tests/fixtures/decode (README.md there says how each was made).
+#include "adi/appdata.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/ffprobe_audio.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "temp_directory.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace adi::audio;
@@ -327,10 +338,191 @@ void settings() {
     const auto bad = limitsFromSettings({{kCacheMaxSizeKey, -5}, {kCacheMinFreeKey, "x"}});
     check(bad.maxBytes == d.maxBytes && bad.minFreeBytes == d.minFreeBytes, "limits: an illegal value keeps the default");
 }
+
+void defaultCacheSettings(const fs::path& root) {
+    const auto home = root / "owned-application";
+#if defined(_WIN32)
+    if (_wputenv_s(L"ADI_HOME", home.c_str()) != 0) throw std::runtime_error("set test ADI home");
+#else
+    if (setenv("ADI_HOME", home.c_str(), 1) != 0) throw std::runtime_error("set test ADI home");
+#endif
+    const auto fallback = adi::appdata::pathsFor(adi::appdata::App::Daw).cache / "decoded";
+    const auto parent = root / fs::path(u8"cache-音");
+    const auto folder = parent / "decoded";
+    fs::create_directories(parent);
+    const auto other = parent / "keep.wav";
+    std::ofstream(other, std::ios::binary) << "User media outside decoded storage";
+    check(!setDefaultMediaCacheRoot("relative-cache"), "a relative cache folder is refused");
+    auto terminated = parent.native();
+    terminated.push_back(fs::path::value_type{});
+    check(!setDefaultMediaCacheRoot(fs::path(terminated)), "a NUL in a cache path is refused");
+    {
+        CallbackScope callback;
+        check(!setDefaultMediaCacheRoot(parent), "an audio callback cannot configure a cache folder");
+    }
+    check(setDefaultMediaCacheRoot(parent), "an absolute Unicode cache root is accepted");
+    setDefaultDecodeCacheLimits({64ULL << 20, 0});
+    check(!fs::exists(folder), "setting initial limits leaves the process decode folder lazy");
+    check(playableFile(fixture("src16.wav")) == fixture("src16.wav") && !fs::exists(folder),
+          "configured limits keep an ordinary WAV on its direct path");
+    DecodeProblem refused{};
+    {
+        CallbackScope callback;
+        refused = problemOf([&] { (void)playableFile(fixture("tone16.flac")); });
+    }
+    check(refused == DecodeProblem::AudioThread && !fs::exists(folder),
+          "a refused first audio callback cannot initialize the cache");
+    const auto next = root / "next-launch";
+    const auto& analysis = adi::media::defaultAnalysisCache();
+    check(analysis.folder() == parent / "analysed" && !fs::exists(analysis.folder()) && !fs::exists(folder),
+          "the analysis cache uses the selected Unicode parent without creating either cache folder");
+    check(!setDefaultMediaCacheRoot(next), "analysis use alone fixes the common root until relaunch");
+    auto& configured = defaultDecodeCache();
+    check(configured.folder() == folder && configured.limits().maxBytes == 64ULL << 20 &&
+              configured.limits().minFreeBytes == 0,
+          "first decoder use takes the selected folder and configured limits");
+    const auto held = configured.playable(fixture("tone16.flac"));
+    check(held.parent_path() == folder && !fs::exists(fallback) &&
+              !setDefaultMediaCacheRoot(next) && !fs::exists(next),
+          "live cache use keeps the root until relaunch");
+    setDefaultDecodeCacheLimits({0, 0});
+    check(&defaultDecodeCache() == &configured && configured.limits().maxBytes == 0 && fs::exists(held),
+          "updating active limits keeps the cache object and the owned pinned PCM");
+    configured.release(held);
+    configured.trim();
+    check(!fs::exists(held) && fs::is_regular_file(other),
+          "a later owner trim stays in the decoded child rather than touching neighboring files");
+}
+
+void ffprobeMetadata(const fs::path& folder) {
+    const std::string valid = R"({"streams":[{"index":2,"codec_type":"audio","sample_rate":"48000","channels":2}]})";
+    const auto stream = parseFfprobeAudio(valid);
+    check(stream.index == 2 && stream.sampleRate == 48000 && stream.channels == 2,
+          "ffprobe retains the absolute audio stream index and PCM layout");
+    check(problemOf([&] { (void)parseFfprobeAudio(R"({"streams":[]})"); }) == DecodeProblem::NoAudio,
+          "ffprobe's empty audio selection means no audio");
+
+    const auto refuse = [](std::string_view text, DecodeProblem code) {
+        return problemOf([&] { (void)parseFfprobeAudio(text); }) == code;
+    };
+    check(refuse(valid + std::string("\0suffix", 7), DecodeProblem::Corrupt), "ffprobe refuses bytes after a null");
+    check(refuse(std::string(65537, ' '), DecodeProblem::Corrupt), "ffprobe refuses oversized JSON");
+    check(refuse(R"({"streams":[],"x":[[[[[[[[[[{"y":0}]]]]]]]]]]})", DecodeProblem::Corrupt),
+          "ffprobe refuses excessive nesting in ignored fields");
+    check(refuse(R"({"streams":[{},{}]})", DecodeProblem::Corrupt), "ffprobe refuses an ambiguous selection");
+    for (const char* field : {"-1", "2.5", "4294967296", "true", "\"2\""}) {
+        auto packet = nlohmann::json::parse(valid);
+        packet["streams"][0]["index"] = nlohmann::json::parse(field);
+        check(refuse(packet.dump(), DecodeProblem::Corrupt), std::string("ffprobe refuses invalid index ") + field);
+    }
+    auto packet = nlohmann::json::parse(valid);
+    auto& audio = packet["streams"][0];
+    audio["channels"] = 65;
+    check(refuse(packet.dump(), DecodeProblem::Unsupported), "ffprobe enforces the decode channel limit");
+    audio["channels"] = 1;
+    audio["sample_rate"] = "768001";
+    check(refuse(packet.dump(), DecodeProblem::Unsupported), "ffprobe enforces the decode sample-rate limit");
+    audio["sample_rate"] = "48000junk";
+    check(refuse(packet.dump(), DecodeProblem::Corrupt), "ffprobe requires a complete decimal sample rate");
+
+    const auto absent = folder / "absent-ffprobe";
+    check(problemOf([&] { (void)probeFfprobeAudio(absent, {}); }) == DecodeProblem::Unsupported,
+          "a missing ffprobe reports unsupported");
+    std::stop_source stopped;
+    stopped.request_stop();
+    check(problemOf([&] { (void)probeFfprobeAudio(absent, {}, stopped.get_token()); }) == DecodeProblem::Cancelled,
+          "a cancelled ffprobe refuses before looking for the tool");
+}
+
+constexpr std::size_t kTestFfmpegFrames = 700;
+constexpr std::size_t kTestFfmpegChannels = 3;
+constexpr std::array<float, kTestFfmpegChannels> kTestFfmpegSample{0.5f, -0.25f, 0.125f};
+
+int ffmpegTestChild(int argc, char** argv) {
+    const auto input = std::find_if(argv, argv + argc - 1, [](const char* arg) {
+        return std::string_view(arg) == "-i";
+    });
+    if (input == argv + argc - 1) return 2;
+    const auto mode = fs::path(input[1]).filename();
+    if (mode == "empty") return 0;
+#if defined(_WIN32)
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 2;
+#endif
+    constexpr std::array<unsigned char, kTestFfmpegChannels * 4> frame{
+        0, 0, 0, 0x3f, 0, 0, 0x80, 0xbe, 0, 0, 0, 0x3e};
+    if (mode == "partial") return std::fwrite(frame.data(), 1, 5, stdout) == 5 ? 0 : 2;
+    if (std::fwrite(frame.data(), 1, 3, stdout) != 3 || std::fflush(stdout) != 0) return 2;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (std::fwrite(frame.data() + 3, 1, frame.size() - 3, stdout) != frame.size() - 3) return 2;
+    for (std::size_t i = 1; i < kTestFfmpegFrames; ++i) {
+        if (std::fwrite(frame.data(), 1, frame.size(), stdout) != frame.size()) return 2;
+    }
+    return mode == "failed" ? 7 : 0;
+}
+
+void ffmpegPcm(const fs::path& executable, const fs::path& folder) {
+    const auto source = [&](const char* name) {
+        auto path = folder / name;
+        std::ofstream(path, std::ios::binary) << "owned process test fixture";
+        return path;
+    };
+    constexpr FfprobeAudioStream layout{1, 48000, 3};
+    const auto accepted = [](std::span<const float>) { return true; };
+    const auto complete = source("complete");
+    std::vector<float> samples;
+    const auto frames = streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+        [&](std::span<const float> chunk) {
+            check(chunk.size() % kTestFfmpegChannels == 0, "every PCM sink batch is frame-aligned");
+            samples.insert(samples.end(), chunk.begin(), chunk.end());
+            return true;
+        });
+    check(frames == kTestFfmpegFrames && samples.size() == frames * kTestFfmpegChannels,
+          "FFmpeg PCM accepts the exact frame budget and reports its delivered frames");
+    bool exact = true;
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        if (samples[i] != kTestFfmpegSample[i % kTestFfmpegChannels]) exact = false;
+    check(exact, "split process reads reconstruct the exact float words and channel order");
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames - 1, accepted);
+    }) == DecodeProblem::NoSpace, "FFmpeg PCM enforces the frame budget");
+    for (const char* input : {"empty", "partial", "failed"}) {
+        check(problemOf([&] {
+            (void)streamFfmpegAudio(executable, source(input), layout, kTestFfmpegFrames, accepted);
+        }) == DecodeProblem::Corrupt, std::string("FFmpeg PCM refuses ") + input + " output");
+    }
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+                               [](std::span<const float>) { return false; });
+    }) == DecodeProblem::CacheWrite, "FFmpeg PCM reports a sink refusal");
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+            [](std::span<const float>) -> bool { throw DecodeError(DecodeProblem::NoSpace, "sink quota"); });
+    }) == DecodeProblem::NoSpace, "FFmpeg PCM preserves the sink's typed error");
+}
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc > 2 && std::string_view(argv[1]) == "-nostdin")
+            return ffmpegTestChild(argc, argv);
+        if (argc == 6 && std::string_view(argv[1]) == "--ffmpeg-stream") {
+            const auto stream = probeFfprobeAudio(argv[3], argv[4]);
+            double peak = 0.0;
+            const auto frames = streamFfmpegAudio(argv[2], argv[4], stream, std::stoull(argv[5]),
+                [&](std::span<const float> samples) {
+                    for (float value : samples) peak = std::max(peak, std::abs(static_cast<double>(value)));
+                    return true;
+                });
+            std::printf("%u %u %u %llu %.9f\n", stream.index, stream.sampleRate, stream.channels,
+                        static_cast<unsigned long long>(frames), peak);
+            return 0;
+        }
+        // Optional native gate against an explicitly chosen ffprobe and owned media.
+        if (argc == 4 && std::string_view(argv[1]) == "--ffprobe") {
+            const auto stream = probeFfprobeAudio(argv[2], argv[3]);
+            std::printf("%u %u %u\n", stream.index, stream.sampleRate, stream.channels);
+            return 0;
+        }
         adi::test::TempDirectory tmp("decode", "suite");
         formats(tmp.path());
         refusals(tmp.path());
@@ -340,6 +532,9 @@ int main() {
         pinned(tmp.path());
         freeSpace(tmp.path());
         settings();
+        defaultCacheSettings(tmp.path());
+        ffprobeMetadata(tmp.path());
+        ffmpegPcm(fs::absolute(argv[0]), tmp.path());
     } catch (const std::exception& e) {
         check(false, std::string("unexpected exception: ") + e.what());
     }

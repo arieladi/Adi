@@ -412,6 +412,9 @@ class AdiApplication final : public juce::JUCEApplication,
             diagnosticLog_.emplace(appdata::pathsFor(appdata::App::Daw).data, ADI_VERSION_STRING);
             refreshDiagnosticLog();
         }
+        const auto cacheRoot = settings_->get(audio::kCacheFolderKey).get<std::string>();
+        if (!audio::setDefaultMediaCacheRoot(pathFromUtf8(cacheRoot)))
+            report("Cache Folder must be an absolute path. ADI will use the application cache folder.");
         commands_ = std::make_unique<AppCommands>(*settings_);
         refreshCacheLimits();
         commands_->onEnvelopeLockChanged = [this] {
@@ -1696,7 +1699,9 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         if (limits.maxBytes == cacheLimits_.maxBytes && limits.minFreeBytes == cacheLimits_.minFreeBytes)
             return;
-        audio::defaultDecodeCache().setLimits(limits);
+        // Through the default cache's own setter: the cache (and its folder under Cache Folder) is made
+        // only when a decode needs it, so the limits are kept for it until then.
+        audio::setDefaultDecodeCacheLimits(limits);
         cacheLimits_ = limits;
     }
     void refreshTestTone() {

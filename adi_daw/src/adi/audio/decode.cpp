@@ -28,6 +28,7 @@
 #include <memory>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <system_error>
 #include <thread>
@@ -660,8 +661,10 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
                 if(!probe.frames() || !probe.channels() || probe.channels()>kMaxDecodeChannels || !probe.sampleRate() || probe.sampleRate()>kMaxDecodeRate)
                     throw std::runtime_error("unsupported cached audio dimensions");
             } catch(const std::exception& error) {throw DecodeError(DecodeProblem::CacheWrite,display(target)+": incomplete/invalid cache target: "+error.what());}
+            const auto bytes = fs::file_size(target, ec);
+            if (ec) throw DecodeError(DecodeProblem::CacheWrite, display(target) + ": cached audio disappeared or became unreadable");
             auto& item = items_[hash.hex];
-            item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
+            item.bytes = static_cast<std::uint64_t>(bytes);
             item.lastUse = stamp();
             ++item.pins;
             ++stats_.hits;
@@ -700,8 +703,10 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     }
 
     std::lock_guard lock(mutex_);
+    const auto bytes = fs::file_size(target, ec);
+    if (ec) throw DecodeError(DecodeProblem::CacheWrite, display(target) + ": decoded audio disappeared or became unreadable");
     auto& item = items_[hash.hex];
-    item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
+    item.bytes = static_cast<std::uint64_t>(bytes);
     item.lastUse = stamp();
     ++stats_.decodes;
     evict(0, hash.hex);
@@ -753,15 +758,66 @@ std::vector<std::string> DecodeCache::problems() const {
     return problems_;
 }
 
+namespace {
+struct DefaultDecodeCacheState {
+    std::mutex mutex;
+    fs::path rootOverride;
+    std::optional<fs::path> activeRoot;
+    DecodeCacheLimits limits;
+    std::unique_ptr<DecodeCache> cache;
+};
+DefaultDecodeCacheState& defaultCacheState() {
+    static DefaultDecodeCacheState state;
+    return state;
+}
+const fs::path& resolveMediaCacheRoot(DefaultDecodeCacheState& state) {
+    if (!state.activeRoot)
+        state.activeRoot = state.rootOverride.empty() ? appdata::pathsFor(appdata::App::Daw).cache : state.rootOverride;
+    return *state.activeRoot;
+}
+} // namespace
+
+bool setDefaultMediaCacheRoot(fs::path root) {
+    if (onAudioThread) return false;
+    if (!root.empty() && (!root.is_absolute() || root.native().find(fs::path::value_type{}) != fs::path::string_type::npos))
+        return false;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (state.activeRoot) return root == state.rootOverride;
+    state.rootOverride = std::move(root);
+    return true;
+}
+
+fs::path defaultMediaCacheRoot() {
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    return resolveMediaCacheRoot(state);
+}
+
+void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
+    if (onAudioThread) return;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (state.limits.maxBytes == limits.maxBytes && state.limits.minFreeBytes == limits.minFreeBytes)
+        return;
+    state.limits = limits;
+    if (state.cache) state.cache->setLimits(limits);
+}
+
 DecodeCache& defaultDecodeCache() {
-    static DecodeCache cache(appdata::pathsFor(appdata::App::Daw).cache / "decoded");
-    return cache;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (!state.cache)
+        state.cache = std::make_unique<DecodeCache>(resolveMediaCacheRoot(state) / "decoded", state.limits);
+    return *state.cache;
 }
 
 fs::path playableFile(const fs::path& source) {
+    if (onAudioThread)
+        throw DecodeError(DecodeProblem::AudioThread, display(source) + ": decoding is never done on the audio thread");
     // A WAV the reader plays never touches the cache, so a session of plain
     // WAVs creates no cache folder at all.
-    if (!onAudioThread && sniff(source) == SourceFormat::Riff) {
+    if (sniff(source) == SourceFormat::Riff) {
         try {
             WavReader probe(source);
             return source;

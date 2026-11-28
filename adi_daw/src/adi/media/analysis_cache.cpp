@@ -2,8 +2,8 @@
 #include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
-#include "adi/appdata.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -220,5 +220,11 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
     }catch(const std::bad_alloc&){result.problem=AnalysisCacheProblem::Resource;return result;}
     catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=firstError.empty()?e.what():firstError+"; trim aborted: "+e.what();return result;}
 }
-AnalysisCache& defaultAnalysisCache(){static AnalysisCache cache([]{const auto paths=appdata::pathsFor(appdata::App::Daw);return paths.cache.empty()?fs::path{}:paths.cache/"analysed";}());return cache;}
+AnalysisCache& defaultAnalysisCache() {
+    static AnalysisCache cache([] {
+        const auto root = audio::defaultMediaCacheRoot();
+        return root.empty() ? fs::path{} : root / "analysed";
+    }());
+    return cache;
+}
 } // namespace adi::media
