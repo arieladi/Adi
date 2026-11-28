@@ -26,7 +26,13 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **Sheet 8 (Chord Comb, Color Cab):** "looks perfect to me". His panel's points on it were sorted against the code: the small missing things are SC-484, the additions are DF-W66, and two of its requests (the old colour sounding while the new one builds; no latency) are already what ADR-0192 built. **ADI-Shaper:** he doubts it matches its model ("it needs a browser, presets, and lots of templates, need to make sure it dident miss any quality or ability"); win read the model's pages and put the gaps on SC-481 and in the lists' prompt (#840).
 
-**Next free:** ADR-0267; schema minor 1.29; DF-W67, DF-R4, DF-C10, DF-E93; SC-485.
+**The three lists landed the same afternoon** (#842, `docs/review/device-parity-2026-11-28.md`). ADI-Shaper: 178 features, 21 has, 24 part, 130 missing; its seven shapers measure very close to the model's, so what is there is sound and what is missing is breadth. OneShot: 89 features, 19 has, 42 missing. Sampler: 116 features, 7 has, 54 missing. Owed by win: the missing rows the plan does not carry become plan rows, and the order of ADI-Shaper's build goes to him as choices.
+
+**His answers H and I** are ADR-0267 d7 (a device's presets are the Browser's and are found at the device, with a button to the Browser) and ADR-0268 (the panel's ideas beyond Live, a goal). Both ride the next stack on `win/adr-0267`.
+
+**He tested a newer build:** hosted VST3 and CLAP plug-ins work, automation records, a held drag bends a segment, the dial follows the automation. One new finding, a folded device that does not unfold by a double-click (SC-485). He tests instruments and MIDI recording next.
+
+**Next free:** ADR-0269; schema minor 1.29; DF-W67, DF-R4, DF-C10, DF-E93; SC-486.
 
 ---
 
