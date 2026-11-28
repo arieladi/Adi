@@ -25,6 +25,17 @@ bool positiveAscending(const std::vector<std::int64_t>& ids) {
         std::adjacent_find(ids.begin(), ids.end()) == ids.end();
 }
 
+bool needsRetainedPages(const LaunchSlot& slot, std::uint32_t rate) noexcept {
+    return slot.physicalLoopEndFrame > 0 || slot.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate);
+}
+
+bool samePinnedShape(const LaunchSlot& a, const LaunchSlot& b) noexcept {
+    return a.track == b.track && a.scene == b.scene && a.clip == b.clip &&
+        a.physicalStartFrame == b.physicalStartFrame && a.physicalFrames == b.physicalFrames &&
+        a.physicalLoopBeginFrame == b.physicalLoopBeginFrame && a.physicalLoopEndFrame == b.physicalLoopEndFrame &&
+        a.fade == b.fade && a.mode == b.mode;
+}
+
 } // namespace
 
 LaunchAudioClip LaunchAudioClip::fromSamples(std::int64_t clip, std::uint32_t rate, std::uint16_t channels,
@@ -151,7 +162,8 @@ bool LaunchAudioRuntime::postRegionEdit(LaunchAudioDriver& driver, const LaunchC
 LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject> project,
                                        std::vector<std::int64_t> tracks, std::int32_t maxFrames,
                                        std::shared_ptr<const LaunchAudioProject> beforeClock,
-                                       std::int64_t clockSample, std::uint64_t compatibleGainRevision)
+                                       std::int64_t clockSample, std::uint64_t compatibleGainRevision,
+                                       LaunchAudioDriver* owner)
     : project_(std::move(project)), beforeClock_(std::move(beforeClock)), clockSample_(clockSample),
       tracks_(std::move(tracks)), ranges_(tracks_.size()), maxFrames_(maxFrames),
       compatibleGainRevision_(compatibleGainRevision) {
@@ -162,6 +174,18 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
     const auto known = project_->view().tracks;
     if (!positiveAscending(tracks_) || !std::includes(known.begin(), known.end(), tracks_.begin(), tracks_.end()))
         throw std::invalid_argument("Session audio runtime needs known tracks in ascending order");
+    if (owner && project_->stored()) {
+        owner->collectPinnedSourceOwners();
+        const auto gather = [&](const LaunchAudioProject& bank, std::vector<Candidate>& into) {
+            for (const auto& slot : bank.view().slots) {
+                if (slot.clip == 0 || slot.physicalFrames <= 0) continue;
+                const auto* pcm = bank.clip(slot.clip);
+                into.push_back({slot, pcm && needsRetainedPages(slot,pcm->rate()) ? owner->ownerFor(*pcm) : nullptr});
+            }
+        };
+        gather(*project_,pinned_);
+        if (beforeClock_) gather(*beforeClock_,beforePinned_);
+    }
     // A one-frame loop can produce one range per frame per track. Reserve
     // that bound so a callback never drops or allocates a range.
     for (std::size_t index = 0; index < tracks_.size(); ++index) {
@@ -174,6 +198,171 @@ LaunchAudioRuntime::LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>
 
 const std::shared_ptr<const LaunchAudioProject>& LaunchAudioRuntime::mediaAt(std::int64_t sample) const noexcept {
     return beforeClock_ && sample < clockSample_ ? beforeClock_ : project_;
+}
+
+const LaunchAudioRuntime::Candidate* LaunchAudioRuntime::pinnedCandidate(std::int64_t sample, std::int64_t track,
+                                                                        std::int64_t clip) const noexcept {
+    if (!hasTrack(track)) return nullptr;
+    const auto& bank = beforeClock_ && sample < clockSample_ ? beforePinned_ : pinned_;
+    if (bank.empty()) return nullptr;
+    const auto* end = bank.data() + bank.size();
+    auto* item = std::lower_bound(bank.data(),end,track,[](const Candidate& candidate,std::int64_t id) {
+        return candidate.slot.track < id;
+    });
+    for (; item != end && item->slot.track == track; ++item)
+        if (item->slot.clip == clip) return item;
+    return nullptr;
+}
+
+void LaunchAudioDriver::collectPinnedSourceOwners() noexcept {
+    // Owner is the only thread that acquires/drops a catalog reference. A
+    // driver needs a live catalog to acquire its first lease. Existing runs
+    // and tails keep their raw leases through graph reclamation and rendering.
+    std::erase_if(sourceOwners_, [](const auto& entry) {
+        const auto& source = entry.second;
+        return source.use_count() == 1 && source->leases.load(std::memory_order_acquire) == 0;
+    });
+}
+
+std::shared_ptr<LaunchPinnedSource> LaunchAudioDriver::ownerFor(const LaunchAudioClip& clip) {
+    const SourceKey key{clip.pageReader(),clip.clip()};
+    if (!key.reader) return {};
+    const auto position = sourceOwners_.lower_bound(key);
+    if (position != sourceOwners_.end() && !(key < position->first)) return position->second;
+    auto shared = clip.shareRawPages();
+    if (!shared) return {};
+    auto owner = std::make_shared<LaunchPinnedSource>(std::move(*shared));
+    sourceOwners_.emplace_hint(position,key,owner);
+    return owner;
+}
+
+LaunchAudioDriver::Retained* LaunchAudioDriver::findRetained(std::int64_t track, std::size_t count) noexcept {
+    if (count == 0) return nullptr;
+    auto* const end = retained_.data() + count;
+    auto* item = std::lower_bound(retained_.data(),end,track,[](const Retained& entry,std::int64_t id) {
+        return entry.track < id;
+    });
+    return item == end || item->track != track ? nullptr : item;
+}
+
+const LaunchAudioDriver::Retained* LaunchAudioDriver::retainedFor(std::int64_t track, std::int64_t clip,
+                                                                std::uint64_t run) const noexcept {
+    if (retainedCount_ == 0 || run == 0) return nullptr;
+    const auto* end = retained_.data() + retainedCount_;
+    const auto* item = std::lower_bound(retained_.data(),end,track,[](const Retained& entry,std::int64_t id) {
+        return entry.track < id;
+    });
+    return item == end || item->track != track || item->clip != clip || item->run != run ? nullptr : item;
+}
+
+void LaunchAudioDriver::retire(LaunchPinnedSource* source) noexcept {
+    // At most one retained run per track and two outstanding fades per track.
+    // Unfinished ranges still point into these entries until finishRanges().
+    if (source) retiring_.data()[retiringCount_++] = source;
+}
+
+void LaunchAudioDriver::retargetPinnedRun(const LaunchSlot& previous,const LaunchSlot& next,
+                                           std::uint64_t run) noexcept {
+    auto* retained = findRetained(previous.track,retainedCount_);
+    if (!retained || retained->clip != previous.clip || retained->run != run) return;
+    if (!samePinnedShape(retained->slot,previous)) {
+        retireRun(previous.track,run);
+        return;
+    }
+    // Launcher verified the copied slot's topology and phase. The old
+    // reader keeps its prepared PCM identity until the live run ends.
+    retained->clip = next.clip;
+    retained->slot = next;
+    gains_.retargetRun(next.track,previous.clip,next.clip,run);
+}
+
+void LaunchAudioDriver::retireRun(std::int64_t track, std::uint64_t run) noexcept {
+    if (run == 0) return;
+    auto* entry = findRetained(track,retainedCount_);
+    if (!entry || entry->run != run) return;
+    retire(entry->source);
+    entry->run = 0;
+    endedRetainedRun_ = true;
+}
+
+void LaunchAudioDriver::finishRanges() noexcept {
+    while (retiringCount_ != 0)
+        retiring_.data()[--retiringCount_]->leases.fetch_sub(1,std::memory_order_release);
+    if (endedRetainedRun_ && retainedCount_ != 0) {
+        auto* const start = retained_.data();
+        const auto* end = std::remove_if(start,start + retainedCount_,[](const Retained& entry) {
+            return entry.run == 0;
+        });
+        retainedCount_ = static_cast<std::size_t>(end - start);
+    }
+    endedRetainedRun_ = false;
+}
+
+void LaunchAudioDriver::suspend() noexcept {
+    if (wasPlaying_) launcher_.suspendStatus();
+    wasPlaying_ = false;
+    for (std::size_t index = 0; index < tailCount_; ++index)
+        retire(tails_.data()[index].pinned);
+    tailCount_ = 0;
+    finishRanges();
+    nextTimelineSample_ = -1;
+}
+
+void LaunchAudioDriver::discardIncompatiblePinnedRuns(const LaunchAudioRuntime* after,
+                                                       std::int64_t sample) noexcept {
+    finishRanges();
+    std::size_t retained = 0;
+    for (std::size_t index = 0; index < retainedCount_; ++index) {
+        const auto& entry = retained_.data()[index];
+        const auto* next = after ? after->pinnedCandidate(sample,entry.track,entry.clip) : nullptr;
+        if (next && after->incarnation() == entry.incarnation && samePinnedShape(entry.slot,next->slot))
+            retained_.data()[retained++] = entry;
+        else
+            entry.source->leases.fetch_sub(1,std::memory_order_release);
+    }
+    retainedCount_ = retained;
+    if (!after) {
+        std::size_t activeTails = 0;
+        for (std::size_t index = 0; index < tailCount_; ++index) {
+            const auto& tail = tails_.data()[index];
+            if (tail.pinned)
+                tail.pinned->leases.fetch_sub(1,std::memory_order_release);
+            else
+                tails_.data()[activeTails++] = tail;
+        }
+        tailCount_ = activeTails;
+    }
+}
+
+void LaunchAudioDriver::retainPinnedRuns(const LaunchAudioRuntime& before, const LaunchAudioRuntime& after,
+                                         std::int64_t sample) noexcept {
+    struct Context {
+        LaunchAudioDriver& driver;
+        const LaunchAudioRuntime& before;
+        const LaunchAudioRuntime& after;
+        std::int64_t sample;
+        std::size_t settledRuns;
+    };
+    const Context context{*this,before,after,sample,retainedCount_};
+    (void)launcher_.anyRunningClip(&context,[](const void* opaque, std::int64_t track,
+                                              std::int64_t clip, std::uint64_t run) noexcept {
+        const auto& call = *static_cast<const Context*>(opaque);
+        auto& driver = call.driver;
+        if (driver.retainedCount_ == driver.retained_.size() || driver.findRetained(track,call.settledRuns) ||
+            !call.before.dropsPinnedPages(&call.after,call.sample,track,clip,true))
+            return false;
+        const auto* old = call.before.pinnedCandidate(call.sample,track,clip);
+        const auto* next = call.after.pinnedCandidate(call.sample,track,clip);
+        if (!old || !old->source || !next || !samePinnedShape(old->slot,next->slot)) return false;
+        auto* source = old->source.get();
+        source->leases.fetch_add(1,std::memory_order_relaxed);
+        driver.retained_.data()[driver.retainedCount_++] = {track,clip,run,call.before.incarnation(),call.before.gainRevision(),source,old->slot};
+        return false;
+    });
+    if (retainedCount_ > context.settledRuns)
+        std::sort(retained_.data(),retained_.data() + retainedCount_,[](const Retained& a,const Retained& b) {
+            return a.track < b.track;
+        });
 }
 
 bool LaunchAudioRuntime::dropsWorkerWarp(const LaunchAudioRuntime* after, std::int64_t sample,
@@ -195,8 +384,7 @@ bool LaunchAudioRuntime::dropsPinnedPages(const LaunchAudioRuntime* after, std::
     auto* slot = std::lower_bound(slots.data(),end,track,
         [](const LaunchSlot& item,std::int64_t id) { return item.track < id; });
     for (; slot != end && slot->track == track; ++slot) {
-        if (slot->clip != clip || (!slot->physicalLoopEndFrame &&
-            slot->physicalFrames <= 3 * ClipPlayback::readAheadFrames(source->rate()))) continue;
+        if (slot->clip != clip || !needsRetainedPages(*slot,source->rate())) continue;
         const auto* nextBank = after && after->hasTrack(track) ? after->mediaAt(sample).get() : nullptr;
         if (retainedOnly) {
             // An ordinary refresh may deliberately remove or move the slot.
@@ -225,7 +413,8 @@ bool LaunchAudioDriver::dropsRunningProtectedAudio(const LaunchAudioRuntime& bef
         bool externalTempo, pinnedPages;
     };
     const Check check{before,after,sample,externalTempo,pinnedPages};
-    return launcher_.anyRunningClip(&check,[](const void* opaque, std::int64_t track, std::int64_t clip) noexcept {
+    return launcher_.anyRunningClip(&check,[](const void* opaque, std::int64_t track, std::int64_t clip,
+                                              std::uint64_t) noexcept {
         const auto& query = *static_cast<const Check*>(opaque);
         return (query.externalTempo && query.before.dropsWorkerWarp(query.after,query.sample,track,clip)) ||
             (query.pinnedPages && query.before.dropsPinnedPages(query.after,query.sample,track,clip,!query.externalTempo));
@@ -245,8 +434,17 @@ void LaunchAudioRuntime::startIfQueued(LaunchAudioDriver& driver, LaunchBlock bl
     block.followPass = driver.pass_;
     auto view = mediaAt(block.sample)->view();
     view.tracks = tracks_;
+    LaunchSink sink;
+    sink.context = &driver;
+    sink.transition = [](void* state, const LaunchTransition& edge) noexcept {
+        static_cast<LaunchAudioDriver*>(state)->retireRun(edge.track,edge.oldRun);
+    };
+    sink.retargeted = [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
+        static_cast<LaunchAudioDriver*>(state)->retargetPinnedRun(previous,next,run);
+    };
     if ((block.preparedScene && block.preparedScene->token > driver.performedSceneToken()) ||
-        driver.launcher_.admitWhileStopped(block, view)) transport.play();
+        driver.launcher_.admitWhileStopped(block,view,sink)) transport.play();
+    driver.finishRanges();
 }
 
 void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
@@ -271,6 +469,12 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     driver.wasPlaying_ = true;
     block.incarnation = project_->incarnation();
     if (driver.tailIncarnation_ != block.incarnation) {
+        while (driver.retainedCount_ != 0) {
+            const auto& retained = driver.retained_.data()[--driver.retainedCount_];
+            if (retained.run != 0) driver.retire(retained.source);
+        }
+        for (std::size_t index = 0; index < driver.tailCount_; ++index)
+            driver.retire(driver.tails_.data()[index].pinned);
         driver.tailCount_ = 0;
         driver.tailIncarnation_ = block.incarnation;
     }
@@ -279,6 +483,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         auto tail = driver.tails_.data()[index];
         if (addTail(tail, 0, block.frames))
             driver.tails_.data()[remainingTails++] = tail;
+        else driver.retire(tail.pinned);
     }
     driver.tailCount_ = remainingTails;
     block.followPass = driver.pass_;
@@ -310,12 +515,13 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         sceneObserverContext, sceneObserver, capture};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
-        call.runtime.add(call.driver.gains_, *call.media, section, call.block, call.offset, call.capture);
+        call.runtime.add(call.driver, *call.media, section, call.block, call.offset, call.capture);
     }, [](void* state, const LaunchTransition& edge) noexcept {
         const auto& call = *static_cast<const Context*>(state);
         const auto& before = call.runtime.beforeClock_;
         const auto* outgoing = before && edge.sample == call.runtime.clockSample_ ? before.get() : call.media;
         call.runtime.fadeOut(call.driver, *outgoing, edge, call.offset + edge.offset, call.frames);
+        call.driver.retireRun(edge.track,edge.oldRun);
         if (call.capture || call.observer) {
             auto logicalEdge = edge;
             logicalEdge.offset += call.offset;
@@ -362,6 +568,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             call.incarnation, call.block.followActionsEnabled, call.seed);
         if (next && next->request.scene && call.runtime.sceneClock(*next->request.scene)) return std::nullopt;
         return next;
+    }, [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
+        static_cast<Context*>(state)->driver.retargetPinnedRun(previous,next,run);
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);
@@ -382,7 +590,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         context.media = mediaAt(block.sample).get();
         context.view = context.media->view();
         context.view.tracks = tracks_;
-        driver.gains_.begin(block, tracks_, gainRevision());
+        driver.gains_.begin(block, tracks_, gainRevision(), &driver,
+            [](const void* raw, std::int64_t track, std::int64_t clip, std::uint64_t run) noexcept {
+                const auto* retained = static_cast<const LaunchAudioDriver*>(raw)->retainedFor(track,clip,run);
+                return retained ? retained->gainRevision : std::uint64_t{0};
+            });
         if (!driver.launcher_.process(block, context.view, sink))
             break;
         context.offset += block.frames;
@@ -402,8 +614,8 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
                                 std::int32_t frames) noexcept {
     if (frames <= 0 || tracks_.empty()) return false;
     const auto* media = beforeClock_ && beforeClock_->pcmRevision() == tail.media ? beforeClock_.get() : project_.get();
-    if (media->pcmRevision() != tail.media) return false;
-    const auto* pcm = media->clip(tail.clip);
+    if (!tail.pinned && media->pcmRevision() != tail.media) return false;
+    const auto* pcm = tail.pinned ? &tail.pinned->pcm : media->clip(tail.clip);
     if (!pcm) return false;
     const auto duration = launchFadeFrames(pcm->rate());
     if (tail.elapsed >= duration) return false;
@@ -427,7 +639,11 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
 void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioProject& media, const LaunchTransition& edge,
                                  std::int32_t offset, std::int32_t frames) noexcept {
     if (!edge.oldFade || offset < 0 || offset >= frames) return;
-    const auto* pcm = media.clip(edge.oldClip);
+    const auto* retained = driver.retainedFor(edge.track,edge.oldClip,edge.oldRun);
+    const auto bankSample = beforeClock_.get() == &media && edge.sample == clockSample_ ? edge.sample - 1 : edge.sample;
+    const auto* declared = retained ? pinnedCandidate(bankSample,edge.track,edge.oldClip) : nullptr;
+    auto* pinned = declared && samePinnedShape(retained->slot,declared->slot) ? retained->source : nullptr;
+    const auto* pcm = pinned ? &pinned->pcm : media.clip(edge.oldClip);
     if (!pcm) return;
     const auto anchor = edge.oldPhysicalSourceAnchorFrame >= 0 ? edge.oldPhysicalSourceAnchorFrame
         : pcm->frameForTick(edge.oldSourceAnchorTick, media.bpm());
@@ -435,14 +651,16 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
         std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, anchor));
     LaunchAudioDriver::Tail tail{edge.track, edge.oldClip, source, 0,
         edge.oldFramesSinceStart, edge.oldVelocity * driver.gains_.currentMultiplier(edge.track, edge.oldRun),
-        media.pcmRevision(), {edge.sample,edge.oldClockAnchorTick,edge.oldClockAnchorSourceTick}};
-    if (addTail(tail, offset, frames - offset) && driver.tailCount_ < driver.tails_.size())
+        media.pcmRevision(), {edge.sample,edge.oldClockAnchorTick,edge.oldClockAnchorSourceTick}, pinned};
+    if (addTail(tail, offset, frames - offset) && driver.tailCount_ < driver.tails_.size()) {
+        if (pinned) pinned->leases.fetch_add(1,std::memory_order_relaxed);
         driver.tails_.data()[driver.tailCount_++] = tail;
+    }
 }
 
-void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProject& media, const LaunchSection& section,
+void LaunchAudioRuntime::add(LaunchAudioDriver& driver, const LaunchAudioProject& media, const LaunchSection& section,
                              const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
-    const auto gain = gains.range(block, section);
+    const auto gain = driver.gains_.range(block, section);
     if (section.arrangement || section.frames <= 0 || tracks_.empty())
         return;
     const auto* ids = tracks_.data();
@@ -453,7 +671,10 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     auto& ranges = ranges_.data()[track - ids];
     if (ranges.size >= ranges.items.size()) return;
     if (!ranges.midi.empty()) ranges.midi.data()[ranges.size] = {section, block, base};
-    const auto* pcm = media.clip(section.clip);
+    const auto* retained = driver.retainedFor(section.track,section.clip,section.run);
+    const auto* declared = retained ? pinnedCandidate(block.sample,section.track,section.clip) : nullptr;
+    const auto* pinned = declared && samePinnedShape(retained->slot,declared->slot) ? retained->source : nullptr;
+    const auto* pcm = pinned ? &pinned->pcm : media.clip(section.clip);
     const auto anchor = section.physicalSourceAnchorFrame >= 0 ? section.physicalSourceAnchorFrame
         : (pcm ? pcm->frameForTick(section.sourceAnchorTick, media.bpm()) : 0);
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
@@ -463,7 +684,7 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
         !pcm->usesPages() && !pcm->followsTempo() && fade < 0 && section.velocity == 1.0f && source >= 0 &&
         static_cast<std::uint64_t>(source) <= pcm->frames() &&
         static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);
-    if (capture && !tapePcm && section.clip != 0 && (section.regionIsLiveEdit ||
+    if (capture && !tapePcm && section.clip != 0 && (pinned || section.regionIsLiveEdit ||
         (gain.beforeFrames > 0 && gain.before != 1.0f) ||
         (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
 

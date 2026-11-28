@@ -32,7 +32,11 @@ LaunchClipGainEdits::Track* LaunchClipGainEdits::findTrack(std::int64_t id) noex
 }
 
 void LaunchClipGainEdits::begin(const LaunchBlock& block, std::span<const std::int64_t> ids,
-                               std::uint64_t pcmRevision) noexcept {
+                               std::uint64_t pcmRevision, const void* retainedContext,
+                               RetainedRevision retainedRevision) noexcept {
+    const auto heldRevision = [&](const Track& track) {
+        return retainedRevision ? retainedRevision(retainedContext,track.id,track.clip,track.run) : std::uint64_t{0};
+    };
     if (ids.size() > tracks_.size() || block.frames <= 0 || block.sample < 0 ||
         block.sample > std::numeric_limits<std::int64_t>::max() - block.frames) {
         count_ = 0;
@@ -48,6 +52,7 @@ void LaunchClipGainEdits::begin(const LaunchBlock& block, std::span<const std::i
         // Keep its literal address so commands for the new baseline can queue
         // before its first callback. The old baseline's edits have expired.
         for (auto& track : std::span(active_, count_)) {
+            if (heldRevision(track) != 0) continue;
             track.multiplier = 1.0f;
             track.pending.reset();
         }
@@ -77,7 +82,9 @@ void LaunchClipGainEdits::begin(const LaunchBlock& block, std::span<const std::i
         const auto& queued = mailbox_[static_cast<std::size_t>(read++ % capacity)];
         const auto& edit = queued.edit;
         auto* track = findTrack(edit.track);
-        if (track && queued.pcmRevision == pcmRevision_ && edit.incarnation == incarnation_ &&
+        const auto oldRevision = track ? heldRevision(*track) : std::uint64_t{0};
+        if (track && (queued.pcmRevision == pcmRevision_ || (oldRevision != 0 && queued.pcmRevision == oldRevision)) &&
+            edit.incarnation == incarnation_ &&
             edit.run == track->run && edit.clip == track->clip)
             track->pending = Pending{edit, {}};
     }
@@ -117,6 +124,14 @@ LaunchClipGainRange LaunchClipGainEdits::range(const LaunchBlock& block,
         track->pending.reset();
     }
     return plan;
+}
+
+void LaunchClipGainEdits::retargetRun(std::int64_t id, std::int64_t previousClip, std::int64_t clip,
+                                     std::uint64_t run) noexcept {
+    auto* track = findTrack(id);
+    if (!track || track->clip != previousClip || track->run != run) return;
+    track->clip = clip;
+    if (track->pending) track->pending->edit.clip = clip;
 }
 
 float LaunchClipGainEdits::currentMultiplier(std::int64_t trackId, std::uint64_t run) noexcept {

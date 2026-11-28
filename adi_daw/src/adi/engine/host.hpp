@@ -58,6 +58,8 @@ public:
     // and before running any node. Returned metadata lives through that slice.
     // No allocation/lock/I/O.
     [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
+    // Owner only, after the publisher freed obsolete graph catalogs.
+    virtual void collectRetiredSources() const noexcept {}
 };
 class PublishedGraph final : public Sequenced {
 public:

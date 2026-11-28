@@ -1079,7 +1079,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                 : StoredLaunchPageReuse{};
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
                 storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages,
-                !hasPriorBank || timing.preparedPinnedRestart);
+                !hasPriorBank || (adoptedCompatible && !primeExternalAt_));
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {
@@ -1162,7 +1162,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             gainRevision = prior->launchAudio->gainRevision();
     }
     timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,
-                                                            clockSample, gainRevision);
+                                                            clockSample, gainRevision, launchAudioDriver_.get());
     if (timedScenePending) {
         if (!timing.launchAudio->hasScene(preparedScene_->scene))
             throw std::runtime_error("a committed Session scene must remain available until launch");
@@ -3575,33 +3575,41 @@ bool Session::TimingView::samePausedTempo(const TimingView& previous) const noex
     return matchesComparedPausedTempo;
 }
 
+void Session::TimingView::collectRetiredSources() const noexcept {
+    if (auto* driver = session->launchAudioDriver_.get()) driver->collectPinnedSourceOwners();
+}
+
 bool Session::TimingView::readyToAdopt(const GraphTransportState* before) const noexcept {
     const auto* previous = dynamic_cast<const TimingView*>(before);
     if (!previous || previous->session != session) return true;
     const auto playing = session->transport_.playing();
+    const auto position = session->transport_.position();
     const auto protectExternal = playing && protectExternalSessionAudio;
     // Compare with the graph that actually played. The owner's prior publication
     // can have been superseded before its page reader ever reached the driver.
     // A global pause preserves the old slot run on the same clock.
-    const bool protectPinned = (protectExternal || protectCompatiblePinnedPages) &&
-        previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
+    const bool compatibleFormat = previous->sampleRate == sampleRate && previous->spec.channels == spec.channels &&
         previous->spec.maxFrames == spec.maxFrames;
-    if ((protectExternal || protectPinned) && previous->launchAudio && session->launchAudioDriver_ &&
-        session->launchAudioDriver_->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
-            session->transport_.position(),protectExternal,protectPinned) &&
-        (playing || preparedPinnedRestart || samePausedTempo(*previous)))
-        return false;
-    if (!playing || !delayedSourceReadiness || !previous->authoredPerformanceTempo ||
-        previous->tempoRevision == tempoRevision || previous->spec.sampleRate != spec.sampleRate ||
-        previous->spec.channels != spec.channels || previous->spec.maxFrames != spec.maxFrames ||
-        previous->spec.precision != spec.precision || previous->spec.delayCompensation != spec.delayCompensation)
-        return true;
-
-    // The driver owns this clock. Its elapsed and loop history select the
-    // page that will actually be heard after this generation's source delay.
-    auto requested = session->transport_;
-    (void)projectLoop(requested);
-    return delayedSourceReadiness(requested,spec.maxFrames,true);
+    const bool protectPinned = (protectExternal || protectCompatiblePinnedPages) && compatibleFormat;
+    auto* driver = session->launchAudioDriver_.get();
+    const bool dropped = (protectExternal || protectPinned) && previous->launchAudio && driver &&
+        driver->dropsRunningProtectedAudio(*previous->launchAudio,launchAudio.get(),
+            position,protectExternal,protectPinned);
+    if (dropped && (playing || preparedPinnedRestart || samePausedTempo(*previous))) return false;
+    if (playing && delayedSourceReadiness && previous->authoredPerformanceTempo &&
+        previous->tempoRevision != tempoRevision && compatibleFormat &&
+        previous->spec.precision == spec.precision && previous->spec.delayCompensation == spec.delayCompensation) {
+        // The driver owns this clock. Its elapsed and loop history select the
+        // page that will actually be heard after this generation's source delay.
+        auto requested = session->transport_;
+        (void)projectLoop(requested);
+        if (!delayedSourceReadiness(requested,spec.maxFrames,true)) return false;
+    }
+    if (driver) {
+        driver->discardIncompatiblePinnedRuns(compatibleFormat ? launchAudio.get() : nullptr,position);
+        if (dropped && launchAudio) driver->retainPinnedRuns(*previous->launchAudio,*launchAudio,position);
+    }
+    return true;
 }
 
 const TransportInfo* Session::TimingView::beginBlock()const noexcept {
@@ -3941,7 +3949,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
             launcher->suspend();
         }
         const bool rendered = call.driver.graph_.process(call.block, resampling);
-        if (runtime) runtime->finish();
+        if (runtime && launcher) runtime->finish(*launcher);
         liveSession.midiHardwareSink_ = nullptr;
         liveSession.recordingAudioTracks_ = {};
         if (call.monitors) {

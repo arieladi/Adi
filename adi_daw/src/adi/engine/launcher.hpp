@@ -161,6 +161,7 @@ struct LaunchSink {
     void (*trackStatus)(void*, const LaunchTrackStatus&) noexcept = nullptr;
     void (*scenePerformed)(void*, const LaunchSceneTransition&) noexcept = nullptr;
     std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
+    void (*retargeted)(void*,const LaunchSlot& previous,const LaunchSlot& next,std::uint64_t run) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
@@ -194,7 +195,7 @@ public:
     [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
     /// Driver only, at a graph boundary before consuming the next gestures.
     [[nodiscard]] bool anyRunningClip(const void*,
-        bool (*matches)(const void*, std::int64_t track, std::int64_t clip) noexcept) const noexcept;
+        bool (*matches)(const void*, std::int64_t track, std::int64_t clip, std::uint64_t run) noexcept) const noexcept;
 
 private:
     enum class Action : std::uint8_t { Start, Stop, Arrangement };
@@ -254,8 +255,8 @@ private:
     void adopt(const LaunchBlock&, const LaunchView&, LaunchSink) noexcept;
     [[nodiscard]] bool valid(const LaunchRequest&, const LaunchBlock&, const LaunchView&) noexcept;
     [[nodiscard]] RetargetResult retarget(std::span<const LaunchRequest>, const LaunchBlock&,
-                                          const LaunchView&) noexcept;
-    void drain(const LaunchBlock&, const LaunchView&, std::int64_t) noexcept;
+                                          const LaunchView&, LaunchSink) noexcept;
+    void drain(const LaunchBlock&, const LaunchView&, std::int64_t, LaunchSink) noexcept;
     void drainRegionEdits(const LaunchBlock&, const LaunchView&) noexcept;
     void queueStop(Track&, const Pending&, std::uint64_t preparedThrough) noexcept;
     [[nodiscard]] bool preparedFollowersCanceled(const Track&, std::uint64_t token) const noexcept;

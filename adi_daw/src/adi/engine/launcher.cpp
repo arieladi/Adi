@@ -871,7 +871,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
 }
 
 Launcher::RetargetResult Launcher::retarget(std::span<const LaunchRequest> requests,
-                                            const LaunchBlock& block, const LaunchView& view) noexcept {
+                                            const LaunchBlock& block, const LaunchView& view, LaunchSink sink) noexcept {
     if (requests.empty() || requests.size() > LaunchGestureQueue::capacity || !requests.front().scene)
         return RetargetResult::Rejected;
     const auto scene = *requests.front().scene;
@@ -921,16 +921,21 @@ Launcher::RetargetResult Launcher::retarget(std::span<const LaunchRequest> reque
             rebindRunRequest(track.user);
         // No new run edge, chase, gain ramp or Follow Action draw. The new
         // clip section names the copy and the old run's exact clock and age.
+        if (sink.retargeted) {
+            const auto& before = *findClip(view,track.id,*request.expectedClip);
+            const auto& after = *findSlot(view,track.id,scene);
+            sink.retargeted(sink.context,before,after,track.run.serial);
+        }
         track.run.clip = *request.clip;
         track.run.scene = scene;
     }
     return RetargetResult::Applied;
 }
 
-void Launcher::drain(const LaunchBlock& block, const LaunchView& view, std::int64_t now) noexcept {
+void Launcher::drain(const LaunchBlock& block, const LaunchView& view, std::int64_t now, LaunchSink sink) noexcept {
     ++admission_;
     if (deferredRetargetSize_ &&
-        retarget(std::span(deferredRetarget_).first(deferredRetargetSize_),block,view) != RetargetResult::PendingView)
+        retarget(std::span(deferredRetarget_).first(deferredRetargetSize_),block,view,sink) != RetargetResult::PendingView)
         deferredRetargetSize_ = 0;
     for (std::size_t remaining = LaunchGestureQueue::capacity; remaining > 0;) {
         const auto result = gestures_.pop(batch_);
@@ -939,7 +944,7 @@ void Launcher::drain(const LaunchBlock& block, const LaunchView& view, std::int6
         if (std::any_of(gesture.begin(),gesture.end(),[](const LaunchRequest& request) {
                 return request.kind == LaunchRequestKind::RetargetRunning;
             })) {
-            switch (retarget(gesture,block,view)) {
+            switch (retarget(gesture,block,view,sink)) {
             case RetargetResult::PendingView:
                 std::copy_n(gesture.data(),gesture.size(),deferredRetarget_.data());
                 deferredRetargetSize_ = gesture.size();
@@ -967,7 +972,7 @@ bool Launcher::admitWhileStopped(const LaunchBlock& block, const LaunchView& vie
     adopt(block,view,sink);
     discardUnpublishedScene(block);
     const auto now = atSample(block,block.sample);
-    drain(block,view,now);
+    drain(block,view,now,sink);
     const auto active = std::span(activeTracks_,trackCount_);
     const auto fresh = [this](const std::optional<Pending>& pending) {
         return pending && pending->admission == admission_;
@@ -1064,7 +1069,7 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
             followScene_->earliestSample = block.sample;
         }
     }
-    drain(block,view,now);
+    drain(block,view,now,sink);
     drainRegionEdits(block,view);
     if (block.preparedScene && block.preparedScene->token > lastPreparedScene_) {
         const auto& scene = *block.preparedScene;
@@ -1271,10 +1276,10 @@ void Launcher::suspendStatus() noexcept {
 }
 
 bool Launcher::anyRunningClip(const void* context,
-    bool (*matches)(const void*, std::int64_t track, std::int64_t clip) noexcept) const noexcept {
+    bool (*matches)(const void*, std::int64_t track, std::int64_t clip, std::uint64_t run) noexcept) const noexcept {
     for (std::size_t index = 0; index < trackCount_; ++index) {
         const auto& track = activeTracks_[index];
-        if (track.run.clip && matches(context,track.id,track.run.clip)) return true;
+        if (track.run.clip && matches(context,track.id,track.run.clip,track.run.serial)) return true;
     }
     return false;
 }

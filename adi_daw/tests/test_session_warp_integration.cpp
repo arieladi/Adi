@@ -6,6 +6,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/engine/capture_scene.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/launch_gain_edits.hpp"
@@ -820,6 +821,121 @@ void pausedSupersessionReturnsToSameClock(bool nonconstant) {
     require(swapsPaused == swaps && std::abs(resumed - .55f) < 1e-6f && std::abs(restarted - .275f) < 1e-6f &&
             callbackAllocations == 0 && audio::callbackFileIo == 0,
             "equal clock across superseded B preserves old PCM and prepares a correct new start");
+}
+
+void pausedSupersessionAdoptsChangedClock(float originalGain, bool capture) {
+    test::TempDirectory folder{"session_unwarped_one_shot","different-clock-pause"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+    addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+    pinUnwarpedOneShot(*store,50031250,4000000000);
+    db.exec("UPDATE clip_launch SET ram_mode=0,clip_fade=1 WHERE clip_id=101");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto firstPulse = 123000;
+    constexpr auto secondPulse = firstPulse + 12000;
+    constexpr auto thirdPulse = secondPulse + 12000;
+    constexpr auto tailPulse = thirdPulse + 12000 + 1;
+    constexpr auto tempoTick = quarter;
+    std::vector<float> pcm(tailPulse + 6000);
+    Playback playback{session,pcm};
+    playback.paged = true;
+    scene(*store,session,10);
+    playback.through(firstPulse - 1);
+    const auto before = trackState(session);
+    const auto swaps = session.graph().stats().swaps;
+    if (originalGain != 1.0f)
+        require(session.postLaunchClipGainEdit({1,101,session.launchIncarnation(),before.run,originalGain,ClipUpdateRate::None}),
+                "set a live multiplier on the old baseline before the authored edit");
+    require(before.clip == 101 && before.run > 0 && session.beginRender().bpmAtTick(tempoTick) == 120,
+            "play late into the original four-second source at 120 BPM");
+
+    SQLite::Statement editTempo(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,150)");
+    editTempo.bind(1,tempoTick);
+    editTempo.exec();
+    db.exec("UPDATE clips SET gain_db=-6.020599913279624 WHERE id=101");
+    require(session.refresh(*store),"publish the changed clip and 150 BPM step");
+    playback.through(firstPulse);
+    require(session.beginRender().bpmAtTick(tempoTick) == 120 && session.graph().stats().swaps == swaps,
+            "the rolling old source holds the new clock pending");
+
+    session.transport().play(false);
+    playback.through(firstPulse + 1);
+    require(session.beginRender().bpmAtTick(tempoTick) == 150 && trackState(session).run == before.run,
+            "global pause adopts the new clock while preserving the active slot run");
+    (void)session.graph().collect();
+    session.transport().play();
+    playback.through(firstPulse + 2);
+    const auto resumed = pcm[firstPulse + 1];
+
+    const auto publishAgain = [&](std::int64_t until) {
+        const auto adopted = session.graph().stats().swaps;
+        require(session.refresh(*store),"publish an ordinary refresh on the adopted clock");
+        playback.through(until);
+        require(session.graph().stats().swaps > adopted && trackState(session).run == before.run &&
+                session.beginRender().bpmAtTick(tempoTick) == 150,
+                "another graph actually adopts while the same physical run continues");
+        (void)session.graph().collect();
+    };
+    publishAgain(secondPulse + 2);
+    const auto refreshed = pcm[secondPulse + 1];
+    auto editedScene = std::int64_t{10};
+    auto editedClip = std::int64_t{101};
+    if (capture) {
+        std::array<LaunchTrackStatus,8> rows{};
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(rows,header),"snapshot the playing held source for Capture Scene");
+        const SceneCaptureSnapshot snapshot{header,rows,session.launchIncarnation(),session.realisedAppliedSequence(),
+                                            OpJournal(*store).headSeq()};
+        const auto sceneCopy = prepareCaptureAndInsertScene(*store,snapshot,editedScene,"Captured while retained");
+        require(sceneCopy.edit.ok && sceneCopy.transfers.size() == 1,
+                "prepare one authored copy from the saved Session source");
+        const auto copied = commitCaptureAndInsertScene(*store,session,sceneCopy);
+        require(copied.durable.ok && copied.retargetQueued,"commit the scene copy and its non-retriggering handover");
+        editedScene = sceneCopy.scene;
+        editedClip = sceneCopy.transfers.front().newClip;
+        const auto edgeCount = playback.count;
+        playback.through(playback.first + 1);
+        const auto retained = trackState(session);
+        require(retained.run == before.run && retained.clip == editedClip && retained.scene == editedScene &&
+                playback.count == edgeCount,"Capture Scene rekeys the old audible run without emitting a launch edge");
+        (void)session.graph().collect();
+    }
+    publishAgain(thirdPulse + 2);
+    const auto refreshedAgain = pcm[thirdPulse + 1];
+
+    constexpr auto tailDelay = 6;
+    playback.through(tailPulse - tailDelay);
+    OpRequest stop;
+    stop.opType = "session.stopTrack";
+    stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(stop).ok,"stop the retained source explicitly");
+    playback.through(tailPulse - tailDelay + 1);
+    require(trackState(session).clip == 0,"the explicit Stop releases the retained run");
+    require(session.refresh(*store),"replace the graph while the outgoing raw fade is still rendering");
+    (void)session.graph().collect();
+    playback.through(tailPulse + 2);
+    const auto tail = pcm[tailPulse];
+    playback.through(tailPulse + launchFadeFrames(rate) + 2);
+    (void)session.graph().collect();
+    const auto relaunched = playback.first;
+    OpRequest launch;
+    launch.opType = "session.launchClip";
+    launch.payload = {{"track",1},{"scene",editedScene},{"clip",editedClip},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(launch).ok,"relaunch the edited clip");
+    playback.through(relaunched + 3001);
+    const auto restarted = pcm[static_cast<std::size_t>(relaunched + 3000)];
+    std::printf("Different clock paused adoption: 150 BPM, resume %.6f, post-refresh %.6f / %.6f, tail %.6f, restart %.6f\n",
+                static_cast<double>(resumed),static_cast<double>(refreshed),
+                static_cast<double>(refreshedAgain),static_cast<double>(tail),static_cast<double>(restarted));
+    const auto expected = .55f * originalGain;
+    require(std::abs(resumed - expected) < 1e-6f && std::abs(refreshed - expected) < 1e-6f &&
+            std::abs(refreshedAgain - expected) < 1e-6f && tail > .45f * originalGain && tail < expected &&
+            std::abs(restarted - .275f) < 1e-6f && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "resuming and Capture keep the old PCM and phase, while the new run uses the saved edit");
 }
 
 void coldPagedOneShotOnAuthoredRamp() {
@@ -2181,6 +2297,8 @@ int main() {
         relaunchEditedPinnedOneShot();
         pausedSupersessionReturnsToSameClock(false);
         pausedSupersessionReturnsToSameClock(true);
+        pausedSupersessionAdoptsChangedClock(1.0f,false);
+        pausedSupersessionAdoptsChangedClock(.8f,true);
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();

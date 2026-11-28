@@ -741,6 +741,7 @@ private:
         void applyLoop() const noexcept;
         [[nodiscard]] bool projectLoop(Transport&) const noexcept;
         [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;
+        void collectRetiredSources() const noexcept override;
         [[nodiscard]] bool samePausedTempo(const TimingView&) const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;

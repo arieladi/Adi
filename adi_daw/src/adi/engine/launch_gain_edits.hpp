@@ -39,9 +39,13 @@ public:
     explicit LaunchClipGainEdits(std::size_t maximumTracks);
 
     [[nodiscard]] bool post(const LaunchClipGainEdit&, std::uint64_t pcmRevision) noexcept;
-    void begin(const LaunchBlock&, std::span<const std::int64_t> tracks, std::uint64_t pcmRevision) noexcept;
+    // Returns the actual PCM revision for an independently retained run.
+    using RetainedRevision = std::uint64_t (*)(const void*,std::int64_t,std::int64_t,std::uint64_t) noexcept;
+    void begin(const LaunchBlock&, std::span<const std::int64_t> tracks, std::uint64_t pcmRevision,
+               const void* retainedContext = nullptr, RetainedRevision retainedRevision = nullptr) noexcept;
     [[nodiscard]] LaunchClipGainRange range(const LaunchBlock&, const LaunchSection&) noexcept;
     [[nodiscard]] float currentMultiplier(std::int64_t track, std::uint64_t run) noexcept;
+    void retargetRun(std::int64_t track, std::int64_t previousClip, std::int64_t clip, std::uint64_t run) noexcept;
 
 private:
     struct Pending {

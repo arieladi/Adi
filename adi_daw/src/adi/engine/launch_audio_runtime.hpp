@@ -5,7 +5,11 @@
 #include "adi/engine/launch_gain_edits.hpp"
 #include "adi/engine/launcher.hpp"
 
+#include <atomic>
+#include <functional>
+#include <map>
 #include <memory>
+#include <utility>
 
 namespace adi::engine {
 
@@ -62,6 +66,15 @@ private:
     std::vector<LaunchSceneClock> sceneClocks_;
 };
 
+// Graph catalogs and the owner registry share these descriptors. The audio
+// driver only increments/decrements the independent raw lease count.
+struct LaunchPinnedSource {
+    explicit LaunchPinnedSource(LaunchAudioClip source) : pcm(std::move(source)) {}
+    LaunchAudioClip pcm;
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+    std::atomic<std::uint32_t> leases{0};
+};
+
 struct LaunchRenderSlice {
     LaunchSection section;
     LaunchBlock block;
@@ -72,19 +85,19 @@ struct LaunchRenderSlice {
 /// mailboxes carry live commands from the owner to the driver.
 class LaunchAudioDriver {
 public:
-    explicit LaunchAudioDriver(std::size_t tracks) : launcher_(tracks), gains_(tracks), tails_(tracks * 2) {}
+    explicit LaunchAudioDriver(std::size_t tracks) : launcher_(tracks), gains_(tracks), tails_(tracks * 2),
+        retained_(tracks), retiring_(tracks * 4) {}
     [[nodiscard]] bool post(std::span<const LaunchRequest> requests) noexcept { return launcher_.post(requests); }
     [[nodiscard]] bool readStatus(std::span<LaunchTrackStatus> tracks, LaunchStatusHeader& header) const noexcept {
         return launcher_.readStatus(tracks, header);
     }
     [[nodiscard]] bool dropsRunningProtectedAudio(const LaunchAudioRuntime& before, const LaunchAudioRuntime* after,
                                               std::int64_t sample, bool externalTempo, bool pinnedPages) const noexcept;
-    void suspend() noexcept {
-        if (wasPlaying_) launcher_.suspendStatus();
-        wasPlaying_ = false;
-        tailCount_ = 0;
-        nextTimelineSample_ = -1;
-    }
+    void suspend() noexcept;
+    void retainPinnedRuns(const LaunchAudioRuntime& before, const LaunchAudioRuntime& after,
+                          std::int64_t sample) noexcept;
+    void discardIncompatiblePinnedRuns(const LaunchAudioRuntime*, std::int64_t sample) noexcept;
+    void collectPinnedSourceOwners() noexcept; // owner only
     [[nodiscard]] std::uint64_t performedSceneToken() const noexcept {
         return performedScene_.load(std::memory_order_acquire);
     }
@@ -96,11 +109,38 @@ private:
         float velocity;
         std::uint64_t media;
         LaunchWarpPosition warp;
+        LaunchPinnedSource* pinned = nullptr;
     };
+    struct Retained {
+        std::int64_t track = 0, clip = 0;
+        std::uint64_t run = 0, incarnation = 0, gainRevision = 0;
+        LaunchPinnedSource* source = nullptr;
+        LaunchSlot slot;
+    };
+    [[nodiscard]] Retained* findRetained(std::int64_t track, std::size_t count) noexcept;
+    [[nodiscard]] const Retained* retainedFor(std::int64_t, std::int64_t, std::uint64_t) const noexcept;
+    void retireRun(std::int64_t, std::uint64_t) noexcept;
+    void retargetPinnedRun(const LaunchSlot& previous,const LaunchSlot& next,std::uint64_t run) noexcept;
+    void retire(LaunchPinnedSource*) noexcept;
+    void finishRanges() noexcept;
+    [[nodiscard]] std::shared_ptr<LaunchPinnedSource> ownerFor(const LaunchAudioClip&);
     Launcher launcher_;
     LaunchClipGainEdits gains_;
     std::vector<Tail> tails_;
     std::size_t tailCount_ = 0;
+    std::vector<Retained> retained_;
+    std::size_t retainedCount_ = 0;
+    bool endedRetainedRun_ = false;
+    std::vector<LaunchPinnedSource*> retiring_;
+    std::size_t retiringCount_ = 0;
+    struct SourceKey {
+        const LaunchPagedAudio* reader;
+        std::int64_t clip;
+        bool operator<(const SourceKey& other) const noexcept {
+            return reader == other.reader ? clip < other.clip : std::less<const LaunchPagedAudio*>{}(reader,other.reader);
+        }
+    };
+    std::map<SourceKey,std::shared_ptr<LaunchPinnedSource>> sourceOwners_; // owner thread only
     std::uint64_t tailIncarnation_ = 0;
     std::uint64_t pass_ = 0;
     bool wasPlaying_ = false;
@@ -117,7 +157,8 @@ public:
     LaunchAudioRuntime(std::shared_ptr<const LaunchAudioProject>, std::vector<std::int64_t> tracks,
                        std::int32_t maxFrames,
                        std::shared_ptr<const LaunchAudioProject> beforeClock = {},
-                       std::int64_t clockSample = 0, std::uint64_t compatibleGainRevision = 0);
+                       std::int64_t clockSample = 0, std::uint64_t compatibleGainRevision = 0,
+                       LaunchAudioDriver* owner = nullptr);
 
     void startIfQueued(LaunchAudioDriver&, LaunchBlock, Transport&) const noexcept;
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
@@ -130,6 +171,7 @@ public:
                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
                LaunchCaptureBuffer* capture = nullptr) noexcept;
     void finish() noexcept { active_ = false; }
+    void finish(LaunchAudioDriver& driver) noexcept { finish(); driver.finishRanges(); }
     void overlay(std::int64_t track, const NodeIo&, std::span<std::uint8_t> replaces = {}) const noexcept;
     // Owner only. The source declares this latency before graph realization.
     [[nodiscard]] std::int32_t latencyForTrack(std::int64_t track) const noexcept;
@@ -148,6 +190,13 @@ public:
     [[nodiscard]] std::span<const LaunchRenderSlice> sectionsFor(std::int64_t track) const noexcept;
 
 private:
+    friend class LaunchAudioDriver;
+    struct Candidate {
+        LaunchSlot slot;
+        std::shared_ptr<LaunchPinnedSource> source;
+    };
+    [[nodiscard]] const Candidate* pinnedCandidate(std::int64_t sample, std::int64_t track,
+                                                   std::int64_t clip) const noexcept;
     struct Range {
         std::int32_t offset, frames;
         const LaunchAudioClip* pcm;
@@ -171,11 +220,12 @@ private:
                                std::int32_t frames) noexcept;
     void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
                  std::int32_t blockFrames) noexcept;
-    void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
+    void add(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
              std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
     std::shared_ptr<const LaunchAudioProject> project_;
     std::shared_ptr<const LaunchAudioProject> beforeClock_;
     std::int64_t clockSample_;
+    std::vector<Candidate> pinned_, beforePinned_;
     std::vector<std::int64_t> tracks_;
     std::vector<TrackRanges> ranges_;
     std::int32_t maxFrames_;

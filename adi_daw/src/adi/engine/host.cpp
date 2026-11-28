@@ -119,6 +119,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts, do
 std::size_t GraphHost::collect() {
     const std::size_t n = pub_.collect();
     stats_.reclaimed.fetch_add(static_cast<std::int64_t>(n), std::memory_order_relaxed);
+    if (const auto* current = currentTransportState()) current->collectRetiredSources();
     return n;
 }
 
