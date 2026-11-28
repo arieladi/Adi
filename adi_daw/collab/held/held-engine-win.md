@@ -12,6 +12,52 @@
 
 ## State (newest first)
 
+- 2026-11-28, round 2, end: **BASE is now origin/main** (land/basics-1128c merged in #838). Chain
+  `held/engine-win-chain` at `77224fc8` holds 16 of the 18 taken stacks. Round 2 merged, in order: BASE
+  (origin/main at `629a4834`) `5579e020`, (9) ffmpeg-pcm-stream `7f9328ab`, (11)
+  publication-safety-integration `d6df55e2`, archive-document-control `cff34908`, render-job-json-full-bytes
+  `190bb7e5` (a no-op: its NUL guard came with the publication stack), (12) clap-transport-gate `df3f8e2d`,
+  (15) comp-take-splice `2968450d`, (16) scanner-clean-mode `f0a41333`, (17b) project-sync-folder `77224fc8`
+  (16 of 18 counts project-snapshot-backup as taken by another route). All five validators
+  pass at `77224fc8`. No merge dropped a test.
+  **Left for the next round, in this order:** (13) export-profile-validation, then (14) source-hash-flac-proof
+  (it carries export-flac-writer and export-quantizer from (13)'s stack, so it goes after it). Then the full
+  checks: core, then all.
+  **Nothing is built yet.** Slot 16 was still "waiting for a build place" with round 1's check on `c8a41862`
+  (merges 1-5) from 16:02 to the end of round 2; `slot.sh run` refuses ("BUSY") until it ends. Next session:
+  `bash /d/adibuild-tools/slot.sh wait 16` until it reports, read it, then
+  `bash /d/adibuild-tools/slot.sh run 16 origin/held/engine-win-chain core`.
+- How to do (13) export-profile-validation (31 commits; merge attempted in round 2 and aborted to stay inside
+  the round, nothing of it is on the chain). Nine files collide. The decisions already made for the six small
+  ones, to redo quickly:
+  - `CMakeLists.txt`: both hunks both sides (BASE `aiff_file.cpp` + seat `quantizer.cpp`; BASE's four job/preset
+    sources + seat `after_export.cpp`).
+  - `wav_file.hpp`: both includes (`<array>`, `quantizer.hpp`); BASE's BWF v2 block **without** its
+    `enum class WavDither` line (the seat moved WavDither to `quantizer.hpp`, first three values unchanged),
+    plus the seat's `validWavSpeakerMask`.
+  - `wav_file.cpp`: constructor both (BASE's `validateV2` loudness, seat's `quantizer_.emplace`); write path the
+    seat's `quantizer_->quantize`. BASE's `quantizePcm` stays for `wavSampleAtDepth` (check that the
+    quantizer's undithered rounding equals it: clamp to +-2, round, saturate).
+  - `normalization.hpp/.cpp`: both enum groups; `finish(..., service, advanceFrames, speakerMask)` in that
+    order (BASE's queue passes `advanceWork` sixth; the seat's call sites in queue.cpp must pass
+    `{}`/`advanceWork` before the mask); `final.process` becomes `final.append` (the seat's measurement API);
+    the seat's literal `pass + 1 < 4` reads `maxLoudnessEncodingPasses`.
+  - `test_wav_file.cpp`: one main with BASE's `metadataV2`, `invalidMetadataV2` and the seat's `shapedDither`,
+    `speakerMask`.
+  - `queue.hpp`: all four hunks both sides (BASE `container`/`exactPcmFilename` + the seat's deliveries, rate
+    policy, analysis-only, tail, loop, gapless; `validateJob` + `DeliveryResult`; `onHost`/`wavProgress` +
+    `fingerprintDelivery`; the seat's `renderWavPrepared(..., const PlanRange& = {})` + BASE's
+    `prepareNiOutput`).
+  - `queue.cpp` (17 hunks) and `test_render_queue.cpp` (4) are the real work. The seat split validation into
+    `validate(job, plannedRange)` + public `validateDeliveryProfile`; BASE (with the publication stack) made the
+    old one the public `validateJob` used by `job_json.cpp`, `job_preset.cpp`, `project_jobs.cpp`. Keep
+    `validateJob(const Job&)` as the public entry that calls the seat's `validate(j, false)`, and carry BASE's
+    AIFF container and literal-filename rules into `validateDeliveryProfile`.
+  - **Two AIFF writers meet here**: BASE's `audio/aiff_file.*` (`PcmContainer::Aiff`, `writeAiffFromWav`,
+    `validateAiffSize`, from the save dialog) and the seat's `render/aiff_writer.*` (`ExportContainer::Aiff`
+    in a delivery). Keep both to build, refuse `container != Wav` together with non-empty `deliveries` or a
+    non-WAV `encoding.container`, and log it for the seat to fold its delivery onto BASE's writer.
+
 - 2026-11-28, round 1, end: chain `held/engine-win-chain` at `7bc8ed71` holds 11 of the 17 taken stacks
   (table below). **Next, in this order:** (9) ffmpeg-pcm-stream, (11) publication-safety-integration, then
   archive-document-control and render-job-json-full-bytes, (12) clap-transport-gate, (13)
@@ -189,6 +235,17 @@ project-sync-folder (PD-08).
 | 16a | scanner-paused-reader-proof (DEV-25) | b944e252 | d2a70fba | none |
 | 16b | vst3-class-id-packets (DF-E25 c) | 7d4128dc | 7207a3e0 | one include line each side |
 | 17a | project-cloud-backup (PD-08) | 25bf2855 | 7bc8ed71 | none |
+| - | BASE: origin/main (land/basics-1128c landed in #838) | 629a4834 | 5579e020 | none |
+| 9 | ffmpeg-pcm-stream (TM-MD-05, Cache Folder; carries the decode-cache, FFprobe and streamed-output stack) | e0db001a | 7f9328ab | `CMakeLists` BASE's decode-space tests kept; `decode.cpp` both includes, BASE's `admitSpace` (it holds the seat's over-maximum refusal); `ui_main` Cache Folder read before AppCommands, BASE's `refreshCacheLimits` the one place limits apply, now through `setDefaultDecodeCacheLimits` (no cache built at launch), the seat's duplicate `applyDecodeCacheLimits` dropped; consistency test BASE's form + the seat's `missingPublishedFile`; doc both |
+| 11 | publication-safety-integration (EX-07, EX-09, PD-02, PD-04) | 20f27d66 | d6df55e2 | `publish_file.*` BASE throughout (the seat's side was the older form); `queue.*` BASE's AIFF/literal-name validation now in the public `validateJob`, `{format}` token = container (`wav`, `aiff`, `ni_stems_mp4`; new helper `formatToken`, since BASE added AIFF after the tokens), the seat's `prepareNiOutput`; `collect_export` + `collection_detail.hpp` BASE's `keepUndoHistory` threaded into the seat's hooked `detail::collectExport`; `project_files` BASE's resolve-first collision-safe naming with the seat's cancellation, copy progress, hooks and warnings carried into `publishCollectedMedia`; `ui_main` BASE's worker; tests BASE's canonical-parent checks + the seat's `deliveryNameTokens`; `job_json.cpp` refuses an AIFF or literal-filename job (version 2 has no field for them) |
+| 11b | archive-document-control (EX-09) | dc3a8efc | cff34908 | `project_document` two entries: `runCollectAndExport(job)` -> StoreFileResult, `(job, control)` -> media::FileResult with `cancelled`, BASE's body; `ui_main` converts for its promise |
+| 11c | render-job-json-full-bytes | cd265a59 | 190bb7e5 | none; no content (equal commit already in 11) |
+| 12 | clap-transport-gate (#663, carries probe-portability) | dce7dffd | df3f8e2d | `ci.yml` BASE's VST3 session step, then the seat's all-platform research self-tests and the Windows transport gate; `MANIFEST.json` both groups, 92 entries checked against committed bytes |
+| 15 | comp-take-splice (CT-04) | 2d911206 | 2968450d | `edit_plan.cpp` BASE's `prepareDelete(clips)` and the seat's `prepareCompTake` both; test both includes |
+| 16c | scanner-clean-mode (DEV-25) | 9a1928bb | f0a41333 | loader: the seat's Clean cache mode with BASE's SC-319 block lifting, Clean lifts as Refresh does; `test_scan_cache` both tests |
+| 17b | project-sync-folder (PD-08) | 2a2d0f96 | 77224fc8 | one include line each side; read against BASE's `synchronizedProject`: no shared code, but two detectors (see For the director) |
+| 13 | export-profile-validation | 2b3b7e5c | (not merged) | attempted, aborted; see State for the decisions made |
+| 14 | source-hash-flac-proof | ab4fab82 | (not merged) | after 13 (it carries two of 13's branches) |
 
 All five validators pass at `7bc8ed71`. No merge dropped a test.
 
@@ -196,6 +253,11 @@ All five validators pass at `7bc8ed71`. No merge dropped a test.
 
 - Core check started on slot 16 at `c8a41862` (merges 1 to 5); it had not got a build place when round 1
   ended. Nothing is proved yet: the merges were resolved by reading, not built.
+- Round 2: the same check was still waiting for a build place at the end of round 2 (third-party sources
+  fetched 16:02, then "waiting for a build place"); a new run is refused while it waits. Still nothing proved.
+  The places most likely to break on the first build, to read first: `queue.cpp` `validateJob` /
+  `formatToken` (merge 11), `project_files.cpp` `publishCollectedMedia`'s new parameters (11),
+  `project_document` overloads (11b), `ui_main.cpp` `refreshCacheLimits` (9).
 
 ## Account (so far)
 
@@ -214,9 +276,22 @@ What the chain adds, once proved (one line per thing a user would notice):
 - The plug-in search follows Windows shortcuts to plug-in folders and files (DEV-25).
 - The scanner packet can carry exact VST3 class IDs (DF-E25 c, packet half; the producer is parked).
 - A dated ZIP backup of the project into a chosen folder, engine side (PD-08; the File command is window-fn's).
+- Settings > File & Folder > Cache Folder now works: decoded audio and waveform analysis go under the chosen
+  folder from the next launch; the decode limits apply without building the cache at launch (TM-MD-05).
+- Audio that only FFmpeg can read is bounded by FFprobe first and decoded as a stream (TM-MD-05).
+- Export names can use `{format}`, `{rate}` and `{index}` (EX-07).
+- Export presets apply by field group, user export presets are kept in ADI's data, and saved export jobs
+  travel with the project (EX-07, EX-09, engine side).
+- Collect and Export can be cancelled inside a large file, shows copy progress, and reports a pending
+  checkpoint and media durability warnings in the status bar (PD-02, PD-04).
+- Comp Take: a range of a take lane copied to the main lane as one undo step (CT-04, engine side).
+- A Clean plug-in scan that re-probes everything except plug-ins the user blocked (DEV-25, engine side).
+- ADI can tell which sync folder (OneDrive, iCloud Drive) holds a project (PD-08, engine side; no status yet).
+- Not a user feature: the research probes are built and self-tested on every platform in CI (#663).
 
 Left out, and why: see the survey's "already on main" and "abandoned" rows, and project-snapshot-backup
-(SC-157 did it).
+(SC-157 did it). Not yet merged (next round, not left out): export-profile-validation and
+source-hash-flac-proof.
 
 ## For the director
 
@@ -226,6 +301,16 @@ Left out, and why: see the survey's "already on main" and "abandoned" rows, and 
   explicit dated ZIP backup to a chosen folder. Recommendation: keep the ZIP one only as the engine half of
   a later File command, after the director rules whether ADI offers it beside Live's Backup folder (Live has
   no such command: it is an addition).
+
+- **Two AIFF exports.** Main has AIFF from the save dialog (`PcmContainer::Aiff`); the seat's held export
+  stack has its own AIFF writer for its multi-format deliveries. Recommendation: one writer, main's; the
+  seat folds its delivery onto it before the export stack lands. Nothing for him to choose unless he wants
+  the seat's multi-delivery export at all before 3 December's plan rows are read.
+- **Two sync-folder detectors.** Main's journal policy (ADR-0258 d7) and the seat's PD-08 status detect
+  OneDrive/iCloud separately. Recommendation: the seat makes both use one root list before the status is
+  shown; no ruling needed.
+- **Clean scan and Live.** The seat's Clean scan is Live's "deep rescan" (Alt with Rescan). It has no
+  control yet. Recommendation: wire it to Alt+Rescan, Live's gesture, when the Plug-Ins page is next touched.
 
 Beyond these, the seat's own open questions (its log's "FOR THE DIRECTOR": MX-09, CT-01/CT-02, CT-04,
 EX-03, EX-04, EX-05, PD-07, EX-12), which this chain does not answer.
