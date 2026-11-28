@@ -339,6 +339,14 @@ void backupsAfterTheClockGoesBack() {
           "clock set back: the backup just written is not offered to the Recycle Bin");
     check(behind.expired.size() == 1 && behind.expired.front().createdUtc == stamp + hour,
           "clock set back: the oldest of the other backups is offered instead");
+    // The window's path for a synced project writes through Store::writeProjectBackup and then asks
+    // for the expired ones with the stamp it wrote.
+    const auto behindAgain = stamp - 2 * hour;
+    const auto synced = Store::writeProjectBackup(fixture.source, behindAgain);
+    const auto expired = backup::expiredBackups(fixture.source, behindAgain);
+    check(synced.ok && expired.size() == 2 &&
+              std::ranges::none_of(expired, [&](const ProjectBackup& item) { return item.createdUtc == behindAgain; }),
+          "clock set back: the stamp just written is kept on the synced-project path too");
 }
 
 void copiesAndSwitches() {

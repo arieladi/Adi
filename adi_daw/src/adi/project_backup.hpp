@@ -3,6 +3,9 @@
 
 #include "adi/store.hpp"
 
+#include <cstdint>
+#include <optional>
+
 namespace adi::backup {
 
 struct Job {
@@ -25,7 +28,11 @@ struct Result {
 // which takes only a short source read lock per copy step.
 [[nodiscard]] StoreFileResult prepare(Store&, std::int64_t utcMicros, Job&);
 [[nodiscard]] Result write(Job&, std::stop_token = {});
-[[nodiscard]] std::vector<ProjectBackup> expiredBackups(const std::filesystem::path& project);
+// The owned backups past the ten kept, newest first by stored time (ADR-0213 d4). A backup stamped
+// `writtenUtc` (the one just written) is never among them, and counts as one of the ten: a clock set
+// back gives it the earliest stamp, and it must not be binned the moment it is written.
+[[nodiscard]] std::vector<ProjectBackup> expiredBackups(const std::filesystem::path& project,
+                                                        std::optional<std::int64_t> writtenUtc = std::nullopt);
 
 // Restore to a new path. The backup and the original project remain intact.
 [[nodiscard]] StoreFileResult recover(const std::filesystem::path& backup, const std::filesystem::path& destination,

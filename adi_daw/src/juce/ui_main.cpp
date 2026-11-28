@@ -1166,7 +1166,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 std::vector<ProjectBackup> obsolete;
                 if (outcome.ok && outcome.warning.empty() && !stop.stop_requested()) {
                     try {
-                        obsolete = backup::expiredBackups(request.project);
+                        obsolete = backup::expiredBackups(request.project, created);
                     } catch (const std::exception &error) {
                         outcome.warning = "Could not check backup retention. " + std::string(error.what());
                     }

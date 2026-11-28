@@ -1087,21 +1087,33 @@ StoreFileResult prepare(Store& store, std::int64_t utcMicros, Job& job) {
     }
 }
 
-std::vector<ProjectBackup> expiredBackups(const fs::path& project) {
-    auto backups = Store::projectBackups(project, true);
+std::vector<ProjectBackup> expiredBackups(const fs::path& project, std::optional<std::int64_t> writtenUtc) {
+    const auto backups = Store::projectBackups(project, true);
     constexpr std::size_t keep = 10;
     if (backups.size() <= keep) return {};
-    backups.erase(backups.begin(), backups.begin() + static_cast<std::ptrdiff_t>(keep));
-    return backups;
+    const auto justWritten = [&](const ProjectBackup& item) { return writtenUtc && item.createdUtc == *writtenUtc; };
+    auto kept = static_cast<std::size_t>(std::ranges::count_if(backups, justWritten));
+    std::vector<ProjectBackup> expired;
+    for (const auto& item : backups) {
+        if (justWritten(item)) continue;
+        if (kept < keep) {
+            ++kept;
+            continue;
+        }
+        expired.push_back(item);
+    }
+    return expired;
 }
 
 Result write(Job& job, std::stop_token stop) {
     if (job.path.empty()) return {{false, "backup was not prepared", {}}, {}, {}};
+    const auto writtenUtc = job.file.data_ && job.file.data_->backup ?
+        std::optional<std::int64_t>(job.file.data_->backup->utcMicros) : std::nullopt;
     Result result{job.file.write(stop), job.path, {}};
     job.file = {};
     if (result.file.ok && result.file.warning.empty() && !stop.stop_requested()) {
         try {
-            result.expired = expiredBackups(job.project);
+            result.expired = expiredBackups(job.project, writtenUtc);
         } catch (const std::exception& error) {
             result.file.warning = joinedWarning(std::move(result.file.warning),
                 "could not check backup retention: " + std::string(error.what()));
