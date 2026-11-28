@@ -35,8 +35,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <utility>
 
@@ -151,7 +154,10 @@ public:
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
 
     /// The session's `DeviceLoader`. Valid while this object lives.
-    [[nodiscard]] engine::DeviceLoader fn();
+    // Resolves a full VST3 class ID to its exact identifier in the validated
+    // local scanner catalogue. The loaded device keeps the stable class ID.
+    using Vst3ClassLookup = std::function<std::optional<std::string>(std::string_view)>;
+    [[nodiscard]] engine::DeviceLoader fn(engine::DeviceLoader grantedRemote = {}, Vst3ClassLookup localVst3 = {});
 
     struct Stats {
         std::int64_t requests = 0;
@@ -181,8 +187,10 @@ private:
     std::shared_ptr<const DiscoveryResult> discoverOwned(DiscoveryMode, bool allowLegacyFallback,
         DiscoveryJob* job = nullptr);
     void invalidateDiscovery() noexcept;
-    std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err);
-    std::unique_ptr<DeviceInstance> makeVst3(const engine::DeviceRequest& rq, std::string& err);
+    std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err,
+                                         const Vst3ClassLookup& localVst3);
+    std::unique_ptr<DeviceInstance> makeVst3(const engine::DeviceRequest& rq, std::string& err,
+                                            const Vst3ClassLookup& localVst3);
     std::unique_ptr<DeviceInstance> makeClap(const engine::DeviceRequest& rq, std::string& err);
 
     Vst3Host vst3_;

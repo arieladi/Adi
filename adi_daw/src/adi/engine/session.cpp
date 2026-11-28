@@ -638,6 +638,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
     e.deviceId = row.id;
     e.runtimeIdentity=std::make_shared<const int>(0);
     e.resolvedPluginRef = row.pluginRefId;
+    e.resolvedRemoteHost = row.remoteHostId;
     if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
     e.name = !row.name.empty() ? row.name
@@ -660,6 +661,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -670,6 +673,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row,
         inst = makePlaceholder(store, row, ref);
         ++stats_.placeholders;
     } else {
+        if (row.remoteHostId && !err.empty()) sessionProblems_.push_back(deviceRef(row) + ": " + err);
         inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
         ++stats_.loaded;
@@ -707,6 +711,7 @@ void Session::resolveNewRows(const Store& store) {
         }
         const auto compatible = [&](const Entry& candidate) {
             return candidate.deviceId == row.id && candidate.resolvedPluginRef == row.pluginRefId &&
+                candidate.resolvedRemoteHost == row.remoteHostId &&
                 (ref ? candidate.resolvedFormat == ref->format && candidate.resolvedUid == ref->uid
                      : candidate.resolvedFormat.empty() && candidate.resolvedUid.empty());
         };
@@ -775,6 +780,8 @@ std::size_t Session::retryPlaceholders(const Store& store) {
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
         rq.exporting = spec_.exporting;
+        rq.offline = spec_.offline || spec_.exporting;
+        rq.project = &store;
         std::string err;
         auto inst = loader_(rq, err);
         if (inst == nullptr) {
@@ -1713,19 +1720,26 @@ std::shared_ptr<DeviceAutomationBinding> Session::bindResolvedDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& suspended,
     const rows::Model& model) {
     return bindDeviceAutomation(std::move(program), suspended, transport_, spec_.sampleRate,
-        [&](std::int64_t id, std::uint32_t parameter) -> DeviceParameterSteps {
+        [&](std::int64_t id, std::uint32_t parameter) -> std::optional<DeviceParameterSteps> {
             const auto* instance = resolvedAutomationDevice(id, model);
-            if (!instance) return {};
+            if (!instance) return DeviceParameterSteps{};
             const auto native = entryFor(id)->resolvedFormat == "clap" ? device::ClapDevice::paramIdToText(parameter)
                                                                      : std::to_string(parameter);
             const auto* descriptor = instance->findParam(native);
-            if (!descriptor || descriptor->missing || !descriptor->automatable)
-                return {};
+            if (!descriptor) return DeviceParameterSteps{};
+            if (!descriptor->automatable) return std::nullopt;
+            if (descriptor->missing) return DeviceParameterSteps{};
             if (descriptor->shape == device::ParamShape::Switch)
-                return {true, 2};
+                return DeviceParameterSteps{true, 2};
             const bool stepped = descriptor->shape == device::ParamShape::Menu || descriptor->stepCount > 1;
-            return {stepped, descriptor->stepCount};
-        }, [&](std::int64_t id) { return resolvedAutomationDevice(id, model, true) != nullptr; });
+            return DeviceParameterSteps{stepped, descriptor->stepCount};
+        }, [&](std::int64_t id) {
+            const auto* entry = entryFor(id);
+            if (entry && entry->placeholder && !entry->retired && !entry->parked)
+                return DeviceActivatorTarget::WaitingForPlugin;
+            return resolvedAutomationDevice(id, model, true) ? DeviceActivatorTarget::Available
+                                                              : DeviceActivatorTarget::Unsupported;
+        });
 }
 
 bool Session::rebuild() {
@@ -1926,7 +1940,11 @@ void Session::refreshProblems() {
 }
 
 std::vector<std::string> Session::exportBlockingProblems() {
-    return collectProblems(false);
+    auto problems = collectProblems(false);
+    // A range of leading silence can finish without rendering a graph block.
+    if (auto remote = offlineRemoteIssue(); !remote.empty())
+        problems.push_back(std::move(remote));
+    return problems;
 }
 
 std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
@@ -1956,7 +1974,10 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
         append(stripAutomation_->program->problems());
         append(stripAutomation_->problems);
     }
-    if (deviceAutomation_) append(deviceAutomation_->problems);
+    if (deviceAutomation_) {
+        append(deviceAutomation_->problems);
+        if (includeUnavailable) append(deviceAutomation_->waitingForPlugins);
+    }
     append(deviceSourceProblems_);
     if (includeUnavailable) append(placeholderAutomationProblems_);
     append(graph_.problems());
