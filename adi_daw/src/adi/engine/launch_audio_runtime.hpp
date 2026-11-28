@@ -156,9 +156,9 @@ private:
         std::size_t tailCount = 0;
     };
     [[nodiscard]] bool addTail(LaunchAudioDriver::Tail&, std::int32_t offset,
-                               std::int32_t frames) noexcept;
+                               std::int32_t frames, LaunchCaptureBuffer*) noexcept;
     void fadeOut(LaunchAudioDriver&, const LaunchAudioProject&, const LaunchTransition&, std::int32_t offset,
-                 std::int32_t blockFrames) noexcept;
+                 std::int32_t blockFrames, LaunchCaptureBuffer*) noexcept;
     void add(LaunchClipGainEdits&, const LaunchAudioProject&, const LaunchSection&, const LaunchBlock&,
              std::int32_t blockOffset, LaunchCaptureBuffer*) noexcept;
     [[nodiscard]] std::uint64_t gainRevision() const noexcept;

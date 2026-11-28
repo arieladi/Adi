@@ -856,6 +856,8 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         if (audio::onAudioThread || store.readOnly() || !source.data_ ||
             !source.data_->source.sameConnection(appliedSource(store)))
             throw std::runtime_error("Session performance belongs to another open project or driver");
+        if (capture.error == engine::LaunchCaptureError::FadeTail)
+            throw std::runtime_error("Session performance contains an outgoing Fade tail that needs exact overlay replay");
         if (capture.error == engine::LaunchCaptureError::SourceEdited)
             throw std::runtime_error("live Session gain or region changed during the performance and needs an exact edit trace");
         if (capture.error == engine::LaunchCaptureError::PcmRangeOverflow)

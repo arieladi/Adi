@@ -216,7 +216,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     std::size_t remainingTails = 0;
     for (std::size_t index = 0; index < driver.tailCount_; ++index) {
         auto tail = driver.tails_.data()[index];
-        if (addTail(tail, 0, block.frames))
+        if (addTail(tail, 0, block.frames, capture))
             driver.tails_.data()[remainingTails++] = tail;
     }
     driver.tailCount_ = remainingTails;
@@ -254,7 +254,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto& call = *static_cast<const Context*>(state);
         const auto& before = call.runtime.beforeClock_;
         const auto* outgoing = before && edge.sample == call.runtime.clockSample_ ? before.get() : call.media;
-        call.runtime.fadeOut(call.driver, *outgoing, edge, call.offset + edge.offset, call.frames);
+        call.runtime.fadeOut(call.driver, *outgoing, edge, call.offset + edge.offset, call.frames, call.capture);
         if (call.capture || call.observer) {
             auto logicalEdge = edge;
             logicalEdge.offset += call.offset;
@@ -333,7 +333,7 @@ bool LaunchAudioRuntime::hasScene(std::int64_t scene) const noexcept {
 }
 
 bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t offset,
-                                std::int32_t frames) noexcept {
+                                std::int32_t frames, LaunchCaptureBuffer* capture) noexcept {
     if (frames <= 0 || tracks_.empty()) return false;
     const auto* media = beforeClock_ && beforeClock_->pcmRevision() == tail.media ? beforeClock_.get() : project_.get();
     if (media->pcmRevision() != tail.media) return false;
@@ -352,12 +352,14 @@ bool LaunchAudioRuntime::addTail(LaunchAudioDriver::Tail& tail, std::int32_t off
     const auto length = static_cast<std::int32_t>(std::min<std::int64_t>(frames, duration - tail.elapsed));
     ranges.tails.data()[ranges.tailCount++] = {
         {offset, length, pcm, source, tail.velocity, tail.elapsed}, tail.fadeInAtExit};
+    if (capture && tail.velocity != 0.0f && tail.fadeInAtExit != 0 && pcm->frames() != 0)
+        capture->markFadeTail();
     tail.elapsed += length;
     return tail.elapsed < duration;
 }
 
 void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioProject& media, const LaunchTransition& edge,
-                                 std::int32_t offset, std::int32_t frames) noexcept {
+                                 std::int32_t offset, std::int32_t frames, LaunchCaptureBuffer* capture) noexcept {
     if (!edge.oldFade || offset < 0 || offset >= frames) return;
     const auto* pcm = media.clip(edge.oldClip);
     if (!pcm) return;
@@ -367,7 +369,7 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
     LaunchAudioDriver::Tail tail{edge.track, edge.oldClip, source, 0,
         edge.oldFramesSinceStart, edge.oldVelocity * driver.gains_.currentMultiplier(edge.track, edge.oldRun),
         media.pcmRevision()};
-    if (addTail(tail, offset, frames - offset) && driver.tailCount_ < driver.tails_.size())
+    if (addTail(tail, offset, frames - offset, capture) && driver.tailCount_ < driver.tails_.size())
         driver.tails_.data()[driver.tailCount_++] = tail;
 }
 

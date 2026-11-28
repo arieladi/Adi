@@ -131,7 +131,8 @@ struct LiveAudioEdit {
 template<class Sample = float>
 std::array<Sample, static_cast<std::size_t>(frames)> render(Store& project, LaunchCaptureBuffer* capture = nullptr,
                std::int64_t* endTick = nullptr, bool firstSceneOnly = false, SceneReceipts* scenes = nullptr,
-               std::int32_t width = blockFrames, const LiveAudioEdit* liveEdit = nullptr) {
+               std::int32_t width = blockFrames, const LiveAudioEdit* liveEdit = nullptr,
+               std::int64_t captureFrom = 0) {
     Session session;
     session.graph().setFadeFrames(0);
     SessionSpec spec{1, sampleRate, width};
@@ -170,7 +171,7 @@ std::array<Sample, static_cast<std::size_t>(frames)> render(Store& project, Laun
         bool rendered = false;
         {
             auto block = session.beginRender();
-            if (capture) block.observeLaunchCapture(*capture);
+            if (capture && sample >= captureFrom) block.observeLaunchCapture(*capture);
             if (scenes)
                 block.observeSceneLaunches(scenes, [](void* context, const LaunchSceneTransition& edge,
                                                       std::int64_t) noexcept {
@@ -546,6 +547,42 @@ void float64FoldRefused() {
     require(!refused.ok && refused.error.find("channel folding") != std::string::npos,
             "capture refuses a Float64 replay with a mismatched rounding path");
 }
+
+void fadeTailAtCaptureBoundary() {
+    Project project;
+    project.store->db().exec(
+        "INSERT INTO clip_launch(clip_id,clip_fade,ram_mode) VALUES(11,1,1),(12,0,1)");
+    std::string error;
+    const auto source = captureSessionPerformanceSource(*project.store, error);
+    require(source.has_value(), error);
+    const auto tick = [](std::int64_t sample) { return sample * textproj::kPPQ / 24000; };
+    const auto head = OpJournal(*project.store).headSeq();
+    for (const auto captureFrom : {400, 300, 500}) {
+        std::array<LaunchTransition, 8> edges{};
+        LaunchCaptureBuffer tape(edges);
+        std::int64_t endTick = 0;
+        const auto audio = render(*project.store, &tape, &endTick, false, nullptr, blockFrames, nullptr, captureFrom);
+        require(audio[400] > -0.375f && audio[491] > -0.375f && audio[492] == -0.375f,
+                "the outgoing Fade spans the first 92 frames of the late capture");
+        const std::array initial{LaunchCapturedStart{1, captureFrom == 300 ? 11 : 12,
+            tick(captureFrom == 300 ? 200 : captureFrom - 300), 1.0f, captureFrom == 300}};
+        const auto plan = planLaunchCapture(tape, {captureFrom, tick(captureFrom)}, {frames, endTick}, initial);
+        if (captureFrom < 500) {
+            require(tape.hasFadeTail() && plan.error == LaunchCaptureError::FadeTail,
+                    "driver reports tails that begin at or before the first captured block");
+            const auto edit = prepareSessionPerformance(*project.store, *source, plan, sampleRate);
+            require(!edit.ok && edit.error.find("Fade tail") != std::string::npos &&
+                    OpJournal(*project.store).headSeq() == head,
+                    "an unsupported Fade tail refuses exact capture without writing an edit");
+        } else {
+            require(!tape.hasFadeTail() && plan.error == LaunchCaptureError::None,
+                    "an expired Fade tail does not invalidate a later capture");
+        }
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "driver Fade receipts stay allocation and file-I/O free");
+}
+
 } // namespace
 
 int main() {
@@ -558,6 +595,7 @@ int main() {
         liveRawGain<float>();
         liveRawGain<double>();
         float64FoldRefused();
+        fadeTailAtCaptureBoundary();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

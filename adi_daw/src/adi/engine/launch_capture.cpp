@@ -103,6 +103,8 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
         return {LaunchCaptureError::Overflow, {}};
     if (trace.pcmInvalid())
         return {LaunchCaptureError::InvalidPcmRange, {}};
+    if (trace.hasFadeTail())
+        return {LaunchCaptureError::FadeTail, {}};
     if (trace.sourceEdited())
         return {LaunchCaptureError::SourceEdited, {}};
     if (begin.sample < 0 || begin.tick < 0 || end.sample <= begin.sample || end.tick < begin.tick)
