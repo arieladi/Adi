@@ -270,6 +270,14 @@ All five validators pass at `7bc8ed71`. No merge dropped a test.
 - Round 3: round 1's check on `c8a41862` reported at 17:12: **core configure failed**, sqlite-recover missing
   (see State). A core check on `abad9cd1` (merges 1-13) was started at once to see whether the build PC's
   third-party fetch picks the pin up on a second run.
+- Round 3, 18:47: the check on `abad9cd1` failed the same way. **Cause found and fixed** (`064570a4`,
+  `tools/fetch_external.sh`): Git Bash rewrites an argument that starts with `/` into a Windows path, so
+  the sqlite-recover sparse pattern `/ext/recover/dbdata.c` reached git as
+  `C:/Program Files/Git/ext/recover/dbdata.c` and the sparse tree stayed empty (shown locally with
+  `git rev-parse --sq-quote`; patterns with a wildcard are left alone, which is why only this row broke).
+  The two sparse-checkout calls now run with `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'`. This is the
+  seat's own fault on project-salvage, present on its branch before any merge; the fix is plain, so it is on
+  the chain. Core check on `064570a4` (all 18 stacks) started.
 
 ## Account (so far)
 
