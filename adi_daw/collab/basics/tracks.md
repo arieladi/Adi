@@ -1,8 +1,8 @@
 # Basics tracks
 
-**Newest branch** `basics/sc-301-device-chain-end` at `e1fdf54abba2f90da307ea9f4ef1b157a25f5eeb`. The consolidated `basics/tracks-chain` is at `e0ecd002`. All 28 item heads are on main through #830. [Newest branch](https://github.com/arieladi/Adi/tree/basics/sc-301-device-chain-end) · [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
+**Newest branch** `basics/tracks-chain` at `faddc1f515b123ef6ddbecad225a35d51776252d`. All 28 original item heads are on main through #830. [Landing chain](https://github.com/arieladi/Adi/tree/basics/tracks-chain)
 
-Linux Debug with warnings as errors passed all 295 non-performance tests at `6aeeed1b` with `ctest -LE performance` and both display variables unset. The chain fast-forwarded to `e0ecd002` with documentation changes after that run. Each row preserves the checks recorded when the item was published.
+Linux Debug with warnings as errors passed all 304 non-performance tests at `002d74c5` with `ctest -LE performance` and both display variables unset. The published head also includes the landing stack’s macOS header fix. Each row preserves the checks recorded when that item was published.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -34,6 +34,7 @@ Linux Debug with warnings as errors passed all 295 non-performance tests at `6ae
 | SC-297 | `basics/sc-297-browser-sampler-drop` `7c7106df` | Browser samples can drop across a sampler panel. The existing sample loader handles the selected slot. Browser plug-ins and presets still use the chain target. Touched window and window-fn. | The baseline shell missed the panel target. The native baseline ignored the controls and accepted the tile. In the fixed native app, the same WAV loaded on OneShot’s controls, and one Undo cleared the sample and imported media. Headless checks loaded Sampler slot 2 and kept slot 1 empty. All 22 Linux Debug UI, sampler and analyser checks passed on the merged stack, along with three acceptance tests. | on main (#830) |
 | SC-299 | `basics/sc-299-default-device-preset` `3e7ad45b` | Save as Default Preset stores a readable preset under the User Library Defaults/Devices directory for the exact device identity. New inserts and ordinary device swaps load its settings and ordered Configure controls with the placement in one Undo step. Explicit preset choices keep their own settings. Touched engine, window and window-fn. | The native baseline lacked the menu command. The fixed app saved Utility Gain, replaced the same default file on a second save, recalled the exact value on a new Utility and removed only that insert on Undo. The document fixture covered a drop that creates a track, explicit preset override, and ordered, empty and automatic plug-in panels. All 19 no-display Linux Debug UI and preset tests and all three acceptance tests passed. | on main (#830) |
 | SC-301 | `basics/sc-301-device-chain-end` `e1fdf54a` | Right from the last device focuses the chain end and Left returns to the last device. Paste from the keyboard or the blank Device View menu appends in one Undo step. The menu tracks its original destination and refuses a stale track choice. Touched window and window-fn. | The headless baseline kept focus on the last device. In native Xvfb, Right then Ctrl+V inserted before the last device on the baseline and appended on the fixed app. One Undo restored the exact order. The headless menu fixture covered disabled Paste without a device copy, stale destination refusal and append with one Undo. All 19 Linux Debug no-display UI and preset tests and all three acceptance tests passed. | on main (#830) |
+| SC-300 | `basics/tracks-chain` `faddc1f5` | Paste from a focused Arrangement or Mixer track title appends the copied device in one Undo step. The latest successful Cut or Copy supplies title Paste when both clipboards hold material. Touched window and window-fn. | The unfixed shell failed three title-paste checks. Linux Debug WERROR passed all 304 non-performance tests on the landing stack at `002d74c5`. In the rebuilt app on private Xvfb, Ctrl+V on the destination title pasted Utility with its exact Gain in one transaction. One Undo removed the copy. | pushed, Linux checks passed |
 
 The tracks prompt and its wave-two follow-ups are through SC-317. A separate session claimed the second queue on [basics/edit-log](https://github.com/arieladi/Adi/blob/basics/edit-log/adi_daw/collab/basics/edit.md).
 
@@ -41,7 +42,7 @@ The SC-289 and SC-317 integration resolves the conflicts with `land/basics-1127i
 
 SC-88 stays with DEV-22. The Browser dynamics still depend on the unmerged measured Compressor, Glue, Gate, and live Limiter branches.
 
-SC-293’s stock Compressor panel depends on DEV-22 and the MX-24 and DEV-05 routing work. SC-294 and SC-295 stay with DEV-19 and DEV-04. SC-300 awaits the R52 reading on Paste from a track title.
+SC-293’s stock Compressor panel depends on DEV-22 and the MX-24 and DEV-05 routing work. SC-294 and SC-295 stay with DEV-19 and DEV-04. SC-300 uses provisional append from a focused track title while R52 is open.
 
 Note grouping is tracked under MI-09. Native Mix View functions keep their dedicated Move controls.
 
@@ -64,3 +65,5 @@ SC-174 baseline for the edit owner. In the app on Xvfb, I dragged a time range i
 - SC-281 needs a portable default track that carries devices, plug-in state, and media into another project. I recommend defining how it maps sends before applying it at track creation. The sample-default half is on main through SC-212 and TM-MD-04 (`f476ed62`, `02bf7226`).
 
 - SC-298 needs a ruling on whether a built-in’s inactive A/B bank survives reopening and which bank P should select after Undo. I recommend document-local banks initially, one Undo for a changed switch, and the existing automation override for changed values only.
+
+- R52 is still open. I recommend appending a copied device from a focused track title, using the latest successful Cut or Copy if both clipboards hold material. The provisional title behavior is named `kPasteDeviceFromTrackTitle`.
