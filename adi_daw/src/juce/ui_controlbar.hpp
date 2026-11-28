@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/transport.hpp"
 #include "adi/ui/meters.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <optional>
 #include <string>
-#include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 // One item of Live's control bar: a field with text, or a glyph, flat as Live's.
-class BarItem final : public juce::Button {
+class BarItem : public juce::Button {
   public:
     enum class Glyph {
         None,
@@ -33,15 +34,18 @@ class BarItem final : public juce::Button {
     BarItem(const juce::String &text, Glyph glyph = Glyph::None, bool boxed = true,
             bool dropdown = false);
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void clicked(const juce::ModifierKeys &) override;
+    std::function<void(const juce::ModifierKeys &)> onModifiedClick;
     void focusGained(FocusChangeType) override;
-    // A key on the focused field, for the field's own keys (the position's up and down) first.
-    bool keyPressed(const juce::KeyPress &) override;
-    std::function<bool(const juce::KeyPress &)> onKey;
     void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);
+    void setCountInPosition(engine::CountInPosition) noexcept;
     // Live 12's focus ring: shown where the keyboard put the focus, never after a click.
     bool focusRing() const noexcept { return ring_; }
     std::function<void()> onFocus;
+    std::function<void()> onDropdown;
     juce::String text;
     Glyph glyph;
     bool boxed, dropdown;
@@ -49,14 +53,41 @@ class BarItem final : public juce::Button {
     // Live's automation LED in a field's upper left corner (manual 6.5: the time signature fields
     // show one "when the Arrangement contains time signature changes").
     bool automationLed = false;
+    bool overloadLed = false;
+
+  protected:
+    virtual const juce::String &displayText() const noexcept { return text; }
 
   private:
     bool ring_ = false;
+    bool dropdownPress_ = false;
+    engine::CountInPosition countIn_;
+};
+// A numeric field keeps its typed entry and lets the digits be adjusted independently.
+class BarValue final : public BarItem {
+  public:
+    BarValue(const juce::String &text, char separator, int parts);
+    bool keyPressed(const juce::KeyPress &) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    bool stepKey(const juce::KeyPress &);
+    bool wheelAt(float x, const juce::MouseWheelDetails &);
+    std::function<juce::String(int part, int steps, bool commit)> adjust;
+
+  private:
+    const juce::String &displayText() const noexcept override { return preview_.isEmpty() ? text : preview_; }
+    float partBoundary(int part) const;
+    int partAt(float x) const;
+    juce::String preview_;
+    char separator_;
+    int parts_, part_ = 0, dragSteps_ = 0;
+    bool pressed_ = false, dragged_ = false;
 };
 // Live's control bar (manual 3.1): tempo and the metronome on the left, the
-// transport and the loop in the middle, the global switches on the right. What the
-// engine has is live; the rest is drawn as Live draws it and says, when clicked, that
-// it is not built yet.
+// transport and the loop in the middle, the global switches on the right.
 class TransportBar final : public juce::Component {
   public:
     explicit TransportBar(AdiRootComponent &);
@@ -64,6 +95,14 @@ class TransportBar final : public juce::Component {
     void resized() override;
     // Refreshes the live fields: the tempo, the position, the transport's state.
     void refresh();
+    juce::PopupMenu metronomeMenu() const;
+    struct CpuLoad {
+        float current, average;
+        bool missedDeadline = false, deviceReset = false;
+    };
+    // The application supplies a sample at its message-thread timer rate.
+    void setCpuLoad(std::optional<CpuLoad>);
+    std::function<void(juce::PopupMenu)> onCpuMenu;
     // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
     void focus();
     // Live's Tempo and Time Signature fields (manual 9.1.1, 6.5): a click opens a field over one,
@@ -79,30 +118,50 @@ class TransportBar final : public juce::Component {
     void beginLoopLengthEdit();
     // The field being typed in: the tempo's or the signature's, or none.
     const BarItem *editing() const noexcept { return fieldEditor.isVisible() ? editing_ : nullptr; }
-    juce::TextEditor fieldEditor;
-    BarItem link{"Link"}, tap{"Tap"}, tempo{"120.00"},
+    class FieldEditor final : public juce::TextEditor {
+      public:
+        void bind(BarValue &, const juce::String &);
+        bool keyPressed(const juce::KeyPress &) override;
+        void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+
+      private:
+        void finishAdjustment();
+        BarValue *field_ = nullptr;
+        juce::String initial_;
+    } fieldEditor;
+    BarValue tempo{"120.00", '.', 2}, signature{"4 / 4", '/', 2}, position{"1.  1.  1", '.', 3},
+        loopStart{"1.  1.  1", '.', 3}, loopLength{"4.  0.  0", '.', 3};
+    BarItem link{"Link"}, tap{"Tap"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
-        signature{"4 / 4"}, metronome{{}, BarItem::Glyph::Metronome, true, true},
-        quantize{"1 Bar", BarItem::Glyph::None, true, true},
-        follow{{}, BarItem::Glyph::Follow}, position{"1.  1.  1"},
+        metronome{{}, BarItem::Glyph::Metronome, true, true},
+        quantize{juce::String::charToString(0x2014), BarItem::Glyph::None, true, true},
+        follow{{}, BarItem::Glyph::Follow},
         play{{}, BarItem::Glyph::Play, false}, stop{{}, BarItem::Glyph::Stop, false},
         record{{}, BarItem::Glyph::Record, false}, overdub{{}, BarItem::Glyph::Overdub},
         automationArm{{}, BarItem::Glyph::AutomationArm},
         reEnable{{}, BarItem::Glyph::ReEnable}, capture{{}, BarItem::Glyph::Capture},
-        sessionRecord{{}, BarItem::Glyph::SessionRecord}, loopStart{"1.  1.  1"},
+        sessionRecord{{}, BarItem::Glyph::SessionRecord},
         punchIn{{}, BarItem::Glyph::PunchIn}, loop{{}, BarItem::Glyph::Loop},
-        punchOut{{}, BarItem::Glyph::PunchOut}, loopLength{"4.  0.  0"},
+        punchOut{{}, BarItem::Glyph::PunchOut},
         draw{{}, BarItem::Glyph::Draw}, keyboard{{}, BarItem::Glyph::Keyboard}, key{"Key"},
-        midi{"MIDI"}, cpu{"0 %", BarItem::Glyph::None, true, true}, indicators{{}},
+        midi{"MIDI"}, cpu{{}, BarItem::Glyph::None, true, true}, indicators{"In"}, midiOutIndicator{"Out"},
         arrangementPage{"Arrangement"}, mix{"Mix View"};
 
   private:
-    std::vector<BarItem *> items();
     AdiRootComponent &root_;
-    BarItem *lastFocused_ = &link;
-    void beginFieldEdit(BarItem &, const juce::String &text, std::function<bool(const std::string &)> commit);
+    BarItem *lastFocused_ = nullptr;
+    void beginFieldEdit(BarValue &, const juce::String &text, std::function<bool(const std::string &)> commit);
+    enum class TimeField { Position, LoopStart, LoopLength };
+    juce::String adjustTime(TimeField, int part, int steps, bool commit);
     BarItem *editing_ = nullptr;
     std::function<bool(const std::string &)> commit_;
+    enum class CpuMode { Average, Current, Off };
+    CpuMode cpuMode_ = CpuMode::Average;
+    std::optional<CpuLoad> cpuLoad_;
+    int shownCpuPercent_ = -1;
+    void refreshCpuMeter();
+    void setCpuOverload(bool);
+    juce::PopupMenu cpuMenu();
     // What the fields last showed, so a frame that changes nothing formats nothing.
     double shownBpm_ = -1;
     BarPosition shownPosition_{0, 0, 0};

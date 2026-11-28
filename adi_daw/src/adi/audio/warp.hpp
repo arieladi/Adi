@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -10,9 +11,13 @@
 #include <vector>
 
 namespace adi::audio {
+class DecodeCache;
+class WarpRenderCache;
 enum class WarpMode { Beats,Tones,Texture,RePitch,Complex,ComplexPro };
 [[nodiscard]] const char* warpModeName(WarpMode)noexcept;
 [[nodiscard]] std::optional<WarpMode> parseWarpMode(std::string_view)noexcept;
+// Unwarped audio uses the transposed source clock at the existing sample-rate converter.
+[[nodiscard]] double pitchedSampleRate(double sampleRate,double semitones)noexcept;
 enum class TransientLoop { Off,Forward,PingPong };
 struct WarpAnchor {
     std::uint64_t sourceFrame=0,outputFrame=0;
@@ -42,9 +47,13 @@ struct PreparedWarp {
     PreparedWarp(const PreparedWarp&)=delete;
     PreparedWarp& operator=(const PreparedWarp&)=delete;
 private:
+    struct CachedFile {};
     PreparedWarp(std::filesystem::path,std::uint32_t,std::uint16_t,std::uint64_t);
+    PreparedWarp(std::filesystem::path,std::uint32_t,std::uint16_t,std::uint64_t,CachedFile);
     const std::filesystem::path directory_;
+    DecodeCache* cache_ = nullptr;
     friend struct WarpPreparation;
+    friend class WarpRenderCache;
 };
 struct WarpResult {
     WarpError error=WarpError::None;
@@ -57,4 +66,17 @@ struct WarpResult {
 /// Output PCM is aligned offline, so its eventual paged reader adds no live
 /// stretcher latency. A future live stretcher must declare its own PDC delay.
 [[nodiscard]] WarpResult prepareWarp(const WarpRenderPlan&,std::stop_token={});
+
+/// A shared worker result. An empty result means the render is pending.
+/// Request and inspect from owner or disk workers only.
+class WarpTask {
+public:
+    [[nodiscard]] std::shared_ptr<const WarpResult> result() const noexcept;
+private:
+    // The worker writes the result once, then publishes it to other threads.
+    std::shared_ptr<const WarpResult> result_;
+    std::atomic<bool> ready_{false};
+    friend class WarpRenderCache;
+};
+[[nodiscard]] std::shared_ptr<const WarpTask> requestWarp(WarpRenderPlan plan);
 } // namespace adi::audio

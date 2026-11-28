@@ -134,6 +134,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.docked = j.at("docked").get<bool>();
         state.aiChatOpen = j.value("aiChat", false);
         state.timelineLeft = j.value("timelineLeft", 0.);
+        // Windows saved before timeline zoom was persisted used the original scale.
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
         state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);
@@ -158,7 +159,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.clipView = j.value("clipView", false);
         state.clipViewHeight = std::clamp(j.value("clipViewHeight", 286), 0, 4000);
         state.noteGridSnap = j.value("noteGridSnap", true);
-        state.noteGridFixed = j.value("noteGridFixed", false);
+        state.noteGridFixed = j.value("noteGridFixed", state.noteGridFixed);
         state.noteGridTriplet = j.value("noteGridTriplet", false);
         state.noteGridNarrow = std::clamp(j.value("noteGridNarrow", 0), -2, 2);
         if (const double quarters = j.value("noteGridFixedQuarters", .25); std::isfinite(quarters))
@@ -178,6 +179,11 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
         state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        if (const auto saved = j.find("infoAnalyserMode"); saved != j.end()) {
+            const auto mode = integerOr(*saved, -1);
+            if (mode >= 0 && mode <= static_cast<int>(InfoAnalyserMode::ClassicScope))
+                state.infoAnalyserMode = static_cast<InfoAnalyserMode>(mode);
+        }
         const auto palette = j.value("analysisPalette", std::string("adi"));
         const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
         state.analysisPalette = knownPalette ? palette : "adi";
@@ -186,10 +192,11 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
-        state.follow = j.value("follow", false);
+        state.follow = j.value("follow", state.follow);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);
+        state.trackMixer = j.value("trackMixer", true);
         state.mixerInOut = j.value("mixerInOut", false);
         state.mixerSends = j.value("mixerSends", true);
         state.trackOptions = j.value("trackOptions", false);
@@ -209,6 +216,9 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         if (j.contains("foldedGroups"))
             for (const auto &id : j.at("foldedGroups"))
                 state.foldedGroups.insert(id.get<std::int64_t>());
+        if (j.contains("foldedTracks"))
+            for (const auto &id : j.at("foldedTracks"))
+                state.foldedTracks.insert(id.get<std::int64_t>());
         if (j.contains("laneHeights"))
             for (const auto &pair : j.at("laneHeights")) {
                 const auto id = pair.at(0).get<std::int64_t>();
@@ -217,6 +227,26 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
                     return WindowState(defaults);
                 state.laneHeights[id] = h;
             }
+        if (const auto choices = j.find("automationChoices"); choices != j.end() && choices->is_array())
+            for (const auto &choice : *choices) {
+                if (!choice.is_array() || choice.size() != 4 || !choice[1].is_string() || !choice[3].is_string())
+                    continue;
+                const auto track = integerOr(choice[0], 0);
+                const auto owner = integerOr(choice[2], 0);
+                const auto &kind = choice[1].get_ref<const std::string &>();
+                const auto &ref = choice[3].get_ref<const std::string &>();
+                if (track > 0 && owner > 0 && !ref.empty() &&
+                    (kind == "track" || kind == "routing" || kind == "device"))
+                    state.automationChoices.insert_or_assign(track, WindowState::AutomationChoice{kind, owner, ref});
+            }
+        const auto readAutomationTracks = [&](const char *key, auto &tracks) {
+            if (const auto list = j.find(key); list != j.end() && list->is_array())
+                for (const auto &entry : *list)
+                    if (const auto id = integerOr(entry, 0); id > 0)
+                        tracks.insert(id);
+        };
+        readAutomationTracks("hiddenAutomationOverlays", state.hiddenAutomationOverlays);
+        readAutomationTracks("collapsedAutomationLanes", state.collapsedAutomationLanes);
         if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
             !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
             state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512)
@@ -266,6 +296,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixViewDetached", state.mixViewDetached},
                             {"mixview.stack.search", state.mixStackSearch},
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"infoAnalyserMode", static_cast<int>(state.infoAnalyserMode)},
                             {"clipView", state.clipView},
                             {"clipViewHeight", state.clipViewHeight},
                             {"noteGridSnap", state.noteGridSnap},
@@ -297,6 +328,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"overview", state.overview},
                             {"inOut", state.inOut},
                             {"sends", state.sends},
+                            {"trackMixer", state.trackMixer},
                             {"mixerInOut", state.mixerInOut},
                             {"mixerSends", state.mixerSends},
                             {"trackOptions", state.trackOptions},
@@ -316,6 +348,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
         if (state.mixStackBaseHeight) j["mixview.stack.baseHeight"] = *state.mixStackBaseHeight;
         j["folded"] = state.foldedDevices;
         j["foldedGroups"] = state.foldedGroups;
+        j["foldedTracks"] = state.foldedTracks;
         j["laneHeights"] = nlohmann::json::array();
         for (const auto &[id, h] : state.laneHeights) {
             if (id <= 0 || h < 24 || h > 512) {
@@ -324,6 +357,15 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             }
             j["laneHeights"].push_back({id, h});
         }
+        if (!state.automationChoices.empty()) {
+            j["automationChoices"] = nlohmann::json::array();
+            for (const auto &[track, choice] : state.automationChoices)
+                j["automationChoices"].push_back({track, choice.ownerKind, choice.ownerId, choice.paramRef});
+        }
+        if (!state.hiddenAutomationOverlays.empty())
+            j["hiddenAutomationOverlays"] = state.hiddenAutomationOverlays;
+        if (!state.collapsedAutomationLanes.empty())
+            j["collapsedAutomationLanes"] = state.collapsedAutomationLanes;
         SQLite::Transaction transaction(store_.db());
         SQLite::Statement st(store_.db(),
                              "INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES "

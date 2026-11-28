@@ -37,13 +37,16 @@ fix, not a new feature, so it is worked now.
    - the session suite: `ctest -L acceptance`;
    - if your session can drive the real window, do the gesture there, with `ADI_HOME` set to a folder
      of its own.
-5. One branch per item, named `basics/<sc id>-<short name>`. **Start your first from origin/main and each
-   later one from your own previous item's branch,** so that your items form a chain and never collide
-   with each other. (On 27 November four branches could not be stacked because a session had cut each
-   from main and changed the same functions twice in different ways.) Commit and push. **Open no pull
-   request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
-   - If win's report says a branch of yours collides: merge the landing stack it names (`origin/land/...`)
-     into that branch, resolve it yourself, since you wrote both sides, run your tests and push.
+5. **One chain branch per queue: `basics/<your queue>-chain`.** Every item of yours is a commit, or a
+   few, on that one branch, with its SC id in the message. Push after each item. **Open no pull
+   request:** the one macOS runner cannot carry one per fix. Win merges the chains into a landing stack.
+   - Start the chain from the newest landing stack (`origin/land/basics-*`), or from origin/main once
+     that stack has merged. Before each push, merge the newest of them into your chain.
+   - This replaced "one branch per item" on 27 November: of 34 separate branches, 28 collided with each
+     other, most of them with their own session's earlier ones, and could not be stacked.
+   - If you already pushed separate item branches: make the chain, merge each of them into it, oldest
+     first, resolve the collisions yourself (you wrote both sides), run your tests and push. Your report
+     then names the chain's head for each item.
 6. Add a line to your report and start the next item in the same turn.
 
 ## Your report
@@ -82,10 +85,17 @@ Your queue file names your second queue. After both, take the wave 2 rows of you
 (round 2 added rows SC-120 onward, each with its queue), in their order. Stop only at your usage
 limit or a broken environment, and say which in your report.
 
+**What a user will see.** The look of each surface is agreed with the director from a picture before it is
+built (ADR-0243 d1). A fix builds what a control does, in today's look. Where a row makes you add something
+to the window that Live does not show, put it under "For the director" with its measured place before it
+lands.
+
 **One session per queue.** The director starts more sessions as he can, and a queue named as someone's
 second may by then have a session of its own.
 - When you start any queue, push its log branch (`basics/<queue>-log`) first, before the first item.
 - Before you start a second queue, fetch and look for that queue's log branch. If it exists, another
   session has the queue: leave it, and take the wave 2 rows of your own first queue instead.
+- A log branch whose report holds no row a day after it was pushed does not hold a queue. Say so in your own
+  report; win names the owner.
 - A queue with no file of its own (device, export) is every row of `docs/SANITY-CHECK.md` whose Queue
   cell names it: wave 1 first, then 2, then 3.

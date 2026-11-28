@@ -158,6 +158,8 @@ public:
     /// why `LatencyCoalescer` attaches to the HOST and re-reads this every
     /// poll rather than storing it once.
     [[nodiscard]] Graph* currentGraph() const noexcept;
+    /// Owner-only borrowed clock from the latest publication, with currentGraph's lifetime.
+    [[nodiscard]] const GraphTransportState* currentTransportState() const noexcept;
     /// Audio thread, after process: latency of the graph that actually ran.
     [[nodiscard]] std::int32_t renderedLatency() const noexcept;
     /// Single audio reader, after process and before the next process. Protected
@@ -264,7 +266,8 @@ public:
         bool pushInputEvent(NodeId, const Event&) const noexcept;
         /// False writes silence at both widths and never dereferences an expired
         /// publication. A successful slice applies its clock exactly once.
-        bool process(const AudioIo&) noexcept;
+        bool process(const AudioIo&, std::span<const std::int64_t> excludedTracks = {}) noexcept;
+        bool copyMainOutput(const AudioIo&) const noexcept;
     private:
         friend class GraphHost;
         explicit RenderBlock(GraphHost&) noexcept;

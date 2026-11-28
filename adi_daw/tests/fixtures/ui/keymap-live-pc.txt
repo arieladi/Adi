@@ -24,7 +24,7 @@
 28951 Continue Play from Stop Point: Shift+Space
 28952 Insert Audio Track: Cmd+T
 28953 Insert MIDI Track: Cmd+Shift+T
-28954 Delete Track: 
+28954 Delete Track: Delete, Backspace
 28955 Rename: Cmd+R
 28956 Mixer: Cmd+Alt+M
 28957 Channel EQ: 
@@ -126,3 +126,29 @@
 29053 Live 12 Manual: 
 29054 Keyboard Shortcuts: 
 29055 Automation Mode: A
+29056 Delete Automation: Cmd+Backspace
+29057 Arm Selected Tracks: C
+29058 Volume, Pan and Meters: 
+29059 Switch Clip and Device Views: Shift+Tab, F12
+29060 Arrangement Record (Alternate Start): Shift+F9
+29061 Computer MIDI Keyboard: M
+29062 Import MIDI File...: 
+29063 Export MIDI Clip...: Cmd+Shift+E
+29064 About ADI: 
+29065 Import Audio File...: 
+29066 Browser Preview: 
+29067 Preview Selected: Shift+Return, Right
+29068 Hot-Swap: Q
+29069 Manage Project Files...: 
+29070 Toggle Favorite: 
+29071 Toggle Red Collection: 1
+29072 Toggle Orange Collection: 2
+29073 Toggle Yellow Collection: 3
+29074 Toggle Green Collection: 4
+29075 Toggle Blue Collection: 5
+29076 Toggle Purple Collection: 6
+29077 Toggle Gray Collection: 7
+29078 Reverse Clip(s): R
+29079 Lock Envelopes: 
+29080 Open Backup...: 
+29081 Consolidate: Cmd+J

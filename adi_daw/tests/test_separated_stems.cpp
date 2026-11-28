@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/media/separated_stems.hpp"
+#include "adi/control/stem_jobs.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -66,11 +67,13 @@ struct Fixture {
     test::TempDirectory temp{"separated_stems","project"};
     fs::path project=temp.path()/"project"/"song.adi";
     std::unique_ptr<Store> store;
+    std::int64_t initialTrackCount{};
     SeparationResult result;SeparationImportOptions options;
     std::uint32_t rate,frames;
     Fixture(std::size_t number=4,std::uint32_t hz=48000,std::uint32_t length=4800):rate(hz),frames(length) {
         fs::create_directories(project.parent_path());StoreError error{};store=Store::createNewProject(project,error);
         if(!store)throw std::runtime_error("create stem project");
+        initialTrackCount = count(*store, "tracks");
         const auto source=project.parent_path()/"source.wav";wave(source,rate,frames,0.5f);
         if(!importMedia(*store,source,50,100).ok)throw std::runtime_error("register source media");
         result.sourceMedia=50;result.sourceHash=blake3File(source).hex;result.frames=frames;
@@ -94,6 +97,44 @@ std::vector<float> samples(const fs::path& path) {
     if(reader.read(result.data(),static_cast<std::uint32_t>(reader.frames()))!=reader.frames())throw std::runtime_error("read comparison wave");
     return result;
 }
+void jobReadSet() {
+    using namespace adi::control;
+    {
+        Fixture f(1);
+        JobBook jobs;
+        const auto queued = jobs.enqueue("owner", {"stems", f.store->projectUuid(),
+                                                  JobRevisionPolicy::StableUntilCompletion});
+        check(queued && startStemJob(jobs, queued->id, *f.store, f.result).has_value(),
+              "a stem job captures the registered source before inference");
+        if (!queued) return;
+        const auto head = OpJournal(*f.store).headSeq();
+        wave(f.project.parent_path() / "source.wav", f.rate, f.frames, 0.125f);
+        const auto finished = finishStemJob(jobs, queued->id, *f.store, f.result, f.options, Actor::Agent);
+        const auto target = f.project.parent_path() / "audio" /
+                            ("separated-" + f.result.stems.front().hash + ".wav");
+        check(finished && finished->state == JobState::Failed && finished->conflict &&
+                  OpJournal(*f.store).headSeq() == head && !fs::exists(target),
+              "changed source bytes cause a conflict before the gateway can publish a stem");
+    }
+    {
+        Fixture f(1);
+        JobBook jobs;
+        const auto queued = jobs.enqueue("owner", {"stems", f.store->projectUuid(),
+                                                  JobRevisionPolicy::StableUntilCompletion});
+        if (!queued || !startStemJob(jobs, queued->id, *f.store, f.result)) {
+            check(false, "the unchanged source starts its job");
+            return;
+        }
+        OpRequest unrelated;
+        unrelated.opType = "track.create";
+        unrelated.payload = {{"id", 99}, {"kind", "audio"}, {"name", "Other track"}, {"index", 0}};
+        check(OpJournal(*f.store).commit(unrelated).ok, "an unrelated edit moves the project head");
+        const auto finished = finishStemJob(jobs, queued->id, *f.store, f.result, f.options, Actor::Agent);
+        check(finished && finished->state == JobState::Completed && count(*f.store, "agent_requests") == 1,
+              "the unchanged read set allows the real stem gateway commit after an unrelated edit");
+    }
+}
+
 void nativeLifecycle() {
     Fixture f;const auto before=digestProject(*f.store).text;const auto head=OpJournal(*f.store).headSeq();
     auto prepared=f.prepare();check(prepared.ready(),prepared.error().empty()?"complete four-stem result captures without inference":prepared.error().c_str());if(!prepared.ready())return;
@@ -170,7 +211,9 @@ void failuresAndRetry() {
     Fixture stale;auto pending=stale.prepare();OpRequest rename;rename.opType="project.setName";rename.payload={{"name","changed"}};
     if(!OpJournal(*stale.store).commit(rename).ok)throw std::runtime_error("stale rename");
     const auto staleResult=commitSeparatedStems(*stale.store,pending,7);
-    check(!staleResult.ok && staleResult.stale && count(*stale.store,"tracks")==7 && count(*stale.store,"agent_requests")==0,"changed journal head refuses inside commit before any separation action");
+    check(!staleResult.ok && staleResult.stale && count(*stale.store, "tracks") == stale.initialTrackCount &&
+              count(*stale.store, "agent_requests") == 0,
+          "changed journal head refuses inside commit before any separation action");
     Fixture reopened;auto old=reopened.prepare();reopened.store.reset();StoreError error{};reopened.store=Store::open(reopened.project,error);
     check(!commitSeparatedStems(*reopened.store,old,7).ok,"reopened same filename/generation cannot accept an old client's prepared result");
     Fixture changed;auto captured=changed.prepare();fs::remove_all(changed.result.folder);
@@ -178,10 +221,14 @@ void failuresAndRetry() {
     Fixture corrupt;auto capturedBad=corrupt.prepare();
     for(const auto& entry:fs::directory_iterator(corrupt.project.parent_path()))if(entry.path().filename().string().starts_with(".adi-separated-"))
         std::ofstream(entry.path()/"stem-0.wav",std::ios::binary|std::ios::app)<<'x';
-    check(!commitSeparatedStems(*corrupt.store,capturedBad,7).ok && count(*corrupt.store,"tracks")==7,"changed private captured audio refuses publication and rolls back rows");
+    check(!commitSeparatedStems(*corrupt.store, capturedBad, 7).ok &&
+              count(*corrupt.store, "tracks") == corrupt.initialTrackCount,
+          "changed private captured audio refuses publication and rolls back rows");
     Fixture destination;auto destinationJob=destination.prepare();fs::create_directory(destination.project.parent_path()/"audio");
     const auto target=destination.project.parent_path()/"audio"/("separated-"+destination.result.stems.front().hash+".wav");std::ofstream(target)<<"occupied";
-    check(!commitSeparatedStems(*destination.store,destinationJob,7).ok && count(*destination.store,"tracks")==7 && fs::file_size(target)==8,"different pre-existing destination is preserved and no partial group commits");
+    check(!commitSeparatedStems(*destination.store, destinationJob, 7).ok &&
+              count(*destination.store, "tracks") == destination.initialTrackCount && fs::file_size(target) == 8,
+          "different pre-existing destination is preserved and no partial group commits");
 }
 void shapesAndValidation() {
     Fixture f;const auto baseline=digestProject(*f.store).text;
@@ -238,7 +285,8 @@ void cancellationAndCallbacks() {
     check(!prepareSeparatedStems(*f.store,f.result,options).ready(),"already-cancelled result refuses preparation");
     std::stop_source during;options=f.options;options.stop=during.get_token();unsigned calls=0;
     options.checkpoint=[&]{if(++calls==3)during.request_stop();};
-    check(!prepareSeparatedStems(*f.store,f.result,options).ready() && count(*f.store,"tracks")==7,"live cancellation during capture leaves no project changes");
+    check(!prepareSeparatedStems(*f.store, f.result, options).ready() && count(*f.store, "tracks") == f.initialTrackCount,
+          "live cancellation during capture leaves no project changes");
     auto captured=f.prepare();if(!captured.ready())throw std::runtime_error(captured.error());
     const auto preparedCost=emptyResultCost<PreparedSeparation>(),commitCost=emptyResultCost<CommitResult>();
     PreparedSeparation refused;CommitResult commit;
@@ -256,14 +304,16 @@ void boundaries() {
         window.store->db().execAndGet("SELECT count(*) FROM audio_clips WHERE src_start_frames=0 AND src_len_frames=1200").getInt()==4,
         "a named service without a weights hash can return a source subwindow at a nonzero common placement");
     Fixture growing;bool changed=false;growing.options.checkpoint=[&]{if(!changed){changed=true;std::ofstream(growing.result.folder/growing.result.stems.front().file,std::ios::binary|std::ios::app)<<'x';}};
-    check(!growing.prepare().ready() && count(*growing.store,"tracks")==7,"producer growth after size preflight refuses instead of escaping the byte budget");
+    check(!growing.prepare().ready() && count(*growing.store, "tracks") == growing.initialTrackCount,
+          "producer growth after size preflight refuses instead of escaping the byte budget");
     Fixture changing;bool active=false;unsigned checkpoints=0;
     changing.options.checkpoint=[&]{if(active && ++checkpoints==3)for(const auto& entry:fs::directory_iterator(changing.project.parent_path()))
         if(entry.path().filename().string().starts_with(".adi-separated-")){
             std::fstream file(entry.path()/"stem-0.wav",std::ios::binary|std::ios::in|std::ios::out);file.seekp(-1,std::ios::end);file.put('x');
         }};
     auto pending=changing.prepare();active=true;
-    check(!commitSeparatedStems(*changing.store,pending,7).ok && count(*changing.store,"tracks")==7 && count(*changing.store,"agent_requests")==0,
+    check(!commitSeparatedStems(*changing.store, pending, 7).ok &&
+              count(*changing.store, "tracks") == changing.initialTrackCount && count(*changing.store, "agent_requests") == 0,
         "same-size private mutation between prehash and publication copy refuses the complete transaction");
     Fixture readOnly;auto writableJob=readOnly.prepare();StoreError error{};
     auto reader=Store::open(readOnly.project,error,true);
@@ -288,6 +338,6 @@ void boundaries() {
     if(!ec){linked.result.stems.front().file="linked.wav";check(!linked.prepare().ready(),"result file symlink refuses without following outside the result boundary");}
 }
 } // namespace
-int main(){try{nativeLifecycle();failuresAndRetry();shapesAndValidation();cancellationAndCallbacks();boundaries();}
+int main(){try{jobReadSet();nativeLifecycle();failuresAndRetry();shapesAndValidation();cancellationAndCallbacks();boundaries();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

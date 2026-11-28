@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/midi_memory.hpp"
+#include "adi/engine/live_midi_input.hpp"
+#include "adi/engine/transport.hpp"
 #include "adi/engine/mpe_input.hpp"
 #include "adi/audio/io_audit.hpp"
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <thread>
 namespace {std::atomic<unsigned> allocations{0};}
@@ -133,7 +138,48 @@ void concurrent() {
     MidiMemorySnapshot last;std::string error;check(memory.snapshot(last,error) && exact(last),"final snapshot remains coherent after repeated wraps and pinned drops");
     std::printf("concurrent MIDI snapshots: %u accepted / %u attempts, %llu dropped events\n",successes,attempts,static_cast<unsigned long long>(memory.stats().dropped));
 }
+void liveHistoryPublication() {
+    using InputHistory = LiveMidiInput::History;
+    LiveMidiInput input;
+    GraphHost graph;
+    Transport transport;
+    constexpr auto port = midiInputKey("in:test");
+    constexpr MidiInputFilter filter{port, 4};
+    const auto first = std::make_shared<InputHistory>(1, 11, 48000, filter);
+    const auto second = std::make_shared<InputHistory>(2, 12, 48000, MidiInputFilter{});
+    const std::array histories{first, second};
+    const auto render = [&](std::int64_t sample, std::span<const std::shared_ptr<InputHistory>> selected) {
+        AudioIo io;
+        io.frames = 64;
+        io.streamTimeSamples = sample;
+        auto block = graph.beginRender();
+        audio::CallbackScope callback;
+        input.render(block, io, {}, selected, transport, {}, nullptr, RecordingPunch::Within, {});
+    };
+    check(input.push(1, note(), 1, port), "queue one event for both listening tracks");
+    render(0, histories);
+    const auto beforeSilence = input.historyRevision();
+    render(64, histories);
+    MidiMemorySnapshot left, right;
+    std::string error;
+    check(first->memory.snapshot(left, error) && second->memory.snapshot(right, error) &&
+              left.events.size() == 1 && right.events.size() == 1 &&
+              left.endSample == 128 && right.endSample == left.endSample &&
+              input.historyRevision() == beforeSilence + 2,
+          "a silent callback publishes both histories' new end in one revision");
+
+    const auto newlyArmed = std::make_shared<InputHistory>(3, 13, 48000, filter);
+    const std::array changed{first, newlyArmed};
+    const auto beforeArm = input.historyRevision();
+    render(128, changed);
+    check(newlyArmed->memory.listening() && newlyArmed->inputEpoch == first->inputEpoch &&
+              input.historyRevision() == beforeArm + 2,
+          "arming another history on a silent callback publishes its initialization in the same revision");
+    const auto beforeEmpty = input.historyRevision();
+    render(192, {});
+    check(input.historyRevision() == beforeEmpty, "a callback with no listening histories needs no publication");
 }
-int main(){try{gatesClocksAndValues();wrapAndIsolation();parser();invalidInput();concurrent();check(allocations==0 && audio::callbackFileIo==0,"input controls/parser/copies allocate nothing and perform no callback file I/O");}
+}
+int main(){try{gatesClocksAndValues();wrapAndIsolation();parser();invalidInput();concurrent();liveHistoryPublication();check(allocations==0 && audio::callbackFileIo==0,"input controls/parser/copies allocate nothing and perform no callback file I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_memory: %d checks, %d failures\n",checks,failures);return failures?1:0;}

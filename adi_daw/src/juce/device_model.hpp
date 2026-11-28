@@ -44,6 +44,30 @@ namespace adi::gesture::detail { class ProducerFence; class StateProducerFence; 
 namespace adi::device {
 
 // ---------------------------------------------------------------------------
+// SC-315: a mono plug-in on ADI's stereo channel
+// ---------------------------------------------------------------------------
+
+/// The plug-in output channel heard on graph channel `graphChannel`, or -1 for silence. A plug-in with one
+/// main output is heard on both sides, as Live plays it; one with more is heard channel for channel.
+[[nodiscard]] constexpr std::int32_t sourceChannelFor(std::int32_t graphChannel, std::int32_t pluginChannels) noexcept {
+    if (graphChannel < pluginChannels) return graphChannel;
+    return pluginChannels == 1 ? 0 : -1;
+}
+
+/// What a plug-in with one main input is fed from a stereo channel. Live folds the two sides into the
+/// one; whether as their average or their sum is the reading owed, so it is this named choice.
+enum class MonoInputFold { Average, Sum };
+inline constexpr MonoInputFold kMonoInputFold = MonoInputFold::Average;
+
+/// Folds `right` into `mono`, which already holds the left side, `n` samples.
+template <class Sample>
+void foldIntoMono(Sample* mono, const Sample* right, std::int32_t n) noexcept {
+    if (mono == nullptr || right == nullptr) return;
+    for (std::int32_t i = 0; i < n; ++i)
+        mono[i] = kMonoInputFold == MonoInputFold::Average ? (mono[i] + right[i]) * Sample(0.5) : mono[i] + right[i];
+}
+
+// ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
 
@@ -621,6 +645,9 @@ public:
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
+    [[nodiscard]] engine::EventFlow eventFlowAfterBypass(bool bypass) const noexcept override;
+    [[nodiscard]] std::int64_t tailSamplesAfterBypass(bool bypass) const noexcept override;
+    void didSuspendAfterBypass(bool bypass) noexcept override;
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {

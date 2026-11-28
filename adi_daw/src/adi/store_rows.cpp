@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store_rows.hpp"
+#include "adi/ops.hpp"
 #include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
@@ -54,6 +55,20 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
     }
 }
 
+}  // namespace
+
+std::optional<MidiOutput> decodeMidiOutput(std::span<const std::byte> data) {
+    std::string error;
+    const auto mapping = decodeFromLog(data, error);
+    if (!mapping || !mapping->is_object() || !mapping->contains("midiPort") ||
+        !mapping->at("midiPort").is_string() || !mapping->contains("midiChannel") ||
+        !mapping->at("midiChannel").is_number_integer()) return {};
+    auto port = mapping->at("midiPort").get<std::string>();
+    const auto channel = mapping->at("midiChannel").get<std::int64_t>();
+    if (!port.starts_with("out:") || port.size() <= 4 || channel < 1 || channel > 16) return {};
+    return MidiOutput{std::move(port), static_cast<int>(channel)};
+}
+
 // --- notes ------------------------------------------------------------------
 
 /// Decode one clip's `ANOT` blob into notes.
@@ -62,7 +77,7 @@ bool query(Model& m, const SQLite::Database& db, const char* table, const char* 
 /// `all()` refuses above 8.4M records rather than allocating on a corrupt
 /// header's word. Striding by the header's `rec_size` is what makes a v2 record
 /// readable by this v1 build (ADR-0023) -- never `sizeof(NoteRecord)`.
-void readNotesFor(Model& m, const Store& store, std::int64_t clipId) {
+void readClipNotes(Model& m, const Store& store, std::int64_t clipId) {
     const auto blob = store.getEventStream(clipId, "notes");
     if (!blob) return;
 
@@ -92,8 +107,6 @@ void readNotesFor(Model& m, const Store& store, std::int64_t clipId) {
         m.notes.push_back(n);
     }
 }
-
-}  // namespace
 
 Model readModel(const Store& store) {
     Model m;
@@ -391,7 +404,7 @@ Model readModel(const Store& store) {
               [&](const SQLite::Statement& st){keyTaps.emplace(st.getColumn(0).getInt64(),st.getColumn(1).getString());});
     query(m, db, "routing",
           "SELECT id, src_kind, src_id, dst_kind, dst_id, kind, ord, gain_db, "
-          "       pan, pre_fader, enabled, origin FROM routing",
+          "       pan, pre_fader, enabled, origin, channel_map FROM routing",
           [&](const SQLite::Statement& st) {
               Routing r;
               r.id = st.getColumn(0).getInt64();
@@ -406,6 +419,13 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if (r.srcKind == "track" && r.dstKind == "hw_out" && r.dstId == 0 && r.kind == "main") {
+                  const auto data = st.getColumn(12);
+                  if (data.isBlob() && data.getBytes() > 0) {
+                      r.midiOutput = decodeMidiOutput({static_cast<const std::byte*>(data.getBlob()),
+                          static_cast<std::size_t>(data.getBytes())});
+                  }
+              }
               if (const auto tap = individualTaps.find(r.id); tap != individualTaps.end())
                   r.sendTap = tap->second;
               if(const auto tap=keyTaps.find(r.id);tap!=keyTaps.end())r.keyTap=tap->second;
@@ -614,7 +634,7 @@ Model readModel(const Store& store) {
     // because ADR-0009's granularity rule lives there and this should not be a
     // second place that knows how an event stream is addressed.
     for (const Clip& c : m.clips)
-        if (c.kind == "midi") readNotesFor(m, store, c.id);
+        if (c.kind == "midi") readClipNotes(m, store, c.id);
 
     query(m,db,"automation_segment_ranges",
           "SELECT id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges ORDER BY data_id,record_index",

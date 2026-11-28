@@ -7,11 +7,21 @@
 #include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
 #include "adi/ui/note_filters.hpp"
+#include "adi/blob.hpp"
+#include "adi/store.hpp"
+#include "adi/ui/op_submitter.hpp"
+#include "temp_directory.hpp"
 
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -72,6 +82,13 @@ void deleting() {
     const auto two = deleteNotes(c, {3, 9, 555});
     check(two.ops.size() == 2 && two.ops[0].label == "Delete Notes", "several: one op each, a note the clip does not hold is left out");
     check(deleteNotes(c, {}).ops.empty() && deleteNotes(c, {}).refusal.empty(), "none selected: nothing to do");
+    auto wide = c;
+    constexpr std::uint64_t highId = (std::uint64_t{1} << 63) + 7;
+    wide.notes.front().id = highId;
+    const auto ordered = deleteNotes(wide, {9, highId, 9, 555});
+    check(ordered.ops.size() == 2 && ordered.ops[0].payload.at("note") == highId &&
+              ordered.ops[1].payload.at("note") == std::uint64_t{9},
+          "indexed selection keeps clip order and full note IDs, ignoring duplicates and unknown IDs");
 }
 
 void moving() {
@@ -91,6 +108,124 @@ void moving() {
     const auto down = moveNotes(c, {3, 9}, 0, -100);
     check(down.ops[0].payload.at("key") == 0 && down.ops[1].payload.at("key") == 4, "and down, both stop when the lowest reaches key 0");
     check(moveNotes(c, {3}, beat, 0).ops[0].label == "Move Note", "one note is named in the singular");
+}
+
+struct NoteWrites {
+    sqlite3 *db;
+    unsigned count = 0;
+    explicit NoteWrites(Store &store) : db(store.db().getHandle()) {
+        sqlite3_update_hook(db, [](void *context, int, const char *, const char *table, sqlite3_int64) {
+            if (std::strcmp(table, "event_streams") == 0)
+                ++static_cast<NoteWrites *>(context)->count;
+        }, this);
+    }
+    ~NoteWrites() { sqlite3_update_hook(db, nullptr, nullptr); }
+};
+
+void longNoteGesture() {
+    constexpr std::size_t count = 2000;
+    constexpr std::int64_t clipId = 11;
+    test::TempDirectory folder("ui_note_edits", "long-gesture");
+    StoreError error{};
+    auto store = Store::createNewProject(folder.path() / "notes.adi", error);
+    check(store != nullptr, "long gesture: create project");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(11,2,'midi',0,5765760000)");
+    std::vector<NoteRecord> notes(count);
+    std::vector<std::uint64_t> selection;
+    selection.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        auto &note = notes[i];
+        note.start_ticks = static_cast<std::int64_t>(i) * beat / 4;
+        note.dur_ticks = beat / 8;
+        note.note_id = i + 1;
+        note.key = 60;
+        note.vel_on = 100;
+        note.probability = 10000;
+        selection.push_back(note.note_id);
+    }
+    const auto original = writeStream<NoteRecord>(FourCC::Notes, notes, 1, StreamFlags::SortedByTime);
+    check(store->putEventStream(clipId, "notes", original), "long gesture: seed 2,000 native notes");
+    const auto details = engine::readClipDetails(*store, clipId);
+    check(details.clip && details.clip->notes.size() == count, "long gesture: read the original notes in the editor");
+    if (!details.clip)
+        return;
+    auto &db = store->db();
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    const Payload selectionBefore{{"selection", {{"clip", clipId}}}};
+    NoteWrites writes(*store);
+    const auto start = std::chrono::steady_clock::now();
+    auto edit = withOverlaps(*details.clip, moveNotes(*details.clip, selection, 0, 1));
+    if (!edit.refusal.empty() || edit.ops.empty()) {
+        check(false, "long gesture: transpose the selected notes");
+        return;
+    }
+    edit.ops.front().selBefore = selectionBefore;
+    const auto result = submitter.submit(std::move(edit.ops));
+    const auto commitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    const auto step = submitter.nextUndo();
+    const auto bytes = db.execAndGet("SELECT COALESCE(SUM(length(payload)+COALESCE(length(inverse),0)),0) FROM ops").getInt64();
+    std::printf("2,000-note transpose: %.2f ms, %u stream writes, %zu journal rows, %lld journal bytes\n",
+                commitMs, writes.count, result.seqs.size(), static_cast<long long>(bytes));
+    check(result.ok && writes.count == 1 && result.seqs.size() == 1,
+          "long gesture: one canonical note-stream write and one journal row");
+    check(step && step->label == "Move Notes" && step->opCount == 1,
+          "long gesture: one named Undo step");
+    check(bytes < static_cast<std::int64_t>(count) * 512, "long gesture: linear journal payload budget");
+    const auto changed = engine::readClipDetails(*store, clipId);
+    check(changed.clip && changed.clip->notes.size() == count &&
+              std::all_of(changed.clip->notes.begin(), changed.clip->notes.end(), [](const auto &note) { return note.key == 61; }),
+          "long gesture: the transpose reached every note");
+    if (!result)
+        return;
+    writes.count = 0;
+    const auto undoStart = std::chrono::steady_clock::now();
+    const auto undone = submitter.undo();
+    const auto undoMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - undoStart).count();
+    std::printf("2,000-note Undo: %.2f ms, %u stream writes\n", undoMs, writes.count);
+    check(undone.ok && undone.selBefore == selectionBefore && store->getEventStream(clipId, "notes") == original,
+          "long gesture: Undo restores the exact original stream and selection");
+    check(writes.count == 1, "long gesture: Undo restores the stream once");
+}
+
+void multiClipNoteGesture() {
+    test::TempDirectory folder("ui_note_edits", "multiple-clips");
+    StoreError error{};
+    auto store = Store::createNewProject(folder.path() / "notes.adi", error);
+    check(store != nullptr, "multi-clip gesture: create project");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(11,2,'midi',0,5765760),(12,3,'midi',0,5765760)");
+    const auto edit = [] {
+        std::vector<OpRequest> requests;
+        for (const int id : {1, 2})
+            for (const int clipId : {11, 12})
+                requests.push_back(note_edits_detail::op("note.insert",
+                    {{"clip", clipId}, {"note", id}, {"start", (id - 1) * beat / 2}, {"dur", beat / 4}, {"key", 59 + id}},
+                    "Draw Notes"));
+        return requests;
+    };
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    NoteWrites writes(*store);
+    db.exec("CREATE TEMP TRIGGER deny_second BEFORE INSERT ON event_streams WHEN new.clip_id=12 BEGIN SELECT RAISE(ABORT,'refused'); END");
+    const auto refused = submitter.submit(edit());
+    check(!refused && !submitter.nextUndo() && !store->getEventStream(11, "notes") && !store->getEventStream(12, "notes"),
+          "multi-clip gesture: failure on the second clip rolls back both streams and history");
+    db.exec("DROP TRIGGER deny_second");
+    writes.count = 0;
+    const auto committed = submitter.submit(edit());
+    check(committed.ok && writes.count == 2 && committed.seqs.size() == 2,
+          "multi-clip gesture: one stream write and one journal row per clip");
+    check(submitter.nextUndo() && submitter.nextUndo()->label == "Draw Notes" && submitter.nextUndo()->opCount == 2,
+          "multi-clip gesture: one Undo step for all clips");
+    check(submitter.undo().ok && !store->getEventStream(11, "notes") && !store->getEventStream(12, "notes"),
+          "multi-clip gesture: one Undo restores both clips' absent streams");
 }
 
 void resizing() {
@@ -1113,15 +1248,18 @@ void midiClips() {
     bass->clips.push_back(existing);
     snapshot.tracks = {keys, audio, bass};
     const auto one = insertMidiClips(snapshot, {1}, 0, 4 * beat);
-    check(one.refusal.empty() && one.ops.size() == 1 && one.ops[0].opType == "clip.create" &&
+    check(one.refusal.empty() && one.ops.size() == 2 && one.ops[0].opType == "clip.create" &&
               one.ops[0].label == "Insert MIDI Clip" &&
               one.ops[0].payload == Payload({{"id", 41}, {"track", 1}, {"kind", "midi"}, {"pos", 0}, {"length", 4 * beat}}) &&
+              one.ops[1].opType == "clip.setLoop" &&
+              one.ops[1].payload == Payload({{"id", 41}, {"on", true}, {"start", 0}, {"length", 4 * beat}}) &&
               one.select == 1 && one.clip == 41,
-          "an empty MIDI clip across the selection, with an id past every clip's, selected");
-    const auto both = insertMidiClips(snapshot, {1, 2, 3}, 0, 4 * beat);
-    check(both.ops.size() == 2 && both.ops[0].payload.at("track") == 1 && both.ops[1].payload.at("track") == 3 &&
-              both.ops[1].payload.at("id") == 42 && both.clip == 41,
-          "on several tracks: one on each MIDI track, none on the audio track, the first selected");
+          "an empty MIDI clip loops across its full source length and is selected");
+    const auto both = insertMidiClips(snapshot, {1, 2, 3}, beat, 4 * beat);
+    check(both.ops.size() == 4 && both.ops[0].payload.at("track") == 1 && both.ops[2].payload.at("track") == 3 &&
+              both.ops[1].payload == Payload({{"id", 41}, {"on", true}, {"start", 0}, {"length", 3 * beat}}) &&
+              both.ops[3].payload == Payload({{"id", 42}, {"on", true}, {"start", 0}, {"length", 3 * beat}}) && both.clip == 41,
+          "on several tracks, each new MIDI clip loops from source zero regardless of Arrangement position");
     check(!insertMidiClips(snapshot, {2}, 0, beat).refusal.empty() && insertMidiClips(snapshot, {2}, 0, beat).ops.empty(),
           "with no MIDI track it is refused");
     check(!insertMidiClips(snapshot, {1}, beat, beat).refusal.empty(), "and with no time selected");
@@ -1130,12 +1268,41 @@ void midiClips() {
           "over an existing clip nothing is made on any track, and the track is named");
     check(insertMidiClips(snapshot, {3}, 8 * beat, 9 * beat).refusal.empty(), "right after a clip is free");
 }
+void loopPlayhead() {
+    engine::ClipDetails clip;
+    clip.posTicks = 8 * beat;
+    clip.lengthTicks = 12 * beat;
+    clip.startMarkerTicks = beat;
+    clip.loopEnabled = true;
+    clip.loopStartTicks = 2 * beat;
+    clip.loopLengthTicks = 2 * beat;
+    check(noteEditorPlayheadTick(clip, 8 * beat + beat / 2) == 8 * beat + beat / 2,
+          "the pickup before the loop plays on its original beat");
+    check(noteEditorPlayheadTick(clip, 11 * beat) == 9 * beat &&
+              noteEditorPlayheadTick(clip, 15 * beat + beat / 2) == 9 * beat + beat / 2,
+          "the loop end and later repeats map back to the notes' first occurrence");
+    check(noteEditorPlayheadTick(clip, 20 * beat) == 20 * beat,
+          "the end of the selected clip returns to song time");
+    clip.startMarkerTicks = 5 * beat;
+    check(noteEditorPlayheadTick(clip, 8 * beat) == 6 * beat,
+          "a clip that starts inside a later loop occurrence opens at that source phase");
+    clip.loopEnabled = false;
+    check(noteEditorPlayheadTick(clip, 12 * beat) == 12 * beat,
+          "a linear clip plays on the Arrangement time axis");
+}
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--long-notes-speed-only") {
+        longNoteGesture();
+        multiClipNoteGesture();
+        return g_failures ? 1 : 0;
+    }
     adding();
     deleting();
     moving();
+    longNoteGesture();
+    multiClipNoteGesture();
     resizing();
     velocities();
     activating();
@@ -1157,6 +1324,7 @@ int main() {
     scaleMode();
     noteFilters();
     clipTime();
+    loopPlayhead();
     intervals();
     noteStretch();
     midiClips();

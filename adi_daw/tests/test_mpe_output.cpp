@@ -520,6 +520,68 @@ void testPlainRoute() {
           "a second finger on the same key, collapsed onto channel 0, is counted");
 }
 
+void testChannelPitchWheel() {
+    section("An ordinary pitch wheel stays a channel message on every route");
+    for (const auto mode : {ExpressionRoute::Plain, ExpressionRoute::NoteExpression, ExpressionRoute::MpeMidi}) {
+        MpeRouter router;
+        ExpressionCaps caps;
+        caps.bendParam[4] = 21;
+        router.configure(mode, caps);
+        auto wheel = expr(7, 0, ExpressionDim::Pitch, 1.0);
+        wheel.channel = 4;
+        const Event authored{8, EventType::Controller, 4, 0, 123, kCtrlPitchBend, .5};
+        Out output;
+        route(router, {wheel, authored}, output);
+        const auto bend = controls(output.all(), 4, kCtrlPitchBend);
+        check(bend.size() == 2 && bend[0].frame == 7 && bend[0].word == 12288 && bend[0].paramId == 21 &&
+                  bend[0].noteId == 0 && bend[0].fromControllerEvent && router.unknownNotes() == 0,
+              "the wheel keeps its channel and frame and uses the standard channel bend range");
+        check(bend.size() == 2 && bend[1].frame == 8 && bend[1].word == 8192 && bend[1].paramId == 21 &&
+                  bend[1].noteId == 0 && !bend[1].fromControllerEvent,
+              "the normalized envelope center reaches the same channel route without a note identity");
+    }
+}
+
+// SC-312: the pitch wheel, channel pressure and CC74 played for the whole channel (an expression on note
+// 0, as ADI's MIDI input makes a pitch wheel) reach a synth as the channel's own messages on EVERY
+// route, as Live sends them: the bend through the plug-in's map at MIDI's master range (2 semitones, the
+// range the input decoded it with), so a full throw of the wheel is the full word. Before, the
+// NoteExpression route sent note expression for note 0, which synths ignore, and the MIDI routes dropped
+// it as an unknown note.
+void testChannelWideExpressionIsAChannelMessage() {
+    section("SC-312 -- the pitch wheel and channel pressure for the whole channel, on every route");
+    ExpressionCaps caps = reachable();
+    caps.bendParam[0] = 1000;
+    caps.pressureParam[0] = 2000;
+    caps.timbreParam[0] = 3000;
+    for (const auto way : {ExpressionRoute::NoteExpression, ExpressionRoute::MpeMidi, ExpressionRoute::Plain}) {
+        const std::string name = way == ExpressionRoute::NoteExpression ? "NoteExpression"
+                                 : way == ExpressionRoute::MpeMidi      ? "MpeMidi"
+                                                                        : "Plain";
+        MpeRouter r;
+        r.configure(way, caps);
+        Out o;
+        route(r, {on(0, 1, 60), expr(5, 0, ExpressionDim::Pitch, 2.0, 0), expr(6, 0, ExpressionDim::Pressure, 0.4, 1),
+                    expr(7, 0, ExpressionDim::Timbre, 0.6, 1), expr(8, 0, ExpressionDim::Pitch, -1.0, 0)},
+                o);
+        const auto v = o.all();
+        const auto bend = controls(v, 0, kCtrlPitchBend);
+        const auto atEnd = [&](const std::vector<MpeOut> &c) { return c.empty() ? MpeOut{} : c.back(); };
+        std::vector<MpeOut> wheel;
+        for (const auto &x : bend)
+            if (x.frame >= 5) wheel.push_back(x);
+        check(wheel.size() == 2 && wheel[0].paramId == 1000 && wheel[0].word == 16383 &&
+                  std::abs(wheel[0].value - 1.0) < 1e-12,
+              name + ": the wheel thrown up to +2 semitones is the full word 16383, on the channel's mapped bend");
+        check(wheel.size() == 2 && wheel[1].word == 4096,
+              name + ": -1 semitone is the word 4096, half way down at MIDI's 2-semitone range");
+        const auto pressure = atEnd(controls(v, 0, kCtrlAfterTouch));
+        check(pressure.paramId == 2000 && pressure.value == 0.4, name + ": channel pressure reaches its parameter");
+        const auto timbre = atEnd(controls(v, 0, kCtrlTimbre));
+        check(timbre.paramId == 3000 && std::abs(timbre.value - 0.6) < 1e-12, name + ": CC74 reaches its parameter");
+        check(countKind(v, MpeOut::Kind::Expression) == 0, name + ": none of it goes out as note expression on note 0");
+    }
+}
 void testSwitchingRoutesEndsNotesWhereTheyStarted() {
     section("ADR-0097 -- switching route ends every note on its own channel first");
 
@@ -576,9 +638,13 @@ void testUnassignedIdsAndCapacity() {
     check(v.size() == 1 && v[0].channel == 2 && v[0].key == 62,
           "notes with id 0 are matched by key: 62 ends on ITS channel, 2");
     Out o3;
-    route(r, {expr(6, 0, ExpressionDim::Pitch, 1.0)}, o3);
-    check(o3.list.size() == 0 && r.unknownNotes() == 1,
-          "expression needs an id to find its note; with 0 it is counted, not guessed");
+    route(r, {expr(6, 0, ExpressionDim::Pitch, 1.0, 0)}, o3);
+    // SC-312: id 0 is how ADI's MIDI input marks an expression for the whole channel (the pitch wheel), so
+    // it is still never guessed onto a note: it is the channel's own bend, on the master channel 0.
+    const auto wheel = o3.all();
+    check(wheel.size() == 1 && wheel[0].kind == MpeOut::Kind::Control && wheel[0].ctrl == kCtrlPitchBend &&
+              wheel[0].channel == 0 && r.unknownNotes() == 0,
+          "an expression with id 0 is never guessed onto a note: it is the channel's bend, on the master channel");
 
     MpeRouter small;
     small.configure(ExpressionRoute::MpeMidi, ExpressionCaps{});
@@ -890,6 +956,8 @@ int main() {
     testMemberChannelAllocation();
     testParameterPath();
     testPlainRoute();
+    testChannelWideExpressionIsAChannelMessage();
+    testChannelPitchWheel();
     testSwitchingRoutesEndsNotesWhereTheyStarted();
     testUnassignedIdsAndCapacity();
     testFullOutputListPreservesState();

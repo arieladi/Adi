@@ -3,6 +3,7 @@
 #include "adi/blob.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/vst3_host.hpp"
+#include <pluginterfaces/vst/ivsteditcontroller.h>
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -24,6 +25,181 @@ void check(bool yes, const char *label) {
 }
 std::filesystem::path native(const std::string &s) {
     return std::filesystem::path(std::u8string(s.begin(), s.end()));
+}
+// SC-312: the MIDI map read from a plug-in's declared "MIDI CC c|n" parameters (JUCE's wrapper declares
+// its map that way and answers IMidiMapping from it), for a controller the host cannot reach.
+void declaredMidiMap() {
+    const auto param = [](std::string name, std::uint32_t id) {
+        device::ParamDescriptor d;
+        d.name = std::move(name);
+        d.id = std::to_string(id);
+        return d;
+    };
+    const std::vector<device::ParamDescriptor> params{
+        param("Cutoff", 7), param("MIDI CC 0|1", 0x6d636d01), param("MIDI CC 0|64", 0x6d636d40),
+        param("MIDI CC 0|7", 0x6d636d07), param("MIDI CC 0|128", 0x6d636d80), param("MIDI CC 0|129", 0x6d636d81),
+        param("MIDI CC 0|74", 0x6d636d4a), param("MIDI CC 3|11", 0x6d636f00), param("MIDI CC 0|101", 0x6d636d65),
+        param("MIDI CC x|1", 99), param("MIDI CC 16|1", 98), param("MIDI CC 0|130", 97)};
+    engine::ExpressionCaps caps;
+    caps.controllerParam[0][7] = 1234; // already known: kept
+    check(device::mapDeclaredMidiControllers(params, caps), "a declared map is found");
+    check(caps.controllerParam[0][1] == 0x6d636d01 && caps.controllerParam[0][64] == 0x6d636d40,
+          "the mod wheel and the sustain pedal land on their declared parameters");
+    check(caps.bendParam[0] == 0x6d636d81 && caps.pressureParam[0] == 0x6d636d80,
+          "controller 129 is the pitch bend, 128 channel aftertouch");
+    check(caps.timbreParam[0] == 0x6d636d4a && caps.controllerParam[3][11] == 0x6d636f00 && caps.rpnParam[0] == 0x6d636d65,
+          "CC74 is the timbre too; other channels and the MPE configuration's CC101 are read");
+    check(caps.controllerParam[0][7] == 1234, "an entry the caps already have is kept");
+    check(caps.controllerParam[0][2] == engine::kNoParam && caps.bendParam[1] == engine::kNoParam,
+          "what is not declared stays unmapped; malformed names and channel 16 or controller 130 are ignored");
+    engine::ExpressionCaps none;
+    check(!device::mapDeclaredMidiControllers({param("Cutoff", 7)}, none), "no declared map, nothing found");
+}
+// SC-310: a value ADI sets on a VST3 (its panel, Undo, Delete to default, a project's rows replayed at
+// open) reaches the PROCESSOR, through IParameterChanges in the next process call, as VST3 asks
+// (ADR-0073). ADI calls the processor itself, so JUCE's own hand-over in processBlock never runs: a
+// value set only through JUCE reached the edit controller and stopped there. The fixture records Drive
+// as its processor received it and through nothing else, as a plug-in that keeps its processor apart.
+// SC-332: a plug-in that renames a parameter (a macro) and says so shows the new name, at the next pump.
+void renamedParameterShows(device::Vst3Host& host, const juce::PluginDescription& desc, void (*rename)(int)) {
+    std::string error;
+    auto instance = host.instantiate(desc, 48000.0, 64, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    const auto nameOf = [&]() -> std::string {
+        for (std::int32_t i = 0; i < vst.paramCount(); ++i)
+            if (const auto* d = vst.paramAt(i); d != nullptr && d->id == "4000") return d->name;
+        return "<none>";
+    };
+    check(nameOf() == "Drive", "the parameter reads its first title");
+    rename(1);
+    vst.pumpMainThread();
+    check(nameOf() == "Macro 1", "renamed by the plug-in, it reads the new title (SC-332)");
+    rename(0);
+    vst.pumpMainThread();
+    check(nameOf() == "Drive", "and back");
+}
+
+void valuesReachProcessor(device::Vst3Host& host, const juce::PluginDescription& desc, double (*processorDrive)(),
+                          bool offline) {
+    constexpr double sampleRate = 48000.0;
+    constexpr std::int32_t frames = 64;
+    std::string error;
+    auto instance = host.instantiate(desc, sampleRate, frames, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    // A project's parameter rows are replayed before the device first plays.
+    check(vst.setParam("4000", device::ParamValue::fromNormalized(0.35)), "Drive set before the first block (project open)");
+    vst.setOffline(offline);
+    vst.prepare(sampleRate, frames);
+    check(vst.usingRawProcessor(), "the values ride the raw VST3 process call");
+    std::array<float, frames> inL{}, inR{}, outL{}, outR{};
+    const float *input[]{inL.data(), inR.data()};
+    float *output[]{outL.data(), outR.data()};
+    const auto block = [&] {
+        engine::NodeIo io;
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = sampleRate;
+        io.in = input;
+        io.out = output;
+        vst.process(io);
+    };
+    const auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6; };
+    block();
+    std::printf("processor Drive after the replayed value: %.4f\n", processorDrive());
+    check(near(processorDrive(), 0.35),
+          offline ? "offline: a value set before the first block reaches the processor in it"
+                  : "a value set before the first block (a project opening) reaches the processor in it");
+    check(vst.setParam("4000", device::ParamValue::fromNormalized(0.65)), "Drive set from the panel");
+    block();
+    check(near(processorDrive(), 0.65),
+          offline ? "offline: a panel value reaches the processor in the next block"
+                  : "a panel value (or Undo's) reaches the processor in the next block");
+    check(near(vst.getParam("4000").normalized, 0.65), "and the controller shows it");
+    check(vst.setParam("4000", device::ParamValue::fromNormalized(0.2)), "Drive back to its default (Delete)");
+    block();
+    check(near(processorDrive(), 0.2), "Delete to default reaches the processor too");
+    // Several sets between two blocks: the processor takes the last.
+    vst.setParam("4000", device::ParamValue::fromNormalized(0.1));
+    vst.setParam("4000", device::ParamValue::fromNormalized(0.9));
+    block();
+    check(near(processorDrive(), 0.9), "of two values set between blocks, the processor ends on the last");
+}
+// SC-311: an edit made in the plug-in's own window reaches its sound, and an automated parameter moves
+// where its value is shown (ADI's panel reads the edit controller, as does the plug-in's window). The
+// fixture's Gesture Trigger makes its controller drag Drive to 0.7 through the host's IComponentHandler,
+// beginEdit, forty performEdits, endEdit, exactly as an editor reports a drag.
+void editorAndAutomationFollow(device::Vst3Host& host, const juce::PluginDescription& desc, double (*processorDrive)()) {
+    constexpr double sampleRate = 48000.0;
+    constexpr std::int32_t frames = 64;
+    std::string error;
+    auto instance = host.instantiate(desc, sampleRate, frames, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    vst.prepare(sampleRate, frames);
+    std::array<float, frames> inL{}, inR{}, outL{}, outR{};
+    const float *input[]{inL.data(), inR.data()};
+    float *output[]{outL.data(), outR.data()};
+    const auto block = [&] {
+        engine::NodeIo io;
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = sampleRate;
+        io.in = input;
+        io.out = output;
+        vst.process(io);
+    };
+    const auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6; };
+    block();
+    auto *component = static_cast<Steinberg::Vst::IComponent *>(vst.rawComponent());
+    Steinberg::Vst::IEditController *controller = nullptr;
+    if (component != nullptr)
+        component->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void **>(&controller));
+    check(controller != nullptr, "the fixture's edit controller is reachable");
+    if (controller == nullptr)
+        return;
+    controller->setParamNormalized(4001 /* Gesture Trigger: the editor drags Drive to 0.7 */, 1.0);
+    block();
+    std::printf("processor Drive after the editor's drag: %.4f\n", processorDrive());
+    check(near(processorDrive(), 0.7), "an edit made in the plug-in's own window reaches the processor in the next block");
+    // A lane plays Drive: the value reaches the processor through the block, and the controller (what
+    // ADI's panel and the plug-in's window show) follows on the message thread.
+    engine::Event lane{};
+    lane.type = engine::EventType::ParamValue;
+    lane.paramId = 4000;
+    lane.value = 0.45;
+    lane.frame = 0;
+    check(vst.pushEvent(lane), "an automation value for Drive");
+    block();
+    check(near(processorDrive(), 0.45), "the lane's value reaches the processor");
+    vst.pumpMainThread();
+    std::printf("controller Drive after the lane's value and a pump: %.4f\n", vst.getParam("4000").normalized);
+    check(near(vst.getParam("4000").normalized, 0.45),
+          "an automated parameter moves where it is shown: the controller follows the lane");
+    controller->release();
+}
+// SC-315: a mono plug-in on ADI's stereo channel is heard on both sides, and hears both sides folded.
+// The decision both hosts (VST3 and CLAP) take for each graph channel, and the fold.
+void monoOnStereo() {
+    check(device::sourceChannelFor(0, 1) == 0 && device::sourceChannelFor(1, 1) == 0,
+          "a plug-in with one output is heard on the left and on the right");
+    check(device::sourceChannelFor(0, 2) == 0 && device::sourceChannelFor(1, 2) == 1,
+          "a stereo plug-in is heard channel for channel");
+    check(device::sourceChannelFor(2, 2) == -1 && device::sourceChannelFor(0, 0) == -1,
+          "a channel the plug-in has no output for is silent; so is a plug-in with none");
+    std::array<float, 3> mono{0.5f, -1.f, 0.f};
+    const std::array<float, 3> right{0.5f, 1.f, 0.25f};
+    device::foldIntoMono(mono.data(), right.data(), 3);
+    check(mono == std::array<float, 3>{0.5f, 0.f, 0.125f},
+          "a stereo channel into one input: the two sides folded, a centred signal at its own level");
+    std::array<double, 2> wide{0.25, 0.75};
+    const std::array<double, 2> wideRight{0.25, -0.75};
+    device::foldIntoMono(wide.data(), wideRight.data(), 2);
+    check(wide == std::array<double, 2>{0.25, 0.0}, "and at double width");
 }
 void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc,
                      std::uint64_t (*completedProcessCalls)()) {
@@ -283,8 +459,65 @@ class KeyHalfGain final : public device::DeviceInstance {
     const device::DeviceIdentity identity_{"internal", uid, "Key Half Gain", "", ""};
 };
 
+using RefuseStateStreams = void (*)(unsigned);
+constexpr unsigned componentStream = 1, controllerStream = 2;
+
+void stateCaptureContract(device::Vst3Host &host, const juce::PluginDescription &description,
+                          RefuseStateStreams refuseStreams) {
+    const auto make = [&] {
+        std::string error;
+        auto adapter = host.makeDevice(description, 48000., 32, error);
+        if (!adapter) throw std::runtime_error(error);
+        return adapter;
+    };
+    const auto capture = [refuseStreams](device::DeviceInstance &adapter, unsigned refused) {
+        refuseStreams(refused);
+        auto bytes = adapter.saveState("chunk");
+        refuseStreams(0);
+        return bytes;
+    };
+    const auto hasStreams = [](const std::vector<std::uint8_t> &bytes, unsigned expected) {
+        const auto xml = juce::AudioProcessor::getXmlFromBinary(bytes.data(), static_cast<int>(bytes.size()));
+        return xml && xml->hasTagName("VST3PluginState") &&
+               (xml->getChildByName("IComponent") != nullptr) == ((expected & componentStream) != 0) &&
+               (xml->getChildByName("IEditController") != nullptr) == ((expected & controllerStream) != 0);
+    };
+    const auto roundTrips = [&](const std::vector<std::uint8_t> &bytes, unsigned refused) {
+        auto reopened = make();
+        return !bytes.empty() && reopened->loadState("chunk", bytes) && capture(*reopened, refused) == bytes;
+    };
+    auto adapter = make();
+    const auto baseline = capture(*adapter, 0);
+    check(hasStreams(baseline, componentStream | controllerStream),
+          "SC-430: the native fixture hands over both VST3 streams");
+    check(capture(*adapter, componentStream | controllerStream).empty(),
+          "SC-430: the JUCE wrapper alone does not make a refused VST3 state readable");
+    check(capture(*adapter, componentStream).empty(),
+          "SC-430: losing a previously captured component stream fails capture");
+    check(capture(*adapter, controllerStream).empty(),
+          "SC-430: losing a previously captured controller stream fails capture");
+    check(!baseline.empty() && capture(*adapter, 0) == baseline,
+          "SC-430: a healthy retry returns both intact VST3 streams");
+
+    auto stateless = make();
+    check(hasStreams(capture(*stateless, componentStream | controllerStream), 0),
+          "SC-430: a VST3 that has never provided either stream saves an empty wrapper");
+    auto component = make();
+    const auto componentOnly = capture(*component, controllerStream);
+    check(hasStreams(componentOnly, componentStream),
+          "SC-430: a VST3 that has never provided controller state still saves its component");
+    check(roundTrips(componentOnly, controllerStream),
+          "SC-430: reopening a saved component-only VST3 still permits its optional controller stream");
+    auto controller = make();
+    const auto controllerOnly = capture(*controller, componentStream);
+    check(hasStreams(controllerOnly, controllerStream),
+          "SC-430: a VST3 that has never provided component state still saves its controller");
+    check(roundTrips(controllerOnly, componentStream),
+          "SC-430: reopening a saved controller-only VST3 still permits its optional component stream");
+}
+
 void documentContract(device::Vst3Host &host, const juce::PluginDescription &description,
-                      const KeyProbe &keyProbe) {
+                      const KeyProbe &keyProbe, RefuseStateStreams refuseStreams) {
     constexpr std::int64_t keyTrack = 2, programmeTrack = 3, recipientId = 30;
     constexpr std::int32_t frames = 256;
     const auto identity = device::identityOf(description);
@@ -406,6 +639,15 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
 
     check(document->ops().undo().ok && document->synchronise() && routed(*document, "pre_fx"),
           "leave the authored route for a clean reopen");
+    const auto chunkHash = [](ui::ProjectDocument &project) {
+        const auto &states = project.session().model().pluginState;
+        const auto chunk = std::find_if(states.begin(), states.end(), [](const auto &state) {
+            return state.deviceId == recipientId && state.role == "chunk";
+        });
+        return chunk == states.end() ? std::string{} : chunk->hash;
+    };
+    check(document->takeSnapshot("Healthy VST3", 1000, 0).ok, "SC-430: save the native VST3 baseline");
+    const auto savedHash = chunkHash(*document);
     document->release();
     document.reset();
     auto reopened = ui::ProjectDocument::open(file, false, loader, error);
@@ -413,10 +655,18 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
     check(routed(*reopened, "pre_fx") && prepare(*reopened), "the reopened project reads the stored route");
     (void)render(*reopened);
     check(keyProbe.stereoKey(.5, .75), "first reopened audio callback hears the stored pre-FX key without a new edit");
+    refuseStreams(controllerStream);
+    const auto staleSnapshot = reopened->takeSnapshot("VST3 controller refused", 1001, 0);
+    refuseStreams(0);
+    check(staleSnapshot.ok && !savedHash.empty() && chunkHash(*reopened) == savedHash &&
+              reopened->pluginStateWarning().find("Dormant auxiliary") != std::string::npos,
+          "SC-430: Take Snapshot names the reopened VST3 and retains its last saved chunk after a refusal");
     reopened->release();
 }
 
 void contract() {
+    declaredMidiMap();
+    monoOnStereo();
     test::TempDirectory temp("vst3_key", "owned");
     scan::Config config;
     config.executable = native(ADI_SCAN_HELPER);
@@ -444,10 +694,11 @@ void contract() {
     const auto readLegacyMidi = reinterpret_cast<ReadLegacyMidi>(module.getFunction("adiFixtureReadLegacyMidi"));
     const auto mappedMemberBend = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureMappedMemberBend"));
     const auto readNoteWire = reinterpret_cast<ReadNoteWire>(module.getFunction("adiFixtureReadNoteWire"));
+    const auto refuseStreams = reinterpret_cast<RefuseStateStreams>(module.getFunction("adiFixtureRefuseStateStreams"));
     auto auxiliaryBuffersValid = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliaryBuffersValid"));
     auto auxiliarySinkSilent = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliarySinkSilent"));
     if (!first || !last || !channels || !inPlace || !auxiliaryBuffersValid || !auxiliarySinkSilent ||
-        !completedProcessCalls || !readLegacyMidi || !mappedMemberBend || !readNoteWire)
+        !completedProcessCalls || !readLegacyMidi || !mappedMemberBend || !readNoteWire || !refuseStreams)
         throw std::runtime_error("owned fixture observations unavailable");
     const auto types = list.getTypes();
     const auto expression = std::find_if(types.begin(), types.end(),
@@ -456,9 +707,21 @@ void contract() {
         [](const auto& desc) { return desc.name == "ADI Test MPE"; });
     if (expression == types.end() || mapped == types.end())
         throw std::runtime_error("owned VST3 expression fixture not discovered");
+    stateCaptureContract(host, *expression, refuseStreams);
     mpeWire(host, *expression, *mapped, readLegacyMidi, mappedMemberBend);
     mpeSwitchReleases(host, *mapped, readNoteWire);
     expressionBlock(host, *expression, completedProcessCalls);
+    const auto processorDrive = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureProcessorDrive"));
+    check(processorDrive != nullptr, "the fixture reports Drive as its processor received it");
+    if (processorDrive != nullptr)
+        for (const bool offline : {false, true})
+            valuesReachProcessor(host, *expression, processorDrive, offline);
+    if (processorDrive != nullptr)
+        editorAndAutomationFollow(host, *expression, processorDrive);
+    const auto rename = reinterpret_cast<void (*)(int)>(module.getFunction("adiFixtureRenameDrive"));
+    check(rename != nullptr, "the fixture can rename its Drive parameter");
+    if (rename != nullptr)
+        renamedParameterShows(host, *expression, rename);
     for (const auto &desc : types)
         for (bool wide : {false, true}) {
             std::string error;
@@ -592,7 +855,7 @@ void contract() {
         return description.name == "ADI Test NoteExpr";
     });
     if (stereo == descriptions.end()) throw std::runtime_error("Owned stereo auxiliary fixture unavailable");
-    documentContract(host, *stereo, {first, last, channels, inPlace});
+    documentContract(host, *stereo, {first, last, channels, inPlace}, refuseStreams);
 }
 } // namespace
 int main() {

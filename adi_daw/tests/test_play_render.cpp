@@ -80,13 +80,14 @@ bool persistentCatalogueContracts() {
     fs::copy_file(adi::media::pathFromUtf8(ADI_CATALOGUE_CLAP),clapPath);
 #endif
     adi::device::Vst3Host discovery;juce::KnownPluginList vstTypes;
-    const auto discovered=discovery.scanFile(ADI_CATALOGUE_FIXTURE,vstTypes,config);
+    // The persisted catalogue stores canonical paths, including for symlinked build trees.
+    const auto vstPath=text(fs::canonical(adi::media::pathFromUtf8(ADI_CATALOGUE_FIXTURE)));
+    const auto discovered=discovery.scanFile(juce::String::fromUTF8(vstPath.c_str()),vstTypes,config);
     if(!check(discovered.complete && discovered.failures.empty() && vstTypes.getNumTypes()==3,"real VST3 catalogue population"))return false;
     std::string error;auto scanner=adi::scan::Scanner::open(config,error);
     if(!check(scanner && scanner->probe("clap",clapPath).state==adi::scan::State::Ready,"real CLAP catalogue population"))return false;
     scanner.reset();const auto stored=adi::scan::readCatalogue(config.registry,error);
     if(!check(stored && stored->pluginCount==4,"four persisted real fixture descriptions"))return false;
-    const auto vstPath=text(fs::canonical(adi::media::pathFromUtf8(ADI_CATALOGUE_FIXTURE)));
     const auto clapCanonical=text(fs::canonical(clapPath));
     const auto* vstModule=stored->find("vst3",vstPath);const auto* clapModule=stored->find("clap",clapCanonical);
     if(!vstModule || !clapModule)return false;
@@ -117,10 +118,25 @@ bool persistentCatalogueContracts() {
             juce::String::fromUTF8(text(trap/"bad.vst3").c_str())).getFullPathName();
         auto unknown=vstRef;unknown.uid=otherLocation.createIdentifierString().toStdString();
         unknown.pathHint=otherLocation.fileOrIdentifier.toStdString();
-        adi::engine::DeviceRequest request;request.ref=&unknown;
+        // SC-324: a project saved where the plug-in stood at another path (another computer, a moved
+        // folder) finds it by name and class ID, keeps its saved identity, and loads the catalogued module;
+        // the bad file at the saved path is never scanned or loaded.
+        if(!check(load(loader,unknown) && loader.stats().moved==1 &&
+            loader.stats().scans==0 && loader.stats().needsDiscovery==0 && loader.stats().catalogueReads==1,
+            "a VST3 saved at another path loads from the catalogue by its name and class ID, no helper or root scan"))return false;
+        auto noHintMoved=unknown;noHintMoved.pathHint.clear();
+        {
+            adi::engine::DeviceRequest request;request.ref=&noHintMoved;
+            auto instance=loader.fn()(request,error);
+            if(!check(instance && instance->loaded() && instance->identity().uid==vstRef.uid && loader.stats().moved==2,
+                "with no saved path either, it is found, under this machine's identity"))return false;
+        }
+        auto otherClass=otherLocation;otherClass.uniqueId^=0x5a5a;otherClass.deprecatedUid^=0x5a5a;
+        auto stranger=unknown;stranger.uid=otherClass.createIdentifierString().toStdString();
+        adi::engine::DeviceRequest request;request.ref=&stranger;
         if(!check(!loader.fn()(request,error) && error.find("NeedsDiscovery")!=error.npos &&
             loader.stats().scans==0 && loader.stats().needsDiscovery==1 && loader.stats().catalogueReads==1,
-            "same-class/different-location target trap returns NeedsDiscovery without identity guessing, helper or root scan"))return false;
+            "another class ID at another path is not guessed: NeedsDiscovery, no helper or root scan"))return false;
         const auto reads=loader.stats().catalogueReads;error="untouched";bool refused=false;
         {adi::audio::CallbackScope scope;refused=!loader.hydrateCatalogue(error);}
         if(!check(refused && error=="untouched" && loader.stats().catalogueReads==reads,"catalogue hydration refuses callbacks before mutation"))return false;

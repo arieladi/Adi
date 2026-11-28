@@ -5,6 +5,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/transients.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -27,6 +28,10 @@ PeakResult success(MediaPeaks data){return {PeakProblem::none,{},std::move(data)
 int hex(char c){return c>='0' && c<='9'?c-'0':c>='a' && c<='f'?c-'a'+10:-1;}
 bool validHash(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return hex(c)>=0;});}
 std::uint64_t countBins(std::uint64_t frames,std::uint64_t step){return frames/step+(frames%step!=0?1u:0u);}
+std::uint64_t framesPerBin(const MediaPeaks& data,std::uint32_t maximum) {
+    const auto limit=std::min(static_cast<std::uint64_t>(maximum),static_cast<std::uint64_t>(kMaxPeakValues/data.channels));
+    return std::max(std::uint64_t{1},countBins(data.frames,limit));
+}
 bool shape(const MediaPeaks& data) {
     if(!validHash(data.contentHash) || data.sampleRate==0 || data.sampleRate>audio::kMaxDecodeRate || data.channels==0 || data.channels>audio::kMaxDecodeChannels || data.framesPerBin==0 || data.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))return false;
     const auto count=countBins(data.frames,data.framesPerBin);
@@ -59,19 +64,13 @@ bool matches(const MediaPeaks& data,const Plan& source) {
 struct Cancelled {};
 void cancelled(std::stop_token stop){if(stop.stop_requested())throw Cancelled{};}
 std::filesystem::path locate(const Store& store,const Plan& source,std::stop_token stop) {
-    const auto folder=projectFolder(store);std::vector<std::filesystem::path> candidates;
-    if(source.relative){const auto path=pathFromUtf8(*source.relative);if(path.is_absolute())throw std::runtime_error("absolute relative media path");candidates.push_back(folder/path);}
-    const auto name=pathFromUtf8(source.name).filename();if(!name.empty())candidates.push_back(folder/"audio"/name);
-    if(source.hint){const auto path=pathFromUtf8(*source.hint);if(!path.is_absolute())throw std::runtime_error("non-absolute media hint");candidates.push_back(path);}
-    for(const auto& path:candidates) {
-        cancelled(stop);std::error_code error;const bool exists=std::filesystem::exists(path,error);
-        if(error)throw std::runtime_error("cannot inspect media path");
-        if(!exists)continue;
-        const auto hash=blake3File(path,stop);if(hash.error==HashError::cancelled)throw Cancelled{};
-        if(!hash || hash.hex!=source.hash)throw std::runtime_error("media content hash mismatch");
-        return path;
-    }
-    return {};
+    std::string error;
+    const auto path = resolveMedia(projectFolder(store), source.relative ? pathFromUtf8(*source.relative) : std::filesystem::path{},
+                                  source.hint ? pathFromUtf8(*source.hint) : std::filesystem::path{},
+                                  source.name, source.hash, error, stop);
+    cancelled(stop);
+    if (path.empty() && !error.empty()) throw std::runtime_error(error);
+    return path;
 }
 }
 std::vector<std::byte> encodePeaks(const MediaPeaks& data) {
@@ -121,16 +120,22 @@ PeakResult readMediaPeaks(const Store& store,std::int64_t id) {
     }catch(const std::bad_alloc&){return failed(PeakProblem::resource);}
     catch(const std::exception& exception){return failed(PeakProblem::database,exception.what());}
 }
-PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied) {
+PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,PeakCacheResolution resolution) {
     if(audio::onAudioThread)return failed(PeakProblem::audioThread);
-    return buildMediaPeaks(store,id,maximum,stop,supplied,&defaultAnalysisCache());
+    return buildMediaPeaks(store,id,maximum,stop,supplied,&defaultAnalysisCache(),resolution);
 }
-PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,AnalysisCache* shared) {
+PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,AnalysisCache* shared,PeakCacheResolution resolution) {
     if(audio::onAudioThread)return failed(PeakProblem::audioThread);
     if(stop.stop_requested())return failed(PeakProblem::cancelled);
     if(maximum==0 || maximum>kMaxPeakValues)return failed(PeakProblem::invalidRequest);
-    auto cached=readMediaPeaks(store,id);if(cached)return cached;
+    const auto sufficient=[&](const MediaPeaks& peaks){
+        return resolution==PeakCacheResolution::AnyValid || peaks.framesPerBin<=framesPerBin(peaks,maximum);
+    };
+    auto cached=readMediaPeaks(store,id);if(cached && sufficient(*cached.data))return cached;
     if(cached.problem==PeakProblem::unknownMedia || cached.problem==PeakProblem::database || cached.problem==PeakProblem::resource)return cached;
+    const auto fallback=[&](PeakProblem problem,std::string detail={}) {
+        return cached?std::move(cached):failed(problem,std::move(detail));
+    };
     try {
         const auto source=plan(store,id);if(!source)return failed(PeakProblem::unknownMedia);
         if(!validHash(source->hash))return failed(PeakProblem::invalidSource,"invalid source identity");
@@ -140,16 +145,18 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
             if(analysis.problem==AnalysisCacheProblem::Cancelled)throw Cancelled{};
             if(analysis)if(const auto section=analysis.data->sections.find("APKS");section!=analysis.data->sections.end() && section->second.version==1 && section->second.configuration==0) {
                 auto decoded=decodePeaks(section->second.bytes);
-                if(decoded && matches(*decoded.data,*source))return decoded;
+                if(decoded && matches(*decoded.data,*source)) {
+                    if(sufficient(*decoded.data))return decoded;
+                    if(!cached || decoded.data->framesPerBin<cached.data->framesPerBin)cached=std::move(decoded);
+                }
             }
         }
-        const auto path=locate(store,*source,stop);if(path.empty())return failed(PeakProblem::missingMedia);
+        const auto path=locate(store,*source,stop);if(path.empty())return fallback(PeakProblem::missingMedia);
         cancelled(stop);auto& cache=supplied?*supplied:audio::defaultDecodeCache();const auto playable=cache.playable(path);
         struct Release {audio::DecodeCache& cache;const std::filesystem::path& path;~Release(){cache.release(path);}} release{cache,playable};
         cancelled(stop);audio::WavReader reader(playable);MediaPeaks data;data.contentHash=source->hash;data.sampleRate=reader.sampleRate();data.channels=reader.channels();data.frames=reader.frames();
-        if(data.sampleRate==0 || data.sampleRate>audio::kMaxDecodeRate || data.channels==0 || data.channels>audio::kMaxDecodeChannels || data.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) || !matches(data,*source))return failed(PeakProblem::invalidSource,"source dimensions changed");
-        const auto binsLimit=std::min(static_cast<std::uint64_t>(maximum),static_cast<std::uint64_t>(kMaxPeakValues/data.channels));
-        data.framesPerBin=std::max(std::uint64_t{1},countBins(data.frames,binsLimit));const auto count=countBins(data.frames,data.framesPerBin);
+        if(data.sampleRate==0 || data.sampleRate>audio::kMaxDecodeRate || data.channels==0 || data.channels>audio::kMaxDecodeChannels || data.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) || !matches(data,*source))return fallback(PeakProblem::invalidSource,"source dimensions changed");
+        data.framesPerBin=framesPerBin(data,maximum);const auto count=countBins(data.frames,data.framesPerBin);
         data.bins.resize(static_cast<std::size_t>(count*data.channels));std::vector<float> block(static_cast<std::size_t>(4096)*data.channels);
         std::uint64_t position=0;
         for(std::uint64_t bin=0;bin<count;++bin) {
@@ -157,7 +164,7 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
             std::uint64_t remaining=std::min(data.frames-position,data.framesPerBin);
             while(remaining) {
                 cancelled(stop);const auto wanted=static_cast<std::uint32_t>(std::min(remaining,std::uint64_t{4096}));
-                if(reader.read(block.data(),wanted)!=wanted)return failed(PeakProblem::read,"short audio read");
+                if(reader.read(block.data(),wanted)!=wanted)return fallback(PeakProblem::read,"short audio read");
                 for(std::uint32_t frame=0;frame<wanted;++frame)for(std::uint32_t channel=0;channel<data.channels;++channel) {
                     const float raw=block[static_cast<std::size_t>(frame)*data.channels+channel];const float value=std::isfinite(raw)?raw:0;
                     auto& range=data.bins[static_cast<std::size_t>(bin*data.channels+channel)];range.minimum=std::min(range.minimum,value);range.maximum=std::max(range.maximum,value);
@@ -166,7 +173,7 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
             }
         }
         cancelled(stop);const auto hash=blake3File(path,stop);if(hash.error==HashError::cancelled)throw Cancelled{};
-        if(!hash || hash.hex!=data.contentHash)return failed(PeakProblem::invalidSource,"source changed during peaks read");
+        if(!hash || hash.hex!=data.contentHash)return fallback(PeakProblem::invalidSource,"source changed during peaks read");
         if(shared) {
             try {
                 std::string error;
@@ -180,7 +187,26 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
         }
         return success(std::move(data));
     }catch(const Cancelled&){return failed(PeakProblem::cancelled);}
-    catch(const std::bad_alloc&){return failed(PeakProblem::resource);}
-    catch(const std::exception& exception){return failed(PeakProblem::read,exception.what());}
+    catch(const std::bad_alloc&){return fallback(PeakProblem::resource);}
+    catch(const std::exception& exception){return fallback(PeakProblem::read,exception.what());}
+}
+std::vector<std::uint64_t> buildMediaTransients(const Store& store, std::int64_t id, const std::string &contentHash,
+                                              std::stop_token stop) {
+    if(audio::onAudioThread || stop.stop_requested())return {};
+    try {
+        const auto source=plan(store,id);
+        if(!source || source->hash!=contentHash || !validHash(source->hash))return {};
+        const auto path=locate(store,*source,stop);
+        if(path.empty())return {};
+        auto& cache=audio::defaultDecodeCache();
+        const auto playable=cache.playable(path);
+        struct Release {audio::DecodeCache& cache;const std::filesystem::path& path;~Release(){cache.release(path);}} release{cache,playable};
+        audio::WavReader reader(playable);
+        auto detected=audio::detectTransients(reader,0,reader.frames(),50,stop);
+        if(!detected)return {};
+        const auto hash=blake3File(path,stop);
+        if(hash && hash.hex==source->hash)return std::move(detected.frames);
+    } catch(const Cancelled&) {} catch(const std::exception&) {}
+    return {};
 }
 }

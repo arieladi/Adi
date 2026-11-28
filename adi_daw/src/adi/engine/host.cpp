@@ -135,6 +135,11 @@ Graph* GraphHost::currentGraph() const noexcept {
     return live_ != nullptr ? &live_->graph() : nullptr;
 }
 
+const GraphTransportState* GraphHost::currentTransportState() const noexcept {
+    const auto* published = pub_.peek();
+    return published ? published->transportState() : nullptr;
+}
+
 void GraphHost::fadeIn(const AudioIo& io) noexcept {
     if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || (io.out == nullptr && io.out64 == nullptr)) return;
 
@@ -299,7 +304,7 @@ NodeId GraphHost::RenderBlock::find(const Node& node) const noexcept {
 bool GraphHost::RenderBlock::pushInputEvent(NodeId node, const Event& event) const noexcept {
     return valid() && snapshot_->graph().graph().pushInputEvent(node, event);
 }
-bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
+bool GraphHost::RenderBlock::process(const AudioIo& io, std::span<const std::int64_t> excludedTracks) noexcept {
     if (!valid() || io.frames <= 0 || io.numOut < 0 || io.numIn < 0 ||
         io.frames > snapshot_->maxFrames()) {
         clearOutput(io);
@@ -308,9 +313,12 @@ bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
     AudioIo block = io;
     block.renderBlock = serial_;
     if (const auto* state = snapshot_->transportState()) block.transport = state->beginBlock();
-    snapshot_->graph().graph().process(block);
+    snapshot_->graph().graph().processWithExcludedTracks(block, excludedTracks);
     host_.fadeIn(io);
     return true;
+}
+bool GraphHost::RenderBlock::copyMainOutput(const AudioIo& io) const noexcept {
+    return valid() && snapshot_->graph().graph().copyMainOutput(io);
 }
 void GraphHost::process(const AudioIo& io) noexcept {
     auto block = beginRender();

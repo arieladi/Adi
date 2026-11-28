@@ -2,15 +2,25 @@
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
+#include "ui_value_entry.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/builtin_catalog.hpp"
+#include "adi/media/media_ops.hpp"
 #include "juce/pd_declarations.hpp"
 #include "mix_eq_host.hpp"
 #include "adi/mix/eq/Preview.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 namespace adi::ui {
+namespace {
+constexpr int kLoadIssueHeight = 48;
+constexpr const char *kPluginUnavailable = "Plug-in unavailable";
+constexpr const char *kPlaybackProblemDescription =
+    "This device has a playback problem. See Playback Problems in the Status Bar.";
+}
 ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
                                    double defaultNormalized)
     : device(d), parameter(r.id), strip(s) {
@@ -34,6 +44,8 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters, ADR-0203 d11).
     slider.setScrollWheelEnabled(false);
     slider.addMouseListener(this, false); // its right-click opens the parameter's menu (showMenu)
+    toggle.addMouseListener(this, false);
+    menu.addMouseListener(this, true); // includes the ComboBox's label
     // Shift while dragging is Live's finer resolution (manual 41.6). JUCE's way is its
     // velocity mode under the swap key: slow movement under Shift moves the value by a
     // fraction of the plain drag's pixel, speeding up as the mouse does; the plain drag stays
@@ -69,6 +81,7 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     addChildComponent(menu);
     present(r, defaultNormalized);
 }
+ParameterControl::~ParameterControl() = default;
 bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
     if (kind != engine::ParamEventKind::End && !isEnabled()) return false;
     return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
@@ -80,17 +93,43 @@ bool ParameterControl::keyPressed(const juce::KeyPress &k) {
         returnToDefault();
         return true; // A refused reset must not bubble into deleting the device or its track.
     }
-    return false;
+    if (!record || record->shape != panel::Shape::Continuous || k.getModifiers().isAnyModifierKeyDown())
+        return false;
+    if (k == juce::KeyPress::upKey || k == juce::KeyPress::downKey) {
+        const auto step = record->stepCount > 1 ? 1.0 / static_cast<double>(record->stepCount - 1) : .01;
+        setOnce(std::clamp(record->playing + (k == juce::KeyPress::upKey ? step : -step), 0.0, 1.0));
+        return true;
+    }
+    const auto first = valueEntryStart(k);
+    if (k != juce::KeyPress::returnKey && first == 0)
+        return false;
+    if (!valueEntry_)
+        valueEntry_ = std::make_unique<ValueEntry>("Normalized parameter value (0 to 1)", [this](const juce::String &text) {
+            const auto normalized = valueNumber(text);
+            if (normalized && *normalized >= 0 && *normalized <= 1)
+                setOnce(*normalized);
+            else
+                strip.root.say("Enter a parameter value from 0 to 1.");
+        });
+    valueEntry_->open(*this, value.getBounds().withHeight(std::max(18, value.getHeight())).constrainedWithin(getLocalBounds()),
+                      juce::String(record->playing, 6), first);
+    return true;
 }
 bool ParameterControl::returnToDefault() {
+    return setOnce(defaultValue);
+}
+bool ParameterControl::setOnce(double normalized) {
     if (!record || record->missing)
         return false;
-    // One bounded gesture from the value playing to the plug-in's default: one undo step, its
-    // opener in front when the parameter was never touched (ADR-0124 d4).
-    if (!gesture(engine::ParamEventKind::Begin, record->playing))
+    const auto previous = record->playing;
+    if (normalized == previous)
+        return true;
+    // One gesture is one undo step. A callback may rebuild the control.
+    const SafePointer<ParameterControl> alive(this);
+    if (!gesture(engine::ParamEventKind::Begin, previous) || !alive)
         return false;
-    gesture(engine::ParamEventKind::Value, defaultValue);
-    return gesture(engine::ParamEventKind::End, defaultValue);
+    const bool applied = gesture(engine::ParamEventKind::Value, normalized);
+    return alive && gesture(engine::ParamEventKind::End, normalized) && applied;
 }
 void ParameterControl::present(const panel::Record &r, double defaultNormalized) {
     record = &r;
@@ -130,21 +169,39 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     }
 }
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider))
-        showMenu();
+    if (e.mods.isPopupMenu()) {
+        if (e.eventComponent == this || e.eventComponent == &slider || e.eventComponent == &toggle ||
+            e.eventComponent == &menu || menu.isParentOf(e.eventComponent))
+            showMenu();
+    } else if (e.mods.isLeftButtonDown() && strip.root.automationMode() && record && !record->missing) {
+        if (const auto target = strip.root.deviceAutomationTarget(device, parameter))
+            strip.root.showAutomation(target->first, target->second);
+    }
 }
-void ParameterControl::showMenu() {
+void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
+        returnToDefault();
+}
+juce::PopupMenu ParameterControl::menuItems() {
+    juce::PopupMenu m;
     const auto current = strip.root.current();
     if (!current)
-        return;
-    juce::PopupMenu m;
+        return m;
     // Live's Show Automation (manual 25.2; DF-W37): the track's lane shows this parameter's envelope.
-    if ((!record || !record->missing) && strip.root.deviceAutomationTarget(device, parameter))
-        m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
-            if (safe)
-                safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);
-        });
+    const auto target = strip.root.deviceAutomationTarget(device, parameter);
+    if (target) {
+        if (!record || !record->missing)
+            m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
+                if (safe)
+                    safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);
+            });
+        strip.root.addAutomationDeleteItem(m, target->second);
+    }
     strip.root.addReenableAutomation(m, deviceLaneOf(*current, device, format, parameter));
+    return m;
+}
+void ParameterControl::showMenu() {
+    auto m = menuItems();
     if (m.getNumItems() > 0)
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this));
 }
@@ -205,30 +262,161 @@ void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto head = juce::Rectangle<float>(r.getRight() - 6.5f, r.getY(), 6.5f, 6.5f);
     g.drawEllipse(head.reduced(0.6f), 1.8f);
 }
-SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::int32_t sl, juce::String n)
-    : device(d), slot(sl), slotName(std::move(n)), strip_(s) {
-    setTitle(slotName + " sample");
+void HotSwapButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto centre = getLocalBounds().toFloat().getCentre();
+    const float x = centre.x, y = centre.y;
+    juce::Path arrows;
+    arrows.startNewSubPath(x - 4.f, y - 1.f);
+    arrows.quadraticTo(x - 1.f, y - 6.f, x + 4.f, y - 2.f);
+    arrows.startNewSubPath(x + 1.f, y - 2.f);
+    arrows.lineTo(x + 4.f, y - 2.f);
+    arrows.lineTo(x + 4.f, y - 5.f);
+    arrows.startNewSubPath(x + 4.f, y + 1.f);
+    arrows.quadraticTo(x + 1.f, y + 6.f, x - 4.f, y + 2.f);
+    arrows.startNewSubPath(x - 1.f, y + 2.f);
+    arrows.lineTo(x - 4.f, y + 2.f);
+    arrows.lineTo(x - 4.f, y + 5.f);
+    g.setColour(down ? look::accent : over ? look::text : look::outline);
+    g.strokePath(arrows, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+void RevealSampleButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto bounds = getLocalBounds().toFloat();
+    const auto state = controls::stateOf(false, over, down, isEnabled());
+    controls::button(g, bounds, state);
+    const auto folder = bounds.withSizeKeepingCentre(11.f, 8.f);
+    juce::Path shape;
+    shape.startNewSubPath(folder.getX(), folder.getBottom());
+    shape.lineTo(folder.getX(), folder.getY());
+    shape.lineTo(folder.getX() + 4.f, folder.getY());
+    shape.lineTo(folder.getX() + 6.f, folder.getY() + 2.f);
+    shape.lineTo(folder.getRight(), folder.getY() + 2.f);
+    shape.lineTo(folder.getRight(), folder.getBottom());
+    shape.closeSubPath();
+    g.setColour(controls::labelColour(state));
+    g.strokePath(shape, juce::PathStrokeType(1.f));
+}
+namespace {
+std::shared_ptr<const engine::SampleSlotNode> sampleSlot(const engine::Snapshot *snapshot, std::int64_t device,
+                                                         std::int32_t slot) {
+    if (snapshot)
+        for (const auto &node : snapshot->sampleSlots)
+            if (node && node->deviceId == device && node->slot == slot)
+                return node;
+    return {};
+}
+} // namespace
+SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::vector<DeclaredSlot> slots)
+    : device(d), slot(slots.front().id), strip_(s), slots_(std::move(slots)) {
+    setWantsKeyboardFocus(true);
     setTooltip("Drop a sample file here, from the desktop or the browser.");
     clear.getProperties().set("live.small", true);
-    clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
     clear.onClick = [this] {
         if (targetValid && !targetValid()) return;
         if (strip_.clearSample)
             strip_.clearSample(device, slot);
     };
     addChildComponent(clear);
+    addChildComponent(hotSwapButton);
+    hotSwapButton.setTitle("Hot-Swap Sample");
+    hotSwapButton.setTooltip("Browse samples for this slot.");
+    addChildComponent(reveal);
+    reveal.setTitle("Show Sample in Folder");
+    reveal.onClick = [this] {
+        if (targetValid && !targetValid()) return;
+        const auto current = strip_.root.current();
+        const auto selected = sampleSlot(current.get(), device, slot);
+        if (!selected || selected != presented_ || !selected->filePresent || !selected->mediaId)
+            return;
+        try {
+            auto &store = strip_.root.editStore();
+            std::string error;
+            const auto row = media::mediaRow(store.db(), *selected->mediaId);
+            const auto file = media::resolveMedia(media::projectFolder(store), row, error);
+            if (file.empty()) {
+                strip_.root.say(error.empty() ? "The sample file is unavailable." : error);
+                return;
+            }
+            if (strip_.revealSample)
+                strip_.revealSample(file);
+            else
+                juce::File(juce::String::fromUTF8(media::pathUtf8(file).c_str())).revealToUser();
+        } catch (const std::exception &failure) {
+            strip_.root.say(failure.what());
+        }
+    };
+    addChildComponent(slotChooser);
+    if (slots_.size() > 1) {
+        slotChooser.setTitle("Sample Slot");
+        slotChooser.setTooltip("Choose which sample slot to show and edit.");
+        for (std::size_t i = 0; i < slots_.size(); ++i)
+            slotChooser.addItem(slots_[i].name, static_cast<int>(i + 1));
+        slotChooser.setSelectedId(1, juce::dontSendNotification);
+        slotChooser.onChange = [this] {
+            const auto index = slotChooser.getSelectedItemIndex();
+            if (index >= 0 && static_cast<std::size_t>(index) < slots_.size())
+                choose(slots_[static_cast<std::size_t>(index)]);
+        };
+        slotChooser.setVisible(true);
+    }
+    choose(slots_.front());
 }
-void SampleTile::resized() { clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13); }
-void SampleTile::show(const engine::SampleSlotNode *node) {
-    const auto next = node == nullptr || node->empty ? State::Empty : node->missing ? State::Missing : State::Loaded;
-    const auto problem = node != nullptr ? node->problem : std::string();
-    if (next == state_ && problem == problem_)
-        return;
-    state_ = next;
-    problem_ = problem;
-    clear.setVisible(state_ != State::Empty);
-    setTooltip(problem_.empty() ? "Drop a sample file here, from the desktop or the browser." : juce::String(problem_));
+void SampleTile::choose(const DeclaredSlot &choice) {
+    slot = choice.id;
+    slotName = choice.name;
+    setTitle(slotName + " sample");
+    clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
+    refresh();
     repaint();
+}
+void SampleTile::refresh() {
+    const auto next = sampleSlot(strip_.root.reader().get(), device, slot);
+    const bool changed = next != presented_;
+    if (changed) {
+        presented_ = next;
+        state_ = !next || next->empty ? State::Empty : next->missing ? State::Missing : State::Loaded;
+        const bool loaded = state_ == State::Loaded;
+        fileName_ = juce::String{};
+        if (loaded) {
+            fileName_ = juce::String::fromUTF8(next->fileName.c_str());
+            if (fileName_.isEmpty()) fileName_ = next->filePresent ? "Sample" : "Embedded sample";
+        }
+        clear.setVisible(state_ != State::Empty);
+        reveal.setVisible(loaded);
+        const bool canReveal = loaded && next->filePresent && next->mediaId;
+        reveal.setEnabled(canReveal);
+        reveal.setTooltip(canReveal ? "Show the sample file in its folder." : "This sample is embedded in the device preset.");
+        if (next && !next->problem.empty())
+            setTooltip(juce::String::fromUTF8(next->problem.c_str()));
+        else
+            setTooltip(fileName_.isNotEmpty() ? fileName_ : "Drop a sample file here, from the desktop or the browser.");
+        repaint();
+    }
+    auto *cache = strip_.root.arrangement.waveforms;
+    const auto delivered = cache ? cache->delivered() : 0;
+    if (!changed && waveformsSeen_ == cache && peaksSeen_ == delivered) return;
+    waveformsSeen_ = cache;
+    peaksSeen_ = delivered;
+    auto peaks = cache && state_ == State::Loaded ? cache->peaks(*next) : nullptr;
+    if (peaks_ != peaks) {
+        peaks_ = std::move(peaks);
+        repaint(waveformBounds());
+    }
+}
+void SampleTile::resized() {
+    slotChooser.setBounds(3, 2, getWidth() - 6, 17);
+    hotSwapButton.setBounds(4, getHeight() - 18, 17, 15);
+    reveal.setBounds(26, getHeight() - 18, 17, 15);
+    clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13);
+}
+juce::Rectangle<int> SampleTile::fileNameBounds() const noexcept {
+    return getLocalBounds().reduced(6, 0).withTrimmedTop(20).withHeight(14);
+}
+juce::Rectangle<int> SampleTile::waveformBounds() const noexcept {
+    return getLocalBounds().reduced(6, 0).withTrimmedTop(35).withTrimmedBottom(20);
+}
+void SampleTile::mouseDown(const juce::MouseEvent &event) {
+    if (event.mods.isLeftButtonDown())
+        focusIfShowing(*this);
 }
 void SampleTile::paint(juce::Graphics &g) {
     // A drop well, as Live's sample tiles: the slot's name, then its state.
@@ -239,7 +427,10 @@ void SampleTile::paint(juce::Graphics &g) {
     const float dash[] = {4.f, 3.f};
     juce::Path edge;
     edge.addRoundedRectangle(r.reduced(0.5f), 3.f);
-    if (state_ == State::Empty) {
+    if (dropPreview_) {
+        g.setColour(look::dropTarget);
+        g.strokePath(edge, juce::PathStrokeType(2.f));
+    } else if (state_ == State::Empty) {
         juce::Path dashed;
         juce::PathStrokeType(1.f).createDashedStroke(dashed, edge, dash, 2);
         g.fillPath(dashed);
@@ -249,15 +440,36 @@ void SampleTile::paint(juce::Graphics &g) {
     // Light text on the dark display, as a device's display draws it.
     g.setColour(look::textOnBand);
     g.setFont(look::font(11.5f, true));
-    g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
+    if (!slotChooser.isVisible())
+        g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
     g.setFont(look::font(11.f));
-    const char *what = state_ == State::Empty ? "Drop a sample" : state_ == State::Missing ? "File missing" : "Sample loaded";
-    g.setColour(state_ == State::Empty     ? juce::Colour(0xff8a8a8a)
-                : state_ == State::Missing ? juce::Colour(0xffe5352b)
-                                           : look::textOnBand);
-    g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
+    if (state_ != State::Loaded) {
+        const bool missing = state_ == State::Missing;
+        g.setColour(missing ? juce::Colour(0xffe5352b) : juce::Colour(0xff8a8a8a));
+        g.drawFittedText(missing ? "File missing" : "Drop a sample", 6, 18, getWidth() - 12,
+                         std::max(14, getHeight() - 38), juce::Justification::centred, 2);
+        return;
+    }
+    g.drawText(fileName_, fileNameBounds(), juce::Justification::centredLeft, true);
+    const auto area = waveformBounds();
+    if (!peaks_ || peaks_->channels == 0 || area.isEmpty()) return;
+    const auto channels = std::min(peaks_->channels, 2u);
+    const auto framesPerPixel = static_cast<double>(peaks_->frames) / area.getWidth();
+    const float band = static_cast<float>(area.getHeight()) / static_cast<float>(channels);
+    g.setColour(look::value);
+    for (int x = 0; x < area.getWidth(); ++x) {
+        for (std::uint32_t ch = 0; ch < channels; ++ch) {
+            const auto peak = peakSpan(*peaks_, x * framesPerPixel, (x + 1) * framesPerPixel, ch);
+            if (!peak) continue;
+            const float centre = static_cast<float>(area.getY()) + band * (static_cast<float>(ch) + .5f);
+            const float top = centre - std::clamp(peak->maximum, -1.f, 1.f) * band * .5f;
+            const float bottom = centre - std::clamp(peak->minimum, -1.f, 1.f) * band * .5f;
+            g.fillRect(static_cast<float>(area.getX() + x), top, 1.f, std::max(1.f, bottom - top));
+        }
+    }
 }
 bool SampleTile::drop(const juce::String &path) {
+    setDropPreview(false);
     if (targetValid && !targetValid()) return false;
     if (path.isEmpty())
         return false;
@@ -267,16 +479,30 @@ bool SampleTile::drop(const juce::String &path) {
     }
     return strip_.assignSample(device, slot, path.toStdString());
 }
+void SampleTile::setDropPreview(bool on) {
+    if (dropPreview_ == on)
+        return;
+    dropPreview_ = on;
+    repaint();
+}
+void SampleTile::fileDragEnter(const juce::StringArray &files, int, int) {
+    setDropPreview(!files.isEmpty() && strip_.assignSample && (!targetValid || targetValid()));
+}
+void SampleTile::fileDragExit(const juce::StringArray &) { setDropPreview(false); }
 void SampleTile::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview(false);
     if (!files.isEmpty())
         drop(files[0]);
 }
 bool SampleTile::isInterestedInDragSource(const SourceDetails &details) {
     return !BrowserPanel::droppedFiles(details.description).isEmpty();
 }
+void SampleTile::itemDragEnter(const SourceDetails &details) {
+    fileDragEnter(BrowserPanel::droppedFiles(details.description), 0, 0);
+}
+void SampleTile::itemDragExit(const SourceDetails &) { setDropPreview(false); }
 void SampleTile::itemDropped(const SourceDetails &details) {
-    if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
-        drop(files[0]);
+    filesDropped(BrowserPanel::droppedFiles(details.description), 0, 0);
 }
 namespace {
 using NodeAxis = device::EqNodeAxis;
@@ -833,6 +1059,11 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     configureButton.setColour(juce::TextButton::buttonColourId, look::button);
     configureButton.getProperties().set("live.small", true);
     setWantsKeyboardFocus(true);
+    if (!mixCard_) {
+        // Take focus after handling the title press. A Shift click needs the old anchor.
+        setMouseClickGrabsKeyboardFocus(false);
+        title.setMouseClickGrabsKeyboardFocus(false);
+    }
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
     addAndMakeVisible(configureButton);
@@ -843,6 +1074,12 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         if (!validTarget()) return;
         strip.root.togglePluginWindow(id, juce::ModifierKeys::currentModifiers.isCommandDown());
         wrench.setToggleState(strip.root.pluginWindowOpen(id), juce::dontSendNotification);
+    };
+    addChildComponent(hotSwapButton);
+    hotSwapButton.setTitle("Hot-Swap Device");
+    hotSwapButton.setTooltip("Browse replacements for this device.");
+    hotSwapButton.onClick = [this] {
+        if (data) requestHotSwap(*data, std::nullopt, menuEpoch_);
     };
     addChildComponent(search);
     addChildComponent(functionBand);
@@ -866,6 +1103,10 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     configureButton.setTooltip("Choose which of the plug-in's parameters the panel shows.");
     search.setTextToShowWhenEmpty("Find parameter", juce::Colours::grey);
     search.setTitle("Find parameter");
+    addChildComponent(parameterList);
+    parameterList.getProperties().set("live.small", true);
+    parameterList.setTooltip("Lists parameters declared by the plug-in, including those it does not report when touched.");
+    parameterList.onClick = [this] { showParameterList(); };
     title.addMouseListener(this, false);
     title.onClick = [this] { focusIfShowing(*this); };
     enabled.onClick = [this] {
@@ -875,7 +1116,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         if (!safe || !safe->validTarget() || !safe->data) return;
         const bool requested = safe->nativeFunction() ? !safe->data->enabled : safe->enabled.getToggleState();
         if (!safe->strip.setEnabledExpected(*safe->data, requested) && safe && safe->data)
-            safe->enabled.setToggleState(safe->data->enabled, juce::dontSendNotification);
+            safe->enabled.setToggleState(safe->data->enabledNow(), juce::dontSendNotification);
     };
     configureButton.onClick = [this] { configure(); };
     addChildComponent(rename);
@@ -918,8 +1159,13 @@ void DevicePanelView::cancelInteractions() {
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
     dragTarget_.reset();
-    if (eqPreview_) eqPreview_->hovered = -1;
+    draggedDevices_.clear();
+    selectOnRelease_ = false;
+    startedDeviceDrag_ = false;
     const auto safe = SafePointer<DevicePanelView>(this);
+    if (configureSession_) closeConfigure();
+    if (!safe) return;
+    if (eqPreview_) eqPreview_->hovered = -1;
     finishEqEdit(true);
     if (!safe) return;
     endFunctionParameter();
@@ -945,7 +1191,18 @@ bool DevicePanelView::beginFunctionDrag() {
     return true;
 }
 const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
-    return dragTarget_ ? &*dragTarget_ : nullptr;
+    return nativeFunction() && dragTarget_ ? &*dragTarget_ : nullptr;
+}
+bool DevicePanelView::beginDeviceDrag() {
+    if (mixCard_ || nativeFunction() || !data || !validTarget()) return false;
+    if (strip.selectionActsOn(id)) {
+        draggedDevices_ = strip.selectedTargets();
+        if (draggedDevices_.empty()) return false;
+    } else {
+        draggedDevices_ = {*data};
+    }
+    startedDeviceDrag_ = true;
+    return true;
 }
 void DevicePanelView::endFunctionParameter() {
     if (!editingBegan_) return;
@@ -1249,16 +1506,37 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
 void DevicePanelView::visibilityChanged() {
     if (isShowing()) return;
     const auto safe = SafePointer<DevicePanelView>(this);
+    if (configureSession_) closeConfigure();
+    if (!safe) return;
     releaseEqSpectrum();
     if (!safe) return;
     releaseLimiterReduction();
     if (!parameterPages.empty()) cancelInteractions();
 }
-void DevicePanelView::present(const DevicePanelData &d) {
-    if (!presentParameterPages(d)) return;
-    presentFunctionSelection(d);
-    updateEqPreview(d);
-    data = &d;
+bool DevicePanelView::hasPlaybackProblem() const noexcept {
+    return strip.hasPlaybackProblem(id);
+}
+juce::String DevicePanelView::getTooltip() {
+    return hasPlaybackProblem() ? juce::String(kPlaybackProblemDescription) : juce::String{};
+}
+bool DevicePanelView::refreshPlaybackProblem() {
+    const bool next = hasPlaybackProblem();
+    if (next == playbackProblemPresented_)
+        return false;
+    playbackProblemPresented_ = next;
+    const juce::String description(next ? kPlaybackProblemDescription : "");
+    setDescription(description);
+    title.setDescription(description);
+    enabled.setDescription(description);
+    updateTitleTooltip();
+    layoutTitle(strip.folded(id));
+    repaint();
+    return true;
+}
+void DevicePanelView::updateTitleTooltip() {
+    if (!data)
+        return;
+    const auto &d = *data;
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
@@ -1269,33 +1547,63 @@ void DevicePanelView::present(const DevicePanelData &d) {
         hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
         hint += "\nTo retry, reopen this project using File > Open Project.";
     }
+    if (!d.loadIssue.empty())
+        hint += "\n" + juce::String(kPluginUnavailable) + ": " + juce::String(d.loadIssue);
+    if (playbackProblemPresented_)
+        hint += "\n" + juce::String(kPlaybackProblemDescription);
     if (title.getTooltip() != hint) title.setTooltip(hint);
+}
+void DevicePanelView::present(const DevicePanelData &d) {
+    if (!presentParameterPages(d)) return;
+    presentFunctionSelection(d);
+    updateEqPreview(d);
+    const bool bypassChanged = data != nullptr && data->enabledNow() != d.enabledNow();
+    data = &d;
+    if (configureSession_) {
+        const auto safe = SafePointer<DevicePanelView>(this);
+        queueConfigureTouch(d);
+        if (!safe) return;
+    }
+    if (bypassChanged)
+        repaint();
+    const bool loadFailed = !d.loadIssue.empty();
+    const bool loadStateChanged = wrench.isEnabled() == loadFailed;
+    if (!refreshPlaybackProblem())
+        updateTitleTooltip();
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
-                                                          : "Switches the device on or off.");
+                                           : loadFailed ? "This plug-in is unavailable."
+                                                        : "Switches the device on or off.");
     if (enabled.getTooltip() != activatorHint) enabled.setTooltip(activatorHint);
     const auto caption = d.processingIssue.empty() ? juce::String(d.name)
                                                   : "Configuration failed: " + juce::String(d.name);
     if (title.getButtonText() != caption) {
         title.setButtonText(caption);
     }
-    enabled.setToggleState(d.enabled, juce::dontSendNotification);
-    // The first sample slot the built-in declares (ENGINE-SAMPLE-SLOTS.md), named by its [adi.sample]:
-    // the same declarations ProjectDocument::assignSample checks, so OneShot and the Sampler take a drop
-    // as Color Cab does (walk-A A5). Read once per panel. With Pd off no patch is embedded, and Color
-    // Cab keeps its Impulse tile so a drop still says why it cannot load.
+    enabled.setEnabled(!loadFailed);
+    enabled.setToggleState(d.enabledNow() && !loadFailed, juce::dontSendNotification);
+    wrench.setEnabled(!loadFailed);
+    // The declarations ProjectDocument::assignSample checks also name the sample slots on the panel.
+    // With Pd off Color Cab still keeps its Impulse tile so a drop can explain why it cannot load.
     if (!sample && !sampleSlotsRead_ && d.format == "internal" && !d.uid.empty()) {
         sampleSlotsRead_ = true;
-        const auto slots = device::parsePdDeclarations(builtinDeclarations(d.uid)).samples;
-        if (!slots.empty())
-            sample = std::make_unique<SampleTile>(strip, id, slots.front().id, juce::String(slots.front().name));
-        else if (d.uid == "org.adidaw.builtin.color-cab")
-            sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
-        if (sample) {
+        std::vector<SampleTile::DeclaredSlot> slots;
+        for (const auto &declared : device::parsePdDeclarations(builtinDeclarations(d.uid)).samples)
+            slots.push_back({declared.id, juce::String(declared.name)});
+        if (slots.empty() && d.uid == "org.adidaw.builtin.color-cab")
+            slots.push_back({1, "Impulse"});
+        if (!slots.empty()) {
+            sample = std::make_unique<SampleTile>(strip, id, std::move(slots));
             sample->targetValid = [this] { return validTarget(); };
+            sample->hotSwapButton.onClick = [this] {
+                if (data && sample) requestHotSwap(*data, sample->slot, menuEpoch_);
+            };
             addAndMakeVisible(*sample);
             resized();
         }
     }
+    const bool swapVisible = !strip.folded(id) && canHotSwap();
+    if (hotSwapButton.isVisible() != swapVisible)
+        resized();
     // Only a plug-in has a window of its own (parity-7.5 row 1).
     if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
         wrench.setVisible(d.plugin && !strip.folded(id));
@@ -1370,12 +1678,13 @@ void DevicePanelView::present(const DevicePanelData &d) {
         page.enabled->setEnabled(record && validTarget());
         page.enabled->setToggleState(record && record->playing >= .5, juce::dontSendNotification);
     }
-    if (!parameterPages.empty() || mixCard_) resized();
+    if (loadStateChanged || !parameterPages.empty() || mixCard_) resized();
 }
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
     const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight) +
+                    (data && !data->loadIssue.empty() ? kLoadIssueHeight : 0) +
                     (eqPresentation() && parameterPageUnavailableReason().empty() &&
                      (!functionBands_.empty() || !functionSections_.empty()) ? kPageHeight : 0);
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
@@ -1385,7 +1694,7 @@ int DevicePanelView::widthFor(int height) const noexcept {
     // Wide enough for the title bar's switches, a name and Configure; and a sample tile beside.
     int pageWidth = 12;
     for (const auto &page : parameterPages) pageWidth += pageSelectorWidth(page) + (page.enableParameter.empty() ? 0 : 18) + 3;
-    return std::max({eqPresentation() ? 270 : 150, pageWidth,
+    return std::max({eqPresentation() ? 270 : hotSwapButton.isVisible() ? 168 : 150, pageWidth,
                      columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
 void DevicePanelView::layoutCompactControls(int top) {
@@ -1414,33 +1723,50 @@ void DevicePanelView::layoutCompactControls(int top) {
                                                      std::max(0, w - look::border), h);
     }
 }
-void DevicePanelView::resized() {
-    const bool isFolded = strip.folded(id);
+void DevicePanelView::layoutTitle(bool isFolded) {
+    const int markSpace = playbackProblemPresented_ ? static_cast<int>(kPlaybackProblemMarkSize) + 2 : 0;
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
     configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
+    hotSwapButton.setVisible(!isFolded && canHotSwap());
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() || mixCard_ ? 4 : 58)), 15);
+    const int titleRight = getWidth() - (eqPresentation() || mixCard_ ? 4 : 58);
+    const int swapWidth = hotSwapButton.isVisible() ? 17 : 0;
+    hotSwapButton.setBounds(titleRight - swapWidth, 1, swapWidth, 15);
+    title.setBounds(nameLeft, 1, std::max(0, titleRight - swapWidth - nameLeft - markSpace), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (mixCard_ && !isFolded) {
         const auto rail = look::fieldHeight;
         enabled.setBounds(0, 0, rail, rail);
-        title.setBounds(0, 0, std::max(0, getHeight() - rail), rail);
+        title.setBounds(0, 0, std::max(0, getHeight() - rail - markSpace), rail);
         title.setTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi)
                                .translated(0.f, static_cast<float>(getHeight())));
     }
+}
+void DevicePanelView::resized() {
+    const bool isFolded = strip.folded(id);
+    layoutTitle(isFolded);
     if (sample) {
         sample->setVisible(!isFolded);
+        sample->hotSwapButton.setVisible(hotSwapButton.isVisible());
         const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
         sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6, std::min(84, std::max(0, getHeight() - tileTop - 4)));
     }
     search.setVisible(!isFolded && configuring);
-    search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
+    parameterList.setVisible(search.isVisible() && data && data->plugin && !mixCard_);
+    auto searchRow = juce::Rectangle<int>{4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22};
+    if (parameterList.isVisible()) {
+        parameterList.setBounds(searchRow.removeFromRight(83).reduced(0, 1));
+        searchRow.removeFromRight(4);
+    }
+    search.setBounds(searchRow);
     const int rail = mixCard_ ? look::fieldHeight : 0;
     int top = mixCard_ ? look::border : kTitleHeight + (configuring ? 26 : 2);
+    if (data && !data->loadIssue.empty())
+        top += kLoadIssueHeight;
     if (mixCard_ && !isFolded) {
         const auto graph = eqPreviewBounds();
         if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
@@ -1494,10 +1820,15 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? look::focus : look::field;
+    const bool range = !mixCard_ && strip.selectionActsOn(id);
+    auto edge = range || hasKeyboardFocus(true) ? look::focus : look::field;
+    if (nativeFunction() && !range)
+        edge = look::accent;
+    const bool loadFailed = data && !data->loadIssue.empty();
     g.fillAll(look::panel);
     g.setColour(edge);
     if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
+    if (loadFailed) g.setColour(look::error);
     g.drawRect(getLocalBounds().toFloat(), mixCard_ ? look::hairline : look::heavyLine);
     if (mixCard_ && eqPreview_) {
         const auto graph = eqPreviewBounds();
@@ -1540,7 +1871,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
     }
     if (strip.folded(id) && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
-        g.setColour(look::text);
+        g.setColour(loadFailed ? look::error : look::text);
         g.setFont(look::font(11.5f));
         juce::Graphics::ScopedSaveState saved(g);
         g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
@@ -1548,6 +1879,16 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.drawText(title.getButtonText(), kTitleHeight + 2, getHeight() + 4,
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
+    } else if (loadFailed) {
+        const int statusTop = kTitleHeight + (configuring ? 28 : 4);
+        g.setColour(look::error);
+        g.setFont(look::font(12.f, true));
+        g.drawText(kPluginUnavailable, 8, statusTop, getWidth() - 16, 16,
+                   juce::Justification::centredLeft);
+        g.setColour(look::text);
+        g.setFont(look::font(11.5f));
+        g.drawFittedText(juce::String(data->loadIssue), 8, statusTop + 18, getWidth() - 16, 24,
+                         juce::Justification::topLeft, 2);
     } else if (data && !parameterPageUnavailableReason().empty()) {
         g.setColour(look::text);
         g.setFont(look::font(12.f));
@@ -1560,11 +1901,47 @@ void DevicePanelView::paint(juce::Graphics &g) {
                          36, juce::Justification::centred, 2);
     }
 }
+void DevicePanelView::paintOverChildren(juce::Graphics &g) {
+    // Wash the whole device, including its controls, while keeping them editable.
+    if (data != nullptr && !data->enabledNow())
+        g.fillAll(look::frame.withAlpha(0.55f));
+    if (!hasPlaybackProblem())
+        return;
+    constexpr auto size = kPlaybackProblemMarkSize;
+    if (strip.folded(id)) {
+        paintPlaybackProblemMark(g, {(static_cast<float>(getWidth()) - size) * .5f,
+                                    static_cast<float>(getHeight()) - size - 3.f, size, size});
+    } else if (mixCard_) {
+        paintPlaybackProblemMark(g, {(static_cast<float>(look::fieldHeight) - size) * .5f,
+                                    static_cast<float>(look::fieldHeight) + 1.f, size, size});
+    } else {
+        paintPlaybackProblemMark(g, {static_cast<float>(title.getRight()) + 1.f, 4.f, size, size});
+    }
+}
+bool DevicePanelView::canHotSwap() const {
+    if (!strip.hotSwap || mixCard_ || !data || !data->available || data->uid.empty() || nativeFunction())
+        return false;
+    if (data->format != "internal" && data->format != "clap" && data->format != "vst3")
+        return false;
+    const auto current = strip.root.current();
+    const auto *track = current ? current->findTrack(data->track) : nullptr;
+    return track && !track->frozen && !track->frozenByGroup;
+}
+bool DevicePanelView::requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot,
+                                     std::uint64_t epoch) {
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (menuEpoch_ != epoch || !canHotSwap() || !validTarget() || !safe)
+        return false;
+    if (!safe->strip.validExpected(expected) || !safe || safe->menuEpoch_ != epoch || !safe->strip.hotSwap)
+        return false;
+    safe->strip.hotSwap(expected, slot);
+    return true;
+}
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
     if (!validTarget())
         return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
-        return strip.action("device.remove", {{"id", id}});
+        return mixCard_ ? strip.action("device.remove", {{"id", id}}) : strip.deleteDevices(id);
     // Live moves between devices with the left and right arrows (§41.4.1.5).
     if (k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey)
         return navigate ? navigate(k == juce::KeyPress::rightKey) : strip.focusNext(id, k == juce::KeyPress::rightKey);
@@ -1572,6 +1949,8 @@ bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
 }
 void DevicePanelView::focusGained(FocusChangeType) {
     strip.chose(id);
+    if (!mixCard_ && !strip.isSelected(id))
+        strip.selectTitle(*this, false);
     repaint();
 }
 void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
@@ -1579,19 +1958,39 @@ void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
         beginInteraction(Interaction::Text);
     else if (!rename.isVisible())
         endInteraction(Interaction::Text);
-    if (hasKeyboardFocus(true))
+    if (hasKeyboardFocus(true)) {
         strip.chose(id);
+        if (!mixCard_ && !strip.isSelected(id))
+            strip.selectTitle(*this, false);
+    }
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
     dragTarget_.reset();
+    draggedDevices_.clear();
+    selectOnRelease_ = false;
+    startedDeviceDrag_ = false;
     if (!validTarget()) return;
-    if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
+    const bool titleHit = e.eventComponent == &title ||
+                          (e.eventComponent == this && !foldSwitch().contains(e.getPosition()) &&
+                           (e.y < kTitleHeight || strip.folded(id)));
+    if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this)) {
+        if (!mixCard_) {
+            if (!strip.isSelected(id)) strip.selectTitle(*this, false);
+            focusIfShowing(*this);
+        }
         contextMenu(e.getScreenPosition());
-    else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
+    } else if (!mixCard_ && titleHit && e.mods.isLeftButtonDown()) {
+        selectOnRelease_ = !e.mods.isShiftDown() && strip.selectionActsOn(id);
+        if (!selectOnRelease_) strip.selectTitle(*this, e.mods.isShiftDown());
+        focusIfShowing(*this);
+    } else if (e.eventComponent == this && foldSwitch().contains(e.getPosition())) {
+        focusIfShowing(*this);
         strip.fold(id);
-    else if (e.eventComponent == this && e.mods.isLeftButtonDown())
+    } else if (e.eventComponent == this && e.mods.isLeftButtonDown()) {
+        focusIfShowing(*this);
         pressEqGraph(e.position);
+    }
 }
 juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept {
     return mixCard_ ? juce::Rectangle<int>{} : juce::Rectangle<int>{19, 3, 11, 11};
@@ -1610,37 +2009,96 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
         repaint(eqPreviewBounds().toNearestInt());
     }
 }
-void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
+void DevicePanelView::mouseUp(const juce::MouseEvent &event) {
+    if (std::exchange(selectOnRelease_, false) && !startedDeviceDrag_ && event.getDistanceFromDragStart() < 4)
+        strip.selectTitle(*this, false);
+    releaseEqHandle();
+}
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
     if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
-    if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
-        !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
+    const auto pressed = e.getMouseDownPosition();
+    const bool panelTitle = e.eventComponent == this && !foldSwitch().contains(pressed) &&
+                            (pressed.y < kTitleHeight || strip.folded(id));
+    if (dragTarget_ || startedDeviceDrag_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
+        !(e.eventComponent == &title || panelTitle)) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
-    if (container && beginFunctionDrag())
-        container->startDragging(juce::String("adi-mix-function"), this, juce::ScaledImage{}, true, nullptr, &e.source);
+    if (!container) return;
+    const bool function = nativeFunction() != nullptr;
+    if (function && !mixCard_ && strip.selectionActsOn(id)) {
+        strip.root.say("Move native Mix functions one at a time.");
+        return;
+    }
+    if (function ? beginFunctionDrag() : beginDeviceDrag())
+        container->startDragging(juce::String(function ? "adi-mix-function" : kDeviceMoveDrag), this,
+                                 juce::ScaledImage{}, function, nullptr, &e.source);
 }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!validTarget()) return;
     if (e.eventComponent == &title || e.y < kTitleHeight)
         strip.fold(id);
 }
+namespace {
+bool samePanelDevice(const DevicePanelData &a, const DevicePanelData &b) {
+    return a.id == b.id && a.track == b.track && a.chain == b.chain && a.instance == b.instance;
+}
+const DevicePanelData *findPanelDevice(const std::shared_ptr<const ParameterPublication> &feed,
+                                      const DevicePanelData &expected) {
+    if (feed)
+        for (const auto &device : *feed)
+            if (samePanelDevice(device, expected))
+                return &device;
+    return nullptr;
+}
+const panel::Declared *declaredParameter(const DevicePanelData &device, const std::string &id) {
+    const auto &declarations = device.declarations();
+    const auto found = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) {
+        return entry.id == id;
+    });
+    return found == declarations.end() ? nullptr : &*found;
+}
+bool configurableParameter(const DevicePanelData &device, const std::string &id) {
+    const auto *parameter = declaredParameter(device, id);
+    return parameter && parameter->modifiable;
+}
+bool showsParameter(const DevicePanelData &device, const std::string &id) {
+    return std::any_of(device.resolved.entries.begin(), device.resolved.entries.end(),
+                       [&](const auto &entry) { return entry.id == id; });
+}
+std::vector<std::string> panelParameterIds(const DevicePanelData &device) {
+    std::vector<std::string> ids;
+    ids.reserve(device.resolved.entries.size());
+    for (const auto &entry : device.resolved.entries)
+        ids.push_back(entry.id);
+    return ids;
+}
+bool addPanelParameters(DeviceChainStrip &strip, const DevicePanelData &device,
+                        std::span<const std::string> additions) {
+    auto ids = panelParameterIds(device);
+    const auto before = ids.size();
+    for (const auto &parameter : additions)
+        if (configurableParameter(device, parameter) && std::find(ids.begin(), ids.end(), parameter) == ids.end())
+            ids.push_back(parameter);
+    return ids.size() == before || strip.action("device.setPanel", {{"dev", device.id}, {"params", ids}});
+}
+} // namespace
 juce::PopupMenu DevicePanelView::commands() {
     // Live 12's order (manual 23.2.1, its figure of a device's menu): Cut, Copy and Duplicate; Rename;
     // Delete and Fold; then the device's own. Paste is not in it: the Edit menu's and Ctrl/Cmd+V.
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
     const auto epoch = menuEpoch_;
+    const auto selectionEpoch = strip.selectionEpoch_;
     using Clip = DeviceChainStrip::Clip;
     const auto clipItem = [&](const char *name, char key, Clip c) {
         juce::PopupMenu::Item item(name);
         item.isEnabled = c != Clip::Duplicate || !nativeFunction();
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
-        item.action = [safe, c, epoch] {
+        item.action = [safe, c, epoch, selectionEpoch] {
             if (!safe || safe->menuEpoch_ != epoch) return;
             if (safe) safe->endInteraction(Interaction::Menu);
-            if (safe && safe->validTarget())
-                safe->strip.clipboard(c, safe->id);
+            if (safe && (safe->mixCard_ || safe->strip.selectionEpoch_ == selectionEpoch) && safe->validTarget())
+                safe->strip.clipboard(c, safe->id, !safe->mixCard_);
         };
         m.addItem(std::move(item));
     };
@@ -1660,11 +2118,13 @@ juce::PopupMenu DevicePanelView::commands() {
     };
     m.addItem(std::move(renameItem));
     m.addSeparator();
-    m.addItem("Delete", [safe, epoch] {
+    m.addItem("Delete", [safe, epoch, selectionEpoch] {
         if (!safe || safe->menuEpoch_ != epoch) return;
         if (safe) safe->endInteraction(Interaction::Menu);
-        if (safe && safe->validTarget())
-            safe->strip.action("device.remove", {{"id", safe->id}});
+        if (!safe || (!safe->mixCard_ && safe->strip.selectionEpoch_ != selectionEpoch) || !safe->validTarget())
+            return;
+        if (safe->mixCard_) safe->strip.action("device.remove", {{"id", safe->id}});
+        else safe->strip.deleteDevices(safe->id);
     });
     m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe, epoch] {
         if (!safe || safe->menuEpoch_ != epoch) return;
@@ -1672,6 +2132,100 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (strip.hotSwap && !mixCard_) {
+        juce::PopupMenu::Item item("Hot-Swap");
+        const auto keys = strip.root.commands().manager.getKeyMappings()->getKeyPressesAssignedToCommand(AppCommands::HotSwap);
+        if (!keys.isEmpty())
+            item.shortcutKeyDescription = keys[0].getTextDescriptionWithIcons();
+        item.isEnabled = canHotSwap();
+        if (item.isEnabled) {
+            item.action = [safe, epoch, expected = *data] {
+                if (!safe || safe->menuEpoch_ != epoch)
+                    return;
+                safe->endInteraction(Interaction::Menu);
+                if (safe) safe->requestHotSwap(expected, std::nullopt, epoch);
+            };
+        }
+        m.addSeparator();
+        m.addItem(std::move(item));
+    }
+    if (strip.savePreset || strip.saveDefaultPreset) {
+        const auto current = strip.root.current();
+        const auto *track = current && data ? current->findTrack(data->track) : nullptr;
+        const bool supported = data && !data->uid.empty() && !nativeFunction() &&
+                               (data->format == "internal" || data->format == "clap" || data->format == "vst3");
+        const bool eligible = supported && data->available && track && !track->frozen && !track->frozenByGroup;
+        const auto addPresetItem = [&](juce::String label, decltype(&DeviceChainStrip::savePreset) handler) {
+            if (!(strip.*handler)) return;
+            juce::PopupMenu::Item item(std::move(label));
+            item.isEnabled = eligible;
+            if (eligible) {
+                item.action = [safe, epoch, expected = *data, handler] {
+                    if (!safe || safe->menuEpoch_ != epoch)
+                        return;
+                    safe->endInteraction(Interaction::Menu);
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
+                        return;
+                    if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
+                        return;
+                    if (safe && safe->menuEpoch_ == epoch)
+                        if (const auto callback = safe->strip.*handler)
+                            callback(expected);
+                };
+            }
+            m.addItem(std::move(item));
+        };
+        m.addSeparator();
+        addPresetItem(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"), &DeviceChainStrip::savePreset);
+        addPresetItem("Save as Default Preset", &DeviceChainStrip::saveDefaultPreset);
+    }
+    if (!mixCard_ && !configuring && data && data->pluginTouch) {
+        const auto &paramId = data->pluginTouch->parameter;
+        if (const auto *parameter = declaredParameter(*data, paramId)) {
+            juce::PopupMenu touch;
+            const auto choose = [safe, epoch, expected = *data](bool showAutomation) {
+                if (!safe || safe->menuEpoch_ != epoch) return;
+                safe->endInteraction(Interaction::Menu);
+                if (safe && safe->menuEpoch_ == epoch)
+                    safe->chooseLastTouch(expected, showAutomation);
+            };
+            touch.addItem("Show on Device Panel", parameter->modifiable && !showsParameter(*data, paramId), false,
+                          [choose] { choose(false); });
+            touch.addItem("Show Automation", deviceTarget(*data, *parameter).has_value(), false,
+                          [choose] { choose(true); });
+            m.addSeparator();
+            m.addSubMenu("Last Touched: " + juce::String(parameter->name.empty() ? parameter->id : parameter->name), touch);
+        }
+    }
+    juce::PopupMenu automation;
+    if (data && data->activatorAvailable) {
+        DevicePanelData expected;
+        expected.id = data->id;
+        expected.runtime = data->runtime;
+        expected.instance = data->instance;
+        automation.addItem("Show Automation", [safe, expected] {
+            if (safe && safe->strip.validExpected(expected) && safe)
+                safe->strip.root.showDeviceAutomation(expected.id, std::string(kDeviceActivatorParamRef));
+        });
+        if (const auto current = strip.root.current())
+            strip.root.addReenableAutomation(automation, envelopeOf(*current, deviceActivatorTarget(*data)).lane);
+    }
+    strip.root.addDeviceAutomationDeleteItem(automation, id);
+    if (automation.getNumItems() > 0) {
+        m.addSeparator();
+        for (juce::PopupMenu::MenuItemIterator iter(automation); iter.next();) {
+            auto item = iter.getItem();
+            if (item.action)
+                item.action = [safe, epoch, action = item.action] {
+                    if (!safe || safe->menuEpoch_ != epoch)
+                        return;
+                    safe->endInteraction(Interaction::Menu);
+                    if (safe && safe->validTarget())
+                        action();
+                };
+            m.addItem(std::move(item));
+        }
+    }
     if (data && strip.keyChoices && strip.setKey) {
         const auto expected=*data;juce::PopupMenu keys;
         const auto choices=strip.keyChoices(expected);
@@ -1690,6 +2244,37 @@ juce::PopupMenu DevicePanelView::commands() {
         }
         for(auto& [sourceId,entry]:sources){(void)sourceId;keys.addSubMenu(entry.first,entry.second);}
         if(!choices.empty()){m.addSeparator();m.addSubMenu("Sidechain Input",keys);}
+    }
+    if (data && data->plugin) {
+        // SC-325 (ADR-0134 d7): how the plug-in receives per-note expression, from its device menu as
+        // Live's MPE Mode is. The project keeps the choice (one undo step), and it is remembered for the
+        // plug-in, so the next instance of it starts with it.
+        juce::PopupMenu routes;
+        const auto expected = *data;
+        const bool clap = data->format == "clap";
+        const std::array<std::pair<engine::RouteChoice, const char *>, 4> choices{{
+            {engine::RouteChoice::Auto, "Auto"},
+            {engine::RouteChoice::NoteExpression, clap ? "CLAP Note Expression" : "VST3 Note Expression"},
+            {engine::RouteChoice::MpeMidi, "MIDI-MPE"},
+            {engine::RouteChoice::Plain, "Poly-AT (no MPE)"}}};
+        for (const auto &[choice, label] : choices) {
+            juce::PopupMenu::Item item(label);
+            item.isTicked = data->route == engine::routeChoiceName(choice);
+            item.action = [safe, epoch, expected, choice = choice] {
+                if (!safe || safe->menuEpoch_ != epoch) return;
+                safe->endInteraction(Interaction::Menu);
+                if (!safe || !safe->validTarget() || !safe->strip.validExpected(expected)) return;
+                const std::string name = engine::routeChoiceName(choice);
+                Payload payload{{"dev", expected.id}};
+                payload["route"] = name.empty() ? Payload(nullptr) : Payload(name);
+                if (safe->strip.action("device.setExpressionRoute", std::move(payload)) && safe &&
+                    safe->strip.rememberRoute)
+                    safe->strip.rememberRoute(expected, choice);
+            };
+            routes.addItem(std::move(item));
+        }
+        m.addSeparator();
+        m.addSubMenu("MPE", routes);
     }
     if (!eqPresentation()) {
         m.addSeparator();
@@ -1735,77 +2320,182 @@ void DevicePanelView::endRename(bool commit) {
         focusIfShowing(*this);
     endInteraction(Interaction::Text);
 }
-void DevicePanelView::configure() {
-    if (!data || !validTarget() || eqPresentation())
-        return;
-    if (!configuring) {
-        // The first press shows the search; the menu lists what it finds.
-        configuring = true;
-        resized();
-        strip.resized();
+bool DevicePanelView::panelTargetCurrent(const DevicePanelData &expected) {
+    if (!isShowing() || !data || !samePanelDevice(*data, expected) ||
+        (!mixCard_ && strip.root.arrangement.geometry.selection.track != expected.track))
+        return false;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    return validTarget() && safe && safe->strip.validExpected(expected) && safe;
+}
+void DevicePanelView::queueConfigureTouch(const DevicePanelData &next) {
+    if (!configureSession_) return;
+    if (!next.plugin || !next.available || !samePanelDevice(configureSession_->expected, next)) {
+        closeConfigure();
         return;
     }
+    auto &session = *configureSession_;
+    const auto &touches = next.recentPluginTouches;
+    if (!touches || touches->empty() || touches->back().sequence <= session.observed)
+        return;
+    auto &pending = session.pending;
+    const auto pendingBefore = pending.size();
+    for (const auto &touch : *touches) {
+        if (touch.sequence <= session.observed) continue;
+        session.observed = touch.sequence;
+        const auto &paramId = touch.parameter;
+        if (configurableParameter(next, paramId) && !showsParameter(next, paramId) &&
+            std::find(pending.begin(), pending.end(), paramId) == pending.end())
+            pending.push_back(paramId);
+    }
+    if (pending.size() != pendingBefore)
+        strip.triggerAsyncUpdate();
+}
+void DevicePanelView::applyConfigureTouches() {
+    if (!configureSession_ || configureSession_->pending.empty()) return;
+    auto pending = std::exchange(configureSession_->pending, {});
+    const auto expected = configureSession_->expected;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (const auto poll = strip.pollParameterEdits) poll();
+    if (!safe || !safe->configureSession_ || safe->strip.folded(expected.id) || !safe->panelTargetCurrent(expected) || !safe)
+        return;
+    const auto feed = safe->strip.latestPublication();
+    if (safe)
+        if (const auto *current = findPanelDevice(feed, expected))
+            addPanelParameters(safe->strip, *current, pending);
+}
+void DevicePanelView::chooseLastTouch(const DevicePanelData &expected, bool showAutomation) {
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (configuring || !expected.pluginTouch || !panelTargetCurrent(expected) || !safe)
+        return;
+    const auto &paramId = expected.pluginTouch->parameter;
+    if (showAutomation && !strip.root.deviceAutomationTarget(expected.id, paramId))
+        return;
+    if (!strip.addLastTouchedParameter(expected))
+        return;
+    if (showAutomation && safe && safe->panelTargetCurrent(expected) && safe)
+        safe->strip.root.showDeviceAutomation(expected.id, paramId);
+}
+void DevicePanelView::closeConfigure() {
+    configureSession_.reset();
+    if (!std::exchange(configuring, false)) return;
+    ++menuEpoch_;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    endInteraction(Interaction::Menu);
+    if (!safe) return;
+    configureButton.setToggleState(false, juce::dontSendNotification);
+    resized();
+}
+void DevicePanelView::configure() {
+    if (!data || !validTarget() || eqPresentation() || strip.folded(id))
+        return;
+    const bool plugin = !mixCard_ && data->plugin;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (configuring) {
+        if (plugin) {
+            closeConfigure();
+            if (safe) strip.resized();
+        } else {
+            showParameterList();
+        }
+        return;
+    }
+
+    if (plugin && data->available) {
+        const auto expected = *data;
+        if (const auto poll = strip.pollParameterEdits) poll();
+        if (!safe || safe->configuring || !safe->panelTargetCurrent(expected) || !safe)
+            return;
+        const auto feed = strip.latestPublication();
+        if (!safe) return;
+        const auto *latest = findPanelDevice(feed, expected);
+        if (!latest || !latest->available || !latest->plugin) return;
+        const auto &touches = latest->recentPluginTouches;
+        const auto observed = touches && !touches->empty() ? touches->back().sequence : 0;
+        configureSession_ = ConfigureSession{expected, observed, {}};
+    }
+    configuring = true;
+    configureButton.setToggleState(true, juce::dontSendNotification);
+    resized();
+    if (!safe) return;
+    strip.resized();
+    if (safe && configureSession_)
+        strip.root.openPluginWindow(id);
+}
+void DevicePanelView::showParameterList() {
+    if (!data || !configuring || !validTarget()) return;
+
     endInteraction(Interaction::Text);
     if (!beginInteraction(Interaction::Menu)) return;
     juce::PopupMenu m;
     m.addItem(1, "Use default panel");
     m.addItem(2, "Clear panel");
     m.addItem(3, "Done");
-    auto choices = panel::search(data->declarations(), search.getText().toStdString());
-    std::vector<std::string> ids;
-    for (const auto &e : data->resolved.entries)
-        ids.push_back(e.id);
+    const auto choices = panel::search(data->declarations(), search.getText().toStdString());
     std::vector<std::string> candidates;
     for (auto match : choices) {
-        const auto &d = data->declarations()[match.index];
-        if (!d.modifiable)
+        const auto &parameter = data->declarations()[match.index];
+        if (!parameter.modifiable)
             continue;
-        candidates.push_back(d.id);
-        m.addItem(static_cast<int>(candidates.size()) + 3, d.name, true,
-                  std::find(ids.begin(), ids.end(), d.id) != ids.end());
+        candidates.push_back(parameter.id);
+        m.addItem(static_cast<int>(candidates.size()) + 3, parameter.name, true,
+                  showsParameter(*data, parameter.id));
     }
-    auto safe = juce::Component::SafePointer<DevicePanelView>(this);
+    const auto safe = SafePointer<DevicePanelView>(this);
     const auto epoch = menuEpoch_;
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&configureButton),
-                    [safe, ids, candidates, epoch](int chosen) mutable {
+    const auto expected = *data;
+    auto &button = parameterList.isVisible() ? parameterList : configureButton;
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&button),
+                    [safe, expected, candidates = std::move(candidates), epoch](int chosen) {
                         if (!safe || safe->menuEpoch_ != epoch) return;
-                        if (safe) safe->endInteraction(Interaction::Menu);
-                        if (!safe || !safe->validTarget() || chosen == 0)
+                        safe->endInteraction(Interaction::Menu);
+                        if (!safe || chosen == 0 || safe->menuEpoch_ != epoch || !safe->panelTargetCurrent(expected) || !safe)
                             return;
                         if (chosen == 3) {
-                            safe->configuring = false;
-                            safe->resized();
-                            safe->strip.resized();
+                            safe->closeConfigure();
+                            if (safe) safe->strip.resized();
                             return;
                         }
                         if (chosen == 1) {
-                            safe->strip.action("device.setPanel",
-                                               {{"dev", safe->id}, {"params", nullptr}});
+                            safe->strip.action("device.setPanel", {{"dev", safe->id}, {"params", nullptr}});
                             return;
                         }
-                        if (chosen == 2)
+                        const auto feed = safe->strip.latestPublication();
+                        if (!safe) return;
+                        const auto *current = findPanelDevice(feed, expected);
+                        if (!current) return;
+                        auto ids = panelParameterIds(*current);
+                        if (chosen == 2) {
                             ids.clear();
-                        else {
+                        } else {
                             const auto index = static_cast<std::size_t>(chosen - 4);
-                            if (index >= candidates.size())
+                            if (index >= candidates.size() || !configurableParameter(*current, candidates[index]))
                                 return;
-                            const auto &chosenId = candidates[index];
-                            auto it = std::find(ids.begin(), ids.end(), chosenId);
-                            if (it == ids.end())
-                                ids.push_back(chosenId);
+                            const auto &paramId = candidates[index];
+                            if (const auto found = std::find(ids.begin(), ids.end(), paramId); found != ids.end())
+                                ids.erase(found);
                             else
-                                ids.erase(it);
+                                ids.push_back(paramId);
                         }
                         safe->strip.action("device.setPanel", {{"dev", safe->id}, {"params", ids}});
                     });
 }
+struct DeviceChainStrip::OutputMeter {
+    engine::ScopeSource source;
+    std::uint64_t instance = 0;
+    SharedAnalysis::Lease lease;
+    SharedAnalysis::Lease::SourcePosition first;
+    std::uint64_t revision = 0;
+    std::int64_t lastUpdate = 0;
+    std::array<int, 2> levels{};
+    std::array<bool, 2> clipping{};
+};
 DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     addAndMakeVisible(scroll);
     scroll.setViewedComponent(&content, false);
     // Devices run left to right; the strip scrolls sideways, never down, and shows no
     // scroll bar (Live's Device View).
     scroll.setScrollBarsShown(false, false, false, true);
-    // A click past the last device chooses the chain's end, where a paste goes (manual 23.2.1).
+    // The strip takes focus at the chain's end, where a paste goes (manual 23.2.1).
     setWantsKeyboardFocus(true);
     content.addMouseListener(this, false);
     content.addChildComponent(addTab);
@@ -1816,10 +2506,46 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     };
 }
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
-    if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
-        chosen_.reset();
-        focusIfShowing(*this);
-    }
+    if (e.eventComponent != &content || e.x < end_ - 11)
+        return;
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto track = selectedTrack;
+    const auto epoch = addMenuEpoch_;
+    const bool popup = e.mods.isPopupMenu();
+    const auto where = e.getScreenPosition();
+    chooseEnd();
+    if (!safe || !popup)
+        return;
+
+    juce::PopupMenu menu;
+    juce::PopupMenu::Item item("Paste");
+    item.isEnabled = track > 0 && paste && holdsCopy && holdsCopy();
+    item.shortcutKeyDescription =
+        juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
+    item.action = [safe, track, epoch] {
+        if (safe && track > 0 && safe->selectedTrack == track && safe->addMenuEpoch_ == epoch &&
+            safe->root.arrangement.geometry.selection.track == track)
+            safe->pasteAt(track, std::nullopt);
+    };
+    menu.addItem(std::move(item));
+    if (onEndMenu)
+        onEndMenu(std::move(menu));
+    else
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+bool DeviceChainStrip::keyPressed(const juce::KeyPress &key) {
+    if (key != juce::KeyPress::leftKey || !endChosen() || panels.empty())
+        return false;
+    focusIfShowing(*panels.back());
+    return true;
+}
+void DeviceChainStrip::chooseEnd() {
+    chosen_.reset();
+    clearSelection();
+    const auto view = scroll.getViewArea();
+    if (end_ > view.getRight())
+        scroll.setViewPosition(end_ - view.getWidth(), view.getY());
+    focusIfShowing(*this);
 }
 std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
     if (const auto focused = focusedDevice())
@@ -1837,7 +2563,28 @@ bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
         return source && source->functionDragTarget() && &source->strip.root == &root &&
                source->functionDragTarget()->track == selectedTrack;
     }
-    return !BrowserPanel::droppedDevice(details.description).empty();
+    return isMovingDevice(details) || (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details)) ||
+           isInterestedInFileDrag(BrowserPanel::droppedFiles(details.description));
+}
+bool DeviceChainStrip::acceptsSample() const {
+    return panels.empty() && root.sampleInstrumentTarget(selectedTrack);
+}
+bool DeviceChainStrip::isInterestedInFileDrag(const juce::StringArray &files) {
+    return !files.isEmpty() && acceptsSample();
+}
+void DeviceChainStrip::fileDragEnter(const juce::StringArray &files, int x, int) {
+    setDropPreview(files.size() == 1 && acceptsSample() && root.loadSampleInstrument ? std::optional{x} : std::nullopt);
+}
+void DeviceChainStrip::fileDragExit(const juce::StringArray &) { setDropPreview({}); }
+void DeviceChainStrip::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview({});
+    if (!isInterestedInFileDrag(files))
+        return;
+    if (files.size() != 1) {
+        root.say("Drop one sample at a time to make an instrument.");
+        return;
+    }
+    root.loadSampleAsInstrument(selectedTrack, media::pathFromUtf8(files[0].toStdString()));
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     const int at = x + scroll.getViewPositionX();
@@ -1846,15 +2593,63 @@ std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
             return p->id;
     return std::nullopt;
 }
+void DeviceChainStrip::setDropPreview(std::optional<int> x) {
+    if (dropPreviewX_ == x)
+        return;
+    dropPreviewX_ = x;
+    repaint();
+}
+void DeviceChainStrip::itemDragEnter(const SourceDetails &details) { itemDragMove(details); }
+void DeviceChainStrip::itemDragMove(const SourceDetails &details) {
+    if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty()) {
+        fileDragEnter(files, details.localPosition.x, details.localPosition.y);
+        return;
+    }
+    setDropPreview(isInterestedInDragSource(details) ? std::optional{details.localPosition.x} : std::nullopt);
+}
+void DeviceChainStrip::itemDragExit(const SourceDetails &) { setDropPreview({}); }
 void DeviceChainStrip::itemDropped(const SourceDetails &details) {
+    setDropPreview({});
     if (details.description.toString() == "adi-mix-function") {
         if (auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get()))
             dropFunction(*source, dropBefore(details.localPosition.x));
         return;
     }
-    const auto uid = BrowserPanel::droppedDevice(details.description);
-    if (!uid.empty())
-        root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
+    if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
+        moveDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+        return;
+    }
+    if (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details)) {
+        root.browser.loadDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) const {
+    if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)
+        return nullptr;
+    auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get());
+    if (!source || &source->strip.root != &root || source->nativeFunction() || source->draggedDevices_.empty())
+        return nullptr;
+    return source;
+}
+bool DeviceChainStrip::isMovingDevice(const SourceDetails &details) const {
+    return moveSource(details) != nullptr;
+}
+bool DeviceChainStrip::moveDroppedDevice(const SourceDetails &details, std::int64_t track,
+                                        std::optional<std::int64_t> before) {
+    auto *source = moveSource(details);
+    if (!source) {
+        root.say("That device changed before it could be moved.");
+        return false;
+    }
+    auto expected = std::exchange(source->draggedDevices_, {});
+    if (expected.size() > 1 && moveSelection)
+        return moveSelection(expected, track, before);
+    if (expected.size() == 1 && moveDevice)
+        return moveDevice(expected.front(), track, before);
+    root.say("Devices move in the application.");
+    return false;
 }
 bool DeviceChainStrip::hasFunction(mix::Function kind) const {
     if (presented) for (const auto &d : *presented)
@@ -1939,8 +2734,71 @@ void DeviceChainStrip::cancelFunctionInteractions() {
     for (auto &panel : panels) if (panel->nativeFunction()) panel->cancelInteractions();
 }
 DeviceChainStrip::~DeviceChainStrip() {
+    cancelPendingUpdate();
     if (parameterDemand)
         parameterDemand(this, {});
+}
+std::shared_ptr<const ParameterPublication> DeviceChainStrip::latestPublication() const {
+    return publication ? publication() : presented;
+}
+bool DeviceChainStrip::addLastTouchedParameter(const DevicePanelData &expected) {
+    if (!expected.pluginTouch) return false;
+    DevicePanelData identity;
+    identity.id = expected.id;
+    identity.track = expected.track;
+    identity.chain = expected.chain;
+    identity.instance = expected.instance;
+    identity.runtime = expected.runtime;
+    identity.pluginTouch = expected.pluginTouch;
+
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    if (!validExpected(identity) || !safe) return false;
+    const auto touchedDevice = [&](const auto &feed) -> const DevicePanelData * {
+        const auto *row = findPanelDevice(feed, identity);
+        return row && row->available && row->plugin && row->pluginTouch == identity.pluginTouch ? row : nullptr;
+    };
+    const auto &paramId = identity.pluginTouch->parameter;
+    const auto feed = latestPublication();
+    if (!safe) return false;
+    const auto *current = touchedDevice(feed);
+    if (!current) return false;
+    std::shared_ptr<const ParameterPublication> described;
+    if (!declaredParameter(*current, paramId) && root.automationParameters) {
+        // Read descriptors without opening a live parameter subscription.
+        const auto describe = root.automationParameters;
+        const auto generation = root.projectViewGeneration();
+        described = describe(identity.track);
+        if (!safe || !safe->validExpected(identity) || !safe) return false;
+        const auto latest = safe->latestPublication();
+        if (!safe || generation != safe->root.projectViewGeneration() || !touchedDevice(latest)) return false;
+        current = touchedDevice(described);
+        if (!current) return false;
+    }
+    const auto *parameter = declaredParameter(*current, paramId);
+    if (!parameter) return false;
+    if (!parameter->modifiable) return deviceTarget(*current, *parameter).has_value();
+    return addPanelParameters(*this, *current, {&paramId, 1});
+}
+void DeviceChainStrip::cancelConfigureTouches() {
+    cancelPendingUpdate();
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto epoch = frameEpoch_;
+    for (std::size_t i = 0; i < panels.size(); ++i) {
+        if (panels[i]->configureSession_) panels[i]->closeConfigure();
+        if (!safe || frameEpoch_ != epoch) return;
+    }
+}
+void DeviceChainStrip::handleAsyncUpdate() {
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto epoch = frameEpoch_;
+    for (std::size_t i = 0; i < panels.size(); ++i) {
+        panels[i]->applyConfigureTouches();
+        if (!safe) return;
+        if (frameEpoch_ != epoch) {
+            triggerAsyncUpdate();
+            return;
+        }
+    }
 }
 void DeviceChainStrip::updateParameterDemand(std::vector<std::int64_t> devices) {
     std::sort(devices.begin(), devices.end());
@@ -1953,14 +2811,20 @@ void DeviceChainStrip::suspendParameters(bool suspended) {
     parametersSuspended_ = suspended;
     if (suspended) {
         const auto safe = SafePointer<DeviceChainStrip>(this);
+        cancelConfigureTouches();
+        if (!safe) return;
         cancelFunctionInteractions();
+        if (safe) releaseOutputMeters();
         if (safe) updateParameterDemand({});
     }
 }
 void DeviceChainStrip::visibilityChanged() {
     if (!isShowing()) {
         const auto safe = SafePointer<DeviceChainStrip>(this);
+        cancelConfigureTouches();
+        if (!safe) return;
         cancelFunctionInteractions();
+        if (safe) releaseOutputMeters();
         if (safe) updateParameterDemand({});
     }
 }
@@ -1972,6 +2836,66 @@ const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
                 return &d;
     return nullptr;
 }
+bool DeviceChainStrip::PickedDevice::matches(const DevicePanelData &data) const {
+    return data.id == id && data.track == track && data.chain == chain && data.instance == instance;
+}
+bool DeviceChainStrip::isSelected(std::int64_t id) const {
+    return std::any_of(selected_.begin(), selected_.end(), [id](const auto &device) { return device.id == id; });
+}
+bool DeviceChainStrip::selectionActsOn(std::int64_t id) const {
+    return selected_.size() > 1 && isSelected(id);
+}
+void DeviceChainStrip::clearSelection() {
+    if (selected_.empty()) return;
+    selected_.clear();
+    selectionAnchor_.reset();
+    ++selectionEpoch_;
+    for (const auto &p : panels) p->repaint();
+}
+void DeviceChainStrip::selectTitle(const DevicePanelView &panel, bool extend) {
+    const auto *clicked = panel.data;
+    if (!clicked) return;
+    chose(clicked->id);
+    auto first = std::find_if(panels.begin(), panels.end(), [&](const auto &p) { return p.get() == &panel; });
+    if (first == panels.end()) return;
+    auto last = first;
+    if (extend && selectionAnchor_ && selectionAnchor_->chain == clicked->chain) {
+        const auto anchor = std::find_if(panels.begin(), panels.end(), [&](const auto &p) {
+            return p->data && selectionAnchor_->matches(*p->data);
+        });
+        if (anchor != panels.end()) {
+            first = std::min(anchor, last);
+            last = std::max(anchor, last);
+        }
+    }
+    const PickedDevice target{clicked->id, clicked->track, clicked->chain, clicked->instance};
+    if (first == last)
+        selectionAnchor_ = target;
+    selected_.clear();
+    for (auto i = first; i <= last; ++i)
+        if (const auto *data = (*i)->data; data && data->chain == clicked->chain)
+            selected_.push_back({data->id, data->track, data->chain, data->instance});
+    ++selectionEpoch_;
+    for (const auto &p : panels) p->repaint();
+}
+std::vector<DevicePanelData> DeviceChainStrip::selectedTargets() const {
+    std::vector<DevicePanelData> targets;
+    targets.reserve(selected_.size());
+    for (const auto &panel : panels) {
+        const auto *data = panel->data;
+        if (data && std::any_of(selected_.begin(), selected_.end(), [&](const auto &picked) { return picked.matches(*data); }))
+            targets.push_back(*data);
+    }
+    if (targets.size() != selected_.size()) return {};
+    return targets;
+}
+bool DeviceChainStrip::deleteDevices(std::optional<std::int64_t> device) {
+    if (!device) device = focusedDevice();
+    if (!device) return false;
+    if (!selectionActsOn(*device)) return action("device.remove", {{"id", *device}});
+    const auto targets = selectedTargets();
+    return targets.size() > 1 && removeSelection && removeSelection(targets);
+}
 std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
     // While its name is being edited the keys are the editor's: no device is chosen.
     for (const auto &p : panels)
@@ -1979,31 +2903,74 @@ std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
             return p->id;
     return std::nullopt;
 }
+DevicePanelView *DeviceChainStrip::focusedHotSwapPanel() const {
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (dynamic_cast<const juce::TextEditor *>(focused) != nullptr)
+        return nullptr;
+    // Ordinary Stack tiles share the strip's authority, including when Mix View is detached.
+    for (auto *component = focused; component != nullptr; component = component->getParentComponent())
+        if (auto *panel = dynamic_cast<DevicePanelView *>(component))
+            return &panel->strip == this && !panel->rename.isVisible() && panel->canHotSwap() ? panel : nullptr;
+    return nullptr;
+}
+bool DeviceChainStrip::hasHotSwapContext() const { return focusedHotSwapPanel() != nullptr; }
+bool DeviceChainStrip::hotSwapFocused() {
+    if (auto *panel = focusedHotSwapPanel()) {
+        const auto slot = panel->sample && panel->sample->hasKeyboardFocus(true) ? std::optional{panel->sample->slot}
+                                                                                : std::nullopt;
+        return panel->requestHotSwap(*panel->data, slot, panel->menuEpoch_);
+    }
+    return false;
+}
 bool DeviceChainStrip::canClipboard(Clip c) const {
     const auto device = focusedDevice();
     if (c == Clip::Paste)
         return holdsCopy && holdsCopy() && (device || (endChosen() && selectedTrack >= 0));
+    if (device && selectionActsOn(*device))
+        return true;
     if (c == Clip::Duplicate && device)
         if (const auto *data = dataOf(*device); data && !data->plugin && mix::functionForUid(data->uid)) return false;
     return device.has_value();
 }
-bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
+bool DeviceChainStrip::clipboardSelection(Clip c) {
+    const auto targets = selectedTargets();
+    if (targets.size() < 2) return false;
+    if (c == Clip::Cut || c == Clip::Copy)
+        return copySelection && copySelection(targets, c == Clip::Cut);
+    if (c != Clip::Duplicate || !duplicateSelection) return false;
+    const auto &last = targets.back();
+    const auto after = std::find_if(panels.begin(), panels.end(), [&](const auto &p) { return p->id == last.id; });
+    if (after == panels.end()) return false;
+    std::optional<std::int64_t> before;
+    for (auto i = std::next(after); i != panels.end(); ++i)
+        if ((*i)->data && (*i)->data->chain == last.chain) {
+            before = (*i)->id;
+            break;
+        }
+    return duplicateSelection(targets, last.track, before);
+}
+bool DeviceChainStrip::pasteAt(std::int64_t track, std::optional<std::int64_t> before) {
+    if (!paste || !holdsCopy || !holdsCopy())
+        return false;
+    const SafePointer<DeviceChainStrip> alive(this);
+    const bool pasted = paste(track, before);
+    if (pasted && alive) root.say({});
+    return pasted;
+}
+bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, bool includeSelection) {
+    includeSelection = includeSelection || !device;
     if (!device)
         device = focusedDevice();
+    if (c != Clip::Paste && includeSelection && device && selectionActsOn(*device))
+        return clipboardSelection(c);
     const auto *data = device ? dataOf(*device) : nullptr;
     switch (c) {
     case Clip::Cut:
     case Clip::Copy:
         return data != nullptr && copy && copy(*device, c == Clip::Cut);
-    case Clip::Paste: {
-        if (!paste || !holdsCopy || !holdsCopy())
-            return false;
-        const SafePointer<DeviceChainStrip> alive(this);
-        const bool pasted = data ? paste(data->track, *device)
-                                 : endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
-        if (pasted && alive) root.say({});
-        return pasted;
-    }
+    case Clip::Paste:
+        return data ? pasteAt(data->track, *device)
+                    : endChosen() && selectedTrack >= 0 && pasteAt(selectedTrack, std::nullopt);
     case Clip::Duplicate: {
         if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;
@@ -2024,24 +2991,28 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     return false;
 }
 void DeviceChainStrip::showSamples() {
-    // A sample tile shows its slot as the snapshot holds it: empty, loaded or missing.
-    const auto *snapshot = root.reader().get();
-    if (snapshot == nullptr)
-        return;
     for (auto &p : panels)
-        if (p->sample) {
-            const engine::SampleSlotNode *node = nullptr;
-            for (const auto &slot : snapshot->sampleSlots)
-                if (slot && slot->deviceId == p->id && slot->slot == p->sample->slot)
-                    node = slot.get();
-            p->sample->show(node);
-        }
+        if (p->sample) p->sample->refresh();
+}
+void DeviceChainStrip::setPlaybackProblemIds(std::vector<std::int64_t> ids) {
+    if (playbackProblemIds_ == ids)
+        return;
+    playbackProblemIds_ = std::move(ids);
+    for (const auto &panel : panels)
+        panel->refreshPlaybackProblem();
+}
+bool DeviceChainStrip::hasPlaybackProblem(std::int64_t id) const noexcept {
+    return std::binary_search(playbackProblemIds_.begin(), playbackProblemIds_.end(), id);
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto epoch = ++frameEpoch_;
     const auto current = [&safe, epoch] { return safe && safe->frameEpoch_ == epoch; };
-    if (parameterDemand && (parametersSuspended_ || !isShowing())) { updateParameterDemand({}); return; }
+    if (parameterDemand && (parametersSuspended_ || !isShowing())) {
+        releaseOutputMeters();
+        if (current()) updateParameterDemand({});
+        return;
+    }
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
@@ -2060,7 +3031,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
                     const auto panel = std::find_if(panels.begin(), panels.end(), [&](const auto &candidate) {
                         return candidate->id == device.id;
                     });
-                    if (track == selectedTrack && panel != panels.end() && !scroll.getViewArea().isEmpty() &&
+                    if (track == selectedTrack && panel != panels.end() && !(*panel)->configureSession_ &&
+                        !scroll.getViewArea().isEmpty() &&
                         !(*panel)->getBounds().intersects(scroll.getViewArea())) continue;
                     demanded.push_back(device.id);
                 }
@@ -2069,11 +3041,14 @@ void DeviceChainStrip::frame(std::int64_t track) {
         next = publication ? publication() : nullptr;
         if (!current()) return;
     }
-    if (next == presented && track == selectedTrack)
+    if (next == presented && track == selectedTrack) {
+        frameOutputMeters();
         return;
+    }
     if (track != selectedTrack) {
         ++addMenuEpoch_;
         chosen_.reset();
+        clearSelection();
     }
     selectedTrack = track;
     // Keep the old publication alive until every control has adopted the new one.
@@ -2082,6 +3057,11 @@ void DeviceChainStrip::frame(std::int64_t track) {
         for (const auto &d : *next)
             if (d.track == track)
                 visible.push_back(&d);
+    // A selected ID reused for another runtime must never join a later edit.
+    if (std::any_of(selected_.begin(), selected_.end(), [&](const auto &picked) {
+            return std::none_of(visible.begin(), visible.end(), [&](const auto *d) { return picked.matches(*d); });
+        }))
+        clearSelection();
     bool same = panels.size() == visible.size();
     if (same)
         for (std::size_t i = 0; i < panels.size(); ++i)
@@ -2132,6 +3112,84 @@ void DeviceChainStrip::frame(std::int64_t track) {
     showSamples();
     resized();
     repaint();
+    frameOutputMeters();
+}
+juce::Rectangle<int> DeviceChainStrip::outputMeterBounds(std::size_t gap) const noexcept {
+    return {panels[gap + 1]->getX() - scroll.getViewPositionX() - 8, getHeight() / 2 - 12, 5, 24};
+}
+void DeviceChainStrip::releaseOutputMeters() {
+    if (outputMeters_.empty())
+        return;
+    auto released = std::move(outputMeters_);
+    outputMeterBroker_.reset();
+    repaint();
+}
+void DeviceChainStrip::frameOutputMeters() {
+    const auto broker = root.sharedAnalysis;
+    if (!broker || parametersSuspended_ || !isShowing() || panels.size() < 2) {
+        releaseOutputMeters();
+        return;
+    }
+    if (outputMeterBroker_.lock() != broker) {
+        releaseOutputMeters();
+        outputMeterBroker_ = broker;
+    }
+    outputMeters_.resize(panels.size() - 1);
+    bool active = false;
+    for (std::size_t gap = 0; gap < outputMeters_.size(); ++gap) {
+        auto &meter = outputMeters_[gap];
+        const auto bounds = outputMeterBounds(gap);
+        const auto *before = panels[gap]->data;
+        const auto *after = panels[gap + 1]->data;
+        const auto previousLevels = meter.levels;
+        const auto previousClipping = meter.clipping;
+        if (!getLocalBounds().intersects(bounds) || !before || !before->available || !after ||
+            before->chain != after->chain) {
+            meter = {};
+        } else {
+            const engine::ScopeSource source{before->track, engine::ScopePoint::DeviceOutput, before->id};
+            if (meter.source != source || meter.instance != before->instance) {
+                meter = {};
+                meter.source = source;
+                meter.instance = before->instance;
+            }
+            if (!meter.lease) {
+                SharedAnalysis::Request request{source.track, source.point};
+                request.device = source.device;
+                request.outputs = SharedAnalysis::Meters;
+                request.hopSize = request.fftSize;
+                try { meter.lease = broker->acquire(request); }
+                catch (...) {}
+                meter.first = meter.lease.sourcePosition();
+            }
+            active = active || static_cast<bool>(meter.lease);
+            const auto now = root.input.ms();
+            const auto result = meter.lease.read();
+            if (result && meter.first.generation != result->generation)
+                meter.first = {result->generation, 0};
+            if (result && meter.revision != result->revision &&
+                result->firstSequence + result->request.fftSize > meter.first.written) {
+                meter.revision = result->revision;
+                meter.lastUpdate = now;
+                for (std::size_t channel = 0; channel < meter.levels.size(); ++channel) {
+                    const auto peak = result->peak[channel];
+                    const auto db = 20. * std::log10(std::max(peak, 1.e-6f));
+                    meter.levels[channel] = juce::roundToInt(bounds.getHeight() * (1. - meterDepth(db)));
+                    meter.clipping[channel] = peak >= 1.f;
+                }
+            }
+            // A stopped audio device cannot publish the silence that a running one would send.
+            constexpr auto staleMilliseconds = 250;
+            if (!result || now < meter.lastUpdate || now - meter.lastUpdate >= staleMilliseconds) {
+                meter.levels = {};
+                meter.clipping = {};
+            }
+        }
+        if (meter.levels != previousLevels || meter.clipping != previousClipping)
+            repaint(bounds);
+    }
+    if (active)
+        broker->requestFrame();
 }
 void DeviceChainStrip::resized() {
     scroll.setBounds(getLocalBounds());
@@ -2147,30 +3205,66 @@ void DeviceChainStrip::resized() {
     addTab.setBounds(x + 2, 2, 28, 22);
     content.setSize(std::max(x + (addTab.isVisible() ? 34 : 0), getWidth()), h);
 }
+const char *DeviceChainStrip::dropInstruction() const {
+    const auto *track = root.reader().findTrack(selectedTrack);
+    if (track == nullptr)
+        return "Select a Track to Add Devices";
+    if (track->kind == "master")
+        return "Drop Audio Effects on Main";
+    if (track->kind == "vca")
+        return "VCA Tracks Do Not Take Devices";
+    if (!hasAudioMixer(*track, presented.get()))
+        return panels.empty() ? "Drop a MIDI Effect, Instrument or Sample Here"
+                              : "Drop a MIDI Effect or Instrument Here";
+    return "Drop Audio Effects Here";
+}
+juce::Rectangle<int> DeviceChainStrip::dropInstructionArea() const noexcept {
+    const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
+    return {from, 0, std::max(0, getWidth() - from), getHeight()};
+}
 void DeviceChainStrip::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
-    // Between devices, Live's two dark marks; after the last, where the next one goes.
-    g.setColour(look::display);
-    for (std::size_t i = 1; i < panels.size(); ++i) {
-        const int x = panels[i]->getX() - scroll.getViewPositionX() - 8;
-        const int y = getHeight() / 2 - 12;
-        g.fillRect(x, y, 2, 24);
-        g.fillRect(x + 3, y, 2, 24);
+    // Each gap shows the two channels leaving the device on its left.
+    for (std::size_t gap = 0; gap + 1 < panels.size(); ++gap) {
+        const auto bounds = outputMeterBounds(gap);
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            const auto well = bounds.withX(bounds.getX() + static_cast<int>(channel) * 3).withWidth(2);
+            g.setColour(look::display);
+            g.fillRect(well);
+            if (gap < outputMeters_.size()) {
+                const auto &meter = outputMeters_[gap];
+                g.setColour(meter.clipping[channel] ? look::record : look::meterLevel);
+                g.fillRect(well.withTop(well.getBottom() - meter.levels[channel]));
+            }
+        }
     }
-    const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
     g.setColour(look::text);
     g.setFont(look::font(11.5f));
-    g.drawText("Drop Audio Effects Here", from, 0, std::max(0, getWidth() - from), getHeight(),
-               juce::Justification::centred);
+    g.drawText(dropInstruction(), dropInstructionArea(), juce::Justification::centred);
     // The chosen end: where a paste goes, marked as Live marks an insert point.
     if (endChosen()) {
         g.setColour(look::accent);
         g.fillRect(std::max(0, end_ - scroll.getViewPositionX() - 7), 4, 2, std::max(0, getHeight() - 8));
     }
 }
+void DeviceChainStrip::paintOverChildren(juce::Graphics &g) {
+    if (!dropPreviewX_)
+        return;
+    const auto before = dropBefore(*dropPreviewX_);
+    int insertX = end_ - 7;
+    if (before)
+        for (const auto &device : panels)
+            if (device->id == *before) {
+                insertX = device->getX() - 7;
+                break;
+            }
+    const int x = std::clamp(insertX - scroll.getViewPositionX(), 0, std::max(0, getWidth() - 2));
+    g.setColour(look::dropTarget);
+    g.fillRect(x, 4, 2, std::max(0, getHeight() - 8));
+}
 void DeviceChainStrip::fold(std::int64_t id) {
     for (auto &panel : panels)
-        if (panel->id == id && !panel->parameterPages.empty()) panel->cancelInteractions();
+        if (panel->id == id && (!panel->parameterPages.empty() || panel->configureSession_)) panel->cancelInteractions();
     auto &set = root.state().foldedDevices;
     if (!set.erase(id))
         set.insert(id);
@@ -2242,7 +3336,9 @@ bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
         if (panels[i]->id == from) {
             if (forward && i + 1 < panels.size())
                 focusIfShowing(*panels[i + 1]);
-            else if (!forward && i > 0)
+            else if (forward)
+                chooseEnd();
+            else if (i > 0)
                 focusIfShowing(*panels[i - 1]);
             return true;
         }

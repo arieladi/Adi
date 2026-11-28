@@ -665,8 +665,10 @@ void slowOwnerAndLoops() {
         Buffer buffer(Precision::Float64);
         constexpr std::int64_t origin = 11000000;
         auto frame = captured(origin);
-        (void)render(playback, buffer, frame);
+        // The brace is set before playback starts inside it: a brace set behind a playing
+        // position no longer pulls the playback back, as in Live.
         project.session.transport().loop(0, 32);
+        (void)render(playback, buffer, frame);
         bool follows = true;
         Audit audit;
         for (int callback = 1; callback <= 1024; ++callback) {

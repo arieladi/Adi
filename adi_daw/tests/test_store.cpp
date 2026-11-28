@@ -6,6 +6,8 @@
 // checkpoint — so it is asserted by counting files, not by trusting a pragma.
 
 #include "temp_directory.hpp"
+#include "scoped_environment.hpp"
+#include "adi/media/media_ops.hpp"
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
@@ -14,10 +16,15 @@
 #include "adi/ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -142,6 +149,87 @@ void testNewProjectDefaults() {
           "the snapshot fallback also follows the new-project default");
 }
 
+void testProjectUuid() {
+    section("AGT-02: create and first writable open assign a stable project identity");
+    Scratch scratch("project_uuid");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto store = Store::create(path, error);
+    const auto imported = Store::createEmpty(scratch / "import.adi", error);
+    check(store && imported, "both independent projects are created");
+    if (!store || !imported) return;
+
+    const auto storedUuid = [](Store& project) {
+        return project.db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString();
+    };
+    const auto original = storedUuid(*store);
+    const auto other = storedUuid(*imported);
+    check(!original.empty() && !other.empty() && original != other,
+          "new files carry distinct project ids, including a converter's empty store");
+    store.reset();
+
+    auto reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader) == original, "the project id is durable on read-only reopen");
+    reader.reset();
+    {
+        SQLite::Database legacy(path.string(), SQLite::OPEN_READWRITE);
+        legacy.exec("UPDATE adi_meta SET value='' WHERE key='project_uuid'");
+    }
+    reader = Store::open(path, error, true);
+    check(reader && storedUuid(*reader).empty(), "read-only open leaves a legacy project without an id");
+    reader.reset();
+
+    store = Store::open(path, error);
+    check(store && !store->upgradedFromMinor(), "the legacy file is already at the current schema");
+    if (!store) return;
+    const auto backfilled = storedUuid(*store);
+    check(!backfilled.empty() && backfilled != other && !OpJournal(*store).headSeq(),
+          "first writable open fills the id without adding an undo step");
+    store.reset();
+    store = Store::open(path, error);
+    check(store && storedUuid(*store) == backfilled, "later writable opens keep the same id");
+}
+
+void testHeadlessApplyLease() {
+    section("headless Apply requires exclusive access to the project");
+    Scratch scratch("headless_apply");
+    const auto path = scratch / "song.adi";
+    StoreError error{};
+    auto editor = Store::create(path, error);
+    check(editor != nullptr, "the editor owns a writable Store");
+    if (!editor) return;
+
+    OpRequest rename;
+    rename.opType = "project.setName";
+    rename.payload = {{"name", "Editor"}};
+    check(OpJournal(*editor).commit(rename).ok, "the editor commits a starting head");
+    const auto head = OpJournal(*editor).headSeq();
+    auto reader = Store::open(path, error, true);
+    check(reader && reader->readOnly() && OpJournal(*reader).headSeq() == head,
+          "a read-only preview can see the open editor's committed work");
+    const auto refused = Store::openForHeadlessApply(path, error);
+    check(!refused && error == StoreError::ExclusiveAccessRequired &&
+              OpJournal(*editor).headSeq() == head,
+          "headless Apply refuses the editor's shared lease and leaves its head alone");
+
+    editor.reset();
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a remaining read-only Store also holds a shared lease");
+    reader.reset();
+    auto writer = Store::openForHeadlessApply(path, error);
+    check(writer && error == StoreError::Ok && !writer->readOnly(),
+          "headless Apply opens writable once all shared leases are released");
+    if (!writer) return;
+    check(!Store::open(path, error), "a competing editor cannot open during headless Apply");
+    check(!Store::openForHeadlessApply(path, error) && error == StoreError::ExclusiveAccessRequired,
+          "a second headless writer cannot share the exclusive lease");
+    check(OpJournal(*writer).headSeq() == head, "the exclusive writer sees the same starting head");
+    writer.reset();
+    const auto reopened = Store::open(path, error);
+    check(reopened && OpJournal(*reopened).headSeq() == head,
+          "normal access resumes after the exclusive writer releases its lease");
+}
+
 // --- SPEC 3.3: the WAL sidecar rule -----------------------------------------
 
 void testWalSidecarRule() {
@@ -185,6 +273,170 @@ void testWalSidecarRule() {
         const auto name = re->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
         check(name == "WAL test", "data written before close survived the checkpoint");
     }
+}
+
+// Override an actual provider root so the same path check runs on every platform.
+class OneDriveRoot {
+public:
+    explicit OneDriveRoot(const fs::path& path) {
+#if defined(_WIN32)
+        wchar_t* previous = nullptr;
+        std::size_t size = 0;
+        if (_wdupenv_s(&previous, &size, L"OneDrive") != 0)
+            throw std::runtime_error("could not read the test sync-folder root");
+        const std::unique_ptr<wchar_t, decltype(&std::free)> value(previous, &std::free);
+        if (value) old_ = value.get();
+        if (_wputenv_s(L"OneDrive", path.c_str()) != 0)
+#else
+        if (const auto* previous = std::getenv("OneDrive")) old_ = previous;
+        if (setenv("OneDrive", path.c_str(), 1) != 0)
+#endif
+            throw std::runtime_error("could not set the test sync-folder root");
+    }
+    ~OneDriveRoot() {
+#if defined(_WIN32)
+        (void)_wputenv_s(L"OneDrive", old_ ? old_->c_str() : L"");
+#else
+        if (old_) (void)setenv("OneDrive", old_->c_str(), 1);
+        else (void)unsetenv("OneDrive");
+#endif
+    }
+private:
+    std::optional<fs::path> old_;
+};
+
+void testSyncedProjectCopies() {
+    section("SC-159 copied main file includes live committed edits");
+    Scratch s("synced");
+    const auto syncRoot = s.dir / fs::path(u8"Synced caf\u00e9");
+    const auto folder = syncRoot / "Songs";
+    fs::create_directories(folder);
+    adi::test::ScopedOneDrive oneDrive(syncRoot);
+
+    StoreError err{};
+    const auto path = folder / "Song.adi";
+    auto store = Store::create(path, err);
+    check(store != nullptr && err == StoreError::Ok, "create a project inside the sync root");
+    if (!store) return;
+
+    OpRequest edit;
+    edit.opType = "project.setName";
+    edit.payload = {{"name", "Latest committed name"}};
+    check(OpJournal(*store).commit(edit).ok, "commit a project edit");
+    const auto published = s / "Copied.adi";
+    fs::copy_file(path, published);
+    auto copy = Store::open(published, err, true);
+    check(copy && err == StoreError::Ok &&
+              copy->db().execAndGet("SELECT coalesce((SELECT name FROM project WHERE id=1), '')").getString() ==
+                  "Latest committed name",
+          "copying just the main file while the original is still open includes the edit");
+
+    const auto legacyPath = folder / "Legacy.adi";
+    auto established = Store::create(legacyPath, err);
+    const bool closed = established && established->close();
+    check(closed, "prepare a closed input from an older version");
+    if (!closed) return;
+    {
+        SQLite::Database legacy(media::pathUtf8(legacyPath), SQLite::OPEN_READWRITE);
+        // Simulate a process that left a committed WAL behind without its
+        // usual checkpoint on close. This leaves the main file at Untitled.
+        check(legacy.execAndGet("PRAGMA journal_mode=WAL").getString() == "wal",
+              "the old writer uses WAL");
+        const auto configured = sqlite3_db_config(legacy.getHandle(),
+            SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, static_cast<int*>(nullptr));
+        check(configured == SQLITE_OK, "keep the WAL on connection close");
+        if (configured != SQLITE_OK) return;
+        legacy.exec("UPDATE project SET name='Committed in legacy WAL' WHERE id=1");
+    }
+    auto wal = legacyPath;
+    wal += "-wal";
+    check(fs::exists(wal) && fs::file_size(wal) > 32, "committed changes remain in the old WAL");
+
+    auto legacy = Store::open(legacyPath, err);
+    check(legacy != nullptr && err == StoreError::Ok, "open the synced project from an older version");
+    if (!legacy) return;
+    check(!fs::exists(wal), "the recovered project does not keep a live WAL sidecar");
+    const auto recovered = s / "Recovered.adi";
+    fs::copy_file(legacyPath, recovered);
+    copy = Store::open(recovered, err, true);
+    check(copy && err == StoreError::Ok &&
+              copy->db().execAndGet("SELECT name FROM project WHERE id=1").getString() ==
+                  "Committed in legacy WAL",
+          "the live main file includes changes recovered from the old WAL");
+}
+
+void testSynchronizedProject() {
+    section("SC-159 every committed edit is in the synchronized project file");
+    Scratch scratch("sync");
+    const auto root = scratch / "configured sync root";
+    const auto local = scratch / "configured sync root-other";
+    fs::create_directories(root / "Documents");
+    fs::create_directories(local);
+    const OneDriveRoot syncRoot(root);
+    StoreError error{};
+    const auto path = root / "Documents" / "Song.adi";
+    auto store = Store::create(path, error);
+    check(store != nullptr, "create under a configured synchronized root");
+    if (!store) return;
+
+    const auto verifyCopy = [&](const char* name, const char* copyName) {
+        check(siblings(path) == std::vector<std::string>{"Song.adi"},
+              "the live committed project has no journal sidecars");
+        const auto copyPath = local / copyName;
+        fs::copy_file(path, copyPath);
+        auto copy = Store::open(copyPath, error, true);
+        check(copy && copy->db().execAndGet("PRAGMA quick_check").getString() == "ok" &&
+              copy->db().execAndGet("SELECT COALESCE((SELECT name FROM project WHERE id=1),'')").getString() == name &&
+              OpJournal(*copy).count() == OpJournal(*store).count() &&
+              OpJournal(*copy).headSeq() == OpJournal(*store).headSeq(),
+              "copying only the .adi from the live project retains its state and journal");
+    };
+    const auto rename = [&](const char* name) {
+        OpRequest request;
+        request.opType = "project.setName";
+        request.payload = {{"name", name}};
+        return OpJournal(*store).commit(request).ok;
+    };
+    check(store->synchronizedLocation() &&
+          store->db().execAndGet("PRAGMA journal_mode").getString() == "delete" &&
+          store->db().execAndGet("PRAGMA synchronous").getInt() == 3,
+          "synced project uses rollback journaling and EXTRA synchronisation");
+    check(rename("First committed edit") && rename("Second committed edit"), "commit two normal edits");
+    verifyCopy("Second committed edit", "Commit.adi");
+    check(History(*store).undo().ok, "undo the latest edit on the open project");
+    verifyCopy("First committed edit", "Undo.adi");
+    check(store->close(), "close the synchronized project");
+    store = Store::open(path, error);
+    check(store && store->db().execAndGet("PRAGMA journal_mode").getString() == "delete",
+          "opening the existing project also chooses rollback journaling");
+    if (!store) return;
+    check(store->saveAs(local / "Local.adi").ok && !store->synchronizedLocation() &&
+          store->db().execAndGet("PRAGMA journal_mode").getString() == "wal" &&
+          store->db().execAndGet("PRAGMA synchronous").getInt() == 1,
+          "Save As to a similarly named local sibling restores local WAL");
+    check(store->saveAs(root / "Cloud.adi").ok && store->synchronizedLocation() &&
+          store->db().execAndGet("PRAGMA journal_mode").getString() == "delete",
+          "Save As back under the synchronized root restores rollback journaling");
+
+    // A project moved with its live WAL should retain the work already in it.
+    const auto original = local / "Legacy.adi";
+    auto legacy = Store::create(original, error);
+    check(legacy != nullptr, "create a local WAL project to recover in a synced folder");
+    if (!legacy) return;
+    legacy->db().exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    legacy->db().exec("PRAGMA wal_autocheckpoint=0");
+    OpRequest change;
+    change.opType = "project.setName";
+    change.payload = {{"name", "In the previous WAL"}};
+    check(OpJournal(*legacy).commit(change).ok, "write an edit to the old WAL");
+    const auto moved = root / "Legacy.adi";
+    fs::copy_file(original, moved);
+    fs::copy_file(local / "Legacy.adi-wal", root / "Legacy.adi-wal");
+    auto recovered = Store::open(moved, error);
+    check(recovered && recovered->db().execAndGet("PRAGMA journal_mode").getString() == "delete" &&
+          recovered->db().execAndGet("SELECT name FROM project WHERE id=1").getString() == "In the previous WAL" &&
+          !fs::exists(root / "Legacy.adi-wal") && !fs::exists(root / "Legacy.adi-shm"),
+          "opening in a synchronized folder recovers the existing WAL before returning to one file");
 }
 
 // --- SPEC 2 and 11: identity and version gates -------------------------------
@@ -411,7 +663,11 @@ int main() {
     std::printf("adi_store_tests -- SPEC 2, 3, 11 and ADR-0009\n\n");
     testCreateAndOpen();
     testNewProjectDefaults();
+    testProjectUuid();
+    testHeadlessApplyLease();
     testWalSidecarRule();
+    testSyncedProjectCopies();
+    testSynchronizedProject();
     testIdentityAndVersionGates();
     testBlobRoundTrip();
     testSchemaMatchesFile();

@@ -34,24 +34,30 @@ namespace {
 std::atomic<unsigned> g_allocations{0};
 }
 // Every allocation made on an audio thread is counted: the callback must make none.
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     if (audio::onAudioThread) ++g_allocations;
     if (void* p = std::malloc(n ? n : 1)) return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n) { return operator new(n); }
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n) { return operator new(n); }
+ADI_TEST_NOINLINE void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
     try { return operator new(n); } catch (...) { return nullptr; }
 }
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
     try { return operator new[](n); } catch (...) { return nullptr; }
 }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 
@@ -361,17 +367,26 @@ struct Recorder final : device::DeviceInstance {
     };
     device::DeviceIdentity id;
     std::vector<Seen> seen;   // reserved before any render
+    std::vector<device::ParamDescriptor> declared;
     std::int64_t clock = 0;
+    double gain = 1.0;
+    int calls = 0;
     const device::DeviceIdentity& identity() const noexcept override { return id; }
     bool loaded() const noexcept override { return true; }
+    std::int32_t paramCount() const noexcept override { return static_cast<std::int32_t>(declared.size()); }
+    const device::ParamDescriptor* paramAt(std::int32_t index) const noexcept override {
+        return index >= 0 && static_cast<std::size_t>(index) < declared.size() ? &declared[static_cast<std::size_t>(index)] : nullptr;
+    }
     void process(const NodeIo& io) noexcept override {
+        ++calls;
         for (const Event& e : io.events)
             if (e.type == EventType::ParamValue && seen.size() < seen.capacity())
                 seen.push_back({clock + e.frame, e.frame, io.blockOffset, e.paramId, e.value});
         for (std::int32_t c = 0; c < io.channels; ++c) {
             float* out = io.out[c] + io.blockOffset;
             const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
-            for (std::int32_t i = 0; i < io.frames; ++i) out[i] = in ? in[i] : 0.0f;
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                out[i] = in ? in[i] * static_cast<float>(gain) : 0.0f;
         }
     }
 };
@@ -381,6 +396,7 @@ struct Project {
     std::unique_ptr<Store> store;
     Session session;
     Recorder* rec = nullptr;
+    std::vector<device::ParamDescriptor> declared;
     std::int64_t clock = 0;
     double rate;
     std::int32_t block;
@@ -415,6 +431,7 @@ struct Project {
             [this](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
                 auto r = std::make_unique<Recorder>();
                 r->seen.reserve(200000);
+                r->declared = declared;
                 rec = r.get();
                 return r;
             },
@@ -425,7 +442,7 @@ struct Project {
     void refresh() {
         if (!session.refresh(*store)) throw std::runtime_error(session.error());
     }
-    void render(std::int32_t frames) {
+    float render(std::int32_t frames) {
         std::vector<float> l(static_cast<std::size_t>(frames)), r(static_cast<std::size_t>(frames));
         float* out[2] = {l.data(), r.data()};
         AudioIo io;
@@ -435,6 +452,7 @@ struct Project {
         if (rec) rec->clock = clock;
         session.process(io);
         clock += frames;
+        return l.empty() ? 0.0f : l.back();
     }
     void play(std::int64_t frames) {
         for (std::int64_t done = 0; done < frames; done += block) render(block);
@@ -482,6 +500,129 @@ void testThroughTheGraph() {
     }
     check(g_allocations.load() == 0, "no callback in any of those twenty sessions allocated");
     check(audio::callbackFileIo.load() == 0, "and none touched a file");
+}
+
+void testLegacySteppedDeviceLanes() {
+    section("SC-352 -- existing linear streams follow exact resolved switch and menu descriptors");
+    Project p("legacy_stepped", 48000.0, 512);
+    device::ParamDescriptor toggle, menu, unknownCount;
+    toggle.id = "7";
+    toggle.shape = device::ParamShape::Switch;
+    toggle.automatable = true;
+    menu.id = "9";
+    menu.shape = device::ParamShape::Menu;
+    menu.stepCount = 5;
+    menu.automatable = true;
+    unknownCount.id = "11";
+    unknownCount.shape = device::ParamShape::Menu;
+    unknownCount.automatable = true;
+    p.declared = {toggle, menu, unknownCount};
+    p.lane(1, {{0, .2}, {100, .8}, {250, .2}}, "007");
+    p.lane(2, {{0, .24}, {80, .61}, {245, .81}}, "9");
+    p.lane(3, {{0, .29}, {170, .68}}, "11");
+    p.lane(4, {{0, .1}, {480, .9}}, "85");
+    const auto bytes = p.store->getAutomationData(1, {});
+    g_allocations = 0;
+    p.load();
+    p.play(512);
+
+    const auto sent = [&](std::uint32_t id) {
+        std::vector<std::pair<std::int64_t, double>> events;
+        for (const auto& event : p.rec->seen)
+            if (event.paramId == id)
+                events.emplace_back(event.sample, event.value);
+        return events;
+    };
+    check(sent(7) == std::vector<std::pair<std::int64_t, double>>{{0, 0}, {100, 1}, {250, 0}},
+          "the switch holds between authored points and quantizes to 0 or 1");
+    check(sent(9) == std::vector<std::pair<std::int64_t, double>>{{0, .25}, {80, .5}, {245, .75}},
+          "the menu holds and quantizes to its five normalized positions");
+    check(sent(11) == std::vector<std::pair<std::int64_t, double>>{{0, .29}, {170, .68}},
+          "the declared menu of unknown count holds its original normalized values");
+    const auto unresolved = sent(85);
+    check(unresolved.size() > 2 && unresolved[1].second > .1 && unresolved[1].second < .9,
+          "an unresolved parameter keeps the legacy continuous path");
+    check(bytes && p.store->getAutomationData(1, {}) == bytes &&
+              StreamReader<AutomationPoint>(*bytes, FourCC::Automation).at(0)->curve == 1,
+          "rebuild and playback leave the original linear AAUT bytes untouched");
+    check(g_allocations.load() == 0, "stepped playback allocates nothing during a callback");
+}
+
+void testDeviceActivator() {
+    section("SC-353 -- host Activator switches output and chases the plug-in without writing its row");
+    struct Tone final : Node {
+        void process(const NodeIo& io) noexcept override {
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.25f);
+        }
+    } tone;
+    Project p("device-activator", 48000.0, 64);
+    p.session.setSourcesFor([&](std::int64_t track) {
+        return track == 1 ? std::vector<Node*>{&tone} : std::vector<Node*>{};
+    });
+    p.store->db().exec("UPDATE devices SET enabled = 0 WHERE id = 1");
+    p.lane(1, {{0, 1.0}, {100, 0.0}, {290, 1.0}}, "enabled", "enum");
+    p.lane(2, {{0, 0.2}, {240, 0.75}, {1000, 0.75}});
+    p.load();
+    p.rec->gain = 2.0;
+    g_allocations = 0;
+    const auto wet = p.render(64);
+    std::array<float, 64> left{}, right{};
+    float* out[] = {left.data(), right.data()};
+    AudioIo io;
+    io.out = out;
+    io.numOut = 2;
+    io.frames = 48;
+    p.rec->clock = p.clock;
+    bool rendered = false;
+    {
+        auto block = p.session.beginRender();
+        const bool first = block.process(io);
+        out[0] += 48;
+        out[1] += 48;
+        io.frames = 16;
+        rendered = block.process(io) && first;
+    }
+    p.clock += 64;
+    check(rendered && p.session.deviceActivatorAvailable(1) &&
+          p.session.deviceActivatorPlaying(1) == true && wet == 0.5f &&
+          std::all_of(left.begin(), left.end(), [wet](float value) { return value == wet; }),
+          "On runs an otherwise disabled audio effect across both slices of the physical block");
+
+    const auto calls = p.rec->calls;
+    const auto previousEvents = p.rec->seen.size();
+    const auto dry = p.render(64);
+    p.render(64);
+    p.render(64);
+    check(p.session.deviceActivatorPlaying(1) == false && dry == 0.25f &&
+          p.rec->calls == calls && p.rec->seen.size() == previousEvents,
+          "Off passes dry audio and stops device DSP and parameter delivery");
+
+    check(p.render(64) == wet && p.session.deviceActivatorPlaying(1) == true &&
+          p.rec->seen.size() > previousEvents && p.rec->seen[previousEvents].frame == 0 &&
+          p.rec->seen[previousEvents].paramId == 7 && p.rec->seen[previousEvents].value == 0.75,
+          "the first On block chases the parameter change that occurred while Off");
+    SQLite::Statement saved(p.store->db(), "SELECT enabled FROM devices WHERE id = 1");
+    check(p.session.devices().nodeAt(0).bypassed() &&
+          p.session.model().devices.front().enabled == false &&
+          saved.executeStep() && saved.getColumn(0).getInt() == 0,
+          "playback leaves manual device state intact");
+
+    check(p.session.overrideDeviceActivator(1) && p.session.overriddenLanes().contains(1) &&
+          p.render(64) == dry && !p.session.deviceActivatorPlaying(1),
+          "manual override restores the saved switch state");
+    check(p.session.reenableAutomation(1) && p.render(64) == wet,
+          "Re-Enable chases the authored state");
+    check(g_allocations.load() == 0, "Activator playback and parameter chase allocate nothing in a callback");
+
+    Project instrument("instrument-activator", 48000.0, 64);
+    instrument.store->db().exec("UPDATE plugin_refs SET subtype = 'instrument' WHERE id = 1");
+    instrument.lane(1, {{0, 0.0}}, "enabled", "enum");
+    instrument.load();
+    instrument.render(64);
+    check(!instrument.session.deviceActivatorAvailable(1) && !instrument.session.deviceActivatorPlaying(1) &&
+          instrument.mentions("Device Activator is available for loaded audio effects"),
+          "an instrument Activator is retained and reports its unsupported playback");
 }
 
 void testOverrideAndReenable() {
@@ -615,6 +756,8 @@ int main() {
         testDeterministic();
         testBinding();
         testThroughTheGraph();
+        testLegacySteppedDeviceLanes();
+        testDeviceActivator();
         testOverrideAndReenable();
         testNamedAndPlaceholders();
         testRepublishedUnderTheCallback();

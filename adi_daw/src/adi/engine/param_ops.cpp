@@ -3,6 +3,8 @@
 // See param_ops.hpp. ADR-0124; the chunk snapshot is ADR-0142.
 
 #include "adi/engine/param_ops.hpp"
+#include "adi/applied_batches_detail.hpp"
+#include "adi/audio/io_audit.hpp"
 
 #include "adi/engine/session.hpp"
 #include "adi/engine/session_runtime.hpp"
@@ -133,7 +135,9 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
     std::size_t drain(std::int64_t, std::vector<OpRequest>&);
     std::size_t snapshot(std::int64_t, std::int64_t, std::vector<OpRequest>&);
-    SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    SnapshotAllResult snapshotAll(std::int64_t nowMs, SnapshotGestures, SnapshotPolicy,
+                                  std::optional<std::int64_t> onlyDevice = {});
+    std::optional<DevicePresetState> readDevicePresetState(std::int64_t, std::string&);
     std::vector<StateBlob> takeBlobs();
     bool writeBlobs(Store&, std::string&);
     bool applied(const Payload&, std::int64_t);
@@ -142,6 +146,9 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const ParamEditCapture::Stats* uiCaptureStats(std::int64_t) const noexcept;
     bool isAttached(std::int64_t) const noexcept;
     std::int32_t lastTouched(std::int64_t) const noexcept;
+    std::uint64_t lastTouchSequence(std::int64_t) const noexcept;
+    std::span<const ParameterTouch> recentTouches(std::int64_t) const noexcept;
+    const ParamEditCapture* touchCapture(std::int64_t) const noexcept;
     void frontendEnded() noexcept;
     void pump(std::int64_t nowMs) override;
     bool releasable() const noexcept override;
@@ -149,15 +156,19 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     struct Attached;
     struct Gesture;
     bool presentationReady(const AppliedSource&,std::uint64_t) const noexcept override;
-    bool capturePending(std::int64_t);
+    bool capturePending(std::int64_t, bool finishOpen = false);
     void advanceGestures(std::int64_t);
     std::size_t offerOne(std::vector<OpRequest>&);
     std::shared_ptr<Gesture> beginGesture(std::int64_t,const std::string&,ParameterImage,bool,bool unchanged=false,
                                           const std::string& pairedParameter={});
-    bool readImage(Attached&,ParameterImage&);
+    enum class ImagePurpose { Snapshot, Preset };
+    bool readImage(Attached&,ParameterImage&,ImagePurpose = ImagePurpose::Snapshot);
+    gesture::Status readSnapshotImage(Attached&, ParameterImage&);
+    void markSnapshotStale(std::int64_t);
     std::vector<PendingParameterGesture> pendingGestures() const;
     gesture::CommitOutcome commitPending(const gesture::OwnerToken&,std::int64_t,bool);
     gesture::CancelOutcome cancelPending(const gesture::OwnerToken&,std::int64_t,bool);
+    void setNativeAutomation(NativeAutomation callback) {nativeAutomation_=std::move(callback);}
     gesture::DrainOutcome pumpGestures(std::int64_t);
     std::shared_ptr<Gesture> findGesture(const gesture::OwnerToken&) const;
     bool frontendGone_ = false;
@@ -171,6 +182,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     std::int64_t ownerNow_=0;
     bool pumpingGestures_=false;
     bool snapshottingDevices_ = false;
+    std::vector<std::int64_t>* staleSnapshotDevices_ = nullptr;
     /// One state stream of a device, as the glue last saw it.
     struct Role {
         std::string hash;                    ///< of the chunk the plugin last reported
@@ -235,6 +247,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     static void fillRequest(OpRequest& r, std::int64_t deviceId, const std::string& name,
                             const device::ParamDescriptor& d, double norm);
 
+    NativeAutomation nativeAutomation_;
     std::map<std::int64_t, Attached> devices_;
     std::set<std::pair<std::int64_t, std::int32_t>> touched_;   ///< decision 4
     std::vector<ParamEdit> scratch_;
@@ -394,6 +407,7 @@ struct ParamOps::Runtime::Replay {
             std::size_t firstOperation = 0;
             bool hasState = false;
             bool retainsInstance = false;
+            bool storedOnly = false;
         };
         std::shared_ptr<const AppliedBatch> batch;
         std::map<std::int64_t,Target> targets;
@@ -468,6 +482,8 @@ struct ParamOps::Runtime::Replay {
             if (found != owner.devices_.end() && found->second.active && found->second.session == session &&
                 !found->second.sessionLife.expired()) {
                 delivery.anchor = found->second.inst;
+            } else if (entry && entry->placeholder && delivery.retainsInstance) {
+                delivery.storedOnly = true;
             }
         }
         const auto operations = receipt.batch->operations();
@@ -531,6 +547,7 @@ struct ParamOps::Runtime::Gesture {
         const auto current=session->state();
         return current==gesture::State::Committed || current==gesture::State::Cancelled || current==gesture::State::SourceLost;
     }
+    bool nativeAutomation=false;
 };
 
 struct ParamOps::Runtime::DevicePresentation final : gesture::Presentation {
@@ -878,9 +895,29 @@ bool ParamOps::Runtime::isAttached(std::int64_t deviceId) const noexcept {
         (it->second.session==nullptr || !it->second.sessionLife.expired());
 }
 
-std::int32_t ParamOps::Runtime::lastTouched(std::int64_t deviceId) const noexcept {
+const ParamEditCapture* ParamOps::Runtime::touchCapture(std::int64_t deviceId) const noexcept {
     const auto it = devices_.find(deviceId);
-    return it == devices_.end() || !isAttached(deviceId) ? -1 : it->second.capture->lastTouched();
+    if (it == devices_.end() || !it->second.active || !it->second.inst) return nullptr;
+    const auto& attached = it->second;
+    if (attached.session &&
+        (attached.sessionLife.expired() || replay_->blocked || !attached.fenceSource.alive() ||
+         !attached.fenceSource.sameConnection(attached.session->appliedNotifications()) ||
+         attached.session->resolveDevice(attached.runtimeToken) != attached.inst)) return nullptr;
+    return attached.capture.get();
+}
+
+std::int32_t ParamOps::Runtime::lastTouched(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->lastTouched() : -1;
+}
+
+std::uint64_t ParamOps::Runtime::lastTouchSequence(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->lastTouchSequence() : 0;
+}
+std::span<const ParameterTouch> ParamOps::Runtime::recentTouches(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->recentTouches() : std::span<const ParameterTouch>{};
 }
 
 const ParamEditCapture::Stats* ParamOps::Runtime::captureStats(std::int64_t deviceId) const noexcept {
@@ -923,6 +960,7 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
     // one usable slot suffices. The plug-in never receives its address.
     a.uiCapture = std::make_unique<ParamEditCapture>(1);
     a.uiExplicit.clear(); a.uiPending.clear();
+    a.capture->clearLastTouch();
     std::erase_if(touched_,[&](const auto& key) { return key.first == deviceId; });
     a.inst = &inst;
     a.session = session;
@@ -953,13 +991,14 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
     // signal arrives after the plugin already changed.
     a.seenEpoch = inst.stateEpoch();
     a.roles.clear();
-    for (const std::string& role : inst.stateRoles()) {
-        std::vector<std::uint8_t> bytes = inst.saveState(role);
-        Role r;
-        r.recorded = rec != nullptr && rec->stateRoles.count(role) != 0;
-        if (!bytes.empty()) r.hash = hashOf(bytes);
-        if (!r.recorded) r.baseline = std::move(bytes);
-        a.roles.emplace(role, std::move(r));
+    if (!session) {
+        for (const auto& role : inst.stateRoles()) {
+            auto bytes = inst.saveState(role);
+            Role captured;
+            if (!bytes.empty()) captured.hash = hashOf(bytes);
+            captured.baseline = std::move(bytes);
+            a.roles.emplace(role, std::move(captured));
+        }
     }
 
     if(session) {
@@ -976,8 +1015,28 @@ bool ParamOps::Runtime::attachImpl(std::int64_t deviceId, device::DeviceInstance
         a.capture->retainFence(a.parameterFence);
         a.runtimeToken=session->deviceRuntimeToken(deviceId);
         a.committed.deviceId=deviceId;a.committed.token=a.runtimeToken;
-        if(!readImage(a,a.committed)) {
-            a.active=false;replay_->invalidate("initial device image is incomplete");return false;
+        if (!readSnapshotImage(a, a.committed).ok()) {
+            // A plug-in may start without being able to read its state. Seed
+            // this one from the Store so it cannot block the other devices.
+            try {
+                const auto* store = adi::detail::appliedSourceStore(a.fenceSource);
+                if (!store) throw std::runtime_error("plug-in state source is unavailable");
+                a.committed = committedImage(*store, a.committed);
+            } catch (const std::exception& error) {
+                a.active = false;
+                replay_->invalidate(error.what());
+                return false;
+            }
+        }
+        for (const auto& [role, bytes] : a.committed.roles) {
+            Role capture;
+            capture.recorded = rec && rec->stateRoles.contains(role);
+            capture.hash = bytesHash(bytes);
+            if (!capture.recorded && !bytes.empty()) {
+                capture.baseline.resize(bytes.size());
+                std::memcpy(capture.baseline.data(), bytes.data(), bytes.size());
+            }
+            a.roles.emplace(role, std::move(capture));
         }
         auto binding=std::make_shared<device::DeviceCaptureBinding>();
         binding->deviceId=deviceId;binding->parameters=a.capture;
@@ -1046,6 +1105,19 @@ std::size_t ParamOps::Runtime::attachSession(Session& s) {
             if (pp.deviceId == e.deviceId) rec.paramIds.insert(pp.paramId);
         if (attachImpl(e.deviceId, *inst, &rec, &s)) ++added;
     }
+    // A new placeholder is only available after the Session realises a commit.
+    // Record that exact stored-only delivery before subsequent edits advance
+    // the Session. It will never refer to a live instance in another commit.
+    for (auto& receipt : replay_->pending) {
+        if (receipt.batch->sequence() != s.realisedAppliedSequence()) continue;
+        for (const auto& target : receipt.batch->deviceTargets()) {
+            auto& delivery = receipt.targets.at(target.deviceId);
+            const auto* entry = s.entryFor(target.deviceId);
+            if (!delivery.anchor && entry && !entry->retired && entry->placeholder &&
+                Replay::matchesReference(entry, target))
+                delivery.storedOnly = true;
+        }
+    }
     return added;
 }
 
@@ -1078,23 +1150,27 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
             auto& receipt=replay.pending.front();const auto& batch=*receipt.batch;
             replay.status={};replay.status.state=AppliedDeliveryState::Pending;
             replay.status.pendingBatchCount=replay.pending.size();replay.status.batchSerial=batch.sequence();
-            enum class Target { Ready, Retired, Await, Invalid };
+            enum class Target { Ready, Stored, Retired, Await, Invalid };
             auto target=[&](std::int64_t id)->Target {
                 const auto facts=std::find_if(batch.deviceTargets().begin(),batch.deviceTargets().end(),
                     [id](const auto& item){return item.deviceId==id;});
                 if(facts==batch.deviceTargets().end())throw std::runtime_error("applied parameter batch has no target identity");
                 if(!facts->device)return Target::Retired;
                 auto& delivery = receipt.targets.at(id);
+                if(delivery.storedOnly)return Target::Stored;
                 auto attached=devices_.find(id);
                 const bool active=attached!=devices_.end() && attached->second.active &&
                     attached->second.session==replay.session && !attached->second.sessionLife.expired() && attached->second.inst;
+                const auto* entry=replay.session->entryFor(id);
+                const bool placeholder=entry && !entry->retired && entry->placeholder;
                 if(delivery.anchor) {
-                    const auto* entry=replay.session->entryFor(id);
                     if(!entry || entry->retired)
                         return replay.session->realisedAppliedSequence()<batch.sequence()?Target::Await:Target::Retired;
                     if(replay.session->instanceFor(id)!=delivery.anchor)return Target::Invalid;
-                    if(!active)return Target::Await;
-                    if(attached->second.inst!=delivery.anchor)return Target::Invalid;
+                    if(!placeholder) {
+                        if(!active)return Target::Await;
+                        if(attached->second.inst!=delivery.anchor)return Target::Invalid;
+                    }
                 } else {
                     const auto realised=replay.session->realisedAppliedSequence();
                     if(realised<batch.sequence())return Target::Await;
@@ -1102,7 +1178,7 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     // not evidence of the same instance. Only this exact
                     // realised batch may establish an initially absent anchor.
                     if(realised!=batch.sequence())return Target::Invalid;
-                    if(!active || replay.session->instanceFor(id)!=attached->second.inst)
+                    if(!placeholder && (!active || replay.session->instanceFor(id)!=attached->second.inst))
                         return Target::Await;
                 }
                 const auto row=std::find_if(replay.session->model().devices.begin(),replay.session->model().devices.end(),
@@ -1110,7 +1186,6 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(row==replay.session->model().devices.end())return Target::Retired;
                 const auto expected = Replay::pluginReference(*facts);
                 if(row->pluginRefId!=expected)return Target::Invalid;
-                const auto* entry=replay.session->entryFor(id);
                 if (!Replay::matchesReference(entry, *facts)) return Target::Invalid;
                 if(facts->pluginRef && expected) {
                     // `template` here: MSVC 14.52 (the CI runner's image since
@@ -1123,12 +1198,16 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
                        ref->uid!=expectedUid)return Target::Invalid;
                 }
+                // Placeholder state is already durable in the Store. With no
+                // runtime to notify, it must never hold the delivery queue.
+                if(placeholder)return Target::Stored;
                 delivery.anchor = attached->second.inst;
                 return Target::Ready;
             };
             auto admit=[&](std::int64_t id)->std::optional<bool> {
                 switch(target(id)) {
                     case Target::Ready:return true;
+                    case Target::Stored:
                     case Target::Retired:return false;
                     case Target::Await:stop(AppliedDeliveryState::AwaitingAttachment,"waiting for committed device "+std::to_string(id)+" to attach");return {};
                     case Target::Invalid:
@@ -1656,7 +1735,8 @@ std::size_t ParamOps::Runtime::snapshot(std::int64_t deviceId, std::int64_t nowM
     return appended;
 }
 
-ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
+ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, SnapshotGestures gestures,
+                                                          SnapshotPolicy policy, std::optional<std::int64_t> onlyDevice) {
     SnapshotAllResult result;
     const auto refuse = [&](gesture::Status status, std::optional<std::int64_t> id = {}) {
         result.status = std::move(status);
@@ -1665,15 +1745,33 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
     };
     if (snapshottingDevices_ || pumpingGestures_)
         return refuse({gesture::Error::Reentrant, "device state snapshot is already active"});
-    struct Reset { bool& flag; ~Reset() { flag = false; } };
+    struct Reset {
+        bool& flag;
+        std::vector<std::int64_t>*& stale;
+        ~Reset() { flag = false; stale = nullptr; }
+    };
     snapshottingDevices_ = true;
-    const Reset reset{snapshottingDevices_};
+    const Reset reset{snapshottingDevices_, staleSnapshotDevices_};
+    const bool bestEffort = policy == SnapshotPolicy::UseStoredOnCaptureFailure;
+    if (bestEffort) staleSnapshotDevices_ = &result.staleDevices;
     discardExpiredSessions();
     if (!coordinator_ || !replay_->session || !replay_->source.alive())
         return refuse({gesture::Error::SourceLost, "device state snapshot needs an attached Session"});
 
     std::optional<std::int64_t> device;
     try {
+        const bool finishOpen = gestures == SnapshotGestures::FinishOpen;
+        if (finishOpen) {
+            if (!capturePending(nowMs, true))
+                return refuse({gesture::Error::Busy, "device input capture is pending"});
+            for (const auto& task : gestures_) {
+                if (task->state || task->complete || task->terminal() || task->cancelRequested ||
+                    task->nativeAutomation) continue;
+                task->complete = true;
+                if (task->pairedParameter.empty())
+                    openGestures_.erase({task->deviceId, task->parameter});
+            }
+        }
         const auto pumped = pumpGestures(nowMs);
         if (!pumped.status.ok())
             return refuse(pumped.status);
@@ -1682,9 +1780,10 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
                 if (!task->status.ok()) return task->status;
                 return gesture::Status{gesture::Error::Busy, "device state capture is not ready to commit"};
             }
-            if (task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused)
+            const bool refused = task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused;
+            if (refused && !finishOpen)
                 return gesture::Status{gesture::Error::CommitRefused, task->transaction->lastRefusal()};
-            const auto saved = commitPending(*task->owner, nowMs, false);
+            const auto saved = commitPending(*task->owner, nowMs, refused);
             if (!saved.status.ok()) return saved.status;
             if (!saved.durable || !saved.durable->ok)
                 return gesture::Status{gesture::Error::CommitRefused, "device state capture did not commit"};
@@ -1700,7 +1799,7 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
         // An open gesture retains its own origin and must finish first.
         const auto pending = gestures_;
         for (const auto& task : pending) {
-            if (!task->terminal() && (!task->complete || task->cancelRequested))
+            if (!task->terminal() && (!task->complete || task->cancelRequested || task->nativeAutomation))
                 return refuse({gesture::Error::Busy, "finish the open device edit before saving state"},
                               task->deviceId);
         }
@@ -1714,8 +1813,11 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
         auto& session = *replay_->session;
         for (std::size_t i = 0; i < session.entryCount(); ++i) {
             const auto& entry = session.entryAt(i);
-            if (entry.placeholder || entry.retired) continue;
+            if (entry.placeholder || entry.parked || entry.retired ||
+                (onlyDevice && entry.deviceId != *onlyDevice)) continue;
             const auto id = entry.deviceId;
+            if (std::find(result.staleDevices.begin(), result.staleDevices.end(), id) != result.staleDevices.end())
+                continue; // A failed signalled read already left this device's state stale.
             device = id;
             const auto found = devices_.find(id);
             auto* instance = session.instanceFor(id);
@@ -1734,8 +1836,11 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
                 marks.reserved != marks.consumed || inputPending())
                 return refuse({gesture::Error::Busy, "device input is pending before state capture"}, id);
             ParameterImage image;
-            if (!readImage(attached, image))
-                return refuse({gesture::Error::CaptureFailed, "device returned an incomplete state image"}, id);
+            if (auto status = readSnapshotImage(attached, image); !status.ok()) {
+                if (!bestEffort) return refuse(std::move(status), id);
+                markSnapshotStale(id);
+                continue;
+            }
             const auto after = attached.stateFence->watermarks();
             if (instance->stateEpoch() != epoch || after.reserved != marks.reserved ||
                 after.fault || after.closed || inputPending())
@@ -1753,6 +1858,72 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
         return result;
     } catch (const std::exception& error) {
         return refuse(captureFailure(error), device);
+    }
+}
+
+std::optional<ParamOps::DevicePresetState> ParamOps::Runtime::readDevicePresetState(std::int64_t id, std::string& error) {
+    error.clear();
+    const auto refuse = [&](const char* reason) -> std::optional<DevicePresetState> {
+        error = reason;
+        return std::nullopt;
+    };
+    if (audio::onAudioThread || snapshottingDevices_ || pumpingGestures_)
+        return refuse("Device preset capture needs an idle document owner.");
+    struct Reset { bool& flag; ~Reset() { flag = false; } };
+    snapshottingDevices_ = true;
+    const Reset reset{snapshottingDevices_};
+    try {
+        auto* session = replay_->session;
+        const auto source = replay_->source;
+        const auto sequence = source.sequence();
+        // Do not pump or commit queued device edits on behalf of a file save.
+        if (!session || replay_->life.expired() || !source.alive() || replay_->blocked ||
+            replay_->sequence != sequence || !replay_->pending.empty())
+            return refuse("Device updates are pending before preset capture.");
+        const auto found = devices_.find(id);
+        if (found == devices_.end())
+            return refuse("The device is not available for preset capture.");
+        auto& attached = found->second;
+        const auto token = attached.runtimeToken;
+        auto* instance = attached.inst;
+        const auto fence = attached.stateFence;
+        const auto capture = attached.capture;
+        if (!instance || !attached.active || attached.session != session || attached.sessionLife.expired() ||
+            !fence || !attached.fenceSource.sameConnection(source) || session->resolveDevice(token) != instance)
+            return refuse("The device is not available for preset capture.");
+        const auto pendingInput = [&] {
+            return attached.captureBlocked || capture->hasPendingEvents() || !instance->captureCallbacksQuiescent() ||
+                   instance->hasPendingParamChanges() || std::any_of(gestures_.begin(), gestures_.end(), [&](const auto& task) {
+                       return task->deviceId == id && !task->terminal();
+                   });
+        };
+        const auto epoch = instance->stateEpoch();
+        const auto marks = fence->watermarks();
+        const auto input = capture->stats();
+        if (epoch != attached.seenEpoch || marks.fault || marks.closed ||
+            marks.reserved != marks.consumed || input.dropped != attached.recoveredDrops || pendingInput())
+            return refuse("Finish the pending device edit before saving its preset.");
+        ParameterImage image;
+        if (!readImage(attached, image, ImagePurpose::Preset))
+            return refuse("The device did not return a complete preset state.");
+        if (replay_->life.expired() || !attached.active || session->resolveDevice(token) != instance)
+            return refuse("The device changed while its preset was being captured.");
+        for (const auto& [parameter, value] : image.parameters)
+            if (instance->getParam(parameter).normalized != value)
+                return refuse("The device changed while its preset was being captured.");
+        // Check for a callback that ran entirely during saveState(), as well
+        // as one that is still announcing or publishing input now.
+        const auto after = fence->watermarks();
+        const auto inputAfter = capture->stats();
+        if (!source.alive() || source.sequence() != sequence || !replay_->source.sameConnection(source) ||
+            replay_->life.expired() || !attached.active || session->resolveDevice(token) != instance ||
+            instance->stateEpoch() != epoch || after.reserved != marks.reserved || after.fault || after.closed ||
+            inputAfter.pushed != input.pushed || inputAfter.dropped != input.dropped || pendingInput())
+            return refuse("The device changed while its preset was being captured.");
+        return DevicePresetState{std::move(image.parameters), std::move(image.roles)};
+    } catch (const std::exception& exception) {
+        error = exception.what();
+        return std::nullopt;
     }
 }
 
@@ -2073,23 +2244,42 @@ bool ParamOps::Runtime::appliedStateBytes(const Payload& payload,std::span<const
     return true;
 }
 
-bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image) {
-    if(!attached.inst || attached.sessionLife.expired())return false;
-    ParameterImage copied=attached.committed;image=std::move(copied);image.token=attached.runtimeToken;
-    image.name=attached.name;image.format=attached.inst->identity().format;
-    image.parameters.clear();image.declarations.clear();image.roles.clear();
-    for(std::int32_t index=0;index<attached.inst->paramCount();++index) {
-        const auto* descriptor=attached.inst->paramAt(index);if(!descriptor)continue;
-        const auto value=attached.inst->getParam(descriptor->id).normalized;
+bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image,ImagePurpose purpose) {
+    auto* instance = attached.inst;
+    if(!instance || attached.sessionLife.expired())return false;
+    const auto deviceId = attached.committed.deviceId; // Some callers update this same image.
+    image = {};
+    image.deviceId=deviceId;image.token=attached.runtimeToken;
+    image.name=attached.name;image.format=instance->identity().format;
+    for(std::int32_t index=0;index<instance->paramCount();++index) {
+        const auto* descriptor=instance->paramAt(index);if(!descriptor)continue;
+        if (purpose == ImagePurpose::Preset &&
+            (descriptor->missing || (!descriptor->automatable && !descriptor->configurable))) continue;
+        const auto value=instance->getParam(descriptor->id).normalized;
         if(!std::isfinite(value) || value<0 || value>1)return false;
-        image.parameters.emplace(descriptor->id,value);image.declarations.emplace(descriptor->id,*descriptor);
+        image.parameters.emplace(descriptor->id,value);
+        if (purpose == ImagePurpose::Snapshot) image.declarations.emplace(descriptor->id,*descriptor);
     }
-    for(const auto& role:attached.inst->stateRoles()) {
-        const auto bytes=attached.inst->saveState(role);
+    for(const auto& role:instance->stateRoles()) {
+        const auto bytes=instance->saveState(role);
         if(bytes.empty())return false;
         const auto span=std::as_bytes(std::span(bytes));image.roles.emplace(role,std::vector<std::byte>(span.begin(),span.end()));
     }
     return true;
+}
+
+gesture::Status ParamOps::Runtime::readSnapshotImage(Attached& attached, ParameterImage& image) {
+    try {
+        if (readImage(attached, image)) return {};
+        return {gesture::Error::CaptureFailed, "device returned an incomplete state image"};
+    } catch (const std::exception& error) {
+        return captureFailure(error);
+    }
+}
+
+void ParamOps::Runtime::markSnapshotStale(std::int64_t id) {
+    auto& stale = *staleSnapshotDevices_;
+    if (std::find(stale.begin(), stale.end(), id) == stale.end()) stale.push_back(id);
 }
 
 std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std::int64_t id,const std::string& parameter,ParameterImage input,bool state,bool unchanged,
@@ -2135,7 +2325,7 @@ std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std:
     return task;
 }
 
-bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
+bool ParamOps::Runtime::capturePending(std::int64_t nowMs, bool finishOpen) {
     ownerNow_=nowMs;
     if(!coordinator_ || replay_->blocked)return !replay_->blocked;
     if(replay_->session && (replay_->life.expired() || !replay_->source.alive() ||
@@ -2194,7 +2384,7 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             const bool unacknowledged=std::any_of(attached.activities.begin(),attached.activities.end(),[](const auto& activity){return activity.fence!=nullptr;});
             if(attached.activityCursor==attached.activities.size() && !unacknowledged) {
                 attached.activities.clear();attached.activityEdits.clear();attached.activityCursor=0;
-                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled);
+                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled,finishOpen);
             }
             while(attached.activityCursor<attached.activities.size()) {
                 auto& activity=attached.activities[attached.activityCursor];
@@ -2218,13 +2408,22 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
                     task=beginGesture(id,descriptor->id,std::move(image),false);
                     if(!task)throw std::runtime_error("cannot retain callback gesture ownership");
                 }
+                if(activity.kind==ParamActivityKind::Value && nativeAutomation_ && descriptor->automatable && !descriptor->missing) {
+                    if(!task->owner)task->owner=std::make_shared<gesture::OwnerToken>(task->pending->owner());
+                    if(nativeAutomation_(id,*descriptor,ParamEventKind::Value,activity.before,activity.after,task->owner))
+                        task->nativeAutomation=true;
+                }
                 if(activity.kind==ParamActivityKind::Value || activity.kind==ParamActivityKind::End || activity.kind==ParamActivityKind::QuietEnd) {
                     task->input.parameters[descriptor->id]=activity.after;task->dirty=true;
                     const auto index=activity.event.paramIndex;
                     if(index>=0 && static_cast<std::size_t>(index)<attached.mirror.size())attached.mirror[static_cast<std::size_t>(index)]=activity.after;
                 }
                 if(activity.kind==ParamActivityKind::End || activity.kind==ParamActivityKind::QuietEnd) {
-                    task->complete=true;openGestures_.erase(key);
+                    if(task->nativeAutomation) {
+                        if(nativeAutomation_)nativeAutomation_(id,*descriptor,ParamEventKind::End,activity.before,activity.after,task->owner);
+                        task->cancelRequested=true; // Release the preview before the envelope transaction.
+                    } else task->complete=true;
+                    openGestures_.erase(key);
                 }
                 if(activity.fence) {
                     const auto acknowledged=activity.fence->acknowledge(*task->pending,1);
@@ -2236,10 +2435,31 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             if(signalled) {
                 if(!attached.pendingState) {
                     ParameterImage image;
-                    if(!readImage(attached,image))throw std::runtime_error("state snapshot is incomplete");
+                    const auto captured = readSnapshotImage(attached, image);
+                    if (!captured.ok() && !staleSnapshotDevices_) throw std::runtime_error(captured.message);
                     const auto after=attached.stateFence?attached.stateFence->watermarks():marks;
                     if(attached.inst->stateEpoch()!=epoch || after.reserved!=marks.reserved || after.published!=marks.published || after.fault || attached.inst->hasPendingParamChanges()) {
                         attached.captureBlocked=true;ready=false;continue;
+                    }
+                    if (!captured.ok()) {
+                        markSnapshotStale(id);
+                        // Explicit edits already have their own owners. The
+                        // remaining implicit callbacks belong to these unreadable bytes.
+                        for (auto& activity : attached.activities) {
+                            if (!activity.fence) continue;
+                            const auto discarded = activity.fence->discardUnchanged(1);
+                            if (!discarded.ok()) throw std::runtime_error(discarded.message);
+                            activity.fence = nullptr;
+                        }
+                        if (attached.stateFence) {
+                            const auto discarded = attached.stateFence->discardStalePrefix(marks.published);
+                            if (!discarded.ok()) throw std::runtime_error(discarded.message);
+                        }
+                        // The next explicit save reads the device again even
+                        // without another signal. Save As can carry the device over.
+                        attached.seenEpoch = epoch;
+                        if (attached.capture->hasPendingEvents()) { attached.captureBlocked = true; ready = false; }
+                        continue;
                     }
                     bool unchanged=true;
                     for(const auto& [role,bytes]:image.roles) {
@@ -2383,6 +2603,17 @@ gesture::CancelOutcome ParamOps::Runtime::cancelPending(const gesture::OwnerToke
     if(!task)return {{gesture::Error::Closed,"captured gesture is unavailable"},{}};
     task->cancelRequested=true;
     auto attachedAt=devices_.find(task->deviceId);
+    if (task->nativeAutomation && attachedAt != devices_.end()) {
+        auto& attached = attachedAt->second;
+        const auto open = openGestures_.find({task->deviceId, task->parameter});
+        if (open != openGestures_.end() && open->second.lock() == task && attached.inst &&
+            attached.runtimeToken.sameInstance(task->input.token)) {
+            // The envelope owns the observed values. A later forced flush must not
+            // turn this raw gesture's synthetic end into a new scalar edit.
+            attached.capture->discardGesture(task->deviceId, indexOf(*attached.inst, task->parameter));
+            openGestures_.erase(open);
+        }
+    }
     if(attachedAt!=devices_.end() && attachedAt->second.detached && attachedAt->second.inst && attachedAt->second.inst->captureCallbacksQuiescent()) {
         auto& attached=attachedAt->second;
         if(task->recovery)for(const auto& other:gestures_)if(other->deviceId==task->deviceId && !other->terminal())other->cancelRequested=true;
@@ -2427,6 +2658,7 @@ gesture::DrainOutcome ParamOps::Runtime::pumpGestures(std::int64_t nowMs) {
 
 ParamOps::ParamOps(std::int32_t capacity) : runtime_(std::make_shared<Runtime>(capacity)) {}
 ParamOps::~ParamOps() { runtime_->frontendEnded(); }
+void ParamOps::setNativeAutomation(NativeAutomation callback) {runtime_->setNativeAutomation(std::move(callback));}
 std::vector<PendingParameterGesture> ParamOps::pendingGestures() const {return runtime_->pendingGestures();}
 gesture::CommitOutcome ParamOps::commitPending(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,false);}
 gesture::CommitOutcome ParamOps::retryPendingCommit(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->commitPending(owner,now,true);}
@@ -2457,7 +2689,16 @@ AppliedDeliveryStatus ParamOps::retryApplied(std::int64_t now) { return runtime_
 const AppliedDeliveryStatus& ParamOps::appliedDeliveryStatus() const noexcept { return runtime_->appliedDeliveryStatus(); }
 std::size_t ParamOps::drain(std::int64_t now,std::vector<OpRequest>& out) { return runtime_->drain(now,out); }
 std::size_t ParamOps::snapshot(std::int64_t id,std::int64_t now,std::vector<OpRequest>& out) { return runtime_->snapshot(id,now,out); }
-ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now) { return runtime_->snapshotAll(now); }
+ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now, SnapshotGestures gestures, SnapshotPolicy policy) {
+    return runtime_->snapshotAll(now, gestures, policy);
+}
+ParamOps::SnapshotAllResult ParamOps::snapshotDeviceState(std::int64_t deviceId, std::int64_t now,
+                                                         SnapshotGestures gestures) {
+    return runtime_->snapshotAll(now, gestures, SnapshotPolicy::RequireAll, deviceId);
+}
+std::optional<ParamOps::DevicePresetState> ParamOps::readDevicePresetState(std::int64_t id, std::string& error) {
+    return runtime_->readDevicePresetState(id, error);
+}
 std::vector<StateBlob> ParamOps::takeBlobs() { return runtime_->takeBlobs(); }
 bool ParamOps::writeBlobs(Store& store,std::string& error) { return runtime_->writeBlobs(store,error); }
 bool ParamOps::applied(const Payload& payload,std::int64_t now) { return runtime_->applied(payload,now); }
@@ -2467,6 +2708,8 @@ const ParamEditCapture::Stats* ParamOps::captureStats(std::int64_t id) const noe
 const ParamEditCapture::Stats* ParamOps::uiCaptureStats(std::int64_t id) const noexcept { return runtime_->uiCaptureStats(id); }
 bool ParamOps::isAttached(std::int64_t id) const noexcept { return runtime_->isAttached(id); }
 std::int32_t ParamOps::lastTouched(std::int64_t id) const noexcept { return runtime_->lastTouched(id); }
+std::uint64_t ParamOps::lastTouchSequence(std::int64_t id) const noexcept { return runtime_->lastTouchSequence(id); }
+std::span<const ParameterTouch> ParamOps::recentTouches(std::int64_t id) const noexcept { return runtime_->recentTouches(id); }
 void ParamOps::setTolerance(double value) noexcept { runtime_->tolerance_=value>0.0?value:0.0; }
 
 void ParamOps::Runtime::frontendEnded() noexcept {

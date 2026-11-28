@@ -148,7 +148,9 @@ void refusalAndLifecycle() {
 }
 void mapping() {
     Scope::Settings settings;
-    check(Scope::mapNormalized({},settings) && settings.threshold==0 && settings.gain==1 && settings.columnsPerSample==.1 &&
+    // libm can round pow(10, -1) to a different adjacent double than the literal 0.1.
+    check(Scope::mapNormalized({},settings) && settings.threshold==0 && settings.gain==1 &&
+          std::abs(settings.columnsPerSample - .1) < 1e-15 &&
           settings.holdoffSamples==1, "normalized midpoint equations are explicit");
     const auto saved=settings;
     auto bad=Scope::Normalized{}; bad.amplitude=std::numeric_limits<float>::infinity();
@@ -212,18 +214,24 @@ void extremesAndFastBoundary() {
     }
 }
 }
-void *operator new(std::size_t size) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t size) {
     if (failAfter==0) throw std::bad_alloc{};
     if (failAfter>0) --failAfter;
     if (processing) ++allocations;
     if (auto *p=std::malloc(size?size:1)) return p;
     throw std::bad_alloc{};
 }
-void operator delete(void *p) noexcept { if(p&&processing)++frees; std::free(p); }
-void *operator new[](std::size_t n) { return ::operator new(n); }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete(void *p,std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void *p,std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept { if(p&&processing)++frees; std::free(p); }
+ADI_TEST_NOINLINE void *operator new[](std::size_t n) { return ::operator new(n); }
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void *p,std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept { ::operator delete(p); }
+#undef ADI_TEST_NOINLINE
 int main() {
     basicAndOrdering(); triggersAndHoldoff(); partitionAndDc(); refusalAndLifecycle(); mapping(); extremesAndFastBoundary();
     check(allocations==0&&frees==0,"process/reset C++ allocation and free remain zero");

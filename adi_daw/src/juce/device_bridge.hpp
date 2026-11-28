@@ -28,7 +28,21 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+#include <utility>
+
 namespace adi::device {
+
+// A driver may return a nonpositive latency when an endpoint has no report.
+inline std::int64_t reportedRoundTripLatency(juce::AudioIODevice& device) {
+    const auto input = (std::max)(0, device.getInputLatencyInSamples());
+    const auto output = (std::max)(0, device.getOutputLatencyInSamples());
+    return static_cast<std::int64_t>(input) + output;
+}
 
 class DeviceBridge final : public juce::AudioIODeviceCallback {
 public:
@@ -43,6 +57,11 @@ public:
     void setRequestedBlockSize(std::int32_t frames) { requested_ = frames; }
 
     [[nodiscard]] const DeviceCore& core() const { return core_; }
+    [[nodiscard]] std::optional<engine::OutputChannelMap> physicalOutputChannels() const noexcept {
+        if (!hasOutputGrant_.load(std::memory_order_acquire))
+            return std::nullopt;
+        return engine::OutputChannelMap{outputMask_.load(std::memory_order_acquire)};
+    }
 
     /// Non-empty when the device is running at a size other than the one
     /// requested. ADR-0049: reported, never silently corrected.
@@ -56,41 +75,105 @@ public:
     // --- juce::AudioIODeviceCallback ---------------------------------------
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
-        if (device == nullptr) return;
+        // A failed driver restart can still call back with a closed device.
+        if (device == nullptr || !device->isOpen()) return;
 
         // The granted size, read back from the device. Never `requested_`:
         // asking CoreAudio for 8192 returns 4096 and says nothing (ADR-0049).
         const auto granted = static_cast<std::int32_t>(device->getCurrentBufferSizeSamples());
         const double rate = device->getCurrentSampleRate();
+        const auto active = device->getActiveOutputChannels();
+        std::uint64_t outputMask = 0;
+        for (int channel = 0; channel < engine::OutputChannelMap::maximumChannels; ++channel)
+            if (active[channel])
+                outputMask |= std::uint64_t{1} << channel;
 
         // A restart on a live stream is a RECONFIGURATION, not a fresh open:
         // the processor keeps its state and the stream clock stays continuous,
         // or a transport following it jumps backwards mid-session.
         last_ = core_.isOpen() ? core_.changeBlockSize(rate, requested_, granted)
                                : core_.open(*proc_, rate, requested_, granted);
+        if (last_.opened) {
+            // Publish one complete, prepared mask. A running input-only device
+            // has an empty mask, which is distinct from a stopped device.
+            outputMask_.store(outputMask, std::memory_order_release);
+            hasOutputGrant_.store(true, std::memory_order_release);
+            currentDevice_ = {device->getTypeName(), device->getName()};
+            if (stoppedDevice_ && *stoppedDevice_ == currentDevice_)
+                stoppedDevice_.reset();
+        }
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* in, int numIn,
                                           float* const* out, int numOut,
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext&) override {
-        core_.process(out, numOut, in, numIn, numSamples);
+        const engine::OutputChannelMap outputs{outputMask_.load(std::memory_order_acquire)};
+        core_.process(out, numOut, in, numIn, numSamples, outputs);
     }
 
-    void audioDeviceStopped() override { core_.close(); }
+    void audioDeviceStopped() override {
+        hasOutputGrant_.store(false, std::memory_order_release);
+        if (core_.isOpen() && !stoppedDevice_)
+            stoppedDevice_ = currentDevice_;
+        core_.close();
+    }
 
     void audioDeviceError(const juce::String& message) override {
+        // Some drivers report errors from a worker. The sample callback
+        // never takes this lock.
+        const std::lock_guard lock(errorMutex_);
+        pendingError_ = message;
         lastError_ = message;
     }
 
+    // The last error a driver reported, kept for a tool's receipt (adi_play). The window takes its
+    // problems once, through takeDeviceProblem.
+    [[nodiscard]] juce::String lastError() const {
+        const std::lock_guard lock(errorMutex_);
+        return lastError_;
+    }
+
+    // The owner's explicit Settings change may replace a device or turn audio off.
+    void acknowledgeDeviceSetup() { stoppedDevice_.reset(); }
+
+    [[nodiscard]] juce::String takeDeviceProblem() {
+        const auto stopped = std::exchange(stoppedDevice_, std::nullopt);
+        std::optional<juce::String> error;
+        {
+            const std::lock_guard lock(errorMutex_);
+            error = std::exchange(pendingError_, std::nullopt);
+        }
+        if (stopped) {
+            auto problem = stopped->name.isEmpty() ? juce::String("Audio device stopped.")
+                                                   : "Audio device stopped: " + stopped->name + ".";
+            if (error && error->isNotEmpty())
+                problem << " " << *error;
+            return problem;
+        }
+        if (!error)
+            return {};
+        return error->isEmpty() ? juce::String("Audio device reported an error.") : "Audio device error: " + *error;
+    }
+
     [[nodiscard]] const OpenResult& lastOpen() const { return last_; }
-    [[nodiscard]] const juce::String& lastError() const { return lastError_; }
 
 private:
+    struct DeviceName {
+        juce::String type, name;
+        bool operator==(const DeviceName&) const = default;
+    };
     engine::BlockProcessor* proc_ = nullptr;
     DeviceCore core_;
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    std::atomic<std::uint64_t> outputMask_{0};
+    std::atomic<bool> hasOutputGrant_{false};
     std::int32_t requested_ = 0;
     OpenResult last_;
+    DeviceName currentDevice_;
+    std::optional<DeviceName> stoppedDevice_; // owner thread, like open/close
+    mutable std::mutex errorMutex_;
+    std::optional<juce::String> pendingError_;
     juce::String lastError_;
 };
 

@@ -19,6 +19,68 @@ settings::ChannelConfig channelConfigFor(const settings::AppSettings &store, con
         return *kept;
     return settings::defaultChannelConfig(inputs, outputs);
 }
+std::vector<ExternalAudioInput> externalAudioInputsFor(const settings::ChannelConfig &config,
+                                                       const juce::BigInteger &active, int inputCount) {
+    if (inputCount <= 0)
+        return {};
+    // The recorder accepts driver buffer indices 0 through 63. A bit's rank counts all
+    // active physical channels, including those only opened by another configured option.
+    constexpr int maxRecordingInputs = 64;
+    std::vector<int> callbackIndices(static_cast<std::size_t>(inputCount), -1);
+    int packed = 0;
+    for (int bit = active.findNextSetBit(0); bit >= 0 && bit < inputCount && packed < maxRecordingInputs;
+         bit = active.findNextSetBit(bit + 1))
+        callbackIndices[static_cast<std::size_t>(bit)] = packed++;
+    const auto inputAt = [&](int physical) {
+        return physical >= 1 && physical <= inputCount ? callbackIndices[static_cast<std::size_t>(physical - 1)] : -1;
+    };
+
+    std::vector<ExternalAudioInput> inputs;
+    for (const auto &mono : config.monoInputs) {
+        const int channel = inputAt(mono.channel);
+        if (mono.on && channel >= 0)
+            inputs.push_back({"ext:mono:" + std::to_string(mono.channel), settings::displayName(mono),
+                              {static_cast<std::uint32_t>(channel)}});
+    }
+    for (const auto &pair : config.stereoInputs) {
+        if (!pair.on || pair.left >= inputCount)
+            continue;
+        const int left = inputAt(pair.left), right = inputAt(pair.left + 1);
+        if (left >= 0 && right >= 0)
+            inputs.push_back({"ext:stereo:" + std::to_string(pair.left), settings::displayName(pair),
+                              {static_cast<std::uint32_t>(left), static_cast<std::uint32_t>(right)}});
+    }
+    return inputs;
+}
+std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager &manager,
+                                                        const settings::AppSettings &store) {
+    auto *device = manager.getCurrentAudioDevice();
+    if (device == nullptr || !device->isOpen())
+        return {};
+    const auto setup = manager.getAudioDeviceSetup();
+    const int inputs = device->getInputChannelNames().size();
+    const auto config = channelConfigFor(store, setup.inputDeviceName.toStdString(), inputs,
+                                         device->getOutputChannelNames().size());
+    return externalAudioInputsFor(config, device->getActiveInputChannels(), inputs);
+}
+std::vector<std::pair<int, std::string>> readExternalAudioOutputs(juce::AudioDeviceManager &manager,
+    const settings::AppSettings &store, const engine::OutputChannelMap &granted) {
+    auto *device = manager.getCurrentAudioDevice();
+    if (!device || !device->isOpen())
+        return {};
+    const auto setup = manager.getAudioDeviceSetup();
+    const auto config = channelConfigFor(store, setup.outputDeviceName.toStdString(),
+        device->getInputChannelNames().size(), device->getOutputChannelNames().size());
+    std::vector<std::pair<int, std::string>> choices;
+    for (const auto &pair : config.stereoOutputs)
+        if (pair.left >= 1 && pair.left <= 63 && pair.left % 2 == 1 &&
+            pair.on && granted.packedPair(pair.left - 1) >= 0) {
+            const auto label = std::to_string(pair.left) + "/" + std::to_string(pair.left + 1);
+            choices.emplace_back(pair.left - 1, pair.name.empty() ? label : pair.name);
+        }
+    std::ranges::sort(choices, {}, &std::pair<int, std::string>::first);
+    return choices;
+}
 bool keepChannelConfig(settings::AppSettings &store, const std::string &device, bool inputs,
                        const settings::ChannelConfig &edited, std::string &why) {
     auto record = settings::channelConfig(store, device).value_or(edited);
@@ -53,10 +115,26 @@ juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::Audi
     auto error = manager.initialise(2, 2, nullptr, true, {}, &setup);
     // A default input that cannot open beside the output leaves the output to open alone, as before.
     if (error.isNotEmpty() && setup.inputDeviceName.isEmpty())
-        error = manager.initialise(0, 2, nullptr, true, {}, &setup);
+        if (const auto alone = manager.initialise(0, 2, nullptr, true, {}, &setup); alone.isEmpty())
+            error = {};
     if (error.isEmpty())
-        error = useChannelConfig(manager, store);
-    return error;
+        return useChannelConfig(manager, store);
+    // SC-375, the walk's A35: the output would not open (unplugged, or held by another program). The box
+    // names the device and the cause, not the library's text alone, and a free input is not dropped with
+    // the output: it opens on its own, so recording and monitoring wait only for an output. The device
+    // chosen afterwards in Settings plays at once (the application's callback stays attached).
+    const auto output = setup.outputDeviceName.isNotEmpty() ? "\"" + setup.outputDeviceName + "\""
+                                                            : juce::String("the system's output");
+    auto inputOnly = setup;
+    inputOnly.outputDeviceName = {};
+    juce::String input;
+    if (manager.initialise(2, 0, nullptr, true, {}, &inputOnly).isEmpty() && manager.getCurrentAudioDevice() != nullptr) {
+        input = manager.getAudioDeviceSetup().inputDeviceName;
+        (void)useChannelConfig(manager, store);
+    }
+    return "The audio output " + output + " could not be opened: " + error +
+           (input.isNotEmpty() ? " The input \"" + input + "\" is open." : juce::String()) +
+           " Choose an output in Settings > Audio.";
 }
 AudioDevicePage::ChannelButtons::ChannelButtons() {
     setTitle("Channel Configuration");
@@ -86,7 +164,7 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
     driver_.onChange = [this] {
         manager_.setCurrentAudioDeviceType(driver_.getText(), true);
         error_ = useChannelConfig(manager_, settings_);
-        refresh();
+        finishSetupChange();
     };
     input_.onChange = [this] {
         apply([this](auto &setup) {
@@ -210,15 +288,19 @@ void AudioDevicePage::openConfig(bool inputs) {
         name);
     juce::Component::SafePointer<AudioDevicePage> self(this);
     panel->onOk = [self, inputs, name](const settings::ChannelConfig &edited) {
-        if (self == nullptr)
+        // Closing the dialog destroys this callable, so use a local handle afterwards.
+        const auto page = self;
+        if (page == nullptr)
             return;
         std::string why;
         // Kept with the device, then the device opened with the channels now in use.
-        self->error_ = keepChannelConfig(self->settings_, name.toStdString(), inputs, edited, why)
-                           ? useChannelConfig(self->manager_, self->settings_)
-                           : juce::String::fromUTF8(why.c_str());
-        self->closeConfig();
-        self->refresh();
+        const bool saved = keepChannelConfig(page->settings_, name.toStdString(), inputs, edited, why);
+        page->error_ = saved ? useChannelConfig(page->manager_, page->settings_) : juce::String::fromUTF8(why.c_str());
+        page->closeConfig();
+        if (saved)
+            page->finishSetupChange();
+        else
+            page->refresh();
     };
     panel->onCancel = [self] {
         if (self != nullptr)
@@ -248,6 +330,11 @@ void AudioDevicePage::apply(const std::function<void(juce::AudioDeviceManager::A
     // Another device opens with the channels its own record keeps in use (N20).
     if (error_.isEmpty())
         error_ = useChannelConfig(manager_, settings_);
+    finishSetupChange();
+}
+void AudioDevicePage::finishSetupChange() {
+    if (onSetupChanged)
+        onSetupChanged(error_.isEmpty());
     refresh();
 }
 void AudioDevicePage::changeListenerCallback(juce::ChangeBroadcaster *) { refresh(); }

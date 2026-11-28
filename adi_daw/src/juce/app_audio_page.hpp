@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/process.hpp"
 #include "adi/settings/channel_config.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "ui_channel_config.hpp"
 #include "ui_settings.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <array>
+#include <functional>
 #include <memory>
 #include <set>
 #include <vector>
@@ -16,6 +19,13 @@ juce::BigInteger channelBits(const std::set<int> &active, int count);
 // Live's default for its channel counts (N20; Live 12 manual 17.2).
 settings::ChannelConfig channelConfigFor(const settings::AppSettings &, const std::string &device, int inputs,
                                          int outputs);
+// Independent enabled mono inputs and stereo pairs, with physical IDs and packed callback indices.
+std::vector<ExternalAudioInput> externalAudioInputsFor(const settings::ChannelConfig &, const juce::BigInteger &active,
+                                                       int inputCount);
+std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager &, const settings::AppSettings &);
+// Enabled physical stereo output pairs, with any names assigned in Output Config.
+std::vector<std::pair<int, std::string>> readExternalAudioOutputs(juce::AudioDeviceManager &,
+                                                                 const settings::AppSettings &, const engine::OutputChannelMap &);
 // Keeps one side of a device's record as a dialog edited it, the other side as it was; saved at
 // once. False, and why, when refused.
 bool keepChannelConfig(settings::AppSettings &, const std::string &device, bool inputs,
@@ -57,11 +67,15 @@ class AudioDevicePage final : public juce::Component, public SettingsPageHead, p
     } channels;
     // The open dialog, if any.
     ChannelConfigPanel *configPanel() const;
+    // A setup attempt or a saved Input/Output Config edit, including names alone.
+    // The acknowledgement is true only if the device accepted the setup.
+    std::function<void(bool applied)> onSetupChanged;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;
     // Shows the manager's state: its drivers, devices, rates, buffer sizes and latencies.
     void refresh();
+    void finishSetupChange();
     void apply(const std::function<void(juce::AudioDeviceManager::AudioDeviceSetup &)> &);
     // Opens the Input Config or Output Config dialog for the device in use on that side.
     void openConfig(bool inputs);

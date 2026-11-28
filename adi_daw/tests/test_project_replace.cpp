@@ -73,6 +73,64 @@ void stores(){
     StoreError error{};auto memory=Store::create(":memory:",error);check(memory!=nullptr,"in-memory project creation remains supported");
     auto temporary=Store::create({},error);check(temporary!=nullptr,"temporary SQLite project remains supported");
 }
+void discardKeepsUnownedSidecars() {
+    test::TempDirectory temp{"project_replace", "untitled-sidecars"};
+    for (const auto* suffix : {"-shm", "-wal", "-journal"}) {
+        const auto path = temp.path() / (std::string("Untitled") + suffix + ".adi");
+        auto store = project(path, "Untitled");
+        std::error_code error;
+        const auto identity = media::readFileIdentity(path, error);
+        check(identity && store->close(), "close the untouched project and its owned SQLite sidecars");
+        store.reset();
+        if (!identity)
+            continue;
+        const auto bytes = read(path);
+        auto sidecar = path;
+        sidecar += suffix;
+        write(sidecar, "unowned recovery file");
+        check(!discardUntouchedProject(path, *identity) && read(path) == bytes &&
+                  read(sidecar) == "unowned recovery file",
+              "discard leaves both the project and an unowned SQLite sidecar intact");
+        fs::remove(sidecar);
+        check(discardUntouchedProject(path, *identity) && !fs::exists(path),
+              "discard removes the same untouched project once its folder is clear of sidecars");
+    }
+}
+
+void missingMediaReservations() {
+    test::TempDirectory temp{"project_replace","missing-media"};
+    const auto source = temp.path() / "Untitled";
+    const auto target = temp.path() / "Song";
+    const auto missing = fs::path("Samples") / "Recorded" / "Clip.wav";
+    const auto present = missing.parent_path() / "Clip (2).wav";
+    fs::create_directories(source / missing.parent_path());
+    fs::create_directories(target / missing.parent_path());
+    const auto destination = target / "Song.adi";
+    auto active = project(source / "Untitled.adi", "Source");
+    project(destination, "Old").reset();
+    write(source / missing, "source audio about to disappear");
+    write(source / present, "source audio still present");
+    write(target / missing, "other song's audio");
+    if (!media::importMedia(*active, missing, 10, 1).ok || !media::importMedia(*active, present, 11, 2).ok)
+        throw std::runtime_error("import reservation fixture");
+    fs::remove(source / missing);
+
+    const auto saved = active->saveUntitledAs(destination, StoreFileCollision::ReplaceConfirmed);
+    check(saved.ok, "confirmed replacement saves an unnamed song with one missing source");
+    if (!saved.ok) return;
+    const auto pathFor = [&](std::int64_t id) {
+        return media::pathFromUtf8(media::mediaRow(active->db(), id).at("rel_path").get<std::string>());
+    };
+    const auto missingPath = pathFor(10), presentPath = pathFor(11);
+    check(missingPath != presentPath && !fs::exists(target / missingPath) &&
+              read(target / presentPath) == "source audio still present" &&
+              read(target / missing) == "other song's audio",
+          "a missing source reserves its own path while the copied and pre-existing media remain distinct");
+    History history(*active);
+    check(history.undo().ok && history.undo().ok && history.redo().ok && history.redo().ok &&
+              pathFor(10) == missingPath && pathFor(11) == presentPath,
+          "media restored from history keeps the same destinations as the current rows");
+}
 std::error_code fail(const fs::path&){return std::make_error_code(std::errc::io_error);}
 std::error_code refuse(const fs::path&,const fs::path&){return std::make_error_code(std::errc::permission_denied);}
 std::vector<unsigned> waits;unsigned renames=0;bool eventually=false;
@@ -286,10 +344,10 @@ void processes(){
     // Cross-process lease exclusion and release are tested through pipes, with
     // no time-based sleep or timeout expansion.
     int ready[2]{},release[2]{};if(::pipe(ready)!=0 || ::pipe(release)!=0)throw std::runtime_error("pipe");
-    child=::fork();if(child==0){::close(ready[0]);::close(release[1]);std::error_code ec;auto held=media::ProjectFileLease::openShared(target,ec);char marker=held?'Y':'N';(void)::write(ready[1],&marker,1);(void)::read(release[0],&marker,1);::_exit(held?0:99);}
+    child=::fork();if(child==0){::close(ready[0]);::close(release[1]);std::error_code ec;auto held=media::ProjectFileLease::openShared(target,ec);char marker=held?'Y':'N';if(::write(ready[1],&marker,1)!=1)::_exit(98);if(::read(release[0],&marker,1)!=1)::_exit(97);::_exit(held?0:99);}
     ::close(ready[1]);::close(release[0]);char marker=0;const auto got=::read(ready[0],&marker,1);
     check(got==1 && marker=='Y' && !active->saveCopy(target,StoreFileCollision::ReplaceConfirmed).ok,"another process's lease refuses confirmed replacement");
-    (void)::write(release[1],"X",1);::close(ready[0]);::close(release[1]);check(childStatus(child,0),"lease-holder process exits cleanly");
+    check(::write(release[1],"X",1)==1,"release signal written to lease-holder process");::close(ready[0]);::close(release[1]);check(childStatus(child,0),"lease-holder process exits cleanly");
     check(active->saveCopy(target,StoreFileCollision::ReplaceConfirmed).ok,"replacement proceeds after other process exits");active.reset();
     const auto staged=temp.path()/"Stage";write(staged,"crash complete bytes");write(target,"previous complete bytes");
     child=::fork();if(child==0){media::ReplaceHooks hooks;hooks.syncDirectory=crashAfterRename;(void)media::replaceFile(staged,target,hooks);::_exit(99);}
@@ -381,7 +439,7 @@ int main([[maybe_unused]] int argc,char** argv){
 #if !defined(_WIN32)
 if(argc==3 && std::string(argv[1])=="--writer")return writerResult(media::pathFromUtf8(argv[2]));
 #endif
-executable=fs::absolute(argv[0]);try{stores();publication();publicationRetries();
+executable=fs::absolute(argv[0]);try{stores();discardKeepsUnownedSidecars();missingMediaReservations();publication();publicationRetries();
 #if !defined(_WIN32)
 processes();
 #endif

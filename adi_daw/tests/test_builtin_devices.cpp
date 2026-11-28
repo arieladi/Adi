@@ -222,6 +222,9 @@ void thirdPartyPlacement() {
     const auto midi = plugin("test.midi","MIDI effect","midi_effect");
     const auto instrument = plugin("test.instrument","Existing synth","instrument");
     const auto replacement = plugin("test.replacement","Replacement synth","instrument");
+    check(!preparePluginInsert(store, instrument, 1).ok && !preparePluginInsert(store, midi, 1).ok,
+          "the insertion entry point refuses instruments and MIDI effects on audio tracks");
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1");
     const auto add = [&](const rows::PluginRef& ref,std::optional<std::int64_t> before = {},
                          const PluginInsertOptions& options = {}) {
         const auto prepared = preparePluginInsert(store,ref,1,before,options);
@@ -276,6 +279,164 @@ void thirdPartyPlacement() {
     check(withRack.size()==8 && withRack[6]==rack && withRack[7]==afterRack &&
           !preparePluginInsert(store,replacement,1,rack,replace).ok,
           "instrument racks bound audio placement while a replacement protects their nested devices");
+}
+void hotSwapPlacement() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(20,'group','Group');"
+            "UPDATE tracks SET parent_id=20 WHERE id=1;"
+            "INSERT INTO device_chains(id,track_id,ord) VALUES(10,1,0),(11,1,1);"
+            "INSERT INTO plugin_refs(id,format,uid,name,subtype,is_shell,shell_id) VALUES"
+            "(1,'clap','test.effect','Existing effect','effect',0,NULL),"
+            "(2,'vst3','test.replacement','Replacement effect','effect',1,71),"
+            "(3,'internal','org.adidaw.mix.eq','EQ','effect',0,NULL);"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,enabled) VALUES"
+            "(30,11,-6,1,'First',1),(40,11,11,1,'Target',0),(50,11,25,1,'Last',1),(70,10,1,3,'Mix EQ',1);"
+            "INSERT INTO devices(id,chain_id,ord,is_rack,rack_kind) VALUES(60,10,0,1,'effect');"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(40,'shape',0.375);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(7,'device',40,'shape');");
+
+    using DeviceOrder = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    const auto order = [&] {
+        DeviceOrder result;
+        SQLite::Statement rows(db, "SELECT id,ord FROM devices WHERE chain_id=11 ORDER BY ord,id");
+        while (rows.executeStep()) result.emplace_back(rows.getColumn(0).getInt64(), rows.getColumn(1).getInt64());
+        return result;
+    };
+    const DeviceOrder original{{30, -6}, {40, 11}, {50, 25}};
+    rows::PluginRef candidate;
+    candidate.format = "vst3";
+    candidate.uid = "test.replacement";
+    candidate.name = "Replacement effect";
+    // Existing references carry the stored role regardless of scan guesses.
+    candidate.subtype = "instrument";
+    candidate.isShell = true;
+    candidate.shellId = 71;
+    const auto replacement = preparePluginReplacement(store, candidate, 40, 1000);
+    check(replacement.ok && replacement.referenceId == 2 && replacement.chainId == 11 && replacement.deviceId > 1000 &&
+              order() == original,
+          "SC-285 preparation anchors to the exact chain, installed shell reference, and a fresh runtime ID");
+    if (!replacement.ok) return;
+    auto otherShell = candidate;
+    otherShell.shellId = 72;
+    check(!preparePluginReplacement(store, otherShell, 40).ok && !preparePluginReplacement(store, candidate, 60).ok &&
+              !preparePluginReplacement(store, candidate, 70).ok && !preparePluginReplacement(store, candidate, 400).ok,
+          "SC-285 a different device role, a rack, a native Mix function, and a missing target refuse");
+    db.exec("CREATE TRIGGER reject_hot_swap BEFORE INSERT ON devices WHEN NEW.name='Replacement effect' "
+            "BEGIN SELECT RAISE(ABORT,'injected insert failure'); END");
+    check(!commitBuiltinInsert(store, replacement).ok && order() == original &&
+              db.execAndGet("SELECT COUNT(*) FROM automation_lanes WHERE owner_id=40").getInt() == 1,
+          "SC-285 a failed candidate insert rolls the removed device and its automation back");
+    db.exec("DROP TRIGGER reject_hot_swap");
+    History history(store);
+    const DeviceOrder swapped{{30, -6}, {replacement.deviceId, 11}, {50, 25}};
+    check(commitBuiltinInsert(store, replacement).ok && order() == swapped &&
+              db.execAndGet("SELECT enabled FROM devices WHERE ord=11").getInt() == 0 &&
+              db.execAndGet("SELECT COUNT(*) FROM automation_lanes WHERE owner_id=40").getInt() == 0,
+          "SC-285 a single replacement preserves exact order and bypass with no extra instance");
+    const auto undo = history.nextUndo();
+    check(undo && undo->label == "Hot-Swap Device" && history.undo().ok && order() == original &&
+              db.execAndGet("SELECT normalized_value FROM plugin_params WHERE device_id=40").getDouble() == 0.375 &&
+              db.execAndGet("SELECT owner_id FROM automation_lanes WHERE id=7").getInt64() == 40,
+          "SC-285 one Undo restores the original device, parameter, and automation");
+    check(history.redo().ok && order() == swapped && history.undo().ok, "SC-285 Redo reuses the same replacement slot");
+
+    db.exec("UPDATE devices SET ord=11 WHERE id=50");
+    const DeviceOrder tied{{30, -6}, {40, 11}, {50, 11}};
+    const auto tiedReplacement = preparePluginReplacement(store, candidate, 40);
+    check(tiedReplacement.ok && commitBuiltinInsert(store, tiedReplacement).ok &&
+              order() == DeviceOrder{{30, 0}, {tiedReplacement.deviceId, 1}, {50, 2}} &&
+              history.undo().ok && order() == tied,
+          "SC-285 a tied order retains its audible order through the replacement and Undo");
+
+    const auto stale = preparePluginReplacement(store, candidate, 40);
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 20}, {"locked", true}};
+    const auto locked = OpJournal(store).commit(std::span(&lock, 1));
+    check(stale.ok && locked.ok && commitBuiltinInsert(store, stale).stale &&
+              !preparePluginReplacement(store, candidate, 40).ok && order() == tied,
+          "SC-285 a locked ancestor refuses the swap and a moved head invalidates a prepared swap");
+    check(history.undo().ok, "SC-285 test unlocks the group");
+    db.exec("UPDATE tracks SET frozen=1 WHERE id=1");
+    check(!preparePluginReplacement(store, candidate, 40).ok && order() == tied,
+          "SC-285 a frozen track refuses device replacement before mutation");
+    db.exec("UPDATE tracks SET frozen=0 WHERE id=1");
+#if ADI_WITH_PD
+    const auto builtin = prepareBuiltinReplacement(store, "org.adidaw.builtin.utility", 40);
+    check(builtin.ok && commitBuiltinInsert(store, builtin).ok &&
+              order() == DeviceOrder{{30, 0}, {builtin.deviceId, 1}, {50, 2}} && history.undo().ok && order() == tied,
+          "SC-285 the built-in wrapper replaces an effect at the same position");
+#endif
+}
+void moveDeviceRange() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1;"
+            "INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys'),(3,'audio','Audio 2'),(4,'midi','Synth');"
+            "INSERT INTO device_chains(id,track_id) VALUES(10,1),(20,2),(40,4);"
+            "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+            "(1,'clap','test.midi','MIDI effect','midi_effect'),(2,'clap','test.synth','Synth','instrument'),"
+            "(3,'clap','test.effect','Audio effect','effect');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id) VALUES"
+            "(10,10,0,1),(11,10,1,2),(12,10,2,3),(13,10,3,3),(14,10,4,3),"
+            "(20,20,0,1),(21,20,1,3),(40,40,0,2);"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(12,'shape',0.375);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(7,'device',11,'level');");
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> result;
+        SQLite::Statement rows(db, "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                   "WHERE c.track_id=? ORDER BY c.ord,c.id,d.ord,d.id");
+        rows.bind(1, track);
+        while (rows.executeStep()) result.push_back(rows.getColumn(0).getInt64());
+        return result;
+    };
+    const std::vector<std::int64_t> original{10, 11, 12, 13, 14};
+    const std::array effects{DeviceMoveSource{13, 1, 10}, DeviceMoveSource{12, 1, 10}};
+    const auto self = prepareDeviceMove(store, effects, 1, 13);
+    const auto adjacent = prepareDeviceMove(store, effects, 1, 14);
+    check(self.ok && self.requests.empty() && adjacent.ok && adjacent.requests.empty() &&
+              commitDeviceMove(store, self).ok && !OpJournal(store).headSeq(),
+          "SC-288 dropping a range on itself or in its existing position leaves history alone");
+    const std::array separated{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{14, 1, 10}};
+    const std::array wrongOwner{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{13, 2, 10}};
+    check(!prepareDeviceMove(store, separated, 1, {}).ok && !prepareDeviceMove(store, wrongOwner, 1, {}).ok &&
+              !prepareDeviceMove(store, effects, 1, 21).ok && order(1) == original,
+          "SC-288 separated or stale source devices and a destination anchor on the wrong track refuse");
+
+    History history(store);
+    const auto tail = prepareDeviceMove(store, effects, 1, {});
+    check(tail.ok && commitDeviceMove(store, tail).ok && order(1) == std::vector<std::int64_t>{10, 11, 14, 12, 13} &&
+              history.nextUndo() && history.nextUndo()->label == "Move Devices" && history.undo().ok && order(1) == original,
+          "SC-288 a same-chain range drag keeps visual order and is one Undo step");
+    const std::array mixed{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{10, 1, 10}, DeviceMoveSource{11, 1, 10}};
+    check(!prepareDeviceMove(store, mixed, 3, {}).ok && !prepareDeviceMove(store, mixed, 4, {}).ok,
+          "SC-288 a range with an instrument cannot move to audio or into a second instrument");
+    const auto cross = prepareDeviceMove(store, mixed, 2, 20);
+    StoreError error{};
+    const auto otherConnection = Store::open(store.path(), error, true);
+    check(otherConnection && commitDeviceMove(*otherConnection, cross).stale && order(1) == original,
+          "SC-288 a prepared move belongs to the exact connection, even for the same file");
+    check(cross.ok && commitDeviceMove(store, cross).ok && order(1) == std::vector<std::int64_t>{13, 14} &&
+              order(2) == std::vector<std::int64_t>{20, 10, 11, 12, 21} &&
+              db.execAndGet("SELECT normalized_value FROM plugin_params WHERE device_id=12").getDouble() == 0.375 &&
+              db.execAndGet("SELECT owner_id FROM automation_lanes WHERE id=7").getInt64() == 11 &&
+              history.undo().ok && order(1) == original && order(2) == std::vector<std::int64_t>{20, 21},
+          "SC-288 a mixed-role range moves to its one legal slot with the same state and returns in one Undo");
+
+    const auto emptyTrack = prepareDeviceMove(store, effects, 3, {});
+    check(emptyTrack.ok && commitDeviceMove(store, emptyTrack).ok && order(3) == std::vector<std::int64_t>{12, 13} &&
+              history.undo().ok && order(1) == original &&
+              db.execAndGet("SELECT COUNT(*) FROM device_chains WHERE track_id=3").getInt() == 0,
+          "SC-288 moving a range to an empty track makes the chain in the same Undo step");
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 3}, {"locked", true}};
+    check(OpJournal(store).commit(lock).ok && commitDeviceMove(store, emptyTrack).stale &&
+              !prepareDeviceMove(store, effects, 3, {}).ok && order(1) == original && order(3).empty(),
+          "SC-288 a changed head or a locked destination refuses the entire move");
 }
 // DF-E50: automation on a built-in device is applied, at its frame. Utility's
 // Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
@@ -668,6 +829,45 @@ void samplerSession() {
           "a stereo sample holds at most 4M frames, a mono one 8M");
 #endif
 }
+#if ADI_WITH_PD
+void instrumentSustainWithAutomation(DeviceInstance& source) {
+    auto instrument=load("org.adidaw.builtin.oneshot");
+    const auto param=[](int index){return std::to_string(index+1);};
+    const auto volume=param(OneShot::Volume);
+    instrument->prepare(48000,64);
+    check(instrument->loadState("sample:1",source.saveState("sample:1")) &&
+          instrument->setParam(param(OneShot::Attack),ParamValue::withReal(0,0)) &&
+          instrument->setParam(param(OneShot::Release),ParamValue::withReal(0,1)) &&
+          instrument->setParam(volume,ParamValue::withReal(0,0)),"OneShot loads the sample for live MIDI");
+    std::array<std::array<float,64>,2> output{};
+    float* out[]{output[0].data(),output[1].data()};
+    NodeIo io;io.out=out;io.channels=2;io.frames=64;
+    const auto peak=[&](std::size_t from,std::size_t to) {
+        double result=0;
+        for(std::size_t i=from;i<to;++i)result=std::max(result,std::abs(static_cast<double>(output[0][i])));
+        return result;
+    };
+    const std::array<Event,4> play{{{0,EventType::NoteOn,7,60,1,0,1},
+        {12,EventType::Controller,7,0,0,64,1},
+        {32,EventType::ParamValue,0,0,0,OneShot::Volume+1,0},
+        {48,EventType::NoteOff,7,60,1,0,0}}};
+    io.events={play.data(),static_cast<std::int32_t>(play.size())};
+    allocations.store(0,std::memory_order_relaxed);counting=true;
+    {audio::CallbackScope callback;instrument->process(io);}
+    counting=false;
+    check(peak(12,32)>.05 && peak(34,48)<.025 && allocations.load(std::memory_order_relaxed)==0,
+          "typed MIDI and one-based automation share a split callback without allocating");
+    const Event restore{0,EventType::ParamValue,0,0,0,OneShot::Volume+1,
+                        instrument->getParam(volume).normalized};
+    io.events={&restore,1};
+    instrument->process(io);
+    check(peak(0,64)>.05,"the pedal holds the released live note across automation");
+    const Event pedalUp{8,EventType::Controller,7,0,0,64,0};
+    io.events={&pedalUp,1};
+    instrument->process(io);
+    check(peak(0,8)>.05 && peak(57,64)==0,"the pedal starts the one-millisecond release at its frame");
+}
+#endif
 void instrumentSession() {
 #if ADI_WITH_PD
     const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
@@ -705,6 +905,7 @@ void instrumentSession() {
     const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,64});
     if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
     check(loaded,"the project with OneShot loads in an ordinary Session");
+    if(auto* live=session.instanceFor(inserted.deviceId))instrumentSustainWithAutomation(*live);
     session.transport().play();
     std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
     double peak=0;int firstSound=-1;
@@ -751,6 +952,12 @@ void builtinInstrumentPlacement() {
           "a second instrument replaces the first in its place instead of stacking after it");
     check(History(store).undo().ok && at(oneShot.deviceId)==0 && at(sampler.deviceId)==-1 && at(reverb.deviceId)==1,
           "one Undo brings the replaced instrument back where it was");
+    const auto utility = prepareBuiltinInsert(store, "org.adidaw.builtin.utility", 2, oneShot.deviceId);
+    check(utility.ok && commitBuiltinInsert(store, utility).ok && at(oneShot.deviceId) == 0 &&
+              at(utility.deviceId) == 1 && at(reverb.deviceId) == 2,
+          "SC-282: a built-in effect loaded at the selected instrument is placed after it");
+    check(History(store).undo().ok && at(oneShot.deviceId) == 0 && at(reverb.deviceId) == 1 && at(utility.deviceId) == -1,
+          "SC-282: one Undo restores the original effect order");
 #endif
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();hotSwapPlacement();moveDeviceRange();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

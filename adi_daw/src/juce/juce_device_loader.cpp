@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <optional>
 #include <thread>
 #include <string>
 #include <utility>
@@ -255,6 +256,12 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         result->report.failures.push_back({"",diagnostic,state});
         failed(diagnostic,state);
     };
+    const auto noteUnreadable=[&](const scan::ScanPruneResult& reason) {
+        if(std::ranges::none_of(result->report.failures,[&](const auto& failure) {
+            return failure.state==scan::State::UnreadablePath && failure.path==reason.unreadablePath;
+        }))
+            result->report.failures.push_back({reason.unreadablePath,reason.error,scan::State::UnreadablePath});
+    };
     try {
         if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh) {
             failed("invalid discovery mode",scan::State::Invalid);return result;
@@ -265,10 +272,23 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         auto stagedVst3=std::make_unique<juce::KnownPluginList>();
         std::vector<ClapPluginRef> stagedClap;
         scan::ScanPruneRequest prune;
+        scan::ScanPruneResult bound;
         if(mode!=DiscoveryMode::CacheOnly) {
             ++stats_.scans;
             auto config=scanConfig_;
             config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
+            // SC-319: the user's Rescan tries again every plug-in a scan blocked -- two crashes, two
+            // timeouts (a licence box waiting on its user) -- as Live's rescan does; an Incremental
+            // discovery keeps the blocks. A registry that cannot be read is named in the report and
+            // the scan goes on: the blocked stay blocked.
+            std::string liftError;
+            if(mode==DiscoveryMode::Refresh) {
+                const auto file=config.registry.empty()?appdata::pluginRegistryFile():config.registry;
+                if(auto registry=PluginRegistry::open(file,liftError)) {
+                    if(const auto lifted=registry->unblockBlockedScans(liftError))
+                        stats_.scanBlocksLifted+=static_cast<std::int64_t>(*lifted);
+                }
+            }
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
             }
@@ -280,14 +300,17 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 }
                 for(const auto& root:searchPaths->clap)
                     prune.roots.push_back({"clap",media::pathFromUtf8(root)});
-                const auto bound=scan::bindScanPruneRoots(prune);
-                if(!bound){maintenanceFailed(bound);return result;}
+                bound=scan::bindScanPruneRoots(prune);
+                if(!bound && bound.unreadablePath.empty()){maintenanceFailed(bound);return result;}
             }
             if(job) {
                 config.progress=&job->vst3Progress;
                 job->phase.store(DiscoveryPhase::Vst3,std::memory_order_relaxed);
             }
             result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
+            if(!bound.unreadablePath.empty())noteUnreadable(bound);
+            if(!liftError.empty())
+                result->report.failures.push_back({"","the blocked plug-ins could not be tried again: "+liftError,scan::State::Unavailable});
             if(result->report.complete && !result->report.cancelled) {
                 if(job) {
                     config.progress=&job->clapProgress;
@@ -349,14 +372,22 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         std::sort(snapshot->clap.begin(),snapshot->clap.end(),[](const auto& a,const auto& b) {
             return a.bundlePath==b.bundlePath?a.id<b.id:a.bundlePath<b.bundlePath;
         });
-        auto report=result->report;
-        if(mode==DiscoveryMode::Incremental) {
+        // An unreadable search subtree cannot prove any cached module is missing.
+        // Publish the modules we did validate and defer all destructive pruning.
+        const bool incompleteWalk=std::ranges::any_of(result->report.failures,[](const auto& failure) {
+            return failure.state==scan::State::UnreadablePath;
+        });
+        if(mode==DiscoveryMode::Incremental && !incompleteWalk) {
             if(job)job->phase.store(DiscoveryPhase::Reconciling,std::memory_order_relaxed);
             prune.discoveryComplete=true;
             const auto registry=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
             const auto pruned=scan::pruneMissingScans(registry,prune);
-            if(!pruned){maintenanceFailed(pruned);return result;}
+            if(!pruned) {
+                if(pruned.unreadablePath.empty()){maintenanceFailed(pruned);return result;}
+                noteUnreadable(pruned);
+            }
         }
+        auto report=result->report;
         // Both formats, snapshot ownership and the copied report are prepared
         // before replacing either runtime catalogue. Old const snapshots live on.
         known_.swap(stagedVst3);clapCatalogue_.swap(stagedClap);
@@ -413,6 +444,27 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
     return nullptr;
 }
 
+namespace {
+// SC-324: the catalogue's description a saved VST3 identity names once its path is set aside. The
+// identity is "<format>-<name>-<hex hash of the module's path>-<hex class ID>" (JUCE's
+// createIdentifierString); the name may hold dashes, so it is read from the end. One plug-in installed
+// in two folders gives the first in the catalogue's order.
+std::optional<juce::PluginDescription> movedVst3(const juce::KnownPluginList& catalog, const juce::String& uid) {
+    const int idAt=uid.lastIndexOfChar('-');
+    if(idAt<=0)return std::nullopt;
+    const int hashAt=uid.substring(0,idAt).lastIndexOfChar('-');
+    if(hashAt<=0)return std::nullopt;
+    const auto prefix=uid.substring(0,hashAt);const auto classId=uid.substring(idAt+1);
+    if(classId.isEmpty())return std::nullopt;
+    for(const auto& d:catalog.getTypes()) {
+        if(d.pluginFormatName+"-"+d.name!=prefix)continue;
+        const auto idToUse=d.uniqueId!=0?d.uniqueId:d.deprecatedUid;
+        if(juce::String::toHexString(idToUse)==classId)return d;
+    }
+    return std::nullopt;
+}
+} // namespace
+
 std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceRequest& rq,
                                                            std::string& err) {
     const rows::PluginRef& ref = *rq.ref;
@@ -452,6 +504,20 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
                     break;
                 }
             }
+        }
+    }
+    // SC-324: JUCE's identifier string carries a hash of the module's full path, so a project saved on
+    // another computer, or before the plug-in moved to another folder, names a path this catalogue does
+    // not have. As Live finds a plug-in by its own ID wherever it is installed, the catalogue's plug-in of
+    // the same format, name and class ID is this one: with the saved path's spelling it gives back the
+    // project's exact identity (the saved hint), and it loads from where it is now.
+    if(!found) {
+        if(const auto moved=movedVst3(*known_,uid)) {
+            auto projected=*moved;
+            if(!hint.isEmpty())projected.fileOrIdentifier=hint;
+            module=std::make_unique<juce::PluginDescription>(*moved);
+            found=std::make_unique<juce::PluginDescription>(projected.createIdentifierString()==uid?projected:*moved);
+            ++stats_.moved;
         }
     }
     // A completed discovery job owns the Browser catalogue. A project's

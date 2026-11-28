@@ -51,6 +51,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <optional>
@@ -133,6 +134,8 @@ constexpr ScalarSpec kScalars[] = {
      FieldType::Bool, EngineImpact::Snapshot, false},
     {"clip.setGain", "Set a clip's gain", "clips", "id", "gain_db", "gain",
      FieldType::Real, EngineImpact::Snapshot, true},
+    {"audioClip.setTranspose", "Set an audio clip's pitch", "audio_clips", "clip_id", "transpose_semis", "semitones",
+     FieldType::Real, EngineImpact::Snapshot, true},
     {"clip.setColor", "Recolour a clip", "clips", "id", "color", "color",
      FieldType::Int, EngineImpact::None, false},
 
@@ -208,6 +211,10 @@ bool scalarApply(OpContext& c, const Payload& p, std::string& err) {
                 if (track.executeStep() && otherMainOutput(c.db, track.getColumn(0).getInt64(), id))
                     throw std::runtime_error("track already has an enabled main output");
             }
+        }
+        if constexpr (std::string_view(S.op) == "audioClip.setTranspose") {
+            if (!c.replay && !(std::abs(p.at("semitones").get<double>()) <= 48.))
+                throw std::runtime_error("clip pitch must be between -48 and 48 semitones");
         }
         SQLite::Statement st(c.db, std::string("UPDATE ") + S.table + " SET " + S.col +
                                        " = ? WHERE " + S.idCol + " = ?");
@@ -421,8 +428,7 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
 }
 
 std::int64_t newTrackMonitorMode(const Payload& p) {
-    const auto& kind=p.at("kind").get_ref<const std::string&>();
-    return kind=="audio" || kind=="midi" || kind=="instrument"?2:0;
+    return initialTrackMonitorMode(p.at("kind").get_ref<const std::string&>());
 }
 std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
     if (!context.replay) return newTrackMonitorMode(p);
@@ -431,9 +437,11 @@ std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p)
     std::string error;
     const auto inverse=decodeFromLog(replay.inverse,error);
     if (!inverse) throw std::runtime_error("cannot decode recorded track creation: "+error);
-    if (!inverse->contains("monitorMode")) return 0; // creation from before N67
-    if (detail::signedInteger(inverse->at("id"))!=detail::signedInteger(p.at("id")) ||
-        inverse->at("monitorMode")!=2 || newTrackMonitorMode(p)!=2)
+    if (!inverse->contains("monitorMode")) return 0; // Off, including before N67
+    // N67 recorded Auto for audio, MIDI and instrument tracks. Use the recorded mode on redo.
+    const auto& kind = p.at("kind").get_ref<const std::string&>();
+    if (detail::signedInteger(inverse->at("id")) != detail::signedInteger(p.at("id")) ||
+        inverse->at("monitorMode") != 2 || (kind != "audio" && kind != "midi" && kind != "instrument"))
         throw std::runtime_error("invalid recorded monitor mode for new track");
     return 2;
 }
@@ -724,8 +732,77 @@ bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- tempo and signature ------------------------------------------------------
 
+// A musical start follows the tempo map, while Warp-off material retains its
+// authored duration. Reproject its visible length rather than expanding it
+// to the source window: that window can contain audio beyond a split or trim.
+Payload captureUnwarpedTempoLengths(SQLite::Database& db, const Payload& p, bool insert) {
+    SQLite::Statement clips(db, "SELECT c.id,c.pos_ticks,c.length_ticks FROM clips c "
+        "JOIN audio_clips a ON a.clip_id=c.id "
+        "WHERE c.time_base=0 AND c.loop_enabled=0 AND a.warp_enabled=0 "
+        "AND c.pos_ticks>=0 AND c.length_ticks>0 ORDER BY c.id");
+    Payload lengths = Payload::array();
+    if (!clips.executeStep()) return lengths;
+
+    engine::TempoMap before, after;
+    const auto position = detail::signedInteger(p.at("pos"));
+    SQLite::Statement points(db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    while (points.executeStep()) {
+        const engine::TempoEvent event{points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                       points.getColumn(2).getInt()};
+        before.events.push_back(event);
+        if (event.posTicks != position) after.events.push_back(event);
+    }
+    if (insert) {
+        const auto at = std::ranges::lower_bound(after.events, position, {}, &engine::TempoEvent::posTicks);
+        after.events.insert(at, engine::TempoEvent{position, p.at("bpm").get<double>(), p.value("curve", 0)});
+    }
+    for (auto* map : {&before, &after})
+        if (map->events.empty() || map->events.front().posTicks > 0)
+            map->events.insert(map->events.begin(), {0,120,0});
+
+    do {
+        const auto start = clips.getColumn(1).getInt64();
+        const auto oldLength = clips.getColumn(2).getInt64();
+        const double duration = before.ticksToSeconds(edit::addTime(start, oldLength)) - before.ticksToSeconds(start);
+        const double target = after.ticksToSeconds(start) + duration;
+        if (!std::isfinite(target)) throw std::runtime_error("unwarped clip duration exceeds the tempo map");
+        auto end = after.secondsToTicks(target);
+        if (end < std::numeric_limits<std::int64_t>::max() &&
+            target - after.ticksToSeconds(end) > after.ticksToSeconds(end + 1) - target)
+            ++end;
+        const auto newLength = std::max<std::int64_t>(1, end - start);
+        if (newLength != oldLength)
+            lengths.push_back({{"id", clips.getColumn(0).getInt64()}, {"before", oldLength}, {"after", newLength}});
+    } while (clips.executeStep());
+    return lengths;
+}
+
+Payload unwarpedTempoLengths(OpContext& c, const Payload& p, bool insert) {
+    if (!c.replay) return captureUnwarpedTempoLengths(c.db, p, insert);
+    if (c.replay->asInverse) return p.value("_unwarpedLengths", Payload::array());
+    if (!c.replay->hasInverse) return Payload::array();
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode recorded tempo inverse: " + error);
+    // A historical tempo op did not change any clip rows.
+    return inverse->value("_unwarpedLengths", Payload::array());
+}
+
+void applyUnwarpedTempoLengths(OpContext& c, const Payload& lengths) {
+    if (lengths.empty()) return;
+    const char* key = c.replay && c.replay->asInverse ? "before" : "after";
+    SQLite::Statement update(c.db, "UPDATE clips SET length_ticks=? WHERE id=?");
+    for (const auto& length : lengths) {
+        update.bind(1, detail::signedInteger(length.at(key)));
+        update.bind(2, detail::signedInteger(length.at("id")));
+        if (update.exec() != 1) throw std::runtime_error("unwarped clip is missing from tempo edit");
+        update.reset();
+    }
+}
+
 bool tempoInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto unwarped = unwarpedTempoLengths(c, p, true);
         const bool explicitId = p.contains("id");
         const bool explicitTension = p.contains("tension");
         std::string columns = "pos_ticks,bpm,curve", slots = "?,?,?";
@@ -739,20 +816,25 @@ bool tempoInsertApply(OpContext& c, const Payload& p, std::string& err) {
         if (explicitId) st.bind(++parameter, p.at("id").get<std::int64_t>());
         if (explicitTension) st.bind(++parameter, p.at("tension").get<double>());
         st.exec();
+        applyUnwarpedTempoLengths(c, unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
-bool tempoInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
-    if (!p.contains("pos")) { err = "tempo event needs a position"; return false; }
-    inv = Payload::object();
-    inv["pos"] = p.at("pos");
-    return true;
+bool tempoInsertInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        inv = {{"pos", p.at("pos")}};
+        if (auto unwarped = captureUnwarpedTempoLengths(c.db, p, true); !unwarped.empty())
+            inv["_unwarpedLengths"] = std::move(unwarped);
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
 }
 bool tempoRemoveApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto unwarped = unwarpedTempoLengths(c, p, false);
         SQLite::Statement st(c.db, "DELETE FROM tempo_map WHERE pos_ticks = ?");
         st.bind(1, p.at("pos").get<std::int64_t>());
         if (st.exec() == 0) { err = "no tempo event at that position"; return false; }
+        applyUnwarpedTempoLengths(c, unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -767,6 +849,8 @@ bool tempoRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::strin
         inv["curve"] = st.getColumn(1).getInt64();
         inv["id"] = st.getColumn(2).getInt64();
         inv["tension"] = st.getColumn(3).getDouble();
+        if (auto unwarped = captureUnwarpedTempoLengths(c.db, p, false); !unwarped.empty())
+            inv["_unwarpedLengths"] = std::move(unwarped);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -824,6 +908,19 @@ std::optional<Payload> recordedRoutingInverse(const OpContext& c, std::string_vi
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const bool midiOutput = p.contains("midiPort") || p.contains("midiChannel");
+        if (midiOutput) {
+            if (p.at("kind") != "main" || p.at("srcKind") != "track" || p.at("dstKind") != "hw_out" ||
+                p.at("dst") != 0 || p.contains("row"))
+                throw std::runtime_error("a MIDI hardware output needs a track-to-hardware route");
+            const auto port = p.at("midiPort").get<std::string>();
+            const auto channel = detail::signedInteger(p.at("midiChannel"));
+            if (!port.starts_with("out:") || port.size() <= 4 || port.size() > 4096 || channel < 1 || channel > 16)
+                throw std::runtime_error("a MIDI output needs a port and a channel from 1 to 16");
+            SQLite::Statement track(c.db, "SELECT 1 FROM tracks WHERE id=? AND kind IN ('midi','instrument')");
+            track.bind(1, p.at("src").get<std::int64_t>());
+            if (!track.executeStep()) throw std::runtime_error("track cannot route MIDI to hardware");
+        }
         const bool newTrackMain = !c.replay && p.at("kind") == "main" &&
                                   p.at("srcKind") == "track" && p.at("dstKind") == "track";
         if (!c.replay && p.at("kind") == "send" && p.at("srcKind") == "track")
@@ -882,8 +979,8 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
             if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;
 
         SQLite::Statement st(c.db,
-            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader) "
-            "VALUES (?,?,?,?,?,?,?)");
+            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader, channel_map) "
+            "VALUES (?,?,?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("srcKind").get<std::string>());
         st.bind(3, p.at("src").get<std::int64_t>());
@@ -891,6 +988,12 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
         st.bind(5, p.at("dst").get<std::int64_t>());
         st.bind(6, p.at("kind").get<std::string>());
         st.bind(7,pre?1:0);
+        if (midiOutput) {
+            const auto mapping = encodePayload({{"midiPort", p.at("midiPort")}, {"midiChannel", p.at("midiChannel")}});
+            st.bind(8, mapping.data(), static_cast<int>(mapping.size()));
+        } else {
+            st.bind(8);
+        }
         st.exec();
         if(p.at("kind")=="sidechain" && p.at("dstKind")=="device")
             writeRoutingKeyTap(c.db,p.at("id").get<std::int64_t>(),p.value("keyTap",Payload{}));
@@ -1076,6 +1179,27 @@ bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop
         set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
+bool transportMetronomeOptions(OpContext &c, const Payload &p, std::string &error) {
+    if (p.empty()) {
+        error = "Choose a metronome option to change";
+        return false;
+    }
+    const auto options = readTransportSettings(c.store).metronomeOptions;
+    const auto sound = p.value("sound", static_cast<std::int64_t>(options.sound));
+    if (sound < 0 || sound > static_cast<std::int64_t>(MetronomeSound::Bell)) {
+        error = "Choose a supported metronome sound";
+        return false;
+    }
+    const Payload value{{"recordingOnly", p.value("recordingOnly", options.recordingOnly)},
+                        {"eighthNotes", p.value("eighthNotes", options.eighthNotes)},
+                        {"sound", sound}};
+    SQLite::Statement set(
+        c.store.db(),
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.metronomeOptions',?)");
+    set.bind(1, value.dump());
+    set.exec();
+    return true;
+}
 bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
     const auto bars = p.at("bars").get<std::int64_t>();
     if (bars != 0 && bars != 1 && bars != 2 && bars != 4) {
@@ -1086,6 +1210,12 @@ bool transportCountIn(OpContext &c, const Payload &p, std::string &error) {
         c.store.db(),
         "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.countIn',?)");
     set.bind(1, Payload(bars).dump());
+    set.exec();
+    return true;
+}
+bool transportPunch(OpContext &c, const Payload &p, std::string &) {
+    SQLite::Statement set(c.db, "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.punch',?)");
+    set.bind(1, p.dump());
     set.exec();
     return true;
 }
@@ -1192,7 +1322,9 @@ constexpr Field kFRouting[] = {
      "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
     {"row", FieldType::Object, false, "a captured row, as undo restores it"},
     {"sendTapRow", FieldType::Object, false, "a captured individual send tap restored by undo"},
-    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"}};
+    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"},
+    {"midiPort", FieldType::Text, false, "MIDI output identifier from Settings"},
+    {"midiChannel", FieldType::Int, false, "MIDI hardware output channel, 1 through 16"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -1272,7 +1404,11 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
                                      {"resolved", FieldType::Bool, true}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
+constexpr Field kFMetronomeOptions[] = {{"recordingOnly", FieldType::Bool, false},
+                                        {"eighthNotes", FieldType::Bool, false},
+                                        {"sound", FieldType::Int, false}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportPunch[] = {{"in", FieldType::Bool, true}, {"out", FieldType::Bool, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
@@ -2368,6 +2504,8 @@ const OpDescriptor kHandWritten[] = {
      kFCueTrack,false,true,cueTrackApply,nullptr,""},
     {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
      kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setMainOutput", "Select the stereo Main Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,mainOutputApply,nullptr,""},
     {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
      kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
 
@@ -2388,6 +2526,8 @@ const OpDescriptor kHandWritten[] = {
      kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setCountIn", "Set the recording count-in", Scope::Transport, EngineImpact::Snapshot,
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
+    {"transport.setPunch", "Set the recording punch points", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportPunch, false, true, transportPunch, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
      kFTransportSongStart, false, true, transportSongStart, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
@@ -2396,6 +2536,8 @@ const OpDescriptor kHandWritten[] = {
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
      transportMetronome, nullptr, ""},
+    {"transport.setMetronomeOptions", "Set how the metronome clicks", Scope::Transport, EngineImpact::Snapshot,
+     kFMetronomeOptions, false, true, transportMetronomeOptions, nullptr, ""},
 };
 
 }  // namespace

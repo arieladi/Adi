@@ -8,6 +8,7 @@
 #include "adi/blob.hpp"
 #include "adi/changeset.hpp"
 #include "adi/check.hpp"
+#include "adi/control/headless_project.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -43,7 +45,8 @@ int usage() {
         "                           each op's closed JSON Schema, as the control\n"
         "                           boundary enforces it (CTL-02)\n"
         "  adi_tool check <file>    verify structure and external media hashes\n"
-        "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
+        "  adi_tool collect-export <in.adi> <out.zip> [--keep-undo-history]\n"
+        "                           portable ZIP64 copy\n"
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
         "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
         "                           --strict fails on a non-canonical order\n"
@@ -313,9 +316,9 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     }
 
     StoreError err = StoreError::Ok;
-    auto store = Store::open(path, err);
-    if (!store || store->readOnly()) {
-        std::fprintf(stderr, "propose: cannot open %s for writing: %s\n", file, toString(err));
+    auto store = doApply ? Store::openForHeadlessApply(path, err) : Store::open(path, err, true);
+    if (!store || (doApply && store->readOnly())) {
+        std::fprintf(stderr, "propose: cannot open %s: %s\n", file, toString(err));
         return 1;
     }
     std::string why;
@@ -326,7 +329,18 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     }
 
     const auto limits = userLimits();
-    const auto p = agent::preview(*store, *cs, limits);
+    agent::Preview p;
+    if (doApply) {
+        p = agent::preview(*store, *cs, limits);
+    } else {
+        store.reset();
+        auto project = control::HeadlessProject::open(path, why);
+        if (!project) {
+            std::fprintf(stderr, "propose: %s\n", why.c_str());
+            return 1;
+        }
+        p = project->preview(*cs, limits);
+    }
     if (!p.ok) {
         std::fprintf(stderr, "propose: refused (%s): %s\n", agent::toString(p.refusal), p.error.c_str());
         return p.refusal == agent::Refusal::Stale ? 3 : 1;
@@ -368,10 +382,13 @@ int main(int argc, char** argv) {
     const std::string cmd = argv[1];
 
     if (cmd == "collect-export" || cmd == "extract-media") {
-        if (argc != (cmd == "collect-export" ? 4 : 3)) return usage();
         adi::media::FileResult result;
-        if (cmd == "collect-export") result = adi::media::collectExport(argv[2], argv[3]);
-        else {
+        if (cmd == "collect-export") {
+            const bool keepUndoHistory = argc == 5 && std::string_view(argv[4]) == "--keep-undo-history";
+            if (argc != 4 && !keepUndoHistory) return usage();
+            result = adi::media::collectExport(argv[2], argv[3], {}, keepUndoHistory);
+        } else {
+            if (argc != 3) return usage();
             adi::StoreError error;
             auto store = adi::Store::open(std::filesystem::absolute(argv[2]), error);
             if (!store) result = {false, adi::toString(error)};

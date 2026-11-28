@@ -1833,12 +1833,30 @@ void testOrdinaryControllerPorts() {
         controller.value = 0.123456789012345;
         d.pushEvent(controller);
         d.pushEvent(noteOn(11, 60, 0.8, 20));
+        if (mode == 0) {
+            controller.frame = 21;
+            controller.paramId = 1;
+            controller.value = 93.0 / 127.0;
+            d.pushEvent(controller);
+            controller.frame = 22;
+            controller.paramId = 64;
+            controller.value = 1;
+            d.pushEvent(controller);
+            d.pushEvent({23, engine::EventType::NoteExpression, 3, static_cast<std::uint16_t>(ExpressionDim::Pitch),
+                         0, 0, 1.0});
+        }
         d.process(io);
         if (mode == 0) {
             check(
-                f.seenMidi.size() == 1 && f.seenMidi[0].header.time == 3 && f.seenMidi[0].data[0] == 0xb3 &&
+                f.seenMidi.size() == 4 && f.seenMidi[0].header.time == 3 && f.seenMidi[0].data[0] == 0xb3 &&
                     f.seenMidi[0].data[1] == 7 && f.seenMidi[0].data[2] == 16,
                 "ordinary controller reaches the MIDI-capable native CLAP port with segment-relative frame");
+            check(f.seenMidi.size() == 4 &&
+                      f.seenMidi[1].header.time == 5 && f.seenMidi[1].data[1] == 1 && f.seenMidi[1].data[2] == 93 &&
+                      f.seenMidi[2].header.time == 6 && f.seenMidi[2].data[1] == 64 && f.seenMidi[2].data[2] == 127 &&
+                      f.seenMidi[3].header.time == 7 && f.seenMidi[3].data[0] == 0xe3 &&
+                      f.seenMidi[3].data[1] == 0 && f.seenMidi[3].data[2] == 96,
+                  "the CLAP processor receives mod wheel, sustain and the channel pitch wheel as MIDI bytes");
             check(f.seenNotes.size() == 1 && f.seenNotes[0].header.time == 4 &&
                       d.unsupportedControllers() == 0,
                   "the native note and ordinary MIDI controller coexist without changing note dialect");
@@ -3951,6 +3969,20 @@ void testAReleaseWaitsForTheCallInFlight() {
 
 }  // namespace
 
+// SC-333: the transport a CLAP plug-in is handed says it records while ADI records a take.
+void testTheTransportSaysRecording() {
+    std::printf("[SC-333 -- a CLAP plug-in knows ADI is recording]\n");
+    adi::engine::DeviceTransport clock;
+    clock.playing = true;
+    const auto playing = adi::device::clapTransportEvent(clock, 48000.0);
+    check((playing.flags & CLAP_TRANSPORT_IS_PLAYING) != 0 && (playing.flags & CLAP_TRANSPORT_IS_RECORDING) == 0,
+          "playing, not recording: no recording flag");
+    clock.recording = true;
+    const auto recording = adi::device::clapTransportEvent(clock, 48000.0);
+    check((recording.flags & CLAP_TRANSPORT_IS_PLAYING) != 0 && (recording.flags & CLAP_TRANSPORT_IS_RECORDING) != 0,
+          "recording: the plug-in's transport says so");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_tests -- the CLAP host, no JUCE and no plugin\n\n");
@@ -3988,6 +4020,7 @@ int main() {
     testDialectResolution();
     testDialectEncodings();
     testTheListIsSortedByTime();
+    testTheTransportSaysRecording();
     testDialectsThroughTheDevice();
     testFullClapDialectSwitch();
     testPendingClapDialectRelease();

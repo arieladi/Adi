@@ -74,6 +74,7 @@ THIRD_PARTY=(
   # SQLite 3.53.4 in this release contains the upstream WAL-reset fix.
   "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.4.0     df0a28ca9733f687ab7ce77f070c0df84368a45e  build"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
+  "yhirose/cpp-httplib          cpp-httplib MIT       v0.64.0   24e58ce5b25d55045af4cd6f463e83a8082fbe6b build"
   "breakfastquay/rubberband     rubberband  GPL-2.0-or-later v4.0.0 1d95888bec3ae0a17c0c4af791810d5a63f6bc35 build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"

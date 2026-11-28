@@ -3,6 +3,8 @@
 // See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
 
 #include "juce/vst3_host.hpp"
+#include <charconv>
+#include <string_view>
 #include "juce/vst3_scan_host.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
@@ -13,7 +15,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace adi::device {
@@ -128,12 +132,16 @@ scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginL
     std::vector<std::string> roots;
     for (int i = 0; i < paths.getNumPaths(); ++i)
         roots.push_back(paths[i].getFullPathName().toStdString());
-    const auto candidates = scan::findCandidates(roots, ".vst3");
+    std::vector<scan::Failure> unreadable;
+    const auto candidates = scan::findCandidates(roots, ".vst3", &unreadable);
     std::vector<juce::String> files;
     files.reserve(candidates.size());
     for (const auto& candidate : candidates)
         files.push_back(juce::String::fromUTF8(candidate.c_str()));
-    return scanVst3Files(files,into,config);
+    auto report = scanVst3Files(files,into,config);
+    report.failures.insert(report.failures.end(), std::make_move_iterator(unreadable.begin()),
+                          std::make_move_iterator(unreadable.end()));
+    return report;
 }
 scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
                                 const scan::Config& config) {
@@ -148,6 +156,38 @@ std::unique_ptr<juce::AudioPluginInstance> Vst3Host::instantiate(
     auto inst = formats_.createPluginInstance(desc, sampleRate, blockSize, err);
     if (inst == nullptr) error = err.toStdString();
     return inst;
+}
+
+bool mapDeclaredMidiControllers(const std::vector<ParamDescriptor>& params, engine::ExpressionCaps& caps) {
+    constexpr std::string_view prefix = "MIDI CC ";
+    bool found = false;
+    for (const auto& p : params) {
+        if (p.name.size() <= prefix.size() || p.name.compare(0, prefix.size(), prefix) != 0) continue;
+        // "<channel>|<controller>", both decimal, and the id a VST3 ParamID in decimal.
+        const char* first = p.name.data() + prefix.size();
+        const char* last = p.name.data() + p.name.size();
+        unsigned channel = 0, controller = 0;
+        auto [bar, e1] = std::from_chars(first, last, channel);
+        if (e1 != std::errc{} || bar == last || *bar != '|') continue;
+        auto [end, e2] = std::from_chars(bar + 1, last, controller);
+        if (e2 != std::errc{} || end != last || channel > 15) continue;
+        std::uint32_t id = 0;
+        auto [idEnd, e3] = std::from_chars(p.id.data(), p.id.data() + p.id.size(), id);
+        if (e3 != std::errc{} || idEnd != p.id.data() + p.id.size() || p.id.empty()) continue;
+        std::uint32_t* slot = nullptr;
+        if (controller < 128) slot = &caps.controllerParam[channel][controller];
+        else if (controller == engine::kCtrlAfterTouch) slot = &caps.pressureParam[channel];
+        else if (controller == engine::kCtrlPitchBend) slot = &caps.bendParam[channel];
+        if (slot == nullptr || *slot != engine::kNoParam) continue;
+        *slot = id;
+        if (controller == engine::kCtrlTimbre && caps.timbreParam[channel] == engine::kNoParam)
+            caps.timbreParam[channel] = id;
+        if (channel == 0 && controller == 101 && caps.rpnParam[0] == engine::kNoParam) caps.rpnParam[0] = id;
+        if (channel == 0 && controller == 100 && caps.rpnParam[1] == engine::kNoParam) caps.rpnParam[1] = id;
+        if (channel == 0 && controller == 6 && caps.rpnParam[2] == engine::kNoParam) caps.rpnParam[2] = id;
+        found = true;
+    }
+    return found;
 }
 
 DeviceIdentity identityOf(const juce::PluginDescription& desc) {
@@ -297,6 +337,10 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // note-expression interfaces belong to the controller, which is not
         // called from the audio thread.
         caps_ = probeExpressionCaps(*inst_);
+        // SC-312: a controller the host cannot reach still declares its MIDI map as parameters (every
+        // JUCE-built plug-in): read it there, so the sustain pedal, the mod wheel and the pitch wheel
+        // reach the plug-in rather than being dropped.
+        if (!caps_.controllerReachable) (void)mapDeclaredMidiControllers(params_, caps_);
         // ADR-0207 d2: what the graph asks, before it prepares. Here, because
         // it asks the processor, and that is a message-thread question.
         canDouble_ = inst_->supportsDoublePrecisionProcessing();
@@ -476,6 +520,95 @@ void Vst3Device::readParameters() {
         params_.push_back(std::move(d));
         handles_.push_back(p);
     }
+    // SC-310: one slot per parameter for the values the host sets, and each one's VST3 ParamID (JUCE
+    // names a VST3 parameter by its id in decimal, as the automation lanes do).
+    pending_ = std::make_unique<PendingParam[]>(params_.size());
+    pendingSent_.assign(params_.size(), 0);
+    wireIds_.assign(params_.size(), 0);
+    wireValid_.assign(params_.size(), 0);
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        const auto& text = params_[i].id;
+        std::uint32_t id = 0;
+        const auto [end, fault] = std::from_chars(text.data(), text.data() + text.size(), id);
+        if (fault == std::errc{} && end == text.data() + text.size() && !text.empty()) {
+            wireIds_[i] = id;
+            wireValid_[i] = 1;
+        }
+    }
+    // SC-311: the values the processor is sent by a lane, for the controller to follow.
+    followed_ = std::make_unique<PendingParam[]>(params_.size());
+    followedSeen_.assign(params_.size(), 0);
+    wireIndex_.clear();
+    for (std::size_t i = 0; i < params_.size(); ++i)
+        if (wireValid_[i] != 0) wireIndex_.emplace_back(wireIds_[i], static_cast<std::int32_t>(i));
+    std::sort(wireIndex_.begin(), wireIndex_.end());
+}
+
+void Vst3Device::recordFollowed(std::uint32_t wireId, double value) noexcept {
+    if (followed_ == nullptr) return;
+    const auto at = std::lower_bound(wireIndex_.begin(), wireIndex_.end(), std::pair<std::uint32_t, std::int32_t>{wireId, 0},
+                                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (at == wireIndex_.end() || at->first != wireId) return;
+    auto& slot = followed_[static_cast<std::size_t>(at->second)];
+    slot.value.store(value, std::memory_order_relaxed);
+    slot.sequence.fetch_add(1, std::memory_order_release);
+    followedEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+void Vst3Device::readTitles() {
+    for (std::size_t i = 0; i < params_.size() && i < handles_.size(); ++i) {
+        if (handles_[i] == nullptr) continue;
+        params_[i].name = handles_[i]->getName(128).toStdString();
+        params_[i].unit = handles_[i]->getLabel().toStdString();
+    }
+}
+
+void Vst3Device::pumpMainThread() {
+    // SC-332: a plug-in that renamed its parameters (macros) shows the new names. JUCE has already
+    // re-read its own titles; the panel's feed compares names, so the rows follow.
+    if (const auto titles = titlesEpoch_.load(std::memory_order_acquire); titles != titlesRead_) {
+        titlesRead_ = titles;
+        readTitles();
+    }
+    const auto epoch = followedEpoch_.load(std::memory_order_acquire);
+    if (epoch == followedHanded_ || followed_ == nullptr) return;
+    // A host set, not an edit: muted from our own listener (ADR-0124), so it is never taken for the
+    // user's, and the plug-in's echo of it lands inside the scope. Not posted to the processor: the
+    // lane already sent it there.
+    HostMutationScope mute(*this);
+    if (!mute.admitted) return; // another host change in progress: the next pump hands it over
+    for (std::size_t i = 0; i < followedSeen_.size() && i < handles_.size(); ++i) {
+        const auto sequence = followed_[i].sequence.load(std::memory_order_acquire);
+        if (sequence == followedSeen_[i]) continue;
+        followedSeen_[i] = sequence;
+        if (auto* h = handles_[i]) h->setValue(static_cast<float>(followed_[i].value.load(std::memory_order_relaxed)));
+    }
+    followedHanded_ = epoch;
+}
+
+void Vst3Device::postToProcessor(std::size_t i, double normalized) noexcept {
+    if (pending_ == nullptr || i >= params_.size() || wireValid_[i] == 0) return;
+    pending_[i].value.store(normalized, std::memory_order_relaxed);
+    pending_[i].sequence.fetch_add(1, std::memory_order_release);
+    pendingEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+void Vst3Device::drainPosted() noexcept {
+    const auto epoch = pendingEpoch_.load(std::memory_order_acquire);
+    if (epoch == pendingSeen_ || pending_ == nullptr) return;
+    // A value posted after this scan bumps the epoch again, so the next call scans again. A slot whose
+    // value finds the pool full stays unsent and is retried in the next call.
+    bool all = true;
+    for (std::size_t i = 0; i < pendingSent_.size(); ++i) {
+        const auto sequence = pending_[i].sequence.load(std::memory_order_acquire);
+        if (sequence == pendingSent_[i]) continue;
+        if (paramChanges_.set(static_cast<SV::ParamID>(wireIds_[i]),
+                              pending_[i].value.load(std::memory_order_relaxed), 0))
+            pendingSent_[i] = sequence;
+        else
+            all = false;
+    }
+    if (all) pendingSeen_ = epoch;
 }
 
 const ParamDescriptor* Vst3Device::paramAt(std::int32_t i) const noexcept {
@@ -511,6 +644,8 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
+        // SC-310: and to the processor, in the next process call (JUCE's hand-over never runs here).
+        postToProcessor(i, v.normalized);
         return true;
     }
     return false;
@@ -522,6 +657,10 @@ void Vst3Device::audioProcessorParameterChanged(juce::AudioProcessor*, int index
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Value, static_cast<double>(value));
+    // SC-311: an edit made in the plug-in's own window reaches its processor too, as SC-310's host sets
+    // do: JUCE hands it over only in its processBlock, which ADI does not call. Not for a parameter a
+    // lane is driving: there the lane plays, and an echo of its value must not stand in for it.
+    if (ours >= 0 && !paramIsAutomated(ours)) postToProcessor(static_cast<std::size_t>(ours), static_cast<double>(value));
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) {
@@ -676,7 +815,9 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     const double updates = (sampleRate > 0.0)
                              ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
     const auto points = static_cast<std::int32_t>(updates * 3.0) + 10;
-    paramChanges_.reserve(256, points);
+    // Room for every parameter at once: a project's rows replayed at open reach the processor in one
+    // call (SC-310).
+    paramChanges_.reserve(std::max<std::int32_t>(256, static_cast<std::int32_t>(params_.size()) + 16), points);
     outParams_.reserve(256, points);
     // Room for channel resets on note-on and one configuration message.
     constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
@@ -755,6 +896,9 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         events_.clear();
         paramChanges_.clear();
         outParams_.clear();
+        // SC-310: what the host set since the last call, first, at the segment's start; the automation
+        // and mapped controllers below follow it in the same queues.
+        drainPosted();
 
         // ADR-0097: a route change asked for since the last call. Every
         // sounding note ends on its own channel before the new route starts.
@@ -820,6 +964,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
             const std::int32_t t = e.frame - off;
             if (t < 0 || t >= n) { ++routedOutOfRange_; return; }
             paramChanges_.set(static_cast<SV::ParamID>(e.paramId), e.value, t);
+            recordFollowed(e.paramId, e.value); // SC-311: for the controller to follow
         };
         for (const auto& e : io.events) queueParamValue(e);
         // The injected list too, and BEFORE it was cleared -- the router
@@ -859,6 +1004,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
             context.state = Context::kProjectTimeMusicValid | Context::kBarPositionValid |
                             Context::kTempoValid | Context::kTimeSigValid;
             if (clock->playing) context.state |= Context::kPlaying;
+            if (clock->recording) context.state |= Context::kRecording; // SC-333
             context.sampleRate = sampleRate_;
             context.projectTimeSamples = clock->sample;
             context.projectTimeMusic = clock->quarterNotes;
@@ -939,6 +1085,20 @@ void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t /
                 else std::fill_n(dst,n,0.f);
             }
         }
+        // SC-315: a plug-in with one main input hears both sides of a stereo channel, folded.
+        if(main && bus.channels==1 && io.channels>=2) {
+            if(double_) {
+                auto* dst=processor_?rawIn64_[static_cast<std::size_t>(bus.offset)]:wide.getWritePointer(bus.offset);
+                if(io.wide() && source64 && source64[1])foldIntoMono(dst,source64[1]+off,n);
+                else if(!io.wide() && source32 && source32[1])
+                    for(int i=0;i<n;++i){const double r=source32[1][off+i];foldIntoMono(dst+i,&r,1);}
+            } else {
+                auto* dst=processor_?rawIn_[static_cast<std::size_t>(bus.offset)]:narrow.getWritePointer(bus.offset);
+                if(!io.wide() && source32 && source32[1])foldIntoMono(dst,source32[1]+off,n);
+                else if(io.wide() && source64 && source64[1])
+                    for(int i=0;i<n;++i){const float r=static_cast<float>(source64[1][off+i]);foldIntoMono(dst+i,&r,1);}
+            }
+        }
     }
 }
 
@@ -947,21 +1107,23 @@ void Vst3Device::copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t 
     // A segment shorter than the buffer leaves the tail untouched, and the
     // tail is last block's audio: the rest of the segment is silenced.
     for (std::int32_t c = 0; c < io.channels; ++c) {
+        // SC-315: a plug-in with one main output is heard on both sides.
+        const std::int32_t s = sourceChannelFor(c, std::min(ch, mainOutputChannels_));
         if (io.wide()) {
             double* out = io.out64[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && c < mainOutputChannels_ && double_) std::copy(scratch64_.getReadPointer(c), scratch64_.getReadPointer(c) + n, out);
-            else if (c < ch && c < mainOutputChannels_)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(c)[i];
+            if (s >= 0 && double_) std::copy(scratch64_.getReadPointer(s), scratch64_.getReadPointer(s) + n, out);
+            else if (s >= 0)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(s)[i];
             else                   std::fill(out, out + n, 0.0);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0;
         } else {
             float* out = io.out[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && c < mainOutputChannels_ && !double_) std::copy(scratch_.getReadPointer(c), scratch_.getReadPointer(c) + n, out);
-            else if (c < ch && c < mainOutputChannels_)
-                for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(c)[i]);
+            if (s >= 0 && !double_) std::copy(scratch_.getReadPointer(s), scratch_.getReadPointer(s) + n, out);
+            else if (s >= 0)
+                for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(s)[i]);
             else std::fill(out, out + n, 0.0f);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
         }
@@ -1016,10 +1178,30 @@ std::vector<std::string> Vst3Device::stateRoles() const {
     return {"chunk"};
 }
 
+namespace {
+std::optional<unsigned> vst3StateStreams(const void* bytes, std::size_t size) {
+    if (size == 0 || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        return std::nullopt;
+    const auto state = juce::AudioProcessor::getXmlFromBinary(bytes, static_cast<int>(size));
+    if (!state || !state->hasTagName("VST3PluginState"))
+        return std::nullopt;
+    return (state->getChildByName("IComponent") ? 1U : 0U) |
+           (state->getChildByName("IEditController") ? 2U : 0U);
+}
+}
+
 std::vector<std::uint8_t> Vst3Device::saveState(const std::string& role) const {
     if (inst_ == nullptr || role != "chunk") return {};
     juce::MemoryBlock mb;
     inst_->getStateInformation(mb);
+    // JUCE omits a stream whose getState refused while still serializing the
+    // wrapper. Preserve each stream in the last complete or loaded state.
+    // An omitted stream with no prior data can be optional, including for an
+    // entirely stateless plug-in, so its absence alone does not mean refusal.
+    const auto streams = vst3StateStreams(mb.getData(), mb.getSize());
+    if (!streams || (*streams & stateStreams_) != stateStreams_)
+        return {};
+    stateStreams_ = *streams;
     const auto* p = static_cast<const std::uint8_t*>(mb.getData());
     return std::vector<std::uint8_t>(p, p + mb.getSize());
 }
@@ -1034,6 +1216,8 @@ bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8
     HostMutationScope mute(*this);
     if(!mute.admitted)return false;
     inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
+    if (const auto streams = vst3StateStreams(b.data(), b.size()))
+        stateStreams_ = *streams;
     return true;
 }
 
@@ -1051,6 +1235,8 @@ void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetail
     // so the message thread coalesces these and republishes once.
     if (d.latencyChanged)
         latencyEpoch_.fetch_add(1, std::memory_order_release);
+    if (d.parameterInfoChanged)
+        titlesEpoch_.fetch_add(1, std::memory_order_release); // SC-332: read on the message thread
     if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged) {
         // ADR-0142: the answer to our own load or set is not a boundary.
         if (hostMutationOnCurrentThread()) mutedStateSignals_.fetch_add(1, std::memory_order_release);

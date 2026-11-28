@@ -414,6 +414,8 @@ void testTheWholeLoopThroughTheJournal() {
     knobs->begin(0); knobs->value(0, 0.9); knobs->end(0);
     std::vector<OpRequest> out;
     eqi(static_cast<long long>(ops.drain(1000, out)), 2, "opener and edit");
+    const auto cutoffTouch = ops.lastTouchSequence(100);
+    check(cutoffTouch != 0 && ops.lastTouched(100) == 0, "SC-317 the live Session publishes its drained native touch");
     if (out.size() != 2) return;
 
     OpJournal j(*store);
@@ -466,6 +468,8 @@ void testTheWholeLoopThroughTheJournal() {
     std::vector<OpRequest> again;
     eqi(static_cast<long long>(ops.drain(1400, again)), 2,
         "the next edit after the undo: an opener again, then the edit");
+    check(ops.lastTouchSequence(100) > cutoffTouch && ops.lastTouched(100) == 0,
+          "SC-317 the same live Session parameter produces a new touch");
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +485,7 @@ void testTheWholeLoopThroughTheJournal() {
 /// that answers from its own timer instead.
 class Sampler final : public device::DeviceInstance {
 public:
-    Sampler() {
+    explicit Sampler(bool presetControls = false) {
         device::ParamDescriptor c;
         c.id = "cutoff"; c.name = "Cutoff";
         params_.push_back(c);
@@ -489,6 +493,21 @@ public:
         g.id = "gain"; g.name = "Gain";
         params_.push_back(g);
         values_ = {0.5, 0.25};
+        if (presetControls) {
+            device::ParamDescriptor configure;
+            configure.id = "configure";
+            configure.name = "Configuration";
+            configure.automatable = false;
+            configure.configurable = true;
+            params_.push_back(configure);
+            values_.push_back(.75);
+            device::ParamDescriptor meter;
+            meter.id = "meter";
+            meter.name = "Read-only meter";
+            meter.automatable = false;
+            params_.push_back(meter);
+            values_.push_back(.8);
+        }
         id_.format = "test"; id_.name = "Sampler";
     }
     [[nodiscard]] const device::DeviceIdentity& identity() const noexcept override { return id_; }
@@ -769,15 +788,20 @@ void testAnUndoneChunkReseedsTheCapture() {
 
 void testTheLastTouchedParameter() {
     section("ADR-0154 -- the parameter last touched in the plug-in's window: gestures and knob turns, never echoes or presets");
-    Sampler s;
+    Sampler s, replacement;
     ParamOps ops;
     ops.attach(20, s);
     std::vector<OpRequest> out;
     eqi(ops.lastTouched(20), -1, "nothing touched yet");
     s.drag(1, 0.6);
+    check(ops.lastTouchSequence(20) == 0, "SC-317 producer events stay unpublished until the owner drains them");
     ops.drain(1000, out);
     eqi(ops.lastTouched(20), 1, "a drag of gain: gain is the temporary entry");
-    // A plug-in with no gestures: a bare value is a touch too.
+    const auto firstGain = ops.lastTouchSequence(20);
+    s.drag(1, 0.65);
+    ops.drain(1050, out);
+    check(firstGain != 0 && ops.lastTouchSequence(20) > firstGain && ops.lastTouched(20) == 1,
+          "SC-317 a repeat gesture of the same knob advances the sequence");
     s.drag(0, 0.3);
     ops.drain(1100, out);
     eqi(ops.lastTouched(20), 0, "then cutoff");
@@ -790,13 +814,67 @@ void testTheLastTouchedParameter() {
     std::vector<OpRequest> o2;
     ops2.drain(2100, o2);
     eqi(ops2.lastTouched(21), -1, "its echo is not a touch");
+    check(ops2.lastTouchSequence(21) == 0, "SC-317 an echo leaves the sequence unchanged");
+    k.value(1, 0.7);
+    ops2.drain(2120, o2);
+    const auto firstBare = ops2.lastTouchSequence(21);
+    k.value(1, 0.8);
+    ops2.drain(2140, o2);
+    const auto repeatBare = ops2.lastTouchSequence(21);
+    ops2.drain(2340, o2);
+    check(firstBare != 0 && repeatBare > firstBare && ops2.lastTouchSequence(21) == repeatBare &&
+              ops2.lastTouched(21) == 1,
+          "SC-317 repeated bare values touch the same parameter, while quiet completion is not another touch");
     // A preset moves cutoff with no gesture: absorbed, and not a touch.
     s.drag(1, 0.7);
     ops.drain(1200, out);
+    const auto beforePreset = ops.lastTouchSequence(20);
     s.pickPreset(4, 0.9);
     ops.drain(1300, out);
     eqi(ops.lastTouched(20), 1, "a preset's own broadcast does not steal the temporary entry");
+    check(ops.lastTouchSequence(20) == beforePreset, "SC-317 an absorbed preset broadcast cannot advance the touch sequence");
     eqi(ops.lastTouched(99), -1, "an unknown device has none");
+    check(ops.lastTouchSequence(99) == 0, "SC-317 an unknown device has no touch sequence");
+
+    s.drag(1, 0.8); // Leave the old instance's final callbacks in the ring.
+    ops.detach(20);
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.recentTouches(20).empty() &&
+              ops.attach(20, replacement),
+          "SC-317 detaching clears access to the old touch and allows the ID to be reused");
+    ops.drain(1400, out);
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.recentTouches(20).empty(),
+          "SC-317 an old queued callback cannot name a parameter on the replacement");
+    replacement.drag(1, 0.6);
+    ops.drain(1500, out);
+    check(ops.lastTouched(20) == 1 && ops.lastTouchSequence(20) > beforePreset && ops.recentTouches(20).size() == 1,
+          "SC-317 the replacement publishes its own fresh native touch");
+}
+
+void testNativeTouchHistory() {
+    section("SC-317 -- a drain keeps each native parameter touch in chronological order");
+    Knobs k;
+    ParamOps ops(8);
+    check(ops.attach(20, k), "attach a device with a small producer ring");
+    std::vector<OpRequest> out;
+    k.value(0, 0.6);
+    k.value(1, 0.7);
+    k.value(1, 0.8);
+    k.value(0, 0.9);
+    ops.drain(1000, out);
+    const auto initial = ops.recentTouches(20);
+    const auto lastInitial = ops.lastTouchSequence(20);
+    check(initial.size() == 3 && initial[0].index == 0 && initial[1].index == 1 && initial[2].index == 0 &&
+              initial[1].sequence == initial[0].sequence + 2 && initial[2].sequence == lastInitial,
+          "an X/Y drain keeps both parameters, compressing only adjacent repeats at their newest sequence");
+    for (int pass = 0; pass < 70; ++pass) {
+        k.value(1, 0.7);
+        k.value(0, 0.5);
+        ops.drain(1100 + pass, out);
+    }
+    const auto recent = ops.recentTouches(20);
+    check(recent.size() == 128 && recent.front().index == 1 && recent.front().sequence > lastInitial &&
+              recent.back().index == ops.lastTouched(20) && recent.back().sequence == ops.lastTouchSequence(20),
+          "the recent history keeps a bounded chronological tail even with a small capture ring");
 }
 
 void testTheStateLoopThroughTheJournal() {
@@ -951,6 +1029,92 @@ void testTheStateLoopThroughTheJournal() {
     }
 }
 
+void testReadPresetState() {
+    section("SC-85 -- capture a coherent live preset without project changes");
+    const adi::test::TempDirectory scratch("param_ops", "read_preset");
+    StoreError storeError = StoreError::Ok;
+    auto store = Store::createEmpty(scratch.path() / "p.adi", storeError);
+    check(store != nullptr, "create live preset project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name) VALUES(1,'midi','Keys'),(9,'master','Master');"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','preset.sampler','Sampler','instrument');"
+        "INSERT INTO device_chains(id,track_id) VALUES(10,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(100,10,0,1,'A'),(101,10,1,1,'B');");
+    Session session;
+    const auto loader = [](const DeviceRequest& request, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+        auto plugin = std::make_unique<Sampler>(true);
+        plugin->stateless = request.device->id == 101;
+        return plugin;
+    };
+    check(session.load(*store, loader, SessionSpec{}), "load preset Session");
+    auto* sampler = dynamic_cast<Sampler*>(session.instanceFor(100));
+    if (!sampler) { check(false, "resolve the preset device"); return; }
+    ParamOps ops;
+    check(ops.attachSession(session) == 2, "attach both preset devices");
+    sampler->changePatchSilently(13);
+    check(sampler->setParam("cutoff", device::ParamValue::fromNormalized(.625)), "change the live cutoff without writing a row");
+    std::string error;
+    const auto saved = ops.readDevicePresetState(100, error);
+    check(saved && error.empty() && saved->parameters.size() == 3 && !saved->parameters.contains("meter") &&
+          saved->parameters.at("cutoff") == .625 && saved->parameters.at("configure") == .75 &&
+          saved->state.size() == 1 && saved->state.at("chunk").front() == std::byte{13},
+          "save the current writable values and opaque state, skipping the meter");
+    const auto stateless = ops.readDevicePresetState(101, error);
+    check(stateless && stateless->parameters.size() == 3 && stateless->state.empty() && error.empty(),
+          "a device without opaque streams still exports its parameters");
+    sampler->refuseSave = true;
+    check(!ops.readDevicePresetState(100, error) && !error.empty(), "refuse an incomplete declared stream");
+    sampler->refuseSave = false;
+    sampler->afterSave = [&] { sampler->drag(0, .75); };
+    check(!ops.readDevicePresetState(100, error) && error.find("changed") != std::string::npos,
+          "a control change during serialization refuses the snapshot");
+    check(!ops.readDevicePresetState(100, error) && !error.empty(), "capture leaves the queued edit for its normal owner");
+    check(!ops.readDevicePresetState(999, error) && !error.empty(), "an unknown device cannot export state");
+    check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == 0 &&
+          store->db().execAndGet("SELECT count(*) FROM plugin_state").getInt() == 0 && sampler->loads == 0,
+          "reading a preset does not write history, save project state or reload the instance");
+}
+
+void testSnapshotWithMissingDevice() {
+    section("SC-09 -- an unloaded plug-in keeps its saved rows without a runtime receipt");
+    const adi::test::TempDirectory scratch("param_ops", "snapshot_missing");
+    StoreError error = StoreError::Ok;
+    auto store = Store::createEmpty(scratch.path() / "p.adi", error);
+    check(store != nullptr, "create project for an unavailable plug-in");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','missing.sampler','Sampler','instrument');");
+    Session session;
+    check(session.load(*store, {}, SessionSpec{}), "load without the sampler plug-in");
+    ParamOps ops;
+    ops.attachSession(session);
+    std::vector<OpRequest> requests(3);
+    requests[0].opType = "chain.create";
+    requests[0].payload = {{"id", 10}, {"track", 1}, {"ord", 0}, {"name", "Devices"}};
+    requests[1].opType = "device.insert";
+    requests[1].payload = {{"id", 100}, {"chain", 10}, {"ord", 0}, {"ref", 1}, {"name", "Sampler"}, {"latency", 0}};
+    requests[2].opType = "device.setParam";
+    requests[2].payload = {{"dev", 100}, {"param", "cutoff"}, {"norm", 0.75}};
+    OpJournal journal(*store);
+    const auto committed = journal.commit(requests);
+    check(committed.ok && session.refresh(*store), "insert and realise a missing plug-in with saved parameters");
+    ops.attachSession(session);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 1}, {"name", "After the placeholder"}};
+    check(journal.commit(rename).ok && session.refresh(*store),
+          "realise a second edit before pumping the earlier receipt");
+    ops.attachSession(session);
+    const auto captured = ops.snapshotAll(1000);
+    const auto *entry = session.entryFor(100);
+    check(entry && entry->placeholder && !ops.isAttached(100) && captured.ok() && captured.journalOps == 0 &&
+              ops.appliedDeliveryStatus().state == AppliedDeliveryState::Idle &&
+              near(store->db().execAndGet("SELECT normalized_value FROM plugin_params").getDouble(), 0.75),
+          "save acknowledges the older stored-only receipt without waiting for a plug-in or changing its values");
+}
+
 void testSnapshotAll() {
     section("PD-03 -- save every silent changed device before a snapshot or close");
     const adi::test::TempDirectory scratch("param_ops", "snapshot_all");
@@ -1055,6 +1219,12 @@ void testSnapshotAll() {
     const auto latest = ops.snapshotAll(1900);
     check(latest.ok() && latest.stateOps == 1 && count() == 9 && rowHash(100) == hashOfState(*a),
           "the later silent edit is saved at the next explicit request");
+
+    a->changePatchSilently(23);
+    b->refuseSave = true;
+    const auto selected = ops.snapshotDeviceState(100, 2000, ParamOps::SnapshotGestures::FinishOpen);
+    check(selected.ok() && selected.stateOps == 1 && count() == 10 && rowHash(100) == hashOfState(*a),
+          "capturing one device does not read an unrelated plug-in's opaque state");
 }
 
 }  // namespace
@@ -1074,11 +1244,14 @@ int main() {
     testAppliedMovesTheBaselineWithoutAnEcho();
     testRowsFollowTheChunk();
     testASaveWritesTheFirstRow();
+    testSnapshotWithMissingDevice();
     testSnapshotAll();
+    testReadPresetState();
     testAStatelessDeviceWritesItsMoves();
     testAnUndoneChunkReseedsTheCapture();
     testTheStateLoopThroughTheJournal();
     testTheLastTouchedParameter();
+    testNativeTouchHistory();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -137,9 +137,10 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
     r->graph_.setChannels(opts.channels);
     // Every placement, including feedback and monitor nodes, owns the same
     // lifetime/binding contract. No candidate mutates a shared Node binding.
-    const auto add = [&](Node& node) {
+    const auto add = [&](Node& node, std::optional<std::int32_t> intrinsicLatency = {}) {
         if (auto owner = node.sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
-        const NodeId id = r->graph_.addNode(node, opts.fixedLatencyFor ? opts.fixedLatencyFor(node) : std::nullopt);
+        const auto fixed = opts.fixedLatencyFor ? opts.fixedLatencyFor(node) : std::nullopt;
+        const NodeId id = r->graph_.addNode(node, fixed ? fixed : intrinsicLatency);
         if (opts.eventSourceFor) {
             if (auto binding = opts.eventSourceFor(node))
                 (void)r->graph_.setEventSource(id, std::move(*binding));
@@ -165,7 +166,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         if (pn.kind == PlannedKind::Vca) continue;
 
         auto mix = std::make_unique<MixNode>();
-        const NodeId head = add(*mix);
+        const NodeId head = add(*mix, 0);
         r->owned_.push_back(std::move(mix));
 
         NodeId tail = head;
@@ -264,8 +265,8 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 r->problems_.push_back(ref+": invalid key source/tap/gain");continue;
             }
             auto gain=std::make_unique<KeyGain>(e.keyGainDb,e.keyPan);
-            const auto gainId=add(*gain);r->owned_.push_back(std::move(gain));
-            if(!r->graph_.connect(source,gainId) || !r->graph_.connect(gainId,targetId,Bus::Sidechain)) {
+            const auto gainId=add(*gain,0);r->owned_.push_back(std::move(gain));
+            if(!r->graph_.connect(source,gainId) || !r->graph_.connectTrackRoute(gainId,targetId,Bus::Sidechain,srcId)) {
                 r->problems_.push_back(ref+": graph refused device key");continue;
             }
             // Distinct logical identities survive unrelated rebuilds, while a
@@ -354,8 +355,9 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             const NodeId sid = add(*send);
             const NodeId hid = half != nullptr ? add(*half) : kInvalidNode;
             const bool joined = r->graph_.connect(at, sid) &&
-                                (half == nullptr ? r->graph_.connect(sid, to)
-                                                 : r->graph_.connect(sid, hid) && r->graph_.connect(hid, to));
+                                (half == nullptr ? r->graph_.connectTrackRoute(sid, to, Bus::Main, srcId)
+                                                 : r->graph_.connect(sid, hid) &&
+                                                   r->graph_.connectTrackRoute(hid, to, Bus::Main, srcId));
             if (!joined) {
                 r->problems_.push_back(ref + ": the graph refused the send");
                 continue;
@@ -376,7 +378,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             }
             continue;
         }
-        if (!r->graph_.connect(from, to, e.bus)) {
+        if (!r->graph_.connectTrackRoute(from, to, e.bus, srcId)) {
             r->problems_.push_back(trackRef(srcId) + " -> " + trackRef(dstId) +
                                    ": the graph refused the connection");
             continue;

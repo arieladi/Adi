@@ -4,7 +4,13 @@
 #include "adi/ops.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/track_edits.hpp"
+#include "ui_controls.hpp"
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <utility>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
@@ -13,7 +19,8 @@
 #include <unordered_map>
 #include <vector>
 namespace adi::engine {
-struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
+struct StripMeter; // adi/engine/mixer.hpp: the engine's post-fader peak and RMS
+struct MidiNoteActivity;
 }
 namespace adi::ui {
 class AdiRootComponent;
@@ -24,20 +31,22 @@ class ArmButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's Solo switch: a right-click opens its menu (Solo in Place, manual 18.6) and solos nothing.
-class SoloButton final : public juce::TextButton {
+// A right-click opens a mixer switch's menu without switching it.
+class MixerMenuButton final : public controls::PrimaryMouseControl<juce::TextButton> {
   public:
-    using juce::TextButton::TextButton;
+    using PrimaryMouseControl::PrimaryMouseControl;
     std::function<void()> onMenu;
     void mouseDown(const juce::MouseEvent &) override;
-    void mouseUp(const juce::MouseEvent &) override;
 };
-// Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
-// it has clipped. A click resets it.
+class ValueEntry;
 // A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
 // JUCE's Slider starts a drag on any button when its own menu is off.
 class PrimaryButtonSlider final : public juce::Slider {
   public:
+    PrimaryButtonSlider();
+    ~PrimaryButtonSlider() override;
+    void enableValueEdits(double defaultValue, double step);
+    bool keyPressed(const juce::KeyPress &) override;
     // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
     // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
     void mouseDown(const juce::MouseEvent &e) override {
@@ -49,19 +58,17 @@ class PrimaryButtonSlider final : public juce::Slider {
         if (primary_)
             juce::Slider::mouseDrag(e);
     }
-    void mouseUp(const juce::MouseEvent &e) override {
-        if (primary_)
-            juce::Slider::mouseUp(e);
-        primary_ = false;
-    }
-    void mouseDoubleClick(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
-            juce::Slider::mouseDoubleClick(e);
-    }
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
 
   private:
     bool primary_ = false;
+    std::optional<double> default_;
+    double step_ = 0;
+    std::unique_ptr<ValueEntry> valueEntry_;
 };
+// Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
+// it has clipped. A click resets it.
 class PeakHold final : public juce::Button {
   public:
     PeakHold();
@@ -77,7 +84,10 @@ double meterLevel(double depth) noexcept;
 // In/Out column, then the Track Activator, Solo and Arm; volume and pan; one send per
 // return on the rows under them (ADR-0203 d3); the meter. A channel has no button of its own for
 // any Mix View function: those are added in the Mix View like every other one (ADR-0243).
-class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
+class MixerStrip final : public juce::Component,
+                         public juce::SettableTooltipClient,
+                         public juce::DragAndDropTarget,
+                         public juce::FileDragAndDropTarget {
   public:
     // Esc during a live drag cancels it (MX-23).
     bool keyPressed(const juce::KeyPress &) override;
@@ -98,13 +108,22 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kTitleHeight = 17;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
     bool dragging() const noexcept { return dragging_; }
-    // What the meter draws, linear: the level and the peak line, after the window's ballistics.
-    float peak() const noexcept { return peak_; }
-    float rms() const noexcept { return rms_; }
+    // What each meter column draws after the window's ballistics, in linear units.
+    float peak(std::size_t channel) const noexcept { return levels_[channel].peak; }
+    float rms(std::size_t channel) const noexcept { return levels_[channel].rms; }
     // Whether the strip has found the engine's meter for its track.
     bool hasMeter() const noexcept { return meter_ != nullptr; }
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
@@ -120,16 +139,15 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
-    juce::Slider delay;
+    PrimaryButtonSlider delay;
     void setDelayTooltip(const juce::String &tip);
-    // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
-    // only, in the Mixer View, where a track has its Activator. One transport op at release or when
-    // typed, outside undo.
-    juce::Slider cueVolume;
-    // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
+    // Cue Volume on Main in both views. One transport op at release or when typed, outside undo.
+    PrimaryButtonSlider cueVolume;
+    enum class RoutingChooser { MidiFrom, MidiChannel, MidiTo, AudioTo, MainOut, CueOut };
+    std::function<void(RoutingChooser, juce::PopupMenu)> onRoutingMenu;
+    // The Arrangement's compact Cue Out chooser shares the Mixer View's routing menu.
+    juce::TextButton cueOut;
     void cueOutMenu();
-    // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
-    bool onCueOut(juce::Point<int> at) const noexcept;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
@@ -137,8 +155,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
     // Live's step is M1-06).
     static constexpr int kDelayDragPixels = 20000;
-    juce::TextButton active;
-    SoloButton solo{"S"};
+    MixerMenuButton active, solo{"S"};
     bool cueMode_ = false; // the Solo button is the Cue button (Options > Cue Switches)
     bool cueDragging_ = false;
     ArmButton arm;
@@ -155,6 +172,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Which of In, Auto and Off is under `at`, where this strip draws the monitoring switch (MX-09).
     std::optional<Monitor> monitorAt(juce::Point<int>) const noexcept;
     juce::PopupMenu monitorMenu();
+    bool onAudioInput(juce::Point<int>) const noexcept;
+    juce::PopupMenu audioInputMenu();
+    std::function<void(juce::PopupMenu)> onAudioInputMenu;
     // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
     bool showsSends() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm.
@@ -168,9 +188,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // audio mixer: a MIDI track holding no instrument has no volume, pan or sends, as Live's.
     bool isMidi() const noexcept { return midi_; }
     bool hasAudio() const noexcept { return audio_; }
-    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Master, its
+    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Main, its
     // group ("Group"), or No Output.
-    const char *outputLabel() const noexcept;
+    juce::String outputLabel() const;
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
     const std::vector<std::unique_ptr<juce::TextButton>> &returnSwitches() const noexcept { return returnSwitches_; }
     // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
@@ -210,7 +230,41 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::PopupMenu soloMenu();
 
   private:
+    friend class MixerPanel;
+    void trackTitleMenu(juce::Point<int> where);
+    void selectTitle(std::int64_t track);
+    bool cancelTitleDrag();
+    void setDropPreview(bool);
+    std::optional<RoutingChooser> routingChooserAt(juce::Point<int>) const noexcept;
+    void showRoutingMenu(RoutingChooser);
+    juce::PopupMenu midiInputMenu(RoutingChooser);
+    juce::String midiInputLabel(RoutingChooser) const;
+    juce::PopupMenu midiOutputMenu();
+    juce::String midiOutputLabel() const;
+    juce::String audioDestinationLabel(const engine::TrackNode &) const;
+    std::span<const std::pair<int, std::string>> stereoOutputs() const;
+    juce::String stereoOutputLabel(RoutingChooser) const;
+    int selectedStereoOutput(RoutingChooser) const;
     void paintInOut(juce::Graphics &, int x) const;
+    const char *audioInputLabel() const;
+    bool audioInputIsResampling() const;
+    void showAudioInputMenu();
+    juce::Rectangle<int> monitorBounds() const noexcept;
+    void layoutMonitor();
+    class MonitorSwitch final : public juce::Component, public juce::SettableTooltipClient {
+      public:
+        explicit MonitorSwitch(MixerStrip &);
+        bool hitTest(int, int) override;
+        void paint(juce::Graphics &) override;
+        void mouseDown(const juce::MouseEvent &) override;
+        bool keyPressed(const juce::KeyPress &) override;
+        void focusGained(FocusChangeType) override { repaint(); }
+        void focusLost(FocusChangeType) override { repaint(); }
+
+      private:
+        MixerStrip &strip_;
+    };
+    MonitorSwitch monitor_{*this};
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
@@ -224,6 +278,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
   public:
     // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
     juce::PopupMenu volumeMenuItems();
+    juce::PopupMenu panMenuItems();
+    juce::PopupMenu sendMenuItems(std::size_t index);
+    juce::PopupMenu activatorMenuItems();
 
   private:
     void sendMenu(std::size_t index);
@@ -239,10 +296,13 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The sends' rows in the track controls: three to a row, from the row under volume and pan.
     int sendRows() const noexcept { return static_cast<int>((sends_.size() + 2) / 3); }
     // A Mixer View strip's sends: Live's two columns, each knob 22 pt under the one before.
-    int sendsHeight(std::size_t count) const noexcept {
-        return count == 0 ? 0 : 28 + 22 * static_cast<int>(count);
+    static constexpr int kSendPitch = 22, kSendPadding = 28;
+    static int sendsHeight(std::size_t count) noexcept {
+        return count == 0 ? 0 : kSendPadding + kSendPitch * static_cast<int>(count);
     }
+    void layoutSends();
     juce::Rectangle<int> sendBounds(std::size_t index) const noexcept;
+    juce::Rectangle<int> sendArrowBounds(bool down) const noexcept;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
     // Where a Mixer View strip's sections begin, under the name and its rule.
@@ -260,6 +320,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     bool midi_ = false, audio_ = true, inGroup_ = false;
     const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
+    int cueFirstChannel_ = 0;
     // Throws a return's own Pre/Post switch (`TrackNode::returnSendTap`): one `return.setSendTap`,
     // one undo step, which the engine spreads over every send into the return.
     void throwPrePost(std::int64_t ret);
@@ -280,29 +341,48 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // While a lane is followed its control shows the envelope at the playhead, moving as the engine
     // plays it; shown only, no op and no gesture. `volumeDb` and `pan` are the track's own values.
     void followAutomation(double volumeDb, double pan);
-    std::size_t shown_ = 0, returnCount_ = 0;
+    std::size_t shown_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden
     std::size_t position_ = 0; // the track's place, 1-based: its colour by place
     std::size_t number_ = 0;   // Live's track number, which skips the returns: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
+    bool dropPreview_ = false;
     TrackRecordState record_; // the arm and monitoring last shown (MX-09)
     // A drag heard while it moves (MX-23): begun on the control's drag start, ended on its release.
     bool live_ = false, cancelled_ = false; // cancelled: Esc came before the release, which commits nothing
     void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, const std::string &label);
     bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
-    bool onSplitLine(const juce::MouseEvent &) const noexcept;
-    // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),
+    bool resizeFromTop_ = false;
+    struct TitleDrag {
+        std::int64_t source;
+        std::uint64_t generation;
+        int startX;
+        bool movingReturn;
+        bool selectOnRelease;
+        bool moving = false;
+    };
+    std::optional<TitleDrag> titleDrag_;
+    // Empty away from an Arrangement split line, otherwise whether the line is at the top.
+    std::optional<bool> splitLine(const juce::MouseEvent &) const noexcept;
+    // The engine's post-fader meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`),
     // written per callback by the audio thread and read here with relaxed loads; null until the
     // session has a strip for the track. The strips live as long as the session (ADR-0122's
     // rule), and the session as long as the root that holds this panel.
     const engine::StripMeter *meter_ = nullptr;
-    // What the meter draws after the window's ballistics: the level, falling once the engine's
-    // value drops, and the peak line, held and then falling; the clock readings they need.
-    float peak_ = 0, rms_ = 0;
-    double lastFrame_ = -1, peakSince_ = 0;
+    std::uint32_t midiOnsets_ = 0;
+    double midiPulseUntil_ = 0;
+    bool midiLit_ = false;
+    // Each channel's level falls after the engine's value drops. Its peak line
+    // holds for a moment before falling, independently of the other channel.
+    struct MeterLevel {
+        float peak = 0, rms = 0;
+        double peakSince = 0;
+    };
+    std::array<MeterLevel, 2> levels_{};
+    double lastFrame_ = -1;
 };
 // Two shapes over one strip: rows level with the arrangement's lanes (the track
 // controls), or Live's Mixer View, vertical strips left to right (manual 18.1).
@@ -324,8 +404,12 @@ class MixerPanel final : public juce::Component {
     // The frame above and below the lanes stands in front of a row scrolled past either edge.
     void paintOverChildren(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
+    void showContextMenu(juce::PopupMenu, juce::Point<int>);
+    // A presenter can inspect the requested menu without opening a native popup.
+    std::function<void(juce::PopupMenu)> contextMenuPresenter;
     // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
     // coordinates; the whole height for the Mixer View.
     juce::Range<int> rowsBand() const noexcept;
@@ -346,10 +430,11 @@ class MixerPanel final : public juce::Component {
     void reveal(std::size_t index);
     bool submit(const std::string &op, Payload payload, const char *label);
     AdiRootComponent &root;
-    // Where a strip's meter reads from: the engine's {peak, rms} per strip (UI-ARCHITECTURE §9;
+    // Where a strip's meter reads from: the engine's post-fader meter (UI-ARCHITECTURE §9;
     // `Session::strips().stripFor(track)->meter()`, #381), written by the audio thread and read
     // with relaxed loads, never a tap. Null for a track the session has no strip for yet.
     std::function<const engine::StripMeter *(std::int64_t)> meter;
+    std::function<engine::MidiNoteActivity(std::int64_t)> midiActivity;
     // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
     std::function<double()> clock;
     // Each track's Peak Level (manual 18.1), linear, by track id: the strips are reused for other
@@ -360,12 +445,33 @@ class MixerPanel final : public juce::Component {
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
 
   private:
+    friend class MixerStrip;
+    struct TitleDrop {
+        TrackDrop target;
+        int x;
+        bool intoGroup = false;
+    };
+    TitleDrop trackDropAt(int x, bool movingReturn) const;
+    void previewTrackDrop(std::optional<TitleDrop> drop);
     void place();
     void placeColumns();
+    struct ColumnSections {
+        int inOut = 0, trackDelay = 0;
+        std::size_t sends = 0;
+    };
+    ColumnSections columnSections(int height) const noexcept;
+    std::size_t firstSend(std::size_t shown) const noexcept;
+    void scrollSendsBy(int rows, std::size_t shown);
+    bool scrollSends(const juce::MouseEvent &, const juce::MouseWheelDetails &);
     // Live's frame above the rows: the band, and H and W beside the Overview's end.
     void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
+    // The columns share one window into Main's return order. Each track has its own eligible returns.
+    std::vector<std::int64_t> sendReturns_, nextSendReturns_;
+    std::size_t sendOffset_ = 0;
+    float sendWheelFraction_ = 0.f;
+    std::optional<TitleDrop> trackDrop_;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
 };
 // Bitwig's Use Large Track Height (Master Reference 10, Figure 33; the director, 28 October
@@ -375,10 +481,8 @@ class TrackHeightButton final : public juce::Button {
     TrackHeightButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
-// between Arrangement and Session View, then the track height, under the bar over the track names,
-// which holds the flip and the section selectors (the Arrangement sheet; DF-W25). Flipped, it moves to
-// the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
+// The strip down the Arrangement's outer edge holds the track height control. Flipped, it moves to
+// the window's left edge so the track controls meet the lanes (the director, 28 October 2026).
 class SideStrip final : public juce::Component {
   public:
     SideStrip();

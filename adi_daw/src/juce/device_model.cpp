@@ -175,7 +175,11 @@ void DeviceNode::processActive(const engine::NodeIo& io) noexcept {
     inst_->process(io);
 }
 void DeviceNode::didSuspend() noexcept {
-    if (inst_ != nullptr && !bypassed()) inst_->didSuspend();
+    didSuspendAfterBypass(bypassed());
+}
+
+void DeviceNode::didSuspendAfterBypass(bool bypass) noexcept {
+    if (inst_ != nullptr && !bypass) inst_->didSuspend();
 }
 
 bool DeviceNode::needsBypassTransition(std::int32_t configuredLatency) noexcept {
@@ -187,6 +191,10 @@ void DeviceNode::processBypassTransition(const engine::NodeIo& io) noexcept {
 }
 
 std::int64_t DeviceNode::tailSamples() const noexcept {
+    return tailSamplesAfterBypass(bypassed());
+}
+
+std::int64_t DeviceNode::tailSamplesAfterBypass(bool bypass) const noexcept {
     // ADR-0043's escape hatch, and it is checked FIRST. `always_process` is
     // set by a user who has heard their reverb cut off, and a device that
     // reports a tail of zero is exactly the case they set it for -- so it has
@@ -196,17 +204,21 @@ std::int64_t DeviceNode::tailSamples() const noexcept {
     // A bypassed device is not running, so it has nothing to finish. Reporting
     // a tail here would hold a whole chain awake behind a device the user
     // switched off.
-    if (bypassed() || inst_ == nullptr) return 0;
+    if (bypass || inst_ == nullptr) return 0;
 
     return inst_->tailSamples();
 }
 
 engine::EventFlow DeviceNode::eventFlow() const noexcept {
+    return eventFlowAfterBypass(bypassed());
+}
+
+engine::EventFlow DeviceNode::eventFlowAfterBypass(bool bypass) const noexcept {
     // A bypassed instrument is not running, so it consumes nothing -- the same
     // transparency that makes bypass run no device DSP. Notes then
     // reach whatever follows it, which is what bypassing a synth in front of
     // a second one should do.
-    if (bypassed() || inst_ == nullptr) return engine::EventFlow::Through;
+    if (bypass || inst_ == nullptr) return engine::EventFlow::Through;
     return inst_->eventFlow();
 }
 

@@ -38,6 +38,7 @@
 #pragma once
 
 #include "adi/blob.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/events.hpp"
 #include "adi/engine/note_expression.hpp"
 
@@ -89,7 +90,7 @@ enum class RouteChoice : std::uint8_t {
 /// VST3's controller numbers for the two MIDI messages that are not CCs, from
 /// `ivstmidicontrollers.h`. Asserted against the SDK in `vst3_events.hpp`.
 inline constexpr std::uint16_t kCtrlAfterTouch = 128;
-inline constexpr std::uint16_t kCtrlPitchBend  = 129;
+inline constexpr std::uint16_t kCtrlPitchBend  = controllers::kPitchBend;
 
 /// MPE's timbre (Y) controller. The same number as the input parser's
 /// `kTimbreCcMsb`; repeated so this header does not pull the parser in.
@@ -107,6 +108,11 @@ inline constexpr std::uint32_t kNoParam = 0xFFFFFFFFu;
 /// RPN 0 -- a transposition, not a subtle error.
 inline constexpr double kMpeOutBendSemitones = 48.0;
 
+/// SC-312: the range a CHANNEL's pitch wheel is encoded against: MIDI's default pitch-bend sensitivity,
+/// 2 semitones, the master range ADI's MIDI input decodes the wheel with (`MpeZone::masterBendSemitones`)
+/// and MPE's own default for the master channel. A full throw of the wheel goes back out as the full word.
+inline constexpr double kChannelBendSemitones = 2.0;
+
 /// MPE's neutral timbre, CC74 = 64. What a member channel is reset to before a
 /// note that brings no timbre of its own, and what JUCE's `MPEInstrument`
 /// assumes for a new note.
@@ -121,6 +127,9 @@ inline constexpr double kMpeNeutralTimbre = 64.0 / 127.0;
 /// `controllerReachable` is false and `Auto` has nothing to go on. ADR-0097.
 struct ExpressionCaps {
     bool controllerReachable = false;
+
+    // A raw MIDI input can hear the source channel without a parameter mapping.
+    bool preservePitchWheelChannel = false;
 
     /// The plugin takes per-note expression: its `INoteExpressionController`
     /// lists Tuning, or its physical-UI mapping names a type for X.
@@ -356,7 +365,8 @@ private:
     void expression(const Event& e, MpeOutList& out) noexcept;
     void sendMcm(std::int32_t frame, MpeOutList& out) noexcept;
     void control(std::uint8_t chan, std::uint16_t ctrl, double unit, std::int32_t frame,
-                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false) noexcept;
+                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false,
+                 double bendRange = kMpeOutBendSemitones) noexcept;
     int allocate() noexcept;
     Note* find(std::uint64_t id) noexcept;
     [[nodiscard]] const Note* find(std::uint64_t id) const noexcept;

@@ -6,6 +6,7 @@
 #include "adi/engine/mixer.hpp"
 #include <memory>
 namespace adi::engine {
+class SamplePreview;
 class CueControlBatch {
 public:
     void apply() const noexcept;
@@ -37,6 +38,8 @@ public:
     /// Device stopped. Retire the format's monitor history before restart.
     void release() noexcept;
     void setMainAudition(MainAudition mode) noexcept;
+    // Attach before starting the driver; the application owns this player.
+    void setSamplePreview(SamplePreview *) noexcept;
     struct Click {
         void* context=nullptr;
         void (*render)(void*,const AudioIo&) noexcept=nullptr;

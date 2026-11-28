@@ -1,7 +1,7 @@
 {
   "built": {
     "7.2-application": 12,
-    "7.2-shell": 21,
+    "7.2-shell": 20,
     "7.3-arrangement": 25,
     "7.4-devices": 11,
     "7.5-floating": 10,
@@ -9,8 +9,8 @@
     "7.7-clip-view": 41,
     "export": 3,
     "mix-view": 7,
-    "recording": 9,
+    "recording": 8,
     "settings": 15
   },
-  "untagged_built": 145
+  "untagged_built": 144
 }

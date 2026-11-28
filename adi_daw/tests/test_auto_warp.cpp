@@ -70,7 +70,7 @@ void changingTempoAndRests() {
         onsets={0,rate/2,rate,rate*3/2,rate*2,rate*3,rate*7/2};
         const auto rest=audio::autoWarpFromOnsets(onsets,rate*4,rate);
         check(rest && !rest.variableTempo && rest.markers==std::vector<WarpMarker>{{0,0},{static_cast<std::int64_t>(rate*2),4*q},{static_cast<std::int64_t>(rate*4),8*q}},"an isolated missing beat is a rest and does not change the source tempo");
-        onsets={0};for(int beat=0;beat<4;++beat)onsets.push_back(onsets.back()+rate/2);
+        onsets.assign(1,0);for(int beat=0;beat<4;++beat)onsets.push_back(onsets.back()+rate/2);
         for(int beat=0;beat<4;++beat)onsets.push_back(onsets.back()+rate);
         const auto slow=audio::autoWarpFromOnsets(onsets,onsets.back()+rate/10,rate);
         check(slow && slow.variableTempo && slow.markers[1]==WarpMarker{static_cast<std::int64_t>(rate*2),4*q} &&

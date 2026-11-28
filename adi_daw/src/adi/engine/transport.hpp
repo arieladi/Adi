@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
+#include <optional>
 namespace adi::engine {
+// Driver feedback for the recording lead-in. The bar is negative during
+// count-in, with one-based beat and sixteenth fields. Zero means inactive.
+struct CountInPosition {
+    int bar = 0, beat = 0, sixteenth = 0;
+    bool operator==(const CountInPosition&) const = default;
+};
+enum class RecordingPunch : std::uint8_t { Within, Before, After };
+struct RecordingPunchWindow {
+    struct Boundary {
+        std::int64_t sample, tick;
+        friend bool operator==(const Boundary&,const Boundary&)=default;
+    };
+    std::optional<Boundary> in, out;
+    [[nodiscard]] bool active()const noexcept{return in.has_value() || out.has_value();}
+    friend bool operator==(const RecordingPunchWindow&,const RecordingPunchWindow&)=default;
+};
+
 // Single driver-thread state. Commands execute BETWEEN callbacks (or with the
 // driver stopped). A UI must marshal commands to that driver, never mutate this
 // concurrently. Nodes read the same block origin; Session advances it once.
@@ -31,7 +49,9 @@ public:
     /// revision and elapsed stream history; shortened bounds can cause a real
     /// wrap, exactly as advancing through the loop end would.
     void retimeLoop(std::int64_t begin, std::int64_t end, bool enabled = true) noexcept;
-    [[nodiscard]] bool looping() const noexcept { return looping_; }
+    /// A configured brace applies only until its half-open End. Starting at
+    /// or past End keeps playing forward until a locate or a brace edit.
+    [[nodiscard]] bool looping() const noexcept { return loopEnabled_ && position_ < end_; }
     [[nodiscard]] std::int64_t loopBegin() const noexcept { return begin_; }
     [[nodiscard]] std::int64_t loopEnd() const noexcept { return end_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
@@ -56,7 +76,7 @@ private:
     [[nodiscard]] std::int64_t sampleBehind(std::int64_t behind) const noexcept;
     std::int64_t position_ = 0, begin_ = 0, end_ = 0;
     std::uint64_t revision_ = 0;
-    bool playing_ = false, looping_ = false;
+    bool playing_ = false, loopEnabled_ = false;
     std::int64_t streamed_ = 0;
     std::int64_t firstWrap_ = -1; ///< stream offset of this run's first wrap
     std::int64_t retimedLeadInWrap_ = -1; ///< first wrap after a newly projected lead-in
