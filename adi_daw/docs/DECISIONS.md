@@ -20956,3 +20956,90 @@ own answer on presence, and a second round went to the panel. Four more choices 
 | RE-02 | comments brought in from a file (d7); a remark in place of a claim (d2) |
 | `collab/README.md` | ADR 0263 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0264 |
+
+## ADR-0264 — The Tip Zone, a goal: techniques taught in ADI's own terms, written by anyone, read by agents, with links to videos at a saved moment — `DECIDED (direction)` (2026-11-27) — **DIRECTOR'S WORD; A GOAL, NOT NEAR WORK; AN ADDITION; NOTHING BUILT NOW**
+
+**What this records.** The director's outside panel sketched a "Tip Zone": cards made from producers'
+tutorial videos. Its members could not agree on what the videos contain, since none of them can watch
+one. Win proposed another shape and he took it: "i like the way you describe what the tip zone should be,
+its a goal but not a mission". He added four things of his own, which are decisions 3 to 6.
+
+### Decisions
+
+1. **A goal, not near work.** It is in the project and waits behind the basics, the agent's side of the
+   window and the Browser's sheet. No seat starts it.
+2. **A tip teaches a technique, not a video.** Its words are written for ADI and ADI's own devices, with
+   the steps. Its proof is in ADI: a tip carries a small example that makes the sound when the steps are
+   followed. ADI makes no claim about what any video says.
+3. **Anyone can write tips, and others can use them.** His words: "i will be happy if others could also
+   help with that making their own tips that others including agents could use including building their
+   modular devices like in the grid". A tip is a file, as a preset is (ADR-0258 d18). It can carry what
+   it teaches: a preset, a device built in the Grid, a small example song.
+4. **Agents read tips.** A tip is something an agent can find and use, and "try this in my song" is a
+   proposal the user hears and applies or drops, like any other (ADR-0261 d7).
+5. **Videos are "see also".** A tip may link to a video, opened at a saved moment for one technique or
+   from its start for a whole method. His words: "maybe we can have a youtube tip menu where we just send
+   them to see a video from a saved point of time , or the entire video". A tip can be only such a link.
+   The link opens in the user's browser; ADI shows no one else's picture or logo.
+6. **A place where the agents learn what he likes.** His words: "maybe its also a zone for our agents to
+   learn what we like". The tips a user keeps, writes and uses are a readable record of taste, beside the
+   learning companion of ADR-0254 d7: local, readable, and the user's to switch off.
+
+**Win's readings, his to strike.** Tips travel as files, shared however their authors like; the ADI
+project holds nobody's tips on a service of its own (ADR-0263 d8). A collection that ships with ADI is
+reviewed as code is. A producer's name appears inside the shipped program only as a plain "see also", and
+only after that person was asked.
+
+**What is not settled here.** Where the Tip Zone sits in the window (its sheet comes first, ADR-0243 d1);
+the tip file's format; how a shared collection is gathered and checked; what an agent may learn from a
+tip without being told to.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0254 d7; AGT-11 | tips are one more readable source of what the user likes (d6) |
+| ADR-0258 d18 | a tip is a file, as a preset is (d3) |
+| `docs/DEFERRED.md` | DF-W62 holds the goal |
+| `collab/README.md` | ADR 0264 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0265; DF-W63 |
+
+## ADR-0265 — After his own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, and a double-click that adds a track — `DECIDED` (2026-11-28) — **DIRECTOR'S WORD AFTER WORKING IN ADI HIMSELF ON 27 NOVEMBER; ANSWERS THE AGENT SEAT'S TWO QUESTIONS; ADDS TO ADR-0259 d1**
+
+**What this records.** On 27 November the director worked in ADI himself, on main after the ninth stack.
+What he found is registered as SC-433 to SC-445 and given to one session
+(`collab/prompts/2026-11-28-directors-test.md`). Four of his words are rulings and are recorded here, with
+his answers to the two questions the agent seat put to him about Stop Agent: "A a, B a".
+
+### Decisions
+
+1. **Stop Agent stops every hand that writes as an agent does (his A).** ADI's own agent, and any outside
+   program that makes its changes through agent changesets. Ordinary scripts and control surfaces keep
+   working under their own grants.
+2. **Stop Agent does not end a job the user started that has no agent in it (his B).** A render or an
+   export finishes and keeps its own Cancel. ADR-0259 d1 stands for a run an agent takes part in.
+3. **A new song has no return tracks.** His words: "i don't want them at all in the default preset, screen
+   should be clean", confirmed the next day. This departs from Live's own new Set, by his word (SC-437).
+4. **FX channels stay as decided.** Inside a group and at the top level, both (ADR-0245 d9). His words:
+   "keep as today more options usually more better". The rule that keeps them from drifting in heavy
+   songs is ADR-0245's, unchanged.
+5. **A double-click on the empty area under the tracks adds a track, an addition.** The first time it
+   asks which kind, a MIDI track, an audio track or an FX channel, and it remembers the answer, as ADI's
+   other remembered choices do. A setting changes it later (DF-W64).
+6. **Loop is as Live's, and he confirmed how it behaves:** the Loop switch plays the brace where it lies,
+   and Ctrl/Cmd+L moves the brace to what is selected. What was wrong is that playback started outside
+   the brace was pulled into it (SC-445).
+7. **The Info box is the one place for its text.** No tooltip repeats it (SC-433; narrows ADR-0203 d5's
+   tooltips). His words: "showing info in the info box is great but what is that".
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0259 d1; DF-C8 | Stop Agent's reach (d1, d2) |
+| ADR-0203 d5 | no tooltip carries the Info text (d7) |
+| ADR-0245 d9 | stands: a return inside a group or at the top level (d4) |
+| `docs/SANITY-CHECK.md` | SC-433 to SC-445 |
+| `docs/DEFERRED.md` | DF-W63 (a fade editor), DF-W64 (the double-click that adds a track) |
+| `collab/README.md` | ADR 0265 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0266; DF-W65 |

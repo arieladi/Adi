@@ -248,6 +248,44 @@ void anchors() {
           "switching to a stored dead end preserves cap and integrity");
 }
 
+void openingState() {
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    Project project;
+    History history(*project.store);
+    project.edits(1, 2);
+    const auto opening = history.head();
+    project.store->retainOpeningHistory(opening);
+    check(history.setUndoRetentionPolicy(budget(3)).ok, "SC-155: set the open project undo budget");
+    project.edits(3, 12);
+    const auto after = history.compactUndo();
+    const auto tip = history.head();
+    check(after.ok && opening && after.baseSeq > *opening && after.transactions <= 3 &&
+              history.listSnapshots().empty() && history.branches().size() == 1,
+          "SC-155: repeated compaction caps the edit log with no snapshot or branch at the opening point");
+    const auto requiresReload = history.moveTo(opening, 1);
+    check(requiresReload.sessionReloadRequired && history.head() == tip && project.name() == "12",
+          "SC-155: restorable opening point requests reload before changing the live state");
+    check(history.moveTo(opening, 2, prepared).ok && project.name() == "2" && history.head() == opening &&
+              checkProject(*project.store).clean(),
+          "SC-155: the archived opening restores the original state and sequence");
+    check(history.moveTo(tip, 3, prepared).ok && project.name() == "12",
+          "SC-155: restoring the opening preserves the later edits");
+
+    Project origin;
+    History atOrigin(*origin.store);
+    const auto nameBeforeEdits = origin.name();
+    origin.store->retainOpeningHistory(std::nullopt);
+    check(atOrigin.setUndoRetentionPolicy(budget(3)).ok, "SC-155: set the new project undo budget");
+    origin.edits(1, 12);
+    const auto timeline = atOrigin.readTimeline();
+    check(timeline.error.empty() && timeline.originSeq && timeline.steps.size() <= 3 &&
+              timeline.snapshots.empty() && timeline.branches.size() == 1,
+          "SC-155: the pre-edit opening survives repeated compaction and gets a structural sequence");
+    check(atOrigin.moveTo(std::nullopt, 1, prepared).ok && origin.name() == nameBeforeEdits &&
+              atOrigin.readTimeline().headSeq == timeline.originSeq && checkProject(*origin.store).clean(),
+          "SC-155: the logical opening restores the pre-edit state at its new sequence");
+}
+
 UndoCompactionResult compactWith(History &history, Store &store, std::int64_t steps) {
     // Stage the policy independently of the navigation and compaction calls.
     SQLite::Transaction transaction(store.db());
@@ -485,6 +523,7 @@ int main() {
         richCheckpoint();
         exactBytesAndLegacy();
         anchors();
+        openingState();
         undoneHead();
         connectedRedo();
         collaborationAndFailures();

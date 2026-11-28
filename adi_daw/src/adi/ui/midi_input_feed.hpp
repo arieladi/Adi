@@ -37,6 +37,7 @@
 #include <memory>
 #include <span>
 #include <thread>
+#include <type_traits>
 #include <utility>
 namespace adi::ui {
 class MidiInputFeed {
@@ -47,6 +48,7 @@ class MidiInputFeed {
         std::uint32_t port = 0; // the host's slot: stable while the input stays open
         bool track = false, remote = false, mpe = false;
         std::uint64_t serial = 0; // which opening of the slot: a new one starts with a clean parser
+        std::uint64_t portKey = 0;
     };
     static constexpr std::size_t kMaxSources = 64;
     // Events taken from the rings in one block; the rest wait in their rings for the next.
@@ -87,7 +89,7 @@ class MidiInputFeed {
 
     // Audio thread, once per device callback, before the document processes the block that starts at
     // stream sample `blockStart` and lasts `frames` at `sampleRate`; `nowMs` is the ports' clock now.
-    // `enqueue(streamSample, event, inputSample)` returns whether the session took it. Returns how many it took.
+    // `enqueue(streamSample, event, inputSample, portKey)` returns whether the session took it. Returns how many it took.
     template <class Enqueue>
     std::size_t pump(std::int64_t blockStart, std::int32_t frames, double sampleRate, double nowMs, Enqueue &&enqueue) noexcept {
         return pump(blockStart, frames, sampleRate, nowMs, std::forward<Enqueue>(enqueue), []() noexcept {});
@@ -156,7 +158,7 @@ class MidiInputFeed {
                 if (!s.track)
                     continue; // Remote only: no track hears it
                 e.port = s.port;
-                buffer_[pending_++] = {e};
+                buffer_[pending_++] = {e, nullptr, s.portKey};
             }
         }
         reading_.store(-1, std::memory_order_release);
@@ -207,7 +209,13 @@ class MidiInputFeed {
                     if (ev.noteId != 0)
                         ev.noteId = (static_cast<std::uint64_t>(e.port + 1) << 40) | (ev.noteId & ((std::uint64_t{1} << 40) - 1));
                 }
-                if (enqueue(sample, ev, inputSample)) {
+                const bool accepted = [&] {
+                    if constexpr (std::is_invocable_v<Enqueue &, std::int64_t, const engine::Event &, std::int64_t, std::uint64_t>)
+                        return enqueue(sample, ev, inputSample, buffer_[i].portKey);
+                    else
+                        return enqueue(sample, ev, inputSample);
+                }();
+                if (accepted) {
                     ++taken;
                     last_ = sample;
                 } else {
@@ -227,6 +235,7 @@ class MidiInputFeed {
     struct PendingInput {
         MidiPortEvent wire;
         const engine::Event *computer = nullptr;
+        std::uint64_t portKey = 0;
     };
     struct List {
         std::array<Source, kMaxSources> items{};

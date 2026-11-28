@@ -156,6 +156,7 @@ public:
         std::optional<std::int64_t> headSeq, currentBranchId;
         std::int64_t baseSeq = 0; // retained structural root; zero when history has not compacted
         std::string error; // no partial data on failure
+        std::optional<std::int64_t> originSeq; // structural root for the pre-edit state, if materialized
     };
 
     /// Message-thread metadata read, outside journal mutations. One consistent

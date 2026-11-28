@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/history.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -27,6 +28,8 @@ History::Timeline History::readTimeline() const {
         const auto expectedRoots = static_cast<std::size_t>(
             db.execAndGet("SELECT count(*) FROM history_roots").getInt64());
         const bool stored = expectedRoots != 0;
+        if (stored)
+            result.originSeq = history_detail::originRoot(db);
         struct Node {
             std::int64_t txn = 0;
             std::optional<std::int64_t> parent;
