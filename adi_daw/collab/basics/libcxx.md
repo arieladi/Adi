@@ -6,6 +6,12 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 12:46 IST — seats/server-chain `dd26236dd049820217d431e0c1a77a9787e16ca3`
+
+Headless Debug compiled with Clang 20, libc++, Pd and the strict warning flags. The full `ctest -LE performance` run passed 291 of 292 suites. `adi_plugin_admission_tests` failed at `adi_daw/tests/test_plugin_admission.cpp:204` when the copy received a new UUID. The same assertion failed on a direct rerun. The gate ended before the JUCE phase.
+
+The fixture calls `saveCopy` at line `198` with the default `StoreCopyPolicy::share` from `adi_daw/src/adi/store.hpp:186–187`. To test preservation, pass `StoreCopyPolicy::preserve` explicitly. The Server author already made that change and added a separate share-policy test in `6d313f591`. The newer Server tip `bc787719` includes it and is queued for the full gate. [Fixture correction](https://github.com/arieladi/Adi/commit/6d313f591)
+
 ### 28 November 2026, 12:32 IST — main `6aeeed1b19b6f45cb15ec1bb65ce1084058bb127`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 281 registered non-performance CTest suites passed with `ctest -LE performance`.
