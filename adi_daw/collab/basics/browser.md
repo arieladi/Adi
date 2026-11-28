@@ -40,6 +40,7 @@ Wave 2 continues on the same chain. SC-132 was pushed with SC-125 as requested i
 | SC-137 | `basics/browser-chain` at `862cea353` | Browse ADI and MIDI files in Places and All, and open a project by double-click. Browser, library and application seats. | Headless typed-tree, flat query, audio-only audition, open routing and index tests passed. Debug Werror, all 18 no-display UI suites and all 3 acceptance suites passed. | Pushed |
 | SC-146 | `basics/browser-chain` at `27cd97a5e` | A typed search that finds nothing says so in the list, naming the label, or that the first scan still runs. Browser seat. | Headless `browserEmptySearch` in `adi_ui_shell_tests`. Slot check pending: see "Round of 28 November". | Pushed, check pending |
 | SC-145 | `basics/browser-chain` at `f80910a6e` | The line between the Browser's two panes drags; the width is kept with the program (`browser.sidebarWidth`). Browser and Settings seats. | Headless `browserSidebarResize` in `adi_ui_shell_tests`. Slot check pending. | Pushed, check pending |
+| SC-139 | `basics/browser-chain` at `b71ec7827` | Browser Back and Browser Forward: two commands (`browser.back` 29082, `browser.forward` 29083) on Ctrl+[ and Ctrl+], over a history of label and search visits. Browser and window seats; the three key map fixtures. | Headless `browserHistory` and the command-tail check in `adi_ui_shell_tests`. Slot check pending. | Pushed, check pending |
 | SC-147 | `basics/browser-chain` at `62141fcbd` | Audio Effects' groups and Plug-Ins' formats and makers fold as Live's folders: closed at first, triangle, double-click, Enter, Right and Left. Browser seat. | Headless checks in `browserDevices`; six older Browser tests open the folders first through `openBrowserGroups`. Slot check pending. | Pushed, check pending |
 
 ## Measurements
@@ -369,7 +370,7 @@ The final adaptation, 3ad30607d on afb2508f9, keeps SC-134’s sorted hash looku
 
 A new session took the queue on 28 November. Every row above, SC-120 to SC-137 and SC-424, SC-429, SC-431 and SC-432, is in `origin/land/basics-1128c`, which this chain was fast-forwarded to (`16064c0a6`) before the round. That landing stack is not yet on main, so BASE is `origin/land/basics-1128c`. Builds and tests run on the project's build PC through `slot.sh`, slot 1.
 
-What is left of the queue is wave 3, SC-138 to SC-147. The queue file names no order for wave 3, so the order is the register's, except that SC-146, SC-145 and SC-147 were taken first: each is a fault in today's Browser that a test can pin without a reading of Live or a sheet. SC-138 and SC-139 are next.
+What is left of the queue is wave 3, SC-138 to SC-147. The queue file names no order for wave 3, so the order is the register's, except that SC-146, SC-145 and SC-147 were taken first: each is a fault in today's Browser that a test can pin without a reading of Live or a sheet. SC-139 followed; SC-138 is next.
 
 **Not now**
 - SC-140 (tags, the filter panel, a saved search as a label): ADR-0261 d10 puts the filter on one filter panel, which waits for the Browser sheet (d19).
@@ -384,13 +385,19 @@ What is left of the queue is wave 3, SC-138 to SC-147. The queue file names no o
 
 **SC-147.** With no search, Audio Effects starts as seven closed folder rows and Plug-Ins as one closed row per format, each opening to its makers, closed in turn. Folder rows are drawn as a Place's folders are (SC-126: triangle at the row's left, 12 px indent per level, the name in the row font), are selectable, and open by the triangle, a double-click, Enter or Right; Left steps from an entry to its folder and closes an open one. Open state lasts while ADI runs and is not saved. A typed search, All, and Hot-Swap keep the fixed headings of before. Tests that read device or plug-in rows now open the folders first with `openBrowserGroups` (in `tests/test_ui_shell.cpp`).
 
-**Next.** SC-138: a column per property (the index's size and date), sorted by a header click, chosen from the header's menu, and file extensions hidden. Start at `paint` (the Name header) and `sortRows` in `src/juce/ui_browser.cpp`; `LibraryFile` carries no size or date yet. Then SC-139: Back and Forward (Ctrl+[ and Ctrl+]) as two commands beside `browser.hot-swap` in `src/juce/ui_shell.cpp`, with the three keymap fixtures under `tests/fixtures/ui/`.
+**SC-139.** A visit is a label with the search text it shows. One is kept when a label is chosen (the one left, with any typed search, and the one chosen) and when a search is taken into the list by Enter or Down. Back first keeps a search typed and not yet entered, so Forward comes back to it. A new visit after going back drops the visits ahead. A visit whose label has gone (a removed Place) opens All and is kept as All. Hot-Swap keeps none and disables both. The history lasts while the window is open, at most 100 visits (`BrowserPanel::kHistoryLimit`, a guess). Nothing new is drawn: Live 12's back and forward arrows beside the search wait for the Browser sheet (see "For the director"). The two command ids were taken in the order the table grows (WIN-04 asks only that ids never move); no register id was needed.
+
+**The build PC.** All four items were pushed with headless tests written for them, but no slot check has run on them yet: slot 1 has shown a warm-up check of `origin/land/basics-1128c` (mode ui) as RUNNING since its window tests passed at 15:31 (4 of 4 suites), and every `run` since has answered BUSY. Slots 2 to 6 and 8 wait for a build place. The next session should start with `slot.sh run 1 origin/basics/browser-chain all` on the chain head, then fix what it finds.
+
+**Next.** SC-138: a column per property (the index's size and date), sorted by a header click, chosen from the header's menu, and file extensions hidden. Start at `paint` (the Name header) and `sortRows` in `src/juce/ui_browser.cpp`; `LibraryFile` carries no size or date yet. Then SC-142's greying and Locate half.
 
 ## For the director
 
 This session owns the Browser queue.
 
 SC-147. Live's Audio Effects and Plug-Ins folders start closed, and so do ADI's now. A user who knew the old long list sees seven folder rows instead. Recommendation: keep Live's way.
+
+SC-139. Live 12 shows back and forward arrows beside the Browser's search; ADI has the two commands and their keys and draws no arrows yet. Recommendation: draw them with the Browser sheet, left of the search field, in the round-button column's style.
 
 SC-145. The left list's least width (60 px) and the content pane's least width (80 px) are guesses until Live's are read; the width is kept with the program, not with a song. Recommendation: keep both until the Browser sheet.
 
