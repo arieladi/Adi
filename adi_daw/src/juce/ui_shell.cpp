@@ -1644,14 +1644,10 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
         store.retainOpeningHistory(undoHistory.openingHead);
     undoHistory.openedUtc = juce::Time::currentTimeMillis() * 1000;
     undoHistory.read = [this] { return submitter_.timeline(); };
-    undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
-    undoHistory.restoreOpening = [this] {
-        return restoreHistory([this] {
-            return submitter_.restoreOpening(undoHistory.openingHead, juce::Time::currentTimeMillis() * 1000);
-        }, [this] {
-            return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{undoHistory.openingHead});
-        });
+    undoHistory.restore = [this](std::int64_t txn) {
+        return txn == 0 ? restoreHistoryHead(std::nullopt) : restoreStep(txn);
     };
+    undoHistory.restoreOpening = [this] { return restoreHistoryHead(undoHistory.openingHead); };
     if (!submitter_.store().readOnly()) {
         undoHistory.revertSnapshot = [this](std::int64_t id) {
             return restoreHistory([this, id] {
@@ -5590,6 +5586,13 @@ bool AdiRootComponent::setMainOutput(int firstChannel) {
 bool AdiRootComponent::setCueOutput(int firstChannel) {
     const auto current = view_.current();
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
+}
+bool AdiRootComponent::restoreHistoryHead(std::optional<std::int64_t> head) {
+    return restoreHistory([this, head] {
+        return submitter_.restoreHistoryHead(head, juce::Time::currentTimeMillis() * 1000);
+    }, [this, head] {
+        return restoreStoredHistory && restoreStoredHistory(HistoryHeadTarget{head});
+    });
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
     return restoreHistory([this, txnId] { return submitter_.restore(txnId); }, [this, txnId] {
