@@ -1588,6 +1588,12 @@ static void appendLaunchSource(ClipProject& project, const ClipProject& original
         // The launch slot applies the audible End. Keep the requested
         // absolute aperture available in this private PCM reader.
         source.endMarkerTicks.reset();
+    } else if (!audioRow->warpEnabled && authored.loopEnabled && !authored.contentOffsetNs &&
+               !authored.loopBeginNs && !authored.loopEndNs && !authored.sourceEndNs &&
+               authored.endMarkerTicks && *authored.endMarkerTicks < endTick) {
+        // The unrolled reader supplies the loop window. The saved one-shot
+        // End still belongs to the slot and applies when its loop is off.
+        source.endMarkerTicks.reset();
     }
     source.contentOffsetTicks = 0;
     source.contentOffsetNs.reset();

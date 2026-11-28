@@ -1381,6 +1381,48 @@ void pagedLegacyNonzeroStart(const std::string_view mode) {
             "paged legacy playback allocates nothing and does no callback file I/O");
 }
 
+void legacyTickLoopIgnoresOneShotEnd() {
+    constexpr std::int64_t start = 12000, loopHead = 24000, wrap = 48000;
+    const auto source = residentLegacySignal();
+    for (const bool ram : {true,false}) {
+        test::TempDirectory folder{"legacy_raw_loop_end",ram ? "ram" : "paged"};
+        auto store = residentLegacyRawSlot(folder,source,false,ram);
+        OpRequest loop;
+        loop.opType = "clip.setLoop";
+        loop.payload = {{"id",101},{"on",true},{"start",quarter},{"length",3*quarter/2}};
+        require(OpJournal(*store).commit(loop).ok,"save the unwarped tick-only loop");
+        store.reset();
+        StoreError error{};
+        store = Store::open(folder.path()/"song.adi",error);
+        require(store && store->db().execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=101").getInt64()
+                    == 2*quarter &&
+                store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt64() == 0,
+                "reopen the unpinned slot with one-shot End before Loop End");
+
+        Session session;
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        std::vector<float> pcm(static_cast<std::size_t>(wrap+blockFrames));
+        Playback playback{session,pcm};
+        playback.paged = !ram;
+        scene(*store,session,10);
+        playback.through(static_cast<std::int64_t>(pcm.size()));
+        auto mismatch = std::int64_t{-1};
+        for (std::int64_t at = 0; at < static_cast<std::int64_t>(pcm.size()); ++at) {
+            const auto frame = at < wrap ? start + at : loopHead + at - wrap;
+            if (pcm[static_cast<std::size_t>(at)] != source[static_cast<std::size_t>(frame)]) {
+                mismatch = at;
+                break;
+            }
+        }
+        std::printf("Legacy flat Loop %s: first PCM mismatch %lld, laps %llu\n",ram ? "RAM" : "paged",
+                    static_cast<long long>(mismatch),static_cast<unsigned long long>(trackState(session).completedLoops));
+        require(mismatch == -1 && trackState(session).completedLoops == 1 &&
+                playback.count == 1 && playback.edges[0].sample == 0 && session.problems().empty() &&
+                callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "an unpinned loop reaches its Loop End before wrapping, despite the earlier one-shot End");
+    }
+}
+
 void residentLegacyNonzeroStart() {
     enum class Mode { Steady, Rebase, Fade, LiveStart, LiveLoop };
     constexpr auto savedStart = 12000;
@@ -4278,6 +4320,7 @@ int main() {
         pagedLegacyNonzeroStart("gain");
         pagedLegacyNonzeroStart("source");
         residentLegacyNonzeroStart();
+        legacyTickLoopIgnoresOneShotEnd();
         protectResidentLegacyNonzeroStartAdoption();
         residentLegacyBudgetKeepsBothSlots();
         fadedLegacyRawSceneAtFirstAdoption();
