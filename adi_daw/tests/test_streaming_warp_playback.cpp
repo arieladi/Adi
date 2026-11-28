@@ -9,6 +9,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/warp_clip_player.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/render/queue.hpp"
@@ -780,6 +781,63 @@ void reverseTextureTypedTempo() {
     check(step <= largestNearby,"typed tempo seam stays within nearby waveform variation");
 }
 
+void reverseTextureRenderCursor() {
+    const TempoMap tempo{{{0, 100, 2, 0.72}, {12 * quarter, 180, 0, 0}}};
+    const WarpArrangementClock clock(tempo, sourceRate);
+    constexpr auto origin = static_cast<double>(quarter / 3);
+    constexpr auto loopStart = static_cast<double>(quarter / 2);
+    constexpr auto loopLength = static_cast<double>(4 * quarter);
+    std::vector<float> pcm(120000);
+    for (std::size_t i = 0; i < pcm.size(); ++i)
+        pcm[i] = static_cast<float>(std::sin(static_cast<double>(i) / 31));
+    const std::vector<WarpMarker> markers{{0, 0}, {34000, 2 * quarter}, {120000, 5 * quarter}};
+    struct ReadProbe {
+        std::span<const float> source;
+        std::array<std::int64_t, 12> reads{};
+        std::size_t count = 0;
+        static float sample(void* context, std::int64_t frame, std::uint16_t) noexcept {
+            auto& self = *static_cast<ReadProbe*>(context);
+            if (self.count < self.reads.size()) self.reads[self.count] = frame;
+            ++self.count;
+            return self.source[static_cast<std::size_t>(frame)];
+        }
+    };
+    ReadProbe scalarReader{pcm}, cachedReader{pcm};
+    const audio::WarpStreamInput scalarInput{&scalarReader, ReadProbe::sample};
+    const audio::WarpStreamInput cachedInput{&cachedReader, ReadProbe::sample};
+    const auto firstWrap = std::llround(clock.frameAtTick(origin + loopStart + loopLength));
+    const auto secondWrap = std::llround(clock.frameAtTick(origin + loopStart + 2 * loopLength));
+    for (const auto grain : {0.001, 0.065}) {
+        audio::WarpRenderPlan plan;
+        plan.mode = audio::WarpMode::Texture;
+        plan.sourceFrames = pcm.size();
+        plan.outputRate = sourceRate;
+        plan.grainSeconds = grain;
+        const WarpClipPlayer player(clock, plan, markers, sourceRate, 1, origin, 12 * quarter,
+                                    loopStart, loopLength, true);
+        WarpClipPlayer::RenderCursor cursor;
+        bool matches = true, audible = false;
+        {
+            const audio::CallbackScope callback;
+            // Keep the cursor through two wraps and an out-of-order seek.
+            for (const auto begin : {firstWrap - 150, secondWrap - 89, secondWrap, firstWrap - 433}) {
+                for (auto frame = begin; frame < begin + 513; ++frame) {
+                    std::array<float, 1> scalar{}, cached{};
+                    scalarReader.count = cachedReader.count = 0;
+                    matches &= player.renderFrame(frame, scalarInput, scalar) &&
+                               player.renderFrame(cursor, frame, cachedInput, cached) && scalar == cached;
+                    matches &= scalarReader.count <= scalarReader.reads.size() &&
+                               scalarReader.count == cachedReader.count &&
+                               std::equal(scalarReader.reads.data(), scalarReader.reads.data() + scalarReader.count,
+                                          cachedReader.reads.data());
+                    audible |= std::abs(scalar[0]) > 0.1f;
+                }
+            }
+        }
+        check(audible && matches, "reversed Texture cursor preserves PCM and reads through wraps and a cold seek");
+    }
+}
+
 constexpr double bezierTension = 0.72;
 
 double bezierSecondsAtBeat(double beat) {
@@ -946,6 +1004,7 @@ int main() {
         reverseBeatsAttacks();
         reverseTexture();
         reverseTextureTypedTempo();
+        reverseTextureRenderCursor();
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.
