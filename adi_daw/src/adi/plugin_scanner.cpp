@@ -5,6 +5,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/scan_stamp.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/windows_shortcut.hpp"
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
 #include <array>
@@ -200,6 +201,37 @@ std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
         if (unreadable && isAccessDenied(error) && reported.insert(path).second)
             unreadable->push_back({utf8(path), "Cannot read this search location: " + error.message(), State::UnreadablePath});
     };
+    const auto suffixOf = [](const fs::path& path) {
+        auto suffix = utf8(path.extension());
+        for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        return suffix;
+    };
+#if defined(_WIN32)
+    const auto followShortcut = [&](fs::path path) -> std::optional<fs::path> {
+        std::set<fs::path> links;
+        for (unsigned hop = 0; hop <= 32; ++hop) {
+            std::error_code error;
+            path = fs::canonical(path, error);
+            if (error) return std::nullopt;
+            if (suffixOf(path) != ".lnk" || !fs::is_regular_file(path, error))
+                return error ? std::nullopt : std::optional<fs::path>(path);
+            if (hop == 32 || !links.insert(path).second) return std::nullopt;
+            auto target = windowsShortcutTarget(path);
+            if (!target) return std::nullopt;
+            path = std::move(*target);
+        }
+        return std::nullopt;
+    };
+    const auto addShortcut = [&](const fs::path& link) {
+        const auto target = followShortcut(link);
+        if (!target) return;
+        if (suffixOf(*target) == extension) candidates.insert(utf8(*target));
+        else {
+            std::error_code error;
+            if (fs::is_directory(*target, error)) pending.push_back(*target);
+        }
+    };
+#endif
     const fs::directory_iterator end;
     while (!pending.empty()) {
         auto path = std::move(pending.back());
@@ -211,14 +243,24 @@ std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
             continue;
         }
         if (!visited.insert(dir).second) continue;
+#if defined(_WIN32)
+        if (suffixOf(dir) == ".lnk" && fs::is_regular_file(dir, ec)) {
+            addShortcut(dir);
+            continue;
+        }
+        ec.clear();
+#endif
         fs::directory_iterator it(dir, ec);
         for (; !ec && it != end; it.increment(ec)) {
-            auto suffix = utf8(it->path().extension());
-            for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            const auto suffix = suffixOf(it->path());
             std::error_code entryError;
             if (suffix == extension) {
                 const auto module = fs::canonical(it->path(), entryError);
                 if (!entryError) candidates.insert(utf8(module));
+#if defined(_WIN32)
+            } else if (suffix == ".lnk" && it->is_regular_file(entryError)) {
+                addShortcut(it->path());
+#endif
             } else if (it->is_directory(entryError)) {
                 pending.push_back(it->path());
             }

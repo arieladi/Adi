@@ -81,7 +81,7 @@ solely because of cache policy. Candidate-level native aliases, including
 relocated bundles, are resolved before admission.
 Changing bytes while preserving **both** size and time is outside this metadata
 invalidation contract; this is not a content-integrity or tamper-detection cache.
-CLAP-declared invalidation sources and shortcut-folder discovery remain later
+CLAP-declared invalidation sources and Finder-alias discovery remain later
 DEV-25 work.
 
 A matching successful cache entry can now return without a durable pending or
