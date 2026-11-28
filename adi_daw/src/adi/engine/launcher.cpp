@@ -817,7 +817,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             auto cueAdmission = LaunchCueAdmission::None;
             if (next == &track.user && !pending.sceneGesture) {
                 if (pending.grid != LaunchQuantization::None) cueAdmission = LaunchCueAdmission::Scheduled;
-                else if (!pending.repeat) cueAdmission = LaunchCueAdmission::ReadyOnly;
+                else cueAdmission = pending.repeat ? LaunchCueAdmission::HeldRepeat : LaunchCueAdmission::ReadyOnly;
             } else if (next == &track.follow && pending.linkedPhysical) {
                 cueAdmission = LaunchCueAdmission::Scheduled;
             }

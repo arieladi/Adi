@@ -3283,6 +3283,140 @@ void immediateLongPagedLegato(bool loop, bool warm) {
             "ready-only immediate cue admission does no callback allocation or file I/O");
 }
 
+void heldImmediateLongPagedLegato(bool loop, bool warm) {
+    test::TempDirectory folder{"held_immediate_legato",loop ? "loop" : "one-shot"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    constexpr auto elapsed = 120000;
+    constexpr auto tail = 37;
+    constexpr auto start = 60000;
+    constexpr auto head = 9600;
+    constexpr auto lap = elapsed + tail;
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    addClip(*store,folder.path(),101,10,1,false,2400+lap,1,260000);
+    pinUnwarpedOneShot(*store,50000000,4500000000);
+    addClip(*store,folder.path(),102,20,2,true,start,1,elapsed);
+    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=2500770833,"
+            "loop_enabled=0,loop_start_ticks=0,loop_len_ticks=NULL WHERE id=102;"
+            "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,1250000000,3750770833);"
+            "UPDATE clip_launch SET launch_quant=1;"
+            "UPDATE clip_launch SET launch_mode=3,ram_mode=0 WHERE clip_id=102;");
+    if (loop) db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880 WHERE id=102;"
+                      "UPDATE clip_playback_details SET loop_begin_ns=200000000,loop_end_ns=3750770833 WHERE clip_id=102;");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    const auto press = [&](int sceneId, int clip, bool release = false) {
+        OpRequest gesture;
+        gesture.opType = "session.launchClip";
+        gesture.payload = {{"track",1},{"scene",sceneId},{"clip",clip},{"release",release},
+            {"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(gesture).ok,"submit the saved None Repeat gesture");
+    };
+    const auto switchAt = warm ? elapsed + 10 : 0;
+    const auto handoff = switchAt + elapsed;
+    const auto first = handoff + tail;
+    const auto second = first + lap;
+    const auto final = second + lap;
+    const auto end = warm ? final + (loop ? start-head : 0) + 1 : handoff + 8 * blockFrames;
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session,pcm};
+    if (warm) {
+        press(20,102);
+        playback.paged = true;
+        playback.through(1);
+        press(20,102,true);
+        playback.through(switchAt);
+        require(playback.count == 1 && playback.edges[0].sample == 0 && pcm[0] == -.5f && pcm[elapsed] == -.6f,
+                "normal saved None Repeat starts at saved Start and its released first run warms the tail");
+        playback.paged = false;
+    }
+    press(10,101);
+    playback.through(switchAt+1);
+    const auto prior = trackState(session);
+    require(prior.clip == 101,"launch the outgoing physical clip normally");
+    playback.through(handoff);
+    press(20,102);
+    playback.paged = true;
+    playback.through(handoff+blockFrames);
+    if (warm) {
+        require(playback.count == 4 && playback.edges[2].newClip == 102 && playback.edges[2].sample == handoff &&
+                playback.edges[3].newClip == 102 && playback.edges[3].sample == first &&
+                pcm[static_cast<std::size_t>(handoff)] == -.6f && pcm[static_cast<std::size_t>(first)] == -.5f,
+                "first held cue and return to saved Start share one leased callback");
+        playback.through(second+1000);
+        require(playback.count == 5 && playback.edges[4].newClip == 102 && playback.edges[4].sample == second &&
+                pcm[static_cast<std::size_t>(second)] == -.5f,
+                "the next retrigger lands on the exact physical saved-Start lap");
+    }
+    press(20,102,true);
+    playback.through(end);
+    std::printf("Held None %s %s: handoff %d/%.6f, first %d/%.6f, second %d, final %d, transitions %zu\n",
+        loop ? "loop" : "one-shot",warm ? "warm" : "cold",handoff,
+        static_cast<double>(pcm[static_cast<std::size_t>(handoff)]),first,
+        static_cast<double>(pcm[static_cast<std::size_t>(first)]),second,final,playback.count);
+    if (warm && loop) {
+        require(playback.count == 5 && trackState(session).completedLoops == 1 &&
+                pcm[static_cast<std::size_t>(final + start-head)] == -.5f,
+                "Release leaves the loop to wrap normally to its earlier loop head, without a retrigger");
+    } else if (warm) {
+        require(playback.count == 6 && playback.edges[5].newClip == 0 && playback.edges[5].sample == final,
+                "Release lets the final one-shot stop at its physical end");
+    } else {
+        require(playback.count == 1 && trackState(session).run == prior.run && pcm[static_cast<std::size_t>(first)] == .55f,
+                "a cold held press leaves the old PCM intact and never schedules a later launch or repeat");
+    }
+    require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "held None cue reservation and retriggers perform no callback allocation or file I/O");
+}
+
+void heldRepeatProtectsSavedStart() {
+    test::TempDirectory folder{"held_immediate_legato","saved-start-lease"};
+    auto store = longPagedLoopLegatoProject(folder.path(),{false,LongLoopLaunch::Scheduled});
+    store->db().exec("DELETE FROM clip_slots WHERE clip_id=102;"
+                     "UPDATE clips SET pos_ns=0,length_ns=5250000000,loop_enabled=0,loop_start_ticks=0,loop_len_ticks=NULL WHERE id=102;"
+                     "UPDATE clip_playback_details SET content_offset_ns=0,loop_begin_ns=NULL,loop_end_ns=NULL WHERE clip_id=102;");
+    const auto model = rows::readModel(*store);
+    const auto project = readClipProject(*store,model);
+    // Disable ordinary Start read-ahead to isolate what the cue lease pins.
+    const std::array sources{LaunchPagedSource{102,1,60000,9600,180037,252000,false,false}};
+    struct Observed { std::atomic<bool> evicted{false}, disjoint{false}; } observed;
+    const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&observed,
+        .afterPageClaimAttempt=[](void* state,std::int64_t oldPage,std::int64_t wanted,bool claimed) noexcept {
+            if (!claimed) return;
+            auto& status=*static_cast<Observed*>(state);
+            if (oldPage==7 && wanted!=7) status.evicted.store(true,std::memory_order_release);
+            if (wanted==14) status.disjoint.store(true,std::memory_order_release);
+        }};
+    LaunchPagedAudio pages(project,sources,rate,2,blockFrames);
+    require(pages.prime(),"prime authored Start and loop head on the source worker");
+    pages.setRequestSnapshotProbeForTest(&probe);
+    const auto reserve = [&] {
+        const audio::CallbackScope scope;
+        pages.prefetch(102,180000);
+        return pages.reserveCue(102,180000,blockFrames,false,true);
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto ready = reserve();
+    while (!ready && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ready=reserve();
+    }
+    require(ready,"reserve inherited tail, ordinary loop head, and saved Start");
+    {
+        const audio::CallbackScope scope;
+        (void)pages.read(102,100000,1,false);
+    }
+    const auto disjointDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!observed.disjoint.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < disjointDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const auto displaced = observed.evicted.load(std::memory_order_acquire);
+    pages.releaseCue(102);
+    std::printf("Held saved Start lease: disjoint page %d, saved Start evicted %d\n",observed.disjoint.load(),displaced);
+    require(observed.disjoint.load() && !displaced,"the worker cannot reclaim the saved Start while the first Repeat cue is leased");
+}
+
 }
 
 int main() {
@@ -3388,6 +3522,11 @@ int main() {
             immediateLongPagedLegato(loop,true);
             immediateLongPagedLegato(loop,false);
         }
+        for (const auto loop : {false,true}) {
+            heldImmediateLongPagedLegato(loop,true);
+            heldImmediateLongPagedLegato(loop,false);
+        }
+        heldRepeatProtectsSavedStart();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

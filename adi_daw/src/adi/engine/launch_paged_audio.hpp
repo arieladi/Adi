@@ -48,8 +48,9 @@ public:
     /// and any first wrap across scheduling and overlay until releaseCue().
     /// By default a cold cue queues the worker. A ready-only check does not
     /// request pages, and a refused gesture leaves the outgoing run intact.
+    /// A held Repeat also protects a return to saved Start at the first lap.
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
-                                  bool requestAhead = true) noexcept;
+                                  bool requestAhead = true, bool repeatAtEnd = false) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader

@@ -623,7 +623,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         // wrap or phase change; reserve the outer callback's remaining PCM.
         const auto remaining = call.frames - call.offset - offset;
         if (!pages->reserveCue(target.clip,cue.physicalFrame,remaining,
-                               cueAdmission == LaunchCueAdmission::Scheduled)) return false;
+                               cueAdmission == LaunchCueAdmission::Scheduled,
+                               cueAdmission == LaunchCueAdmission::HeldRepeat)) return false;
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
         return true;

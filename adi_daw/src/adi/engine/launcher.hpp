@@ -151,7 +151,7 @@ struct LaunchStatusHeader {
     bool transportPlaying = false, backToArrangement = false;
 };
 
-enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, ReadyOnly };
+enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, ReadyOnly, HeldRepeat };
 
 struct LaunchSink {
     void* context = nullptr;

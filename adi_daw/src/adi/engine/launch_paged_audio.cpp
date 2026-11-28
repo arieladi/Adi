@@ -123,7 +123,7 @@ void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexce
 }
 
 bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int32_t frames,
-                                 bool requestAhead) noexcept {
+                                 bool requestAhead, bool repeatAtEnd) noexcept {
     const auto* found = find(id);
     if (!found || found->latency != 0) return false;
     const auto& source = found->source;
@@ -134,7 +134,13 @@ bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int3
     next.locate(frame);
     next.loop(source.loopBeginFrame,source.loopEndFrame,looping);
     next.play();
-    return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead);
+    if (!repeatAtEnd || end - frame >= frames)
+        return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead);
+    // A Release in a later driver slice can select the normal loop head
+    // instead of this held Restart. The source reserves both possibilities.
+    auto restart = next;
+    restart.loop(source.firstFrame,end,true);
+    return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead,&restart);
 }
 
 void LaunchPagedAudio::releaseCue(std::int64_t id) noexcept {
