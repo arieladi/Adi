@@ -22,12 +22,55 @@ stream reads the newest entry first.
 1. **`window/command-palette` (WIN-06): left out of the chain.** It adds a surface Live does not have: a
    palette over the window on Ctrl/Cmd+P, drawn in today's look, and no agreed sheet shows it (its seat says
    "until the menus and dialogs sheet is agreed"). **Recommendation:** agree its place from a picture with the
-   menus-and-dialogs sheet, then this stream merges it (it merged cleanly with main on 24 November).
+   menus-and-dialogs sheet, then this stream merges it. It no longer merges cleanly: against the chain it collides in eight files (the
+   shell, its cmake list, the three key-map goldens and two suites), so that merge is work of its own once you rule.
 2. **`window/held-peak` (DF-W32, N48's window half): left out.** It changes what the strip's meter shows (the
    engine's held peak); its own seat holds it "for the Mixer sheet", and no Mixer sheet is agreed.
    **Recommendation:** take it with the Mixer sheet.
 3. **`window/shaper-panel-fixes`: left out.** Its four fixes sit on the ADI-Shaper panel stack, which is the
    clones seat's and waits in #716 (open). **Recommendation:** land it with #716 when you release that panel.
+4. **RE-01 (`window-fn/remarks`) is in the chain, with one plain dialog.** Add Remark... and Edit... open a JUCE
+   text prompt (AlertWindow, the shared look) when no window prompt is set. Every other part is menu items in
+   today's look. **Recommendation:** keep it in; if you want no dialog before the menus-and-dialogs sheet, the
+   remarks merge commit is one revert.
+
+---
+
+## 2026-11-28, round 1 ends — where the stream stands; what the next session does
+
+**State.** Steps 1 and 2 are done: the survey (below) and the chain, `held/window-chain` at `b85ca765` (BASE
+`origin/main` 629a4834 merged in). Step 3, the proof, has not run: slot 17's first check (`all`, cold, started at
+15:57 on the chain's second commit `cc2d2c1a`) still waited for a build place at 17:14, behind the other sessions.
+Nothing in the chain has been compiled yet. The five validators pass on `b85ca765`.
+
+**The next session, in order:**
+1. `bash /d/adibuild-tools/slot.sh wait 17` until the old check ends (its result is of `cc2d2c1a` only, but it
+   warms the slot). Then `git fetch`, merge the newest BASE into the chain, push, and
+   `bash /d/adibuild-tools/slot.sh run 17 origin/held/window-chain core`, then `all`.
+2. Fix what the merges broke. The places most likely to: the split pan's menu seam (`MixerStrip::panMenuItems`
+   now takes the clicked control), the key dispatch (`AppCommands::key`, the Latin fallback after BASE's
+   computer-MIDI key), the tap run ended in BASE's `ProjectDocument::startSave` and `restoreHistory`, and the
+   remarks in BASE's rebuilt clip and header menus. Each merge commit's message says what was joined.
+3. Only then, a failure present on the seat's own branch before the merge is logged with its test name and left.
+
+**Step 4, the account (what the chain adds, once proved), one line per thing a user notices:**
+- Tap Tempo makes one undo step per run of taps, heard as you tap, with no forked history (HI-01).
+- A send's menu has Send Pan: Left, 50L, Center, 50R, Right, one undo step (MX-06).
+- The pan's menu switches Stereo Pan and Split Stereo Pan; split, a strip shows Live's two pan sliders (MX-02).
+- Moving a clip with snapping on lands its start or end on another clip's edge, a locator or a signature change
+  a few pixels away, before the grid (ED-09).
+- A track's and a clip's menus add, edit, resolve and delete remarks, each one undo step (RE-01).
+- A key set exports to a file and imports on any platform; under a Hebrew or Russian layout Ctrl/Cmd+Z and the
+  zoom keys still work; a key you set wins over the preset's, and a clash or a key the system takes is told
+  (WIN-05, part).
+- Not seen by a user: the feed says which parameter was last moved from ADI's own controls (SRF-01); the
+  drive-drag test (MX-23); the text-by-place goldens for the window tests (WTS-03 first half).
+
+**Left out, and why:** the survey's rows marked other than "to take", and step 2's six rows on BASE by another
+route and N64 (both tables in the entry below); items 1 to 3 under "For the director".
+
+**For the director before it lands:** the four items in "For the director"; and the chain's own go (it is held
+work, "after 3 December", ADR-0248 d2).
 
 ---
 
