@@ -593,7 +593,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
         static_cast<Context*>(state)->driver.retargetPinnedRun(previous,next,run);
     }, [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue,
-           std::int32_t offset, bool scheduledPress) noexcept {
+           std::int32_t offset, bool quantizedHandoff) noexcept {
         auto& call = *static_cast<Context*>(state);
         if (!call.media->stored() || target.physicalLoopEndFrame || target.physicalFrames <=
             3 * ClipPlayback::readAheadFrames(static_cast<std::uint32_t>(call.block.sampleRate))) return true;
@@ -601,7 +601,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!pcm) return false;
         auto* pages = pcm->pageReader();
         if (!pages) return true;
-        if (!scheduledPress || cue.physicalFrame < 0) return false;
+        if (!quantizedHandoff || cue.physicalFrame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
         if (!rendered || rendered->cuePages) return false;
         // An earlier range on this source could trim the new reservation
@@ -620,6 +620,14 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
         return true;
+    }, [](void* state, const LaunchSlot& target, std::int64_t due, std::int64_t frame) noexcept {
+        const auto& call = *static_cast<const Context*>(state);
+        if (call.runtime.mediaAt(due).get() != call.media) return;
+        const auto* clip = call.media->clip(target.clip);
+        if (!clip || !clip->pageReader() || target.physicalFrames <= 3 * ClipPlayback::readAheadFrames(clip->rate())) return;
+        const auto* rendered = call.runtime.trackRanges(target.track);
+        if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == target.clip) return;
+        clip->pageReader()->prefetch(target.clip,frame);
     }};
     while (context.offset < frames) {
         block.sample = transport.sampleAt(context.offset);

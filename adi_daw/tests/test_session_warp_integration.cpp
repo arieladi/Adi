@@ -2422,31 +2422,51 @@ void scheduledPhysicalPagedLegato(bool ramp, bool queueStop) {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,"physical launch probe allocates no callback memory or file I/O");
 }
 
-void coldPhysicalPagedLegato(bool queueStop) {
+enum class StalledLegato { User, Linked, TiedUser };
+
+void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato::User) {
+    const auto linked = mode != StalledLegato::User;
+    const auto coldUser = mode == StalledLegato::TiedUser;
     test::TempDirectory directory{"long_paged_legato", queueStop ? "cold-stop" : "missing-page"};
     auto store = sceneProject(directory.path());
     auto& db = store->db();
     db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
     constexpr auto due = 144000;
     constexpr auto oldStart = 2400;
+    constexpr auto loopBegin = 124800;
     constexpr auto tail = 3000;
     constexpr auto stopAt = 192000;
-    constexpr auto stalledPage = 18;
-    constexpr auto cue = stalledPage * 8192 - 1;
+    constexpr auto cuePage = 18;
+    constexpr auto cue = cuePage * 8192 - 1;
+    const auto stalledPage = coldUser ? 15 : cuePage;
     constexpr std::uint64_t incarnation = 111;
-    addClip(*store,directory.path(),101,10,1,false,oldStart + due + tail,1,240000);
+    addClip(*store,directory.path(),101,10,1,false,(linked ? loopBegin : oldStart + due) + tail,1,240000);
     pinUnwarpedOneShot(*store,50000000,4500000000);
-    addClip(*store,directory.path(),102,20,1,true,cue,1,240000);
+    if (linked) db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880 WHERE id=101;"
+            "UPDATE clip_playback_details SET loop_begin_ns=2600000000,loop_end_ns=3050000000 WHERE clip_id=101;"
+            "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=4 WHERE clip_id=101;");
+    static_assert(oldStart + due == 146400);
+    addClip(*store,directory.path(),102,20,1,true,cue,1,linked ? 260000 : 240000);
     db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000,"
             "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
             "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
-            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,71979167,4571979167);"
             "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
-    struct Gate { std::atomic<bool> blocked{false}, resume{false}; } gate;
+    db.exec(linked ? "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,521979167,5021979167)"
+                   : "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,71979167,4571979167)");
+    if (coldUser) {
+        db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
+        addClip(*store,directory.path(),103,30,1,true,127200,1,240100);
+        db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000,"
+                "loop_enabled=0,loop_len_ticks=NULL WHERE id=103;"
+                "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=103;"
+                "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(103,100000000,4600000000);"
+                "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=103;");
+    }
+    struct Gate { std::int64_t page; std::atomic<bool> blocked{false}, resume{false}; } gate{stalledPage};
     const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
         .beforePageClaim=[](void* opaque,std::int64_t,std::int64_t requestedPage) noexcept {
-            if (requestedPage != stalledPage) return;
             auto& state = *static_cast<Gate*>(opaque);
+            if (requestedPage != state.page) return;
             state.blocked.store(true,std::memory_order_release);
             while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
         }};
@@ -2502,25 +2522,148 @@ void coldPhysicalPagedLegato(bool queueStop) {
     };
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"queue old clip");
     through(132000);
-    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue far cue");
-    through(132000 + blockFrames);
+    std::array<LaunchTrackStatus,1> rows{};
+    LaunchStatusHeader status;
+    if (linked) {
+        require(driver.readStatus(rows,status) && rows[0].queued.action == LaunchQueuedAction::None,
+                "private linked cue does not become a user-queued action");
+    } else {
+        require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue far cue");
+        through(132000 + blockFrames);
+    }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    if (coldUser) {
+        const auto ready = [&] {
+            const audio::CallbackScope scope;
+            if (!pages.reserveCue(102,cue,blockFrames)) return false;
+            pages.releaseCue(102);
+            return true;
+        };
+        while (!ready() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        require(ready(),"the tied Follow is already warm before queuing the manual cue");
+        require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,30,103,incarnation}}),"queue the manual candidate on the same grid as the warmed Follow");
+        through(132000 + blockFrames);
+        require(driver.readStatus(rows,status) && rows[0].queued.clip == 103 && rows[0].queued.legatoSourceFrame == 127200,
+                "the public forecast belongs to the coincident manual candidate");
+    }
     while (!gate.blocked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    require(gate.blocked.load(std::memory_order_acquire),"the worker reached the missing second page of the exact cue");
+    require(gate.blocked.load(std::memory_order_acquire),"the worker reached the stalled page of the exact cue");
     if (queueStop) require(driver.post(std::array{LaunchRequest{LaunchRequestKind::StopTrack,1,{},{},incarnation}}),"replace pending cue with Stop");
     through(due + tail + 1);
     require(events.count == 1 && events.edges[0].newClip == 101 && pcm[due + tail] == .55f,
-        "the missing second page leaves all outgoing PCM and the previous run intact");
+        "the unready cue leaves the outgoing PCM and previous run intact");
     gate.resume.store(true,std::memory_order_release);
     through(stopAt + 1);
     require((queueStop ? events.count == 2 && events.edges[1].newClip == 0 && events.edges[1].sample == stopAt
                        : events.count == 1) && pages.underrunSamples() == 0 && callbackAllocations == 0 &&
             audio::callbackFileIo == 0,
         "a rejected cue never becomes a run, even after worker completion, while a newer Stop keeps its own grid");
-    std::printf("Mandatory page seam: frame %d, held page %d, old tail %.6f, target underruns %u, Stop %lld\n",
+    std::printf("Mandatory page seam: frame %d, held page %d, old tail %.6f, target underruns %u, Stop %lld, mode %d\n",
         cue,stalledPage,static_cast<double>(pcm[due+tail]),pages.underrunSamples(),
-        static_cast<long long>(events.count == 2 ? events.edges[1].sample : -1));
+        static_cast<long long>(events.count == 2 ? events.edges[1].sample : -1),static_cast<int>(mode));
+}
+
+enum class LinkedPagedLegato { Follow, EarlierUser, CoincidentUser, Stop };
+
+void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action) {
+    test::TempDirectory folder{"long_paged_linked_legato",ramp ? "ramp" : "steady"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec(ramp ? "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1)"
+                 : "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    if (ramp) {
+        SQLite::Statement change(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,140)");
+        change.bind(1,quarter / 2);
+        change.exec();
+    }
+    const auto firstLap = ramp ? 110000 : 120000;
+    const auto followAt = ramp ? 124242 : 120000;
+    const auto stopAt = ramp ? 165385 : 192000;
+    const auto due = action == LinkedPagedLegato::EarlierUser ? 113956 : followAt;
+    const auto user = action == LinkedPagedLegato::EarlierUser || action == LinkedPagedLegato::CoincidentUser;
+    constexpr auto oldStart = 2400;
+    constexpr auto loopBegin = 100800;
+    constexpr auto targetStart = 4800;
+    constexpr auto tail = 3000;
+    const auto period = oldStart + firstLap - loopBegin;
+    const auto phase = [&](int at) { return loopBegin + (at - firstLap) % period; };
+    const auto cue = targetStart + phase(due) - oldStart;
+    const auto followedCue = targetStart + phase(followAt) - oldStart;
+    addClip(*store,folder.path(),101,10,1,false,phase(followAt + tail),1,240000);
+    pinUnwarpedOneShot(*store,50000000,4500000000);
+    db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880 WHERE id=101;"
+            "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=4 WHERE clip_id=101;");
+    {
+        SQLite::Statement loop(db,"UPDATE clip_playback_details SET loop_begin_ns=2100000000,loop_end_ns=? WHERE clip_id=101");
+        loop.bind(1,static_cast<std::int64_t>(ramp ? 2341666667 : 2550000000));
+        loop.exec();
+    }
+    const auto target = [&](int id, int sceneId, int pulse, int quantization) {
+        addClip(*store,folder.path(),id,sceneId,1,true,pulse,1,id == 103 ? 240100 : 240000);
+        SQLite::Statement clip(db,"UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000,"
+                                  "loop_enabled=0,loop_len_ticks=NULL WHERE id=?");
+        clip.bind(1,id); clip.exec();
+        SQLite::Statement audio(db,"UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=?");
+        audio.bind(1,id); audio.exec();
+        SQLite::Statement pin(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(?,100000000,4600000000)");
+        pin.bind(1,id); pin.exec();
+        SQLite::Statement setting(db,"UPDATE clip_launch SET launch_quant=?,ram_mode=0 WHERE clip_id=?");
+        setting.bind(1,quantization); setting.bind(2,id); setting.exec();
+    };
+    target(102,20,followedCue,8);
+    if (user) {
+        db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
+        target(103,30,cue,action == LinkedPagedLegato::EarlierUser ? 12 : 8);
+    }
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    std::vector<float> pcm(static_cast<std::size_t>(stopAt + blockFrames));
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(firstLap-12000);
+    const auto original = trackState(session);
+    require(original.clip == 101 && original.queued.action == LaunchQueuedAction::None,
+            "internal Linked Follow never appears as a user-queued action");
+    playback.paged = true;
+    const auto postAt = firstLap - (action == LinkedPagedLegato::EarlierUser ? 100 : 5000);
+    playback.through(postAt);
+    if (user || action == LinkedPagedLegato::Stop) {
+        OpRequest gesture;
+        gesture.opType = user ? "session.launchClip" : "session.stopTrack";
+        gesture.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+        if (user) {
+            gesture.payload["clip"] = 103;
+            gesture.payload["scene"] = 30;
+        }
+        require(OpJournal(*store).commit(gesture).ok,"publish a saved user action before the physical follow lap");
+        playback.through(postAt+1);
+        const auto planned = trackState(session).queued;
+        if (user) require(planned.clip == 103 && planned.legatoSourceFrame == cue,
+            "the actual earlier or tied user launch keeps its public physical forecast");
+        else require(planned.action == LaunchQueuedAction::Stop,"the explicit Stop replaces the follow");
+    }
+    const auto take = action == LinkedPagedLegato::Stop ? stopAt + 1 : due + blockFrames;
+    playback.through(take);
+    const auto peak = pcm[static_cast<std::size_t>(due)];
+    std::printf("%s action %d: physical lap %d, wanted %d, target cue %d, clip %lld, cut %lld, PCM %.6f, retained %.6f\n",
+        ramp ? "ramp" : "steady",static_cast<int>(action),firstLap,due,cue,
+        static_cast<long long>(playback.edges[1].newClip),static_cast<long long>(playback.edges[1].sample),
+        static_cast<double>(peak),static_cast<double>(pcm[static_cast<std::size_t>(followAt+tail)]));
+    for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+    if (action == LinkedPagedLegato::Stop) {
+        require(playback.count == 2 && playback.edges[1].newClip == 0 && playback.edges[1].sample == stopAt &&
+                playback.edges[1].sourceTick == 0 && pcm[static_cast<std::size_t>(followAt+tail)] == .55f,
+                "Stop suppresses the linked launch and the old pinned loop remains audible through its own grid");
+    } else {
+        require(playback.count == 2 && playback.edges[1].newClip == (user ? 103 : 102) &&
+                playback.edges[1].sample == due && peak == -.5f && trackState(session).queued.action == LaunchQueuedAction::None,
+                "the valid successor lands at its grid with the inherited raw sample");
+    }
+    require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "Linked Follow prefetch and physical cue admission do no callback allocation or file IO");
 }
 
 }
@@ -2592,6 +2735,15 @@ int main() {
             scheduledPhysicalPagedLegato(true,stop);
             coldPhysicalPagedLegato(stop);
         }
+        linkedLongPagedLegato(false,LinkedPagedLegato::Follow);
+        linkedLongPagedLegato(true,LinkedPagedLegato::Follow);
+        linkedLongPagedLegato(true,LinkedPagedLegato::EarlierUser);
+        linkedLongPagedLegato(false,LinkedPagedLegato::CoincidentUser);
+        linkedLongPagedLegato(true,LinkedPagedLegato::CoincidentUser);
+        linkedLongPagedLegato(true,LinkedPagedLegato::Stop);
+        coldPhysicalPagedLegato(false,StalledLegato::Linked);
+        coldPhysicalPagedLegato(true,StalledLegato::Linked);
+        coldPhysicalPagedLegato(false,StalledLegato::TiedUser);
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

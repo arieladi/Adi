@@ -164,7 +164,9 @@ struct LaunchSink {
     void (*retargeted)(void*,const LaunchSlot& previous,const LaunchSlot& next,std::uint64_t run) noexcept = nullptr;
     // May reserve a prospective cue before the running track is changed.
     bool (*admitLegatoCue)(void*, const LaunchSlot&, const LaunchSourceCue&, std::int32_t offset,
-                           bool scheduledPress) noexcept = nullptr;
+                           bool quantizedHandoff) noexcept = nullptr;
+    // Driver-only forecast. Linked follows stay out of the user-queued status.
+    void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, std::int64_t frame) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
@@ -212,7 +214,7 @@ private:
         std::int64_t earliestSample = 0;
         bool sceneGesture = false;
         std::uint64_t admission = 0;
-        bool prepared = false;
+        bool prepared = false, linkedPhysical = false;
         std::int64_t physicalLaps = 0;
     };
     struct Run {
@@ -275,9 +277,12 @@ private:
     void render(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, std::int64_t,
                 std::int32_t begin, std::int32_t end) noexcept;
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
-                    std::int32_t, std::int64_t, bool scheduledPress = false) noexcept;
+                    std::int32_t, std::int64_t, bool quantizedHandoff = false) noexcept;
     [[nodiscard]] std::optional<LaunchSourceCue> queuedLegatoSourceCue(const Track&, const Pending&,
-        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample) const noexcept;
+        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample,
+        std::int64_t* due = nullptr) const noexcept;
+    void prefetchLinkedLegato(const Track&, const LaunchView&, const LaunchBlock&, LaunchSink,
+                              std::int64_t endSample) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,
                                                 const LaunchView&, std::int64_t) const noexcept;
     void publishStatus(const LaunchBlock&, const LaunchView&, LaunchSink, bool, std::int64_t) noexcept;
