@@ -712,13 +712,15 @@ public:
             Clip::StreamReader streamReader{*clip};
             const auto streamInput=streamReader.input();
             std::array<float,64> warpedFrame;
+            WarpClipPlayer::RenderCursor warpCursor;
             for(std::int32_t i=offset-io.blockOffset;i<io.frames;++i) {
                 const auto time=playbackSample(transport,io.blockOffset+i,playbackDelay);
                 const float* sample = nullptr;
                 if (clip->streamingWarp) {
                     if (time < clip->start || time >= clip->end) continue;
                     streamReader.missing = false;
-                    if (!clip->streamingWarp->renderFrame(time,streamInput,std::span(warpedFrame.data(),clip->channels))) {
+                    if (!clip->streamingWarp->renderFrame(warpCursor,time,streamInput,
+                                                         std::span(warpedFrame.data(),clip->channels))) {
                         if (!clip->invalidWarpRate.exchange(true,std::memory_order_relaxed))
                             clip->errors.fetch_add(1,std::memory_order_relaxed);
                         continue;

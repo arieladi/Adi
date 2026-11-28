@@ -301,7 +301,7 @@ double StreamingWarp::reverseTextureCenterTick(double center, WarpStreamClock cl
 }
 
 void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStreamClock clock,
-                                  std::span<float> output) const noexcept {
+                                  std::span<float> output, WarpTextureCursor* cursor) const noexcept {
     const auto half = grain_ / 2;
     const auto grain = static_cast<double>(grain_);
     const auto [first, last] = textureGrains(frame, frame, clock);
@@ -315,9 +315,17 @@ void StreamingWarp::renderTexture(double frame, WarpStreamInput input, WarpStrea
         if (weight == 0) continue;
         const double jitter = (static_cast<double>(grainRandom(seed_, index) >> 11) / 0x1p53 - 0.5) *
             (2 * grainJitterFrames_);
-        const auto sourceTick = clock.causalTextureCenters && clock.maxTicksPerFrame > 0 ?
-            reverseTextureCenterTick(center, clock) : clock.tickAtFrame(clock.context, center);
-        const double readAt = sourceAtTick(sourceTick) + jitter + (frame - center) * pitch_;
+        double source;
+        if (cursor) {
+            auto& pivot = cursor->pivots_[static_cast<std::size_t>(index) % cursor->pivots_.size()];
+            if (pivot.index != index) pivot = {index, sourceAtTick(reverseTextureCenterTick(center, clock))};
+            source = pivot.sourceFrame;
+        } else {
+            const auto sourceTick = clock.causalTextureCenters && clock.maxTicksPerFrame > 0 ?
+                reverseTextureCenterTick(center, clock) : clock.tickAtFrame(clock.context, center);
+            source = sourceAtTick(sourceTick);
+        }
+        const double readAt = source + jitter + (frame - center) * pitch_;
         sampleFrame(input, readAt, {grainPcm.data(), output.size()});
         for (std::uint16_t channel = 0; channel < output.size(); ++channel)
             mix[channel] += grainPcm[channel] * weight;
@@ -409,6 +417,20 @@ bool StreamingWarp::renderFrame(std::int64_t outputFrame, WarpStreamInput input,
     if (mode_ == WarpMode::RePitch) return renderRePitch(frame, sourceAtTick(tick), input, clock, output);
     renderTexture(frame, input, clock, output);
     return true;
+}
+
+void StreamingWarp::renderReversedTexture(std::int64_t outputFrame, WarpStreamInput input, WarpStreamClock clock,
+                                         WarpTextureCursor& cursor, std::span<float> output) const noexcept {
+    std::fill_n(output.data(), output.size(), 0.0f);
+    if (!input.sample || !clock.tickAtFrame || !clock.frameAtTick || output.empty()) return;
+    if (!cursor.hasBounds_) {
+        cursor.first_ = std::round(clock.frameAtTick(clock.context, 0));
+        cursor.end_ = std::round(clock.frameAtTick(clock.context, static_cast<double>(markers_.back().tick)));
+        cursor.hasBounds_ = true;
+    }
+    const auto frame = static_cast<double>(outputFrame);
+    if (frame < cursor.first_ || frame >= cursor.end_) return;
+    renderTexture(frame, input, clock, output.first(std::min<std::size_t>(channels_, output.size())), &cursor);
 }
 
 WarpSourceRange StreamingWarp::sourceRange(std::int64_t firstOutputFrame, std::int64_t lastOutputFrame,

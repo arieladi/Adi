@@ -4,6 +4,8 @@
 #include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 
+#include <array>
+#include <limits>
 #include <span>
 #include <utility>
 
@@ -35,6 +37,19 @@ struct WarpStreamClock {
     bool causalTextureCenters = false;
 };
 
+/// Scratch owned by a single consumer of one causal reversed Texture clock.
+class WarpTextureCursor {
+    friend class StreamingWarp;
+    struct Pivot {
+        std::int64_t index = std::numeric_limits<std::int64_t>::min();
+        double sourceFrame = 0;
+    };
+
+    std::array<Pivot, 8> pivots_{};
+    double first_ = 0, end_ = 0;
+    bool hasBounds_ = false;
+};
+
 struct WarpSourceRange {
     std::int64_t first = 0;
     std::int64_t last = 0; // exclusive
@@ -57,6 +72,11 @@ public:
     /// ratio. Output is silent in that case.
     bool renderFrame(std::int64_t outputFrame, WarpStreamInput, WarpStreamClock,
                      std::span<float> output) const noexcept;
+
+    /// Render against an unchanged, finite causal Texture lap clock. Start
+    /// with an empty cursor whenever the clock or its grain grid changes.
+    void renderReversedTexture(std::int64_t outputFrame, WarpStreamInput, WarpStreamClock,
+                               WarpTextureCursor&, std::span<float> output) const noexcept;
 
     /// Bounds on PCM required for inclusive output frames in one monotone
     /// clock segment. The PCM range is clipped to the source window.
@@ -92,7 +112,8 @@ private:
     [[nodiscard]] double textureGrainCenter(std::int64_t, WarpStreamClock) const noexcept;
     [[nodiscard]] double textureGrainStart(double center) const noexcept;
     [[nodiscard]] double reverseTextureCenterTick(double center, WarpStreamClock) const noexcept;
-    void renderTexture(double frame, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
+    void renderTexture(double frame, WarpStreamInput, WarpStreamClock, std::span<float>,
+                       WarpTextureCursor* = nullptr) const noexcept;
     bool renderRePitch(double frame, double source, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
 
     std::vector<WarpMarker> markers_;

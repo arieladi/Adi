@@ -115,13 +115,10 @@ public:
 
         // Every full lap traverses the same source interval. The middle
         // lookup is bounded even if the requested block wraps many times.
-        const auto lapBoundary = [&](double lap) {
-            return std::llround(tempo_.frameAtTick(placement.sourceOrigin + loopStart_ + lap*loopLength_));
-        };
-        range(first, lapBoundary(firstLap+1)-1, firstLap);
-        range(lapBoundary(lastLap), last, lastLap);
+        range(first, lapBoundary(placement, firstLap+1)-1, firstLap);
+        range(lapBoundary(placement, lastLap), last, lastLap);
         if (lastLap > firstLap+1)
-            range(lapBoundary(firstLap+1), lapBoundary(firstLap+2)-1, firstLap+1);
+            range(lapBoundary(placement, firstLap+1), lapBoundary(placement, firstLap+2)-1, firstLap+1);
     }
 
 private:
@@ -163,14 +160,17 @@ private:
         return std::llround(std::clamp(tempo_.frameAtTick(origin + endTick_), -0x1p50, 0x1p50));
     }
 
+    [[nodiscard]] std::int64_t lapBoundary(Placement placement, double lap) const noexcept {
+        return std::llround(tempo_.frameAtTick(placement.sourceOrigin + loopStart_ + lap*loopLength_));
+    }
+
     [[nodiscard]] double lapAt(Placement placement, std::int64_t frame) const noexcept {
         if (loopLength_ <= 0) return 0;
         const auto tick = tempo_.tickAtFrame(static_cast<double>(frame) + 0.5) - placement.sourceOrigin;
         const auto lap = std::max(0.0, std::floor((tick-loopStart_)/loopLength_));
         // At a half-frame tie the rounded boundary, rather than a floating
         // point comparison in tick space, owns the first sample of a lap.
-        const auto boundary = tempo_.frameAtTick(placement.sourceOrigin + loopStart_ + lap*loopLength_);
-        return lap > 0 && std::llround(boundary) > frame ? lap-1 : lap;
+        return lap > 0 && lapBoundary(placement, lap) > frame ? lap-1 : lap;
     }
 
     [[nodiscard]] ClockView clockView(Placement placement, double lap) const noexcept {
@@ -197,6 +197,39 @@ private:
             reverseFrames, textureGridShift, causalTextureCenters};
     }
 
+public:
+    /// Arrangement render scratch for one clip in one callback slice.
+    /// Tempo and grain state are owned by that consumer until the slice ends.
+    class RenderCursor {
+        friend class WarpClipPlayer;
+        const WarpClipPlayer* owner_ = nullptr;
+        ClockView view_{};
+        std::int64_t next_ = 0, end_ = 0;
+        audio::WarpTextureCursor texture_;
+    };
+
+    bool renderFrame(RenderCursor& cursor, std::int64_t frame, audio::WarpStreamInput input,
+                     std::span<float> output) const noexcept {
+        if (!reverseTexture_ || framesPerTick_ != 0) return renderFrame(frame, input, output);
+        const auto* player = get();
+        if (!player || frame < arrangement_.firstFrame || frame >= arrangement_.endFrame) {
+            std::fill_n(output.data(), output.size(), 0.0f);
+            return true;
+        }
+        if (cursor.owner_ != this || frame != cursor.next_ || frame >= cursor.end_) {
+            const auto lap = lapAt(arrangement_, frame);
+            cursor.end_ = loopLength_ > 0 ? lapBoundary(arrangement_, lap + 1) : arrangement_.endFrame;
+            cursor.view_ = clockView(arrangement_, lap);
+            cursor.texture_ = {};
+            cursor.owner_ = this;
+        }
+        cursor.next_ = frame + 1;
+        player->renderReversedTexture(cursor.view_.processorFrame(frame), input, cursor.view_.clock(),
+                                      cursor.texture_, output);
+        return true;
+    }
+
+private:
     [[nodiscard]] const audio::StreamingWarp* get() const noexcept {
         return compiled_.load(std::memory_order_acquire);
     }
