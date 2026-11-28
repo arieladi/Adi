@@ -1423,6 +1423,74 @@ void legacyTickLoopIgnoresOneShotEnd() {
     }
 }
 
+void persistedLegacyRawLoopRetime(int bpm) {
+    constexpr std::int64_t start = 12000, loopHead = 24000;
+    constexpr std::int64_t cut = 12000, stop = 60000;
+    std::vector<float> source(2*rate);
+    for (std::size_t frame = 0; frame < source.size(); ++frame)
+        source[frame] = (static_cast<float>(frame)-48000.f)/262144.f;
+    test::TempDirectory folder{"legacy_raw_loop","ordinary-retime"};
+    auto store = residentLegacyRawSlot(folder,source,false,true,quarter/2,3*quarter);
+    OpRequest loop;
+    loop.opType = "clip.setLoop";
+    loop.payload = {{"id",101},{"on",true},{"start",quarter},{"length",3*quarter/2}};
+    require(OpJournal(*store).commit(loop).ok,"save the unwarped tick-only loop");
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path()/"song.adi",error);
+    require(store && store->db().execAndGet("SELECT loop_enabled FROM clips WHERE id=101").getInt() == 1 &&
+            store->db().execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=101").getInt() == 0,
+            "reopen the saved Start, End and Loop without source pins");
+
+    Session session;
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    const auto wrap = cut + static_cast<std::int64_t>(std::llround(1.5 * rate * 60 / bpm));
+    std::vector<float> pcm(static_cast<std::size_t>(stop+blockFrames));
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(cut/2);
+    const auto initial = trackState(session);
+    const auto accepted = bpm == 120 || session.setExternalTempoAt(*store,bpm,quarter/2);
+    playback.through(wrap-139);
+    const auto before = trackState(session);
+    playback.through(wrap-139+blockFrames);
+    const auto after = trackState(session);
+    playback.through(stop);
+    const auto beforeStop = trackState(session);
+    OpRequest stopTrack;
+    stopTrack.opType = "session.stopTrack";
+    stopTrack.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(stopTrack).ok,"submit a manual Stop on the same run");
+    playback.through(static_cast<std::int64_t>(pcm.size()));
+    const auto actualBpm = session.beginRender().bpmAtTick(quarter);
+    auto mismatch = std::int64_t{-1};
+    for (std::int64_t at = 0; at < static_cast<std::int64_t>(pcm.size()); ++at) {
+        const auto frame = at < wrap ? start+at : loopHead+at-wrap;
+        const auto expected = at < stop ? source[static_cast<std::size_t>(frame)] : 0.f;
+        if (pcm[static_cast<std::size_t>(at)] != expected) {
+            mismatch = at;
+            break;
+        }
+    }
+    const auto actualStop = playback.count == 2 ? playback.edges[1].sample : -1;
+    std::printf("Legacy Loop %d BPM: accepted %d, clock %.0f, wrap %lld laps %llu/%llu, wrap PCM %.6f, "
+                "Stop %lld, first mismatch %lld, allocations %u, callback file I/O %u\n",
+                bpm,accepted,actualBpm,static_cast<long long>(wrap),
+                static_cast<unsigned long long>(before.completedLoops),static_cast<unsigned long long>(after.completedLoops),
+                static_cast<double>(pcm[static_cast<std::size_t>(wrap)]),
+                static_cast<long long>(actualStop),static_cast<long long>(mismatch),
+                callbackAllocations,audio::callbackFileIo.load());
+    for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+    require(accepted && actualBpm == bpm && mismatch == -1 &&
+            initial.clip == 101 && initial.run != 0 && before.run == initial.run && after.run == initial.run &&
+            before.completedLoops == 0 && after.completedLoops == 1 &&
+            beforeStop.run == initial.run && beforeStop.completedLoops == 1 &&
+            playback.count == 2 && playback.edges[0].sample == 0 &&
+            playback.edges[1].newClip == 0 && actualStop == stop &&
+            session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "the saved raw loop keeps exact PCM, its run and manual Stop through the ordinary tempo change");
+}
+
 void residentLegacyNonzeroStart() {
     enum class Mode { Steady, Rebase, Fade, LiveStart, LiveLoop };
     constexpr auto savedStart = 12000;
@@ -4321,6 +4389,8 @@ int main() {
         pagedLegacyNonzeroStart("source");
         residentLegacyNonzeroStart();
         legacyTickLoopIgnoresOneShotEnd();
+        persistedLegacyRawLoopRetime(120);
+        persistedLegacyRawLoopRetime(140);
         protectResidentLegacyNonzeroStartAdoption();
         residentLegacyBudgetKeepsBothSlots();
         fadedLegacyRawSceneAtFirstAdoption();

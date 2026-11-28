@@ -1749,6 +1749,10 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     const auto streamingClock=std::make_shared<const WarpArrangementClock>(clock,rate);
     const bool steadyWarp = streamingClock->constantFramesPerTick() != 0;
     const bool hasPreparedClock = preparedBpm.has_value() || steadyWarp;
+    const bool keepsRawLoopAperture = !hasPreparedClock &&
+        std::ranges::all_of(clock.events,[bpm](const TempoEvent& event) {
+            return event.curve == 0 && event.bpm >= bpm;
+        });
     const bool useNativeWarp = !steadyWarp ||
         std::ranges::any_of(data.scenes(), [](const auto& scene) { return scene.tempoEnabled; });
     TempoMap fixedClock;
@@ -1988,6 +1992,26 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     }
                 }
                 const auto pinned = prepared.physicalStartFrame >= 0;
+                if (keepsRawLoopAperture && usePins && !pinned && setting.ramMode &&
+                    !slot.legato && !slot.fade && slot.mode == LaunchMode::Trigger && !setting.follow.enabled &&
+                    clip->timeBase == 0 && clip->loopEnabled && !clip->contentOffsetNs && !clip->sourceEndNs &&
+                    !clip->loopBeginNs && !clip->loopEndNs && slot.startTick < slot.loopEndTick &&
+                    slot.endTick > slot.loopEndTick && audioRow != original.rows.audioClips.end() &&
+                    !audioRow->reverse && wholeRawSourceRate(*audioRow,original.rows.media) == rate &&
+                    adoptedRawBank.bank && adoptedRawBank.bank->bpm() == bpm &&
+                    sameRawSlotSource(adoptedRawBank,*clip)) {
+                    const auto* old = adoptedRawBank.bank->clip(clip->id);
+                    const auto loopEndFrame = fixedFrame(slot.loopEndTick);
+                    if (old && !old->usesPages() && !old->followsTempo() && old->rate() == rate &&
+                        loopEndFrame >= 0 && loopEndFrame < audioRow->srcLenFrames &&
+                        old->frames() > static_cast<std::uint64_t>(loopEndFrame) && old->bytes() <= remaining) {
+                        // The original PCM spans the shorter musical lap and
+                        // preserves the live run’s source phase.
+                        pcm.push_back(*old);
+                        remaining -= old->bytes();
+                        continue;
+                    }
+                }
                 // LaunchSlot still owns the musical End. The reader must have
                 // the source past its old flat-clock trim when playback slows.
                 const bool residentOffset = setting.ramMode && slot.startTick > 0;
