@@ -147,6 +147,8 @@
 #X msg 2520 418 p 63 \$1;
 #X obj 2520 470 adi.param \$0 65 0 100 0 % lin Pan_<_Rnd;
 #X msg 2520 508 p 64 \$1;
+#X obj 2520 560 adi.param \$0 66 0 100 0 % lin Spread;
+#X msg 2520 598 p 65 \$1;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 2 0 3 0;
@@ -294,3 +296,5 @@
 #X connect 145 0 0 0;
 #X connect 146 0 147 0;
 #X connect 147 0 0 0;
+#X connect 148 0 149 0;
+#X connect 149 0 0 0;

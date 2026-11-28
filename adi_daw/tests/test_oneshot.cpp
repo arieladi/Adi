@@ -556,6 +556,66 @@ void panControls() {
     }
     check(power && moved, "Pan < Rnd moves each note somewhere else, at the same power");
 }
+// SC-482: Spread plays a note as two voices, the upper (+25 cents at 100 %)
+// panned left and the lower right by the amount, each at half the level. On a
+// ramp, a channel's slope is its voice's read increment.
+void spreadVoices() {
+    std::vector<float> ramp(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+        ramp[i] = static_cast<float>(i) / 8192.f;
+    OneShot d;
+    configure(d);
+    set(d, OneShot::Mode, 1);  // 1-Shot: plays to the region's end and stops
+    std::array<float, 64> l{}, r{};
+    float *out[]{l.data(), r.data()};
+    const auto both = [&](int count) {
+        std::vector<float> left(static_cast<std::size_t>(count)), right(left.size());
+        d.release();
+        d.prepare(48000, 64);
+        for (int at = 0; at < count; at += 64) {
+            const engine::Event e{0, engine::EventType::NoteOn, 0, 60, 1, 0, 1};
+            engine::NodeIo io{};
+            io.out = out;
+            io.channels = 2;
+            io.frames = 64;
+            io.events = {&e, at == 0 ? 1 : 0};
+            allocations = 0;
+            audit = true;
+            d.process(io);
+            audit = false;
+            check(allocations == 0, "Spread allocates nothing on the audio thread");
+            std::copy_n(l.begin(), 64, left.begin() + at);
+            std::copy_n(r.begin(), 64, right.begin() + at);
+        }
+        return std::pair{left, right};
+    };
+    check(d.publishSample(ramp, 1, 48000), "spread ramp publishes");
+    const auto [plainL, plainR] = both(8448);  // Spread at its default, 0
+    check(plainL == plainR && std::abs(plainL[1000] - 1000.f / 8192.f) < 1e-6f,
+          "Spread 0 plays the one centred voice it always played");
+    set(d, OneShot::Spread, 100);
+    const auto [wideL, wideR] = both(8448);
+    const double rootTwo = std::sqrt(2.), up = std::exp2(.25 / 12), down = std::exp2(-.25 / 12);
+    const auto slope = [&](const std::vector<float> &x) {
+        return (x[4000] - x[1000]) / 3000. * 8192. / (.5 * rootTwo);
+    };
+    std::printf("METRIC Spread 100: left increment %.6f (want %.6f), right %.6f (want %.6f)\n",
+                slope(wideL), up, slope(wideR), down);
+    check(std::abs(slope(wideL) - up) < 2e-4 && std::abs(slope(wideR) - down) < 2e-4,
+          "Spread 100: the upper voice hard left, the lower hard right, 50 cents apart");
+    // The upper voice reaches the end first (8,192 / 1.0145 = 8,075 samples).
+    check(wideL[8150] == 0 && wideR[8150] > .4f && wideL[8400] == 0 && wideR[8400] == 0 &&
+              !d.sounding(),
+          "the voice that reaches the end stops; the note ends when both have");
+    // Half way: each voice half left or right, so a DC sample of 1 sums to
+    // 0.5 * (sqrt 1.5 + sqrt 0.5) on each side.
+    check(d.publishSample(std::vector<float>(4096, 1.f), 1, 48000), "spread DC publishes");
+    set(d, OneShot::Spread, 50);
+    const auto [halfL, halfR] = both(512);
+    const double want = .5 * (std::sqrt(1.5) + std::sqrt(.5));
+    check(std::abs(halfL[200] - want) < 1e-6 && std::abs(halfR[200] - want) < 1e-6,
+          "Spread pans its two voices by its amount");
+}
 // DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
 // a Transient or Manual slice is refused past End and cut at End.
 void sliceKeys() {
@@ -905,6 +965,7 @@ int main() {
     lfoControls();
     glideModes();
     panControls();
+    spreadVoices();
     parameterModulation();
     midiControllers();
     preparedSamples();

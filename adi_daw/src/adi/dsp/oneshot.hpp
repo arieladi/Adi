@@ -96,6 +96,7 @@ class OneShot final : public DeviceInstance {
         GlideTime,
         Pan,
         PanRandom,
+        Spread,
         Count
     };
     /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
@@ -211,6 +212,10 @@ class OneShot final : public DeviceInstance {
         std::uint64_t played = 0;
         // The last pitch's read increment (exp2 is per pitch, not per sample).
         double pitchSeen = std::numeric_limits<double>::quiet_NaN(), increment = 0;
+        // SC-482 Spread: the second, lower voice of the note's pair: its own
+        // place in the sample and read increment (the first is position and
+        // increment, detuned up), and the detune the increments were made for.
+        double position2 = 0, increment2 = 0, spreadSeen = 0;
         // The last cutoff offset's filter coefficients (tan is per offset, not
         // per sample): the same offset gives the same coefficients, bit for bit.
         double cutoffSeen = std::numeric_limits<double>::quiet_NaN(), g = 0, r = 0, d = 0;

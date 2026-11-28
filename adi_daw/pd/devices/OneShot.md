@@ -32,6 +32,10 @@ note still sounding. Neither glides from silence, and Slice mode never glides.
 Whether Live's legato Glide restarts the sample is a reading still to take.
 Pan (50 L .. 50 R, as Live shows it) and Pan < Rnd (a random pan drawn for each
 note from its own generator) add to the LFO's pan under the same law.
+Spread plays each note as two voices at half the level: one detuned up and
+panned left, one detuned down and panned right, both by the amount (at 100 %:
+50 cents apart, hard left and right; ADI's span, Live's is a reading). Each
+loops and ends on its own; the note ends when both have. At 0 it is one voice.
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset

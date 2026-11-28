@@ -107,7 +107,16 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        // LFO's pan under its law (centre 1 and 1, hard left
                        // sqrt 2 and 0).
                        {"pan", "Pan", "", -50, 50, 0, 0},
-                       {"pan_random", "Pan < Rnd", "%", 0, 100, 0, 0}};
+                       {"pan_random", "Pan < Rnd", "%", 0, 100, 0, 0},
+                       // SC-482: Spread plays each note as two voices, one
+                       // detuned up and panned left, one down and right, both
+                       // by the amount (0, the default, is one voice as before).
+                       {"spread", "Spread", "%", 0, 100, 0, 0}};
+// SC-482: Spread at 100 % detunes its two voices this far apart in cents, half
+// up and half down, and pans them hard left and right (ADI's span and law:
+// Live's are a reading still to take). Each voice plays at half the level, so
+// the two sum to the one voice they come from as the amount goes to 0.
+constexpr double kSpreadCents = 50;
 // SC-482: Filter < Vel at 100 % opens the cutoff this far at full velocity
 // (ADI's span: Live's is a reading still to take); a softer note, less.
 constexpr double kFilterVelocityOctaves = 4;
@@ -585,6 +594,7 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.end = std::max(v.begin + 1, v.end);
     v.loop = std::clamp(v.loop, v.begin, v.end - 1);
     v.position = v.begin;
+    v.position2 = v.begin;
 }
 void OneShot::rememberMidiControl(MidiChannels &channels, const engine::Event &e) noexcept {
     if (e.channel >= channels.size() || !std::isfinite(e.value))
@@ -741,6 +751,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     double driveGain = 1, filterKeyAmount = 0, filterVelAmount = 0;
     // SC-482: the LFO's attack in samples (0: none) and its rate's key amount.
     double lfoAttack = 0, lfoKeyAmount = 0;
+    // SC-482: Spread's amount, 0..1 (its voices' pan), and each voice's detune
+    // in semitones; 0 plays the one voice the note always played.
+    double spreadAmount = 0, spreadSt = 0;
     // The cutoff moved by `octaves`: 0 is the knob's own cutoff (exp2(0) is 1).
     const auto coefficients = [&](double octaves, double &g, double &q) {
         const double hz = std::clamp(p[Cutoff] * std::exp2(octaves), 5., rate_ * .45);
@@ -769,6 +782,8 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         lfoStep = lfoHz() / rate_;
         lfoAttack = rate_ * p[LfoAttack] * .001;
         lfoKeyAmount = p[LfoKey] / 100.;
+        spreadAmount = p[Spread] / 100.;
+        spreadSt = spreadAmount * kSpreadCents / 200.;
         feAttack = rate_ * p[FilterEnvAttack] * .001;
         feDecay = rate_ * p[FilterEnvDecay] * .001;
         feSustain = p[FilterEnvSustain] / 100.;
@@ -820,12 +835,19 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     // in the devices log for Simpler) and ends when the release
                     // reaches zero, not at the loop's end with a click.
                     const bool looping = classic && p[LoopOn] > 0 && (v.held || v.stage == 3);
-                    if (v.position >= v.end) {
+                    // SC-482 Spread: each of the note's two voices loops on
+                    // its own; out of the loop, the note ends when both have.
+                    const bool spreading = spreadAmount > 0;
+                    if (v.position >= v.end || (spreading && v.position2 >= v.end)) {
                         if (looping) {
                             const double overlap = (v.end - v.loop) * p[Fade] / 200.;
-                            v.position = v.loop + overlap +
-                                         std::fmod(v.position - v.end, v.end - v.loop - overlap);
-                        } else {
+                            if (v.position >= v.end)
+                                v.position = v.loop + overlap +
+                                             std::fmod(v.position - v.end, v.end - v.loop - overlap);
+                            if (spreading && v.position2 >= v.end)
+                                v.position2 = v.loop + overlap +
+                                              std::fmod(v.position2 - v.end, v.end - v.loop - overlap);
+                        } else if (!spreading || (v.position >= v.end && v.position2 >= v.end)) {
                             v.active = false;
                             break;
                         }
@@ -888,17 +910,35 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     }
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
-                    if (!(pitch == v.pitchSeen)) {
+                    if (!(pitch == v.pitchSeen) || !(spreadSt == v.spreadSeen)) {
                         v.pitchSeen = pitch;
-                        v.increment = s->rate / rate_ * std::exp2(pitch / 12.);
+                        v.spreadSeen = spreadSt;
+                        if (spreadSt == 0) {
+                            v.increment = s->rate / rate_ * std::exp2(pitch / 12.);
+                        } else {
+                            v.increment = s->rate / rate_ * std::exp2((pitch + spreadSt) / 12.);
+                            v.increment2 = s->rate / rate_ * std::exp2((pitch - spreadSt) / 12.);
+                        }
                     }
                     const double increment = v.increment;
                     double amplitude = v.gain * v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
                                        level * (1 - p[LfoVolume] / 200. * midi.modulation * (1 - lfo));
-                    if (!classic)
-                        amplitude *= std::min(1., (v.end - v.position) / increment /
-                                                      std::max(1., rate_ * p[FadeOut] * .001));
+                    const double fadeOutSamples = std::max(1., rate_ * p[FadeOut] * .001);
+                    if (!classic && !spreading)
+                        amplitude *= std::min(1., (v.end - v.position) / increment / fadeOutSamples);
                     const double fade = looping ? (v.end - v.loop) * p[Fade] / 200. : 0;
+                    // The sample under a read position, both channels, through
+                    // the loop's crossfade near its end.
+                    const auto source = [&](double position, double *x) {
+                        readBoth(*s, position, x);
+                        if (fade > 0 && position > v.end - fade) {
+                            const auto t = (position - (v.end - fade)) / fade;
+                            for (int c = 0; c < 2; ++c)
+                                x[c] = x[c] * std::cos(t * pi * .5) +
+                                       read(*s, v.loop + position - (v.end - fade), c) *
+                                           std::sin(t * pi * .5);
+                        }
+                    };
                     // The filter's coefficients: the block's, or this voice's
                     // this sample when the LFO moves the cutoff.
                     double g = gFixed, r = rFixed, d = dFixed;
@@ -922,15 +962,30 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         d = v.d;
                     }
                     double both[2];
-                    readBoth(*s, v.position, both);
+                    if (!spreading) {
+                        source(v.position, both);
+                    } else {
+                        // SC-482 Spread: the upper voice panned left by the
+                        // amount, the lower right, each at half the level and
+                        // with its own fade out; one that has ended is silent.
+                        both[0] = both[1] = 0;
+                        for (int k2 = 0; k2 < 2; ++k2) {
+                            const double at = k2 == 0 ? v.position : v.position2;
+                            if (at >= v.end)
+                                continue;
+                            double heard[2];
+                            source(at, heard);
+                            double half = .5;
+                            if (!classic)
+                                half *= std::min(1., (v.end - at) / (k2 == 0 ? v.increment : v.increment2) /
+                                                         fadeOutSamples);
+                            const double side = k2 == 0 ? -spreadAmount : spreadAmount;
+                            for (int c = 0; c < 2; ++c)
+                                both[c] += heard[c] * half * std::sqrt(1 + (c == 0 ? -side : side));
+                        }
+                    }
                     for (int c = 0; c < 2; ++c) {
                         double x = both[c];
-                        if (fade > 0 && v.position > v.end - fade) {
-                            const auto t = (v.position - (v.end - fade)) / fade;
-                            x = x * std::cos(t * pi * .5) +
-                                read(*s, v.loop + v.position - (v.end - fade), c) *
-                                    std::sin(t * pi * .5);
-                        }
                         if (p[FilterOn] > 0 && circuit != Clean) {
                             x = v.filters[c][0].runCircuit(x, g, r, d, filterType, circuit, driveGain);
                             if (p[Slope] > 0)
@@ -948,6 +1003,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                      (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));
                     }
                     v.position += increment;
+                    // Without Spread the second voice rides with the first, so
+                    // an amount raised mid-note splits them from where it is.
+                    v.position2 = spreading ? v.position2 + v.increment2 : v.position;
                     ++v.played;
                 }
             }
