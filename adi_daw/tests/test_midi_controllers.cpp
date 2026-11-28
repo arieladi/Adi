@@ -245,6 +245,26 @@ void rampTimelines() {
               at(*controller, 17) == .25 && at(*controller, 18) == .75,
           "a half-sample knot in the step before a ramp rounds up and keeps the last same-tick value");
 }
+void stepLeadIn() {
+    constexpr auto quarter = 5765760;
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        for (const auto first : {-1, 0, quarter}) {
+            auto input = model();
+            input.tempo.clear();
+            if (first >= 0)
+                input.tempo.push_back({first, 90});
+            input.clips.front().lengthTicks = 2 * quarter;
+            input.controllers.front().points = {{1, 0, .25, 0, 0, 0}, {2, quarter / 2, .75, 0, 0, 0}};
+            const MidiControllerPrograms programs(input, rate);
+            const auto controller = programs.forTrack(1);
+            const auto expected = std::llround(first < 0 ? rate / 4 : rate / 3);
+            check(programs.problems().empty() && controller &&
+                      controller->nextBoundary(1, static_cast<std::int64_t>(rate)) == expected &&
+                      at(*controller, expected - 1) == .25 && at(*controller, expected) == .75,
+                  "step controller backfills the first saved BPM, or uses 120 with no saved row");
+        }
+    }
+}
 void signedPrefixAndNativeEnd() {
     auto input=model();
     input.clips[0].contentOffsetTicks=-1200;
@@ -766,7 +786,7 @@ void compensatedPlayback() {
 } // namespace
 int main() {
     try {
-        timelines();rampTimelines();signedPrefixAndNativeEnd();
+        timelines();rampTimelines();stepLeadIn();signedPrefixAndNativeEnd();
         overlapsAndBounds();
         wire();
         graphDelivery();

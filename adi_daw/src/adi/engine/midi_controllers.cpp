@@ -56,8 +56,10 @@ struct Clock {
             }) != model.tempo.end();
         // Keep the existing step clock and its sample-rounding behavior for
         // projects without an active ramp segment.
-        if (!hasRamp)
-            steps.push_back({0, 0, 120.0 * ppq / (60.0 * rate)});
+        if (!hasRamp) {
+            const double leadInBpm = model.tempo.empty() ? 120.0 : model.tempo.front().bpm;
+            steps.push_back({0, 0, leadInBpm * ppq / (60.0 * rate)});
+        }
         std::int64_t previous = -1;
         for (const auto &row : model.tempo) {
             if (row.posTicks < 0 || row.posTicks <= previous || !std::isfinite(row.bpm) || row.bpm <= 0)

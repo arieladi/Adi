@@ -2021,6 +2021,35 @@ void sessionControllerRamps() {
     }
 }
 
+void sessionControllerStepLeadIn() {
+    constexpr auto quarter = textproj::kPPQ;
+    const std::array points{controllers::Point{0, 0, .25}, controllers::Point{0, quarter / 2, .75}};
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        Fixture f(rate, 257);
+        f.clip(1, quarter / 2, quarter / 4, 2 * quarter);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(5765760,90)");
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 7, points);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("step lead-in controller prepare/commit");
+        f.load();
+        const auto expected = std::llround(rate / 3);
+        while (f.clock <= expected) f.render();
+        const auto heard = std::span(f.instrument->heard).first(f.instrument->count);
+        const auto change = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+            const auto& e = item.e;
+            return e.type == EventType::Controller && e.channel == 3 && e.paramId == 7 && e.value == .75;
+        });
+        const auto note = std::find_if(heard.begin(), heard.end(), [](const Heard& item) {
+            return item.e.type == EventType::NoteOn;
+        });
+        check(change != heard.end() && note != heard.end() && change < note &&
+                  change->clock == expected && note->clock == expected,
+              "persisted step lead-in gives controllers and notes the first saved BPM");
+        std::printf("controller step lead-in %.0f Hz: %lld (expected %lld)\n",
+                    rate, static_cast<long long>(change == heard.end() ? -1 : change->clock), expected);
+    }
+}
+
 void sessionPitchBend() {
     Fixture f(48000, 64);
     constexpr auto ppq = 5765760;
@@ -2385,6 +2414,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "pitch-bend") livePitchBendOwnership(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "controller-ramps") sessionControllerRamps(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "controller-step-lead-in") sessionControllerStepLeadIn(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }
