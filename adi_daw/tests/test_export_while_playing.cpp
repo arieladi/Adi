@@ -7,6 +7,7 @@
 // second set of plug-ins and samples holds while the export runs.
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/freeze_capture.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -371,6 +372,64 @@ void twoEngines() {
     check(f.clean(), "the export beside playback leaves no copy and no stage");
 }
 
+// Freeze or Bounce asked while an export runs is a third engine on the song.
+// Live cannot start one during an export; ADI can, so it must harm neither:
+// each renders its own revision with plug-ins of its own.
+// Called on workers too, so it reports by returning nothing, never by check().
+std::vector<float> wave(const fs::path& path) {
+    audio::WavReader reader(path);
+    const auto frames = static_cast<std::uint64_t>(reader.frames());
+    std::vector<float> samples(static_cast<std::size_t>(frames * static_cast<std::uint64_t>(reader.channels())));
+    if (frames == 0 || reader.read(samples.data(), static_cast<std::uint32_t>(frames)) != frames) return {};
+    return samples;
+}
+void freezeDuringExport() {
+    Fixture f; f.effect();
+    FreezeCaptureSpec spec;
+    spec.tracks = {1};
+    spec.endSample = 24000;
+    spec.session = {2,48000,64};
+    Probe alone;
+    std::vector<float> frozenAlone;
+    {
+        auto capture = captureFreezeAudio(*f.store, spec, loaderFor(alone));
+        check(capture.ready() && capture.streams().size() == 1,
+              capture.error().empty() ? "a freeze alone captures one stream" : capture.error().c_str());
+        if (capture.ready() && capture.streams().size() == 1) frozenAlone = wave(capture.streams().front().postFx);
+    }
+    auto pinned = PinnedProject::capture(*f.store);
+    auto job = f.job("beside-freeze-alone", pinned->path());
+    job.beginSample = 0; job.endSample = 24000;
+    job.playingDevices = {1};
+    const auto exportedAlone = read(renderWav(job, loaderFor(alone)), 24000);
+    job.nameTemplate = "beside-freeze";
+    Probe exporting, freezing;
+    std::vector<float> frozen;
+    std::string freezeError;
+    std::packaged_task<Result()> task([&] { return renderWav(job, loaderFor(exporting)); });
+    auto done = task.get_future();
+    std::jthread exporter(std::move(task));
+    {
+        // The freeze runs on a worker of its own, on its own connection, as the document's does.
+        std::jthread freezer([&] {
+            StoreError error{};
+            auto reader = Store::open(f.store->path(), error, false);
+            if (!reader) { freezeError = "the freeze could not open the project"; return; }
+            auto capture = captureFreezeAudio(*reader, spec, loaderFor(freezing));
+            if (!capture.ready() || capture.streams().size() != 1) { freezeError = capture.error(); return; }
+            frozen = wave(capture.streams().front().postFx);
+        });
+    }
+    const auto file = read(done.get(), 24000);
+    check(freezeError.empty(), freezeError.empty() ? "the freeze beside an export completes" : freezeError.c_str());
+    check(!file.empty() && file == exportedAlone, "a freeze run beside an export leaves the exported file as it is alone");
+    check(!frozen.empty() && frozen == frozenAlone, "an export run beside a freeze leaves the frozen audio as it is alone");
+    check(exporting.created == 1 && exporting.destroyed == 1 && freezing.created == 1 && freezing.destroyed == 1,
+          "the export and the freeze each load their own plug-in and free it");
+    pinned.reset();
+    check(f.clean(), "the export beside a freeze leaves no copy and no stage");
+}
+
 // The director's question of 28 November: is a huge project twice as heavy?
 // Yes, while the export runs: its own plug-ins hold their states (a sampler's
 // samples) a second time. Measured here, and freed when the export ends.
@@ -411,6 +470,7 @@ int main() {
         staleCopies();
         secondInstance();
         twoEngines();
+        freezeDuringExport();
         secondSetMemory();
     } catch (const std::exception& e) {
         check(false, e.what());
