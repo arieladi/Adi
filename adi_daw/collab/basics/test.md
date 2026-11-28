@@ -142,3 +142,15 @@ The final chain at `70270208f` built ADI in Debug with JUCE, Pd and warnings as 
 SC-441. Retest ordinary Play on the Mac with the same project and device. If the click is silent, record the Cue Out pair, Cue Volume and Click While Recording setting. Keep the selected Cue route while checking those settings.
 
 SC-434. Please supply the measured 70-colour table cited in collab/win.md. I recommend using that table to replace the temporary modulo-fourteen palette in the existing 70 slots.
+
+## The director’s second test
+
+
+The first chain landed in #830. I merged `origin/main` and `origin/wincheck/basics/test-chain` into `basics/test-chain` at `2cf51c958`. All 295 headless tests outside the performance label passed in Debug with warnings as errors and DISPLAY unset.
+
+The second chain starts from `origin/main` at `c0d22ae45`. This session owns the director’s second test queue.
+
+| SC | Branch and head | What changed | How it was proved | State |
+|---|---|---|---|---|
+
+### Second test measurements and findings
