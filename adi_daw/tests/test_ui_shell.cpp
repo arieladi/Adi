@@ -13842,8 +13842,8 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
                 sample.onWarpContextMenu = {};
                 int useSetTempo = 0;
                 bool infer = false, startAt = false, straight = false;
-                const auto menu = sample.warpContextMenu();
-                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto sourceMenu = sample.warpContextMenu();
+                for (juce::PopupMenu::MenuItemIterator it(sourceMenu); it.next();) {
                     const auto &entry = it.getItem();
                     infer |= entry.text == "Warp From Here";
                     startAt |= entry.text.startsWith("Warp From Here (Start At ");
@@ -14424,11 +14424,11 @@ void sampleEditorMouse(AppCommands &commands, settings::AppSettings &settings, c
         check(arranged, "extend the loop and change tempo after it has already repeated");
         if (arranged) {
             root.frame();
-            const auto *tempo = root.reader().tempo();
+            const auto *followTempo = root.reader().tempo();
             const auto rate = document->mailbox().sampleRate() > 0 ? document->mailbox().sampleRate()
                                                                    : root.reader().sampleRate();
             const auto probe = changeAt + beat / 4;
-            followDriver.locate(std::llround(tempo->ticksToSeconds(probe) * rate));
+            followDriver.locate(std::llround(followTempo->ticksToSeconds(probe) * rate));
             followDriver.play(true);
             document->mailbox().publish(followDriver);
             root.arrangement.followPaused = false;
@@ -25528,15 +25528,15 @@ int main(int argc, char **argv) {
                 // SC-81: the two Arrangement meter columns read the two actual strip outputs.
                 engine::StripNode leftOnly;
                 leftOnly.prepare(48000, 2);
-                const float left[]{.5f, -.5f}, right[]{0, 0};
+                const float leftIn[]{.5f, -.5f}, rightIn[]{0, 0};
                 float outLeft[2]{}, outRight[2]{};
-                const float *in[]{left, right};
+                const float *in[]{leftIn, rightIn};
                 float *out[]{outLeft, outRight};
-                engine::NodeIo io;
-                io.in = in;
-                io.out = out;
-                io.channels = io.frames = 2;
-                leftOnly.process(io);
+                engine::NodeIo leftOnlyIo;
+                leftOnlyIo.in = in;
+                leftOnlyIo.out = out;
+                leftOnlyIo.channels = leftOnlyIo.frames = 2;
+                leftOnly.process(leftOnlyIo);
                 meterOfTwo = &leftOnly.meter();
                 MixerStrip stereoRow(mixer);
                 stereoRow.setSize(400, 80);

@@ -6533,8 +6533,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         labels_.push_back(edit);
     }
     if (problem_.empty() && !r.sampleProperties.isEmpty() && !metadata.isEmpty()) {
-        const auto properties = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
-        text(r.sampleProperties, properties, juce::Justification::centredLeft, look::text, look::fontLabel);
+        const auto propertiesArea = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
+        text(r.sampleProperties, propertiesArea, juce::Justification::centredLeft, look::text, look::fontLabel);
     }
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())
