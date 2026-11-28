@@ -19,6 +19,11 @@ class LaunchFollowPlayer;
 class LaunchCaptureBuffer;
 class LaunchAudioRuntime;
 
+inline constexpr std::size_t kMaximumTimedRawSceneTracks = 3;
+[[nodiscard]] constexpr bool supportsTimedRawSceneTrackCount(std::size_t tracks) noexcept {
+    return tracks >= 2 && tracks <= kMaximumTimedRawSceneTracks;
+}
+
 struct LaunchSceneClock {
     std::int64_t scene = 0;
     std::optional<double> bpm;

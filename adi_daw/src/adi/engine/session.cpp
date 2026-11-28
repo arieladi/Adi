@@ -79,13 +79,13 @@ bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot&
         (!clip->pageReader() || clip->pageReader()->allPhysicalPhasesPrimed(slot.clip));
 }
 
-// Admit two raw, non-looping tracks whose long disk targets need exact
-// cue-page leases. The caller validates both transport clocks.
+// Admit only raw, non-looping audio tracks with long disk targets that
+// need exact cue-page leases. The caller validates both transport clocks.
 bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcept {
     const auto view = before.view();
-    if (!before.stored() || view.tracks.size() != 2 || before.isMidiTrack(view.tracks[0]) ||
-        before.isMidiTrack(view.tracks[1])) return false;
-    auto targets = 0;
+    if (!before.stored() || !supportsTimedRawSceneTrackCount(view.tracks.size()) ||
+        std::ranges::any_of(view.tracks,[&](auto track) { return before.isMidiTrack(track); })) return false;
+    auto targets = std::size_t{0};
     for (const auto& slot : view.slots) {
         if (slot.clip == 0) {
             if (slot.scene == scene) return false;
@@ -100,7 +100,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
             return false;
         ++targets;
     }
-    return targets == 2;
+    return targets == view.tracks.size();
 }
 
 bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
@@ -1272,8 +1272,9 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         timing.preparedScene = preparedScene_;
         if (timedRaw) {
             DriverClock clock;
-            if (!readDriverClock(clock) || tracks.size() != 2 || timing.settings.punchIn || timing.settings.punchOut)
-                throw std::runtime_error("a timed raw Scene needs an unpunched two-track clock");
+            if (!readDriverClock(clock) || !supportsTimedRawSceneTrackCount(tracks.size()) ||
+                timing.settings.punchIn || timing.settings.punchOut)
+                throw std::runtime_error("a timed raw Scene needs an unpunched clock with two or three audio tracks");
             timing.timedCutSample = clockSample;
             timing.timedCutRevision = clock.revision;
             timing.timedCutPreviousGeneration = timedRawPreviousGeneration;

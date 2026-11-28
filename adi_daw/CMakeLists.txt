@@ -2003,7 +2003,8 @@ target_link_libraries(adi_session_performance_capture_tests PRIVATE adi_core adi
 add_test(NAME adi_session_performance_capture_tests COMMAND adi_session_performance_capture_tests)
 add_executable(adi_session_scene_clock_tests
   tests/test_session_scene_clock.cpp
-  tests/test_session_timed_raw_scene.cpp)
+  tests/test_session_timed_raw_scene.cpp
+  tests/test_session_timed_raw_scene_three_tracks.cpp)
 target_link_libraries(adi_session_scene_clock_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_tests)
 add_executable(adi_session_warp_integration_tests tests/test_session_warp_integration.cpp)

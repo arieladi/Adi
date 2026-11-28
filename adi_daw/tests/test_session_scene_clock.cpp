@@ -23,6 +23,7 @@ namespace adi::test {
 void countReplacedNew() noexcept { if (adi::audio::onAudioThread) ++allocations; }
 unsigned sceneClockCallbackAllocations() noexcept { return allocations.load(std::memory_order_relaxed); }
 void runTimedRawSceneTests();
+void runThreeTrackTimedRawSceneTests();
 } // namespace adi::test
 
 namespace {
@@ -315,8 +316,12 @@ void audioHandover() {
 } // namespace
 
 int main() {
-    try { exercise(); audioHandover(); adi::test::runTimedRawSceneTests(); }
-    catch (const std::exception& error) {
+    try {
+        exercise();
+        audioHandover();
+        adi::test::runTimedRawSceneTests();
+        adi::test::runThreeTrackTimedRawSceneTests();
+    } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
     }

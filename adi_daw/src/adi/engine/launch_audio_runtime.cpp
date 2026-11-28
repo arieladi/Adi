@@ -648,7 +648,8 @@ LaunchAudioRuntime::TrackRanges* LaunchAudioRuntime::trackRanges(std::int64_t tr
 
 bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const LaunchAudioRuntime& outgoing,
         LaunchBlock previous, LaunchBlock candidate, const Transport& transport) noexcept {
-    if (active_ || outgoing.active_ || !beforeClock_ || !project_->stored() || tracks_.size() != 2 ||
+    if (active_ || outgoing.active_ || !beforeClock_ || !project_->stored() ||
+        !supportsTimedRawSceneTrackCount(tracks_.size()) ||
         candidate.frames <= 0 || candidate.frames > maxFrames_ ||
         clockSample_ > std::numeric_limits<std::int64_t>::max() - candidate.frames ||
         !candidate.preparedScene || !transport.playing() || transport.looping() ||
@@ -663,12 +664,13 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
     auto after = project_->view();
     after.tracks = tracks_;
     if (!driver.launcher_.freezeTimedScenePrefix(previous,candidate.preparedScene->token)) return false;
-    std::array<TimedSceneStart,2> starts{};
+    std::array<TimedSceneStart,kMaximumTimedRawSceneTracks> starts{};
     const auto count = driver.launcher_.planTimedSceneStarts(candidate,after,*candidate.preparedScene,starts);
-    if (!count || *count != starts.size() || (starts[0].outgoingRun == 0 && starts[1].outgoingRun == 0))
-        return false;
+    if (!count || *count != tracks_.size()) return false;
+    const auto actions = std::span(starts).first(*count);
+    if (std::ranges::none_of(actions,[](const auto& action) { return action.outgoingRun != 0; })) return false;
 
-    for (const auto& action : starts) {
+    for (const auto& action : actions) {
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto* ranges = trackRanges(action.track);
