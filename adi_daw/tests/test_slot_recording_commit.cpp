@@ -28,6 +28,9 @@ void require(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
 
+constexpr auto keys = midiInputKey("keys");
+constexpr auto pads = midiInputKey("pads");
+
 struct Project {
     test::TempDirectory dir{"slot_recording", "attach"};
     std::filesystem::path path = dir.path() / "Song.adi";
@@ -49,14 +52,14 @@ struct Project {
 
     std::int64_t scalar(const std::string& sql) { return db().execAndGet(sql).getInt64(); }
 
-    SlotRecordingResult capture(bool audio = true) {
+    SlotRecordingResult capture(bool audio = true, MidiInputFilter filter = {keys, 3}) {
         SlotInputRecorder recorder;
         AudioRecordingSpec format;
         format.workFolder = dir.path();
         format.sourceProject = db().execAndGet("SELECT file FROM pragma_database_list WHERE name='main'").getString();
         format.sampleRate = 48000;
         format.maxFrames = 128;
-        const std::array targets{SlotRecordingTarget{{21, 11}, {0}}, SlotRecordingTarget{{22, 11}, {}}};
+        const std::array targets{SlotRecordingTarget{{21, 11}, {0}}, SlotRecordingTarget{{22, 11}, {}, filter}};
         std::string error;
         const auto selected = audio ? std::span(targets).subspan(0) : std::span(targets).subspan(1);
         require(recorder.start(format, selected, error), "prime real slot capture");
@@ -70,11 +73,16 @@ struct Project {
         io.frames = static_cast<std::int32_t>(pcm.size());
         io.streamTimeSamples = 1000;
         const std::array events{
-            SlotMidiInput{1015, 1015, {15, EventType::NoteOn, 2, 60, 42, 0, 100.0 / 127}},
-            SlotMidiInput{1021, 1021, {21, EventType::NoteExpression, 2, 0, 42, 0, -1.25}},
-            SlotMidiInput{1024, 1024, {24, EventType::Controller, 2, 0, 0, 74, 0.625}},
-            SlotMidiInput{1030, 1030, {30, EventType::NoteOff, 2, 60, 42, 0, 29.0 / 127}},
-            SlotMidiInput{1031, 1031, {31, EventType::NoteOn, 2, 67, 43, 0, 45.0 / 127}},
+            SlotMidiInput{1015, 1015, {15, EventType::NoteOn, 2, 60, 42, 0, 100.0 / 127}, keys},
+            SlotMidiInput{1016, 1016, {16, EventType::NoteOn, 2, 64, 42, 0, 90.0 / 127}, pads},
+            SlotMidiInput{1021, 1021, {21, EventType::NoteExpression, 2, 0, 42, 0, -1.25}, keys},
+            SlotMidiInput{1022, 1022, {22, EventType::NoteExpression, 2, 0, 42, 0, -2.25}, pads},
+            SlotMidiInput{1024, 1024, {24, EventType::Controller, 2, 0, 0, 74, 0.625}, keys},
+            SlotMidiInput{1025, 1025, {25, EventType::NoteExpression, 2, 0, 0, 0, -1}, keys},
+            SlotMidiInput{1026, 1026, {26, EventType::NoteOff, 2, 64, 42, 0, 33.0 / 127}, pads},
+            SlotMidiInput{1029, 1029, {29, EventType::Controller, 2, 0, 0, controllers::kPitchBend, .5}, keys},
+            SlotMidiInput{1030, 1030, {30, EventType::NoteOff, 2, 60, 42, 0, 29.0 / 127}, keys},
+            SlotMidiInput{1031, 1031, {31, EventType::NoteOn, 2, 67, 43, 0, 45.0 / 127}, keys},
         };
         recorder.process(io, SlotRecordingWindow{1013, 1093}, events, 1);
         for (int attempt = 0; attempt < 5000; ++attempt) {
@@ -127,11 +135,17 @@ void mixedCommit() {
     require(notes.size() == 2 && sampleAt(notes[0].start_ticks) == 2 && sampleAt(notes[0].start_ticks + notes[0].dur_ticks) == 17 &&
             notes[0].vel_on == 100 && notes[0].vel_off == 29 && notes[0].channel == 2 &&
             sampleAt(notes[1].start_ticks + notes[1].dur_ticks) == 80,
-            "binary notes preserve onset, release, velocity, channel and the held-note closing boundary");
+            "the selected endpoint keeps exact notes and excludes matching note IDs from other ports");
     const auto bend = stream<ExpressionPoint>(project, "SELECT data FROM note_expression WHERE clip_id=42 AND dimension=0", FourCC::Expression);
     const auto cc = stream<AutomationPoint>(project, "SELECT data FROM event_streams WHERE clip_id=42 AND stream_kind='cc' AND channel=2 AND controller=74", FourCC::Controller);
     require(bend.size() == 1 && sampleAt(notes[0].start_ticks + bend[0].time_ticks) == 8 && bend[0].value == -1.25f &&
             cc.size() == 1 && sampleAt(cc[0].time) == 11 && cc[0].value == 0.625, "binary expression and controller values survive");
+    const auto pitch = stream<AutomationPoint>(project,
+        "SELECT data FROM event_streams WHERE clip_id=42 AND stream_kind='pitchbend' AND channel=2 AND controller IS NULL",
+        FourCC::Controller);
+    require(pitch.size() == 2 && sampleAt(pitch[0].time) == 12 && pitch[0].value == .25 &&
+            sampleAt(pitch[1].time) == 16 && pitch[1].value == .5,
+            "legacy wheel input and typed neutral persist on one channel pitch lane at their exact samples");
     const auto noteBytes = project.db().execAndGet("SELECT hex(data) FROM event_streams WHERE clip_id=42 AND stream_kind='notes'").getString();
 
     const auto mediaRow = media::mediaRow(project.db(), 91);
@@ -154,7 +168,7 @@ void mixedCommit() {
     StoreError error{};
     project.store = Store::open(project.path, error, true);
     require(project.store && project.scalar("SELECT count(*) FROM clip_slots") == 2 &&
-            project.scalar("SELECT count(*) FROM event_streams WHERE clip_id=42") == 2 &&
+            project.scalar("SELECT count(*) FROM event_streams WHERE clip_id=42") == 3 &&
             project.db().execAndGet("SELECT hex(data) FROM event_streams WHERE clip_id=42 AND stream_kind='notes'").getString() == noteBytes,
             "native audio and MIDI slot rows reopen from the database");
 }
@@ -200,7 +214,7 @@ void staleStage() {
 
 void midiOnly() {
     Project project;
-    auto take = project.capture(false);
+    auto take = project.capture(false, {});
     const auto midiIds = std::span(ids).subspan(1);
     auto bad = take;
     bad.sourceProject += ".other";
@@ -213,6 +227,16 @@ void midiOnly() {
             project.scalar("SELECT count(*) FROM clip_slots WHERE clip_id=42") == 1 &&
             project.scalar("SELECT count(*) FROM media_files") == 0,
             "attach native MIDI without an audio file or media row");
+    const auto notes = stream<NoteRecord>(project, "SELECT data FROM event_streams WHERE clip_id=42 AND stream_kind='notes'", FourCC::Notes);
+    require(notes.size() == 3 && notes[0].key == 60 && notes[1].key == 64 && notes[0].note_id != notes[1].note_id &&
+            sampleAt(notes[0].start_ticks + notes[0].dur_ticks) == 17 && notes[0].vel_off == 29 &&
+            sampleAt(notes[1].start_ticks + notes[1].dur_ticks) == 13 && notes[1].vel_off == 33,
+            "identical raw note IDs from multiple accepted ports close their own notes");
+    const auto expression = stream<ExpressionPoint>(project,
+        "SELECT data FROM note_expression WHERE clip_id=42 AND note_id=" + std::to_string(notes[1].note_id), FourCC::Expression);
+    require(expression.size() == 1 && expression[0].value == -2.25f &&
+            sampleAt(notes[1].start_ticks + expression[0].time_ticks) == 9,
+            "per-note expression follows the note owned by its input port");
 }
 
 } // namespace

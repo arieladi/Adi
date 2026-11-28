@@ -61,14 +61,15 @@ SlotRecordingResult finish(SlotInputRecorder& recorder, bool deviceStopped = fal
     throw std::runtime_error("slot recording did not finalize");
 }
 
-SlotMidiInput event(std::int64_t stream, std::int32_t frame, EventType type, std::uint64_t id) {
+SlotMidiInput event(std::int64_t stream, std::int32_t frame, EventType type, std::uint64_t id,
+                   std::uint64_t port = 0) {
     Event message;
     message.type = type;
     message.frame = frame;
     message.noteId = id;
     message.dim = 64;
     message.value = 0.5;
-    return {stream + frame, stream + frame, message};
+    return {stream + frame, stream + frame, message, port};
 }
 
 void mixedTake() {
@@ -90,6 +91,8 @@ void mixedTake() {
     constexpr std::int64_t stream = 1234;
     constexpr std::int64_t first = stream + 12;
     constexpr std::int64_t last = first + 80;
+    constexpr auto keys = midiInputKey("keys");
+    constexpr auto pads = midiInputKey("pads");
     AudioIo block;
     block.numIn = 1;
     const float* channels[]{source.data()};
@@ -101,7 +104,8 @@ void mixedTake() {
 
     block.frames = 32;
     block.streamTimeSamples = stream;
-    const std::array beginEvents{event(stream, 11, EventType::NoteOn, 1), event(stream, 12, EventType::NoteOn, 2)};
+    const std::array beginEvents{event(stream, 11, EventType::NoteOn, 1, pads),
+                                 event(stream, 12, EventType::NoteOn, 2, keys)};
     input(recorder, block, SlotRecordingWindow{first, {}}, beginEvents);
     require(recorder.state() == SlotRecordingState::Recording, "begin inside the block starts the take");
     require(!recorder.poll(), "drain live MIDI packets without finalizing the active take");
@@ -112,13 +116,13 @@ void mixedTake() {
     auto late = event(block.streamTimeSamples, 0, EventType::NoteOn, 3);
     late.scheduledSample = first - 1;
     late.inputSample = late.scheduledSample;
-    const std::array nextEvents{late, event(block.streamTimeSamples, 0, EventType::NoteOff, 2)};
+    const std::array nextEvents{late, event(block.streamTimeSamples, 0, EventType::NoteOff, 2, keys)};
     input(recorder, block, SlotRecordingWindow{first, last}, nextEvents);
 
     channels[0] = source.data() + 49;
     block.frames = 51;
     block.streamTimeSamples += 17;
-    const std::array endEvents{event(block.streamTimeSamples, 42, EventType::NoteOn, 4),
+    const std::array endEvents{event(block.streamTimeSamples, 42, EventType::NoteOn, 4, pads),
                                event(block.streamTimeSamples, 43, EventType::NoteOn, 5)};
     input(recorder, block, SlotRecordingWindow{first, last}, endEvents);
     require(recorder.state() == SlotRecordingState::Complete, "stop inside the callback closes the take");
@@ -144,10 +148,10 @@ void mixedTake() {
     for (const auto& packet : result.midi)
         if (packet.kind == MidiCapturePacket::Kind::Event) midiEvents.push_back(packet);
     require(result.midiState == MidiCaptureState::Complete && midiEvents.size() == 3 &&
-            midiEvents[0].timelineSample == 0 && midiEvents[0].event.noteId == 2 &&
-            midiEvents[1].timelineSample == 20 && midiEvents[1].event.noteId == 2 &&
-            midiEvents[2].timelineSample == 79 && midiEvents[2].event.noteId == 4,
-            "MIDI keeps identity and exact local samples, excluding late prestart and stop-edge events");
+            midiEvents[0].timelineSample == 0 && midiEvents[0].event.noteId == 2 && midiEvents[0].port == keys &&
+            midiEvents[1].timelineSample == 20 && midiEvents[1].event.noteId == 2 && midiEvents[1].port == keys &&
+            midiEvents[2].timelineSample == 79 && midiEvents[2].event.noteId == 4 && midiEvents[2].port == pads,
+            "MIDI keeps its source ports, note identities and exact samples within the capture window");
     require(!result.audio->discard() && !recorder.poll(), "completed capture can be discarded and returns once");
 
     require(recorder.start(format, targets, error), "rearm the mixed take after publication");
