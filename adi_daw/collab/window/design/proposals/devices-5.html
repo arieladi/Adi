@@ -51,8 +51,8 @@ const Y0=70,H0=392,Y1=494;
  s+=meter(x+18,y+62,130,0.55,0.6);
  s+=kb(x+124,y+142,54,0.5,O,'NOTE','C 3');
  s+=kb(x+246,y+136,32,0.45,O,'DECAY','5.00 s',{vz:10})+kb(x+332,y+136,27,0.5,O,'COLOR','50 %',{vz:10});
- s+=cap(x+392,y+66,'INPUT FILTER')+tog(x+500,y+52,52,22,'On',true,{c:B,z:10});
- s+=pills(x+392,y+82,196,24,['LP','BP','HP','Notch'],0,{c:B,z:10})+kb(x+420,y+156,18,0.6,B,'FREQ','2.00 kHz');
+ s+=cap(x+392,y+66,'INPUT FILTER')+tog(x+500,y+52,52,22,'On',true,{z:10});
+ s+=pills(x+392,y+82,196,24,['LP','BP','HP','Notch'],0,{z:10})+kb(x+420,y+156,18,0.6,O,'FREQ','2.00 kHz');
  s+=cap(x+476,y+134,'MODE')+pills(x+476,y+142,72,24,['A','B'],0)+tog(x+556,y+142,62,24,'Const',false,{z:10});
  s+=kb(x+676,y+136,22,0.5,O,'WIDTH','100 %')+kb(x+744,y+136,22,0.6,O,'GAIN','0.0 dB')+kb(x+812,y+136,30,0.5,O,'DRY / WET','50 %');
  ['I','II','III','IV','V'].forEach((n,k)=>{const cx=x+16+k*166,on=k<3;
@@ -79,7 +79,7 @@ const Y0=70,H0=392,Y1=494;
 {const x=1670,y=Y1,w=230;s+=R(x,y,w,H0,'#18191c',{r:11,s:'#34353b'});
  s+=T(x+16,y+30,'Sheet 5',{z:14,w:700});
  s+=para(x+16,y+54,['The five remaining effects','that mirror Live\'s.'],{z:11.5,lh:15.5});
- s+=para(x+16,y+104,['Chorus-Ensemble and','Resonators fit whole on','their cards: no arrow.','','Phaser-Flanger, Shifter','and Vocoder show what is','reached for; the arrow','opens the rest (the second','LFO, the envelope\'s times,','the carrier\'s own settings).','','A section that is switched','off is drawn dim, as','Shifter\'s delay here.'],{z:11.5,lh:15.5});}
+ s+=para(x+16,y+104,['Chorus-Ensemble and','Resonators fit whole on','their cards: no arrow.','','Phaser-Flanger, Shifter','and Vocoder show what is','reached for; the arrow','opens the rest (the second','LFO, the envelope\'s times,','the carrier\'s own settings).','','A section that is switched','off is drawn dim, as','Shifter\'s delay here.','','Resonator I sets the note;','II to V are pitched from it.'],{z:11.5,lh:15.5});}
 {const x=20,y=900,w=1880,h=160;s+=R(x,y,w,h,'#18191c',{r:11,s:'#34353b'});
  s+=T(x+20,y+32,'What comes after these sheets',{z:14,w:700});
  s+=para(x+20,y+58,['ADI\'s own devices get sheets of their own: ADI-Shaper has more than four hundred controls and needs its own design; Chord Comb and Color Cab are small.','So do the two instruments, OneShot and Sampler, whose main picture is the sample.','The devices session builds one card at a time from these sheets, and each built card is shown to you in the window beside its sheet before the next is started.','The rules are the same on every card: orange for the device\'s own controls and what is on, blue for what moves them and for pictures of the signal, a value with its unit on every knob, no control drawn twice.'],{z:12,lh:19});}
