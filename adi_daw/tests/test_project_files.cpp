@@ -540,6 +540,52 @@ void readOnlySource() {
     check(source && source->saveAs(f.target("readonly-save-as")).ok && !source->readOnly(),
           "Save As makes an editable project from a supported read-only source");
 }
+void writeProtectedSource() {
+    // A project file the system protects from writing (a read-only attribute, a locked template, a
+    // read-only medium) opens read-only, as an unsupported major does, and Save As makes it editable.
+    Fixture f;
+    f.store.reset();
+    const auto writeBits = fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write;
+    struct Unprotect {
+        fs::path path;
+        ~Unprotect() { std::error_code ignored; fs::permissions(path, fs::perms::owner_write, fs::perm_options::add, ignored); }
+    } unprotect{f.source};
+    fs::permissions(f.source, writeBits, fs::perm_options::remove);
+    if (std::ofstream(f.source, std::ios::binary | std::ios::app).is_open()) {
+        // An administrator writes to a protected file; the system refuses nothing to test.
+        std::printf("SKIP write-protected project checks: this user may write a protected file\n");
+        return;
+    }
+    const auto before = fs::file_size(f.source);
+    StoreError error{};
+    auto opened = Store::open(f.source, error);
+    check(opened && error == StoreError::Ok && opened->readOnly(),
+          "a write-protected project opens read-only instead of failing");
+    if (!opened) {
+        std::printf("write-protected open: %s\n", toString(error));
+        return;
+    }
+    check(opened->db().execAndGet("SELECT name FROM project").getString() == "Original" && resolves(*opened),
+          "the write-protected project's content and media are readable");
+    OpRequest rename;
+    rename.opType = "project.setName";
+    rename.payload = {{"name", "Edited after Save As"}};
+    check(!OpJournal(*opened).commit(rename).ok, "an edit is refused while the file is write-protected");
+    const auto target = f.target("write-protected-save-as");
+    const auto saved = opened->saveAs(target);
+    check(saved.ok && !opened->readOnly() && opened->path() == target && OpJournal(*opened).commit(rename).ok &&
+              resolves(*opened),
+          "Save As makes an editable project from a write-protected one");
+    if (!saved.ok) std::printf("write-protected Save As: %s\n", saved.error.c_str());
+    opened.reset();
+    auto original = Store::open(f.source, error, true);
+    check(original && original->db().execAndGet("SELECT name FROM project").getString() == "Original" &&
+              fs::file_size(f.source) == before,
+          "the write-protected file itself is left as it was");
+    StoreError exclusiveError{};
+    check(!Store::openForHeadlessApply(f.source, exclusiveError) && exclusiveError != StoreError::Ok,
+          "an exclusive open for writing still refuses a write-protected file");
+}
 void historyBranches() {
     Fixture f;auto& s=*f.store;
     fs::copy_file(f.folder/"audio/tone.wav",f.folder/"moved.wav");
@@ -735,5 +781,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();writeProtectedSource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

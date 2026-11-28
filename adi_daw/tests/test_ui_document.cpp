@@ -5702,6 +5702,162 @@ void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
               active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
           "first-save cleanup preserves a newer source revision after its writer closes");
 }
+// A save copies on a worker while the window stays in use. What is written to the project meanwhile (a
+// click that moves the selection, Play, an edit) must not fail the save: the copy is made again.
+void saveWhileTheWindowIsUsed(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    using SaveKind = ui::ProjectDocument::SaveKind;
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    using namespace std::chrono_literals;
+    const auto staging = dir / "Untitled";
+    const auto song = dir / "Song";
+    const auto variation = dir / "Variation";
+    for (const auto &folder : {staging, song, variation})
+        fs::create_directory(folder);
+    std::string error;
+    auto doc = ui::ProjectDocument::open(staging / "Untitled.adi", true, {}, error);
+    check(doc != nullptr, "save in use: open an unnamed project");
+    if (!doc)
+        return;
+    const auto sample = staging / "Samples" / "snare.wav";
+    fs::create_directory(sample.parent_path());
+    {
+        std::array<float, 480> samples{};
+        samples.fill(0.25f);
+        audio::WavWriter writer(sample, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    const bool prepared = doc->prepareImport(media::pathUtf8(sample), 1'700'000'000'000'000, import);
+    auto drop = ui::dropAudio(*doc->view().current(), 4, 0, "Snare", import);
+    const bool placed = prepared && drop.refusal.empty() && doc->ops().submit(std::move(drop.ops)).ok && doc->synchronise();
+    check(placed, "save in use: the unnamed project plays a sample from its own folder");
+    if (!placed)
+        return;
+    const auto settle = [&] {
+        std::optional<Phase> phase;
+        const auto deadline = std::chrono::steady_clock::now() + 30s;
+        while (const auto progress = doc->saveProgress()) {
+            phase = progress->phase;
+            if (*phase == Phase::succeeded || *phase == Phase::cancelled || *phase == Phase::failed ||
+                std::chrono::steady_clock::now() >= deadline)
+                break;
+            std::this_thread::sleep_for(1ms);
+            doc->advanceSave();
+        }
+        doc->clearSave();
+        return phase;
+    };
+    const auto resolvedSample = [&] {
+        auto &db = doc->store().db();
+        std::string problem;
+        return media::resolveMedia(media::projectFolder(doc->store()),
+                                   media::mediaRow(db, db.execAndGet("SELECT media_id FROM audio_clips").getInt64()), problem);
+    };
+
+    // The first save: another track is clicked before the owner can adopt the worker's copy.
+    const auto named = song / "Song.adi";
+    const bool startedFirst = doc->startSave(named, SaveKind::firstSave);
+    auto selection = doc->sessionState().selection();
+    selection.track = selection.track == 3 ? 2 : 3;
+    std::string why;
+    const bool selected = doc->sessionState().select(selection, why);
+    const auto first = settle();
+    if (first != Phase::succeeded)
+        std::printf("save in use, first save: %s\n", doc->error().c_str());
+    std::error_code compared;
+    check(startedFirst && selected && first == Phase::succeeded && fs::equivalent(doc->store().path(), named, compared),
+          "save in use: a click that moves the selection while the first save copies does not fail it");
+    if (first != Phase::succeeded)
+        return;
+    std::size_t sampleFiles = 0;
+    for (const auto &entry : fs::recursive_directory_iterator(song))
+        if (entry.path().extension() == ".wav")
+            ++sampleFiles;
+    const auto moved = resolvedSample();
+    check(sampleFiles == 1 && !moved.empty() && fs::equivalent(moved, song / "Samples" / "snare.wav", compared),
+          "save in use: the repeated first save leaves the sample once in the song's folder");
+    const auto stored = Payload::parse(
+        doc->store().db().execAndGet("SELECT value FROM session_state WHERE key='selection'").getString());
+    check(stored.value("track", std::int64_t{0}) == selection.track,
+          "save in use: the selection made while saving is in the saved project");
+
+    // Save As: Play is pressed and a track is renamed while the worker copies.
+    const auto other = variation / "Variation.adi";
+    const auto ops = OpJournal(doc->store()).count();
+    const bool startedAs = doc->startSave(other, SaveKind::as);
+    OpRequest play;
+    play.opType = "transport.play";
+    play.payload = Payload::object();
+    const bool played = doc->ops().submit(std::move(play)).ok;
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 4}, {"name", "Renamed while saving"}};
+    const bool renamed = doc->ops().submit(std::move(rename)).ok && doc->synchronise();
+    const auto second = settle();
+    if (second != Phase::succeeded)
+        std::printf("save in use, Save As: %s\n", doc->error().c_str());
+    check(startedAs && played && renamed && second == Phase::succeeded &&
+              fs::equivalent(doc->store().path(), other, compared),
+          "save in use: Play and an edit while Save As copies do not fail it");
+    if (second != Phase::succeeded)
+        return;
+    const auto name = [](Store &store) { return store.db().execAndGet("SELECT name FROM tracks WHERE id=4").getString(); };
+    StoreError opened{};
+    auto left = Store::open(named, opened, true);
+    check(name(doc->store()) == "Renamed while saving" && OpJournal(doc->store()).count() > ops &&
+              left && name(*left) == "Renamed while saving" && !resolvedSample().empty(),
+          "save in use: the edit made while saving is in the new project and in the one left behind");
+    check(doc->ops().undo().ok && doc->synchronise() && name(doc->store()) != "Renamed while saving",
+          "save in use: Undo reaches that edit in the new project");
+    for (const auto &folder : {song, variation}) {
+        const bool clean = std::none_of(fs::directory_iterator(folder), fs::directory_iterator(), [](const auto &entry) {
+            return entry.path().filename().string().starts_with(".adi-save-");
+        });
+        check(clean, "save in use: a repeated save leaves no staging folder");
+    }
+}
+// A project file the system protects from writing opens read-only and says so; Save As keeps the work.
+void writeProtectedProject(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto path = dir / "Protected.adi";
+    std::string error;
+    {
+        auto made = ui::ProjectDocument::open(path, true, {}, error);
+        check(made != nullptr, "write-protected: make the project");
+        if (!made)
+            return;
+    }
+    struct Unprotect {
+        fs::path path;
+        ~Unprotect() {
+            std::error_code ignored;
+            fs::permissions(path, fs::perms::owner_write, fs::perm_options::add, ignored);
+        }
+    } unprotect{path};
+    fs::permissions(path, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
+                    fs::perm_options::remove);
+    if (std::ofstream(path, std::ios::binary | std::ios::app).is_open()) {
+        std::printf("SKIP write-protected project checks: this user may write a protected file\n");
+        return;
+    }
+    auto doc = ui::ProjectDocument::open(path, false, {}, error);
+    check(doc != nullptr, "write-protected: the project opens");
+    if (!doc) {
+        std::printf("write-protected open: %s\n", error.c_str());
+        return;
+    }
+    check(doc->store().readOnly() && doc->warning().find("write-protected") != std::string::npos,
+          "write-protected: it opens read-only and the open notice says why");
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 4}, {"name", "Kept by Save As"}};
+    check(!doc->ops().submit(rename).ok, "write-protected: an edit is refused");
+    const auto saved = dir / "Saved" / "Saved.adi";
+    fs::create_directory(saved.parent_path());
+    check(doc->saveAs(saved) && !doc->store().readOnly() && doc->ops().submit(rename).ok && doc->synchronise(),
+          "write-protected: Save As gives an editable project");
+}
 void automaticDailyVersions(const std::filesystem::path &path) {
     constexpr std::int64_t noon = 1'761'566'400'000'000; // 27 October 2025, noon UTC
     constexpr std::int64_t day = 86'400'000'000;
@@ -5901,6 +6057,10 @@ int main(int argc, char **argv) {
         firstSaveMovesTheTake(firstSaveReplacement.path(), true);
         test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
         firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
+        test::TempDirectory saveInUseDir("ui_document", "save-in-use");
+        saveWhileTheWindowIsUsed(saveInUseDir.path());
+        test::TempDirectory protectedDir("ui_document", "write-protected");
+        writeProtectedProject(protectedDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
