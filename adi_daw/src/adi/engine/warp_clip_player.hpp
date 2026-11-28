@@ -26,12 +26,13 @@ public:
     WarpClipPlayer(const WarpArrangementClock& tempo, audio::WarpRenderPlan plan,
                    std::vector<WarpMarker> markers, std::uint32_t sourceRate,
                    std::uint16_t channels, double sourceOrigin, double endTick,
-                   double loopStart, double loopLength)
+                   double loopStart, double loopLength, bool reverseSynthesis = false)
         : tempo_(tempo), pendingPlan_(std::move(plan)), markers_(std::move(markers)),
           sourceRate_(sourceRate), channels_(channels), endTick_(endTick),
           loopStart_(loopStart), loopLength_(loopLength),
           arrangement_{sourceOrigin, std::numeric_limits<std::int64_t>::min(), endFrame(sourceOrigin)},
-          framesPerTick_(tempo.constantFramesPerTick()) {
+          framesPerTick_(tempo.constantFramesPerTick()),
+          reverseEndTick_(reverseSynthesis && !markers_.empty() ? static_cast<double>(markers_.back().tick) : 0) {
         if (pendingPlan_.mode == audio::WarpMode::Beats && pendingPlan_.transients.empty())
             onsetJob_ = requestWarpOnsets(pendingPlan_.source, pendingPlan_.sourceStart,
                                          pendingPlan_.sourceFrames);
@@ -82,7 +83,7 @@ public:
             return true;
         }
         const auto view = clockView(placement, lapAt(placement, frame));
-        return player->renderFrame(frame-view.frameOrigin, input, view.clock(), output);
+        return player->renderFrame(view.processorFrame(frame), input, view.clock(), output);
     }
 
     template<class Add>
@@ -102,7 +103,9 @@ public:
         const auto range = [&](std::int64_t from, std::int64_t to, double lap) {
             if (from > to) return;
             const auto view = clockView(placement, lap);
-            add(player->sourceRange(from-view.frameOrigin, to-view.frameOrigin, view.clock()));
+            const auto fromFrame = view.processorFrame(from), toFrame = view.processorFrame(to);
+            const auto [begin, end] = std::minmax(fromFrame,toFrame);
+            add(player->sourceRange(begin, end, view.clock()));
         };
         if (firstLap == lastLap) {
             range(first, last, firstLap);
@@ -127,16 +130,28 @@ private:
         double originFrame;
         std::int64_t frameOrigin;
         double framesPerTick;
+        double reverseEndTick;
+        std::int64_t reverseFrames;
+
+        [[nodiscard]] std::int64_t processorFrame(std::int64_t arrangementFrame) const noexcept {
+            const auto relative = arrangementFrame-frameOrigin;
+            return reverseEndTick > 0 ? reverseFrames-1-relative : relative;
+        }
 
         [[nodiscard]] audio::WarpStreamClock clock() const noexcept {
             return {this, [](const void* context, double frame) noexcept {
                 const auto& self = *static_cast<const ClockView*>(context);
-                return self.framesPerTick != 0 ? frame / self.framesPerTick :
+                if (self.reverseEndTick > 0)
+                    frame = static_cast<double>(self.reverseFrames)-frame;
+                const auto tick = self.framesPerTick != 0 ? frame / self.framesPerTick :
                     self.tempo->tickAtFrame(frame + self.originFrame) - self.originTick;
+                return self.reverseEndTick > 0 ? self.reverseEndTick-tick : tick;
             }, [](const void* context, double tick) noexcept {
                 const auto& self = *static_cast<const ClockView*>(context);
-                return self.framesPerTick != 0 ? tick * self.framesPerTick :
+                if (self.reverseEndTick > 0) tick = self.reverseEndTick-tick;
+                const auto frame = self.framesPerTick != 0 ? tick * self.framesPerTick :
                     self.tempo->frameAtTick(tick + self.originTick) - self.originFrame;
+                return self.reverseEndTick > 0 ? static_cast<double>(self.reverseFrames)-frame : frame;
             }, tempo->maxTicksPerFrame()};
         }
     };
@@ -160,7 +175,14 @@ private:
         const auto tick = placement.sourceOrigin + lap*loopLength_;
         const auto frame = tempo_.frameAtTick(tick);
         const auto rounded = std::llround(frame);
-        return {&tempo_, tick, static_cast<double>(rounded), rounded, framesPerTick_};
+        if (reverseEndTick_ == 0)
+            return {&tempo_, tick, static_cast<double>(rounded), rounded, framesPerTick_, 0, 0};
+        // Keep the forward slice boundaries and envelopes. Reflect the
+        // playback clock and the requested frame together.
+        const auto duration = framesPerTick_ != 0 ? reverseEndTick_*framesPerTick_ :
+            tempo_.frameAtTick(tick+reverseEndTick_)-frame;
+        return {&tempo_, tick, frame, rounded, framesPerTick_, reverseEndTick_,
+            std::llround(std::clamp(duration,0.0,0x1p50))};
     }
 
     [[nodiscard]] const audio::StreamingWarp* get() const noexcept {
@@ -174,7 +196,7 @@ private:
     std::uint16_t channels_;
     double endTick_, loopStart_, loopLength_;
     Placement arrangement_;
-    double framesPerTick_;
+    double framesPerTick_, reverseEndTick_;
     std::shared_ptr<const WarpOnsetJob> onsetJob_;
     std::unique_ptr<audio::StreamingWarp> player_;
     std::atomic<const audio::StreamingWarp*> compiled_{nullptr};

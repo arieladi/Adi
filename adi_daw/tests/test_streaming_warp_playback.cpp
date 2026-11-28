@@ -426,13 +426,21 @@ constexpr std::array reverseExpectedMarkers{WarpMarker{0, 0}, WarpMarker{26000, 
 constexpr std::array reverseAttacks{6500u, 42000u, 50000u, 65000u};
 constexpr std::array reverseBeats{0.5, 2.5, 2.75, 3.5};
 
-void reverseSource(Project& project, bool physicalReverse, bool ramp) {
+void reverseSource(Project& project, bool physicalReverse, bool ramp, bool singleAttacks = false) {
     constexpr auto fileFrames = reverseStart + reverseLength + 509;
     constexpr auto halfWidth = 96u;
     std::vector<float> pcm(fileFrames * 2, 0.7f);
     std::fill_n(pcm.data() + 2 * reverseStart, 2 * reverseLength, 0.0f);
     for (std::size_t attack = 0; attack < reverseAttacks.size(); ++attack) {
         const auto center = reverseAttacks[attack];
+        if (singleAttacks) {
+            // Each isolated pulse is exactly at the forward source position
+            // corresponding to a known reversed fractional beat.
+            const auto input = reverseStart + reverseLength - center;
+            pcm[2*input] = 0.5f;
+            pcm[2*input+1] = -0.2f;
+            continue;
+        }
         const auto scale = static_cast<float>(attack + 1) / 4.0f;
         for (auto frame = center - halfWidth; frame <= center + halfWidth; ++frame) {
             const auto distance = static_cast<double>(frame) - center;
@@ -489,6 +497,40 @@ void reverseSource(Project& project, bool physicalReverse, bool ramp) {
     project.tempo(ramp ? 1 : 0, 4 * quarter, ramp ? 140.0 : 100.0, ramp ? 120.0 : 100.0);
 }
 
+void comparePreparedReverse(const Project& project, std::span<const StereoFrame> output,
+                            audio::WarpMode mode, float peakTolerance, double rmsTolerance) {
+    // The prepared renderer stretches forward PCM through reflected anchors.
+    // Reverse its output for the comparison, as the playback page reader did.
+    audio::WarpRenderPlan plan;
+    plan.source = project.source;
+    plan.workFolder = project.temporary.path() / "prepared-reverse";
+    plan.sourceStart = reverseStart;
+    plan.sourceFrames = reverseLength;
+    plan.outputRate = sourceRate;
+    plan.mode = mode;
+    plan.anchors = {{0, 0}, {14000, 28800}, {46000, 57600}, {reverseLength, output.size()}};
+    const auto prepared = audio::prepareWarp(plan);
+    if (!prepared) throw std::runtime_error("prepare reversed Warp reference");
+    audio::WavReader reader(prepared.prepared->file);
+    std::vector<float> pcm(output.size() * 2);
+    if (reader.read(pcm.data(), static_cast<std::uint32_t>(output.size())) != output.size())
+        throw std::runtime_error("read reversed Warp reference");
+    double power = 0;
+    float peak = 0;
+    for (std::size_t frame = 0; frame < output.size(); ++frame) {
+        const auto i = 2*(output.size()-1-frame);
+        const auto left = output[frame].left - pcm[i];
+        const auto right = output[frame].right - pcm[i+1];
+        power += static_cast<double>(left)*left + static_cast<double>(right)*right;
+        peak = std::max({peak,std::abs(left),std::abs(right)});
+    }
+    const auto rms = std::sqrt(power / (2.0*static_cast<double>(output.size())));
+    std::printf("reverse %s against #830 steady: peak %.8f, RMS %.8f\n",
+                audio::warpModeName(mode), static_cast<double>(peak), rms);
+    check(peak <= peakTolerance && rms <= rmsTolerance,
+          "steady reversed Warp follows the prepared result within measured tolerance");
+}
+
 void reverseRePitch(bool ramp) {
     Project reversed("re-pitch"), reflected("re-pitch");
     reverseSource(reversed, false, ramp);
@@ -528,37 +570,8 @@ void reverseRePitch(bool ramp) {
     }
     check(worst <= 1, "reversed attacks hit the independent tempo integral on every lap");
 
-    if (!ramp) {
-        // #830 prepares forward PCM by reflecting the oriented output anchors,
-        // then reads the prepared WAV backward. Compare with that reference.
-        audio::WarpRenderPlan plan;
-        plan.source = reversed.source;
-        plan.workFolder = reversed.temporary.path() / "prepared-reverse";
-        plan.sourceStart = reverseStart;
-        plan.sourceFrames = reverseLength;
-        plan.outputRate = rate;
-        plan.mode = audio::WarpMode::RePitch;
-        plan.anchors = {{0, 0}, {14000, 28800}, {46000, 57600}, {reverseLength, 115200}};
-        const auto prepared = audio::prepareWarp(plan);
-        if (!prepared) throw std::runtime_error("prepare #830 reversed Re-Pitch reference");
-        audio::WavReader reader(prepared.prepared->file);
-        std::vector<float> pcm(outputEnd * 2);
-        if (reader.read(pcm.data(), static_cast<std::uint32_t>(outputEnd)) != outputEnd)
-            throw std::runtime_error("read #830 reversed Re-Pitch reference");
-        double power = 0;
-        float peakError = 0;
-        for (std::size_t frame = 0; frame < outputEnd; ++frame) {
-            const auto physicalFrame = outputEnd - 1 - frame;
-            const auto left = output[frame].left - pcm[2 * physicalFrame];
-            const auto right = output[frame].right - pcm[2 * physicalFrame + 1];
-            power += left * left + right * right;
-            peakError = std::max({peakError, std::abs(left), std::abs(right)});
-        }
-        const auto rms = std::sqrt(power / static_cast<double>(2 * outputEnd));
-        std::printf("reverse Re-Pitch against #830 steady: peak %.8f, RMS %.8f\n", peakError, rms);
-        check(peakError <= 0.01f && rms <= 0.001,
-              "steady reversed Re-Pitch follows the prepared #830 result within measured tolerance");
-    }
+    if (!ramp)
+        comparePreparedReverse(reversed,std::span(output).first(outputEnd),audio::WarpMode::RePitch,0.01f,0.001);
 
     // Start just before oriented source frame 40960, a PCM page boundary.
     const auto seek = static_cast<std::size_t>(std::llround(secondsAtBeat(ramp ? 6.5 : 2.5) * rate)) - 1200;
@@ -576,6 +589,61 @@ void reverseRePitch(bool ramp) {
           "reverse PCM and cold seek each complete without page underruns or read errors");
     std::printf("reverse Re-Pitch %s: %d laps at %u Hz, max grid error %lld samples\n",
                 ramp ? "ramp" : "steady", ramp ? 2 : 1, rate, static_cast<long long>(worst));
+}
+
+void reverseBeatsAttacks() {
+    constexpr double firstBpm = 120, lastBpm = 140, slope = (lastBpm-firstBpm)/4;
+    const auto sampleAtBeat = [&](double beat) {
+        const auto seconds = 60/slope*std::log1p(slope*std::min(beat,4.0)/firstBpm) +
+            std::max(0.0,beat-4)*60/lastBpm;
+        return static_cast<std::size_t>(std::llround(seconds*sourceRate));
+    };
+    Project project("beats");
+    reverseSource(project, false, true, true);
+    Session session;
+    project.load(session,Precision::Float32,sourceRate);
+    std::vector<StereoFrame> heard(sampleAtBeat(8));
+    render(session,Precision::Float32,heard,289);
+    std::size_t worst = 0, attacks = 0;
+    for (int lap = 0; lap < 2; ++lap) {
+        for (const auto beat : reverseBeats) {
+            // Each one-sample source onset is the first frame of its forward
+            // slice and therefore the last frame before the reversed boundary.
+            const auto expected = sampleAtBeat(4*lap+beat)-1;
+            const auto* peak = std::max_element(heard.data()+expected-2,heard.data()+expected+3,
+                [](const auto& a, const auto& b) { return a.left < b.left; });
+            if (peak->left > 0.49f && peak->right < -0.19f) {
+                const auto at = static_cast<std::size_t>(peak-heard.data());
+                worst = std::max(worst, at > expected ? at-expected : expected-at);
+                ++attacks;
+            }
+        }
+    }
+    const auto audibleFrames = std::count_if(heard.begin(),heard.end(),[](const auto& frame) { return frame.left>0.49f; });
+    check(attacks == 8 && audibleFrames == 8 && worst <= 1,
+          "the reversed Beats loop plays each analytic onset once across the ramp");
+    check(session.clips()->problems().empty() && session.clips()->underrunSamples()==0 &&
+          session.clips()->readErrors()==0,"reversed Beats streams without page failures or a prepared render");
+    std::printf("reverse Beats ramp: %zu/8 attacks, worst grid error %zu samples\n", attacks, worst);
+    const auto seek = sampleAtBeat(3.5)-50;
+    session.transport().play(false);
+    session.transport().locate(static_cast<std::int64_t>(seek));
+    session.transport().play();
+    std::vector<StereoFrame> sought(sampleAtBeat(4.5)+50-seek);
+    render(session,Precision::Float32,sought,113);
+    check(std::equal(sought.begin(),sought.end(),heard.data()+seek) && session.clips()->underrunSamples()==0,
+          "a reverse Beats cold seek reproduces both attacks around the loop seam");
+
+
+    Project steady("beats");
+    reverseSource(steady,false,false);
+    Session flat;
+    steady.load(flat,Precision::Float32,sourceRate);
+    constexpr std::size_t frames = 115200;
+    std::vector<StereoFrame> native(frames);
+    render(flat,Precision::Float32,native,313);
+    comparePreparedReverse(steady,native,audio::WarpMode::Beats,0.002f,0.0001);
+    check(flat.clips()->problems().empty(),"steady reversed Beats streams without a prepared render");
 }
 
 constexpr double bezierTension = 0.72;
@@ -741,6 +809,7 @@ int main() {
         steadyTempo("re-pitch", 100.0);
         reverseRePitch(false);
         reverseRePitch(true);
+        reverseBeatsAttacks();
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.
