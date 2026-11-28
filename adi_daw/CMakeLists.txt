@@ -470,6 +470,7 @@ target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cp
   src/adi/row_ids.cpp src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/automation_splice.cpp src/adi/automation_splice_store.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
+target_sources(adi_core PRIVATE src/adi/automation_throw.cpp)   # AU-10, the Throw (ADR-0254 d3)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
@@ -2181,6 +2182,9 @@ endif()
 add_executable(adi_automation_splice_store_tests tests/test_automation_splice_store.cpp)
 target_link_libraries(adi_automation_splice_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_automation_splice_store_tests COMMAND adi_automation_splice_store_tests)
+add_executable(adi_automation_throw_tests tests/test_automation_throw.cpp)   # AU-10
+target_link_libraries(adi_automation_throw_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_throw_tests COMMAND adi_automation_throw_tests)
 
 add_executable(adi_automation_splice_tests tests/test_automation_splice.cpp)
 target_link_libraries(adi_automation_splice_tests PRIVATE adi_core adi_warnings)
