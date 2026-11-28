@@ -5,7 +5,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace adi::engine {
 struct MpeOut;
@@ -42,6 +44,15 @@ class NativePdDevice {
     virtual void resetTypedMidi() noexcept {}
     virtual void tempo(double) noexcept {}
     virtual void midi(const engine::MpeOut&) noexcept {}
+    // SC-483. The message thread's calls, beside the audio thread: what a
+    // native keeps besides its parameters and its samples, one stream per role
+    // (the Sampler's zone table). The host lists each role with its own, saves
+    // it with the project and loads it back; a refused load changes nothing.
+    [[nodiscard]] virtual std::span<const std::string_view> stateRoles() const noexcept { return {}; }
+    [[nodiscard]] virtual std::vector<std::uint8_t> saveState(std::string_view) const { return {}; }
+    virtual bool loadState(std::string_view, std::span<const std::uint8_t>) { return false; }
+    /// Message thread, on the host's timer: frees what the audio thread has left.
+    virtual void pumpMainThread() {}
 };
 
 // A synced core's position for one segment (the devices queue's item 6): its

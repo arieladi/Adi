@@ -2,9 +2,11 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
 #include "adi/dsp/sampler.hpp"
+#include "adi/ops.hpp"
 #include "adi/sampler_declarations.hpp"
 #include "juce/pd_declarations.hpp"
 #include <functional>
+#include <memory>
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "replace_operator_new.hpp"
@@ -242,6 +244,147 @@ void slotMode() {
         check(!slots.publishZones(std::array<S::Zone, 1>{}), "a slot-mode Sampler takes no bank");
     }
 }
+// SC-483: what belongs to one sample (root key, tuning, level, pan, start and
+// end, and the ranges that admit a note) reaches a slot through the zone table,
+// and the table is a state stream of its own. The sample is a ramp, so a frame
+// of the output names the position it was read at.
+std::unique_ptr<device::Sampler> plainSlots() {
+    auto d = std::make_unique<device::Sampler>(device::Sampler::slotBacked);
+    set(*d, "volume", 0);
+    set(*d, "attack", .1);
+    set(*d, "release", 1);
+    set(*d, "filter_on", 0);
+    set(*d, "vel_to_vol", 100);
+    return d;
+}
+void slotZoneState() {
+    using S = device::Sampler;
+    using Table = std::array<S::Zone, S::kSlots>;
+    std::vector<float> ramp(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i) {
+        ramp[i] = static_cast<float>(i) / 8192.f;
+    }
+    const auto sample = device::OneShot::prepareSample(ramp, 1, 48000);
+    const auto *prepared = sample.get();
+    const auto fill = [&](int, SlotArray &slots) { slots[2] = {prepared, 1}; };
+    const auto heard = [&](const Table &table, int key, double velocity = 1, int count = 1024) {
+        const auto d = plainSlots();
+        check(d->publishSlotZones(table), "the zone table publishes");
+        const auto note = std::array{on(0, key, velocity)};
+        return renderSlots(*d, count, note, fill);
+    };
+    const auto about = [](float value, double expected) {
+        return std::abs(static_cast<double>(value) - expected) < 1e-6;
+    };
+    {
+        const Table fresh{};
+        check(heard(fresh, 60)[100] == 100.f / 8192, "a fresh zone plays the sample from its start at its own pitch on C3");
+        auto table = fresh;
+        table[2].root = 48;
+        check(heard(table, 48)[100] == 100.f / 8192 && heard(table, 60)[100] == 200.f / 8192,
+              "root key: the sample plays untransposed on its root and an octave up twelve keys above");
+        table = fresh;
+        table[2].detune = 50;
+        check(about(heard(table, 60)[1000], 1000 * std::exp2(.5 / 12) / 8192),
+              "tuning: +50 cents reads the sample a quarter tone faster");
+        table = fresh;
+        table[2].start = table[2].loopStart = .25;   // a loop starts inside the sample
+        table[2].end = .5;
+        const auto trimmed = heard(table, 60, 1, 2304);
+        check(trimmed[100] == 2148.f / 8192 && trimmed[2047] == 4095.f / 8192 && trimmed[2048] == 0,
+              "start and end: the note begins at the start point and stops at the end point");
+        table = fresh;
+        table[2].gainDb = -20;
+        check(about(heard(table, 60)[1000], .1 * 1000 / 8192), "level: -20 dB plays the layer at a tenth");
+        table = fresh;
+        table[2].pan = 1;
+        check(heard(table, 60)[1000] == 0, "pan: a layer panned hard right leaves the left channel silent");
+        table[2].pan = -1;
+        check(about(heard(table, 60)[1000], std::sqrt(2.) * 1000 / 8192), "pan: hard left carries the layer on the left");
+        table = fresh;
+        table[2].key = {48, 59, 0, 0};
+        check(heard(table, 60)[100] == 0 && heard(table, 59)[100] != 0, "key range: a note outside it is not played");
+        table = fresh;
+        table[2].velocity = {64, 127, 0, 0};
+        check(heard(table, 60, .3)[100] == 0 && heard(table, 60, 1)[100] != 0, "velocity range: a soft note is not played");
+        table = fresh;
+        table[2].key = {40, 80, 20, 0};
+        table[2].constantPower = false;
+        check(about(heard(table, 50)[1000], .5 * 1000 * std::exp2(-10. / 12) / 8192),
+              "key fade: halfway up a linear fade the layer plays at half level");
+    }
+    {
+        // The table as state: only the shaped slots are listed, and a second
+        // Sampler given the stream plays the same, sample for sample.
+        const auto d = plainSlots();
+        const auto empty = Payload::from_cbor(d->saveSlotZones());
+        check(empty.at("version") == 1 && empty.at("zones").is_array() && empty.at("zones").empty(),
+              "a Sampler nobody shaped saves an empty zone list");
+        Table table{};
+        table[2].root = 53;
+        table[2].detune = -25;
+        table[2].gainDb = -6;
+        table[2].pan = -.5;
+        table[2].start = table[2].loopStart = .125;
+        table[2].end = .75;
+        table[2].key = {36, 96, 4, 8};
+        table[2].velocity = {10, 120, 5, 5};
+        table[2].select = {0, 100, 0, 20};
+        table[29].loop = true;
+        table[29].loopStart = .5;
+        table[29].crossfade = .25;
+        table[29].constantPower = false;
+        check(d->publishSlotZones(table), "a shaped table publishes");
+        const auto saved = d->saveSlotZones();
+        const auto listed = Payload::from_cbor(saved);
+        check(listed.at("zones").size() == 2 && listed.at("zones")[0].at("slot") == 3 && listed.at("zones")[1].at("slot") == 30,
+              "the saved table lists the two shaped slots by number");
+        const auto copy = plainSlots();
+        check(copy->loadSlotZones(saved) && copy->saveSlotZones() == saved, "the saved table loads into another Sampler and saves the same");
+        const auto &got = copy->slotZones()[2];
+        check(got.root == 53 && got.detune == -25 && got.gainDb == -6 && got.pan == -.5 && got.start == .125 && got.end == .75 &&
+                  got.key.low == 36 && got.key.high == 96 && got.key.fadeLow == 4 && got.key.fadeHigh == 8 && got.velocity.low == 10 &&
+                  got.select.fadeHigh == 20 && copy->slotZones()[29].loop && copy->slotZones()[29].loopStart == .5 &&
+                  !copy->slotZones()[29].constantPower,
+              "every saved field comes back");
+        const auto note = std::array{on(0, 65, .8)};
+        check(renderSlots(*d, 1024, note, fill) == renderSlots(*copy, 1024, note, fill),
+              "the loaded table plays exactly as the saved one");
+        // Refusals keep the table that was there.
+        const auto refuse = [&](Payload bad, const char *what) {
+            check(!copy->loadSlotZones(Payload::to_cbor(bad)) && copy->saveSlotZones() == saved, what);
+        };
+        auto bad = listed;
+        bad["version"] = 2;
+        refuse(bad, "an unknown version is refused");
+        bad = listed;
+        bad["zones"][0]["slot"] = 0;
+        refuse(bad, "slot 0 is refused");
+        bad["zones"][0]["slot"] = 33;
+        refuse(bad, "slot 33 is refused");
+        bad["zones"][0]["slot"] = 30;
+        refuse(bad, "a slot listed twice is refused");
+        bad = listed;
+        bad["zones"][0]["key"] = std::array{80., 20., 0., 0.};
+        refuse(bad, "a range that ends before it begins is refused");
+        bad = listed;
+        bad["zones"][0]["root"] = "C3";
+        refuse(bad, "a field of the wrong type is refused");
+        bad = listed;
+        bad["zones"][0]["gain"] = 30;
+        refuse(bad, "a level above +24 dB is refused");
+        const std::vector<std::uint8_t> garbage{1, 2, 3};
+        check(!copy->loadSlotZones(garbage) && !copy->loadSlotZones({}) && copy->saveSlotZones() == saved,
+              "bytes that are not a table are refused");
+        // A zone that names only some fields takes a fresh zone's for the rest.
+        const Payload partial = {{"version", 1}, {"zones", Payload::array({Payload{{"slot", 5}, {"root", 72}}})}};
+        check(copy->loadSlotZones(Payload::to_cbor(partial)) && copy->slotZones()[4].root == 72 && copy->slotZones()[4].end == 1 &&
+                  copy->slotZones()[4].key.high == 127 && copy->slotZones()[2].root == 60,
+              "a zone that names only its root is a fresh zone with that root, and the unlisted slots are fresh");
+        S bank;
+        check(!bank.loadSlotZones(saved), "a bank-mode Sampler takes no slot table");
+    }
+}
 // The declaration text the host reads agrees with the core it hosts.
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
@@ -281,6 +424,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     slotMode();
+    slotZoneState();
     midiControllers();
     declarations();
 

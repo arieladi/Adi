@@ -4,6 +4,51 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 namespace adi::device {
+namespace {
+// One zone's shape as its saved object: the bank's state and the slot table
+// (SC-483) write the same fields under the same names.
+nlohmann::json zoneJson(const Sampler::Zone &z) {
+    const auto range = [](const Sampler::Range &r) {
+        return std::array{r.low, r.high, r.fadeLow, r.fadeHigh};
+    };
+    return {{"key", range(z.key)},
+            {"velocity", range(z.velocity)},
+            {"select", range(z.select)},
+            {"root", z.root},
+            {"start", z.start},
+            {"end", z.end},
+            {"loopStart", z.loopStart},
+            {"fade", z.crossfade},
+            {"loop", z.loop},
+            {"power", z.constantPower},
+            {"gain", z.gainDb},
+            {"pan", z.pan},
+            {"detune", z.detune}};
+}
+// The other way. A field the object lacks keeps the value z came with; a field
+// of the wrong type throws, which the caller turns into a refusal.
+void zoneFrom(const nlohmann::json &a, Sampler::Zone &z) {
+    const auto range = [&a](const char *name, Sampler::Range &r) {
+        if (a.contains(name)) {
+            const auto v = a.at(name).get<std::array<double, 4>>();
+            r = {v[0], v[1], v[2], v[3]};
+        }
+    };
+    range("key", z.key);
+    range("velocity", z.velocity);
+    range("select", z.select);
+    z.root = a.value("root", z.root);
+    z.start = a.value("start", z.start);
+    z.end = a.value("end", z.end);
+    z.loopStart = a.value("loopStart", z.loopStart);
+    z.crossfade = a.value("fade", z.crossfade);
+    z.loop = a.value("loop", z.loop);
+    z.constantPower = a.value("power", z.constantPower);
+    z.gainDb = a.value("gain", z.gainDb);
+    z.pan = a.value("pan", z.pan);
+    z.detune = a.value("detune", z.detune);
+}
+} // namespace
 Sampler::Sampler() {
     initialise();
     prepare(48000, 4096);
@@ -130,8 +175,51 @@ bool Sampler::publishSlotZones(std::span<const Zone, kSlots> zones) {
         }
         table->zones[i] = zones[i];
     }
+    slotTable_ = table->zones;
     slotZones_.publish(std::move(table));
     return true;
+}
+std::vector<std::uint8_t> Sampler::saveSlotZones() const {
+    nlohmann::json j = {{"version", 1}, {"zones", nlohmann::json::array()}};
+    const auto fresh = zoneJson(Zone{});
+    for (std::size_t i = 0; i < kSlots; ++i) {
+        auto zone = zoneJson(slotTable_[i]);
+        if (zone == fresh) {
+            continue;
+        }
+        zone["slot"] = i + 1;
+        j["zones"].push_back(std::move(zone));
+    }
+    return nlohmann::json::to_cbor(j);
+}
+bool Sampler::loadSlotZones(std::span<const std::uint8_t> bytes) {
+    if (!slotMode_ || bytes.empty() || bytes.size() > 1024 * 1024) {
+        return false;
+    }
+    try {
+        const auto j = nlohmann::json::from_cbor(bytes.begin(), bytes.end());
+        if (!j.is_object() || j.at("version") != 1 || !j.at("zones").is_array() ||
+            j.at("zones").size() > kSlots) {
+            return false;
+        }
+        std::array<Zone, kSlots> table{};
+        std::array<bool, kSlots> listed{};
+        for (const auto &a : j.at("zones")) {
+            const auto slot = a.at("slot").get<std::int64_t>();
+            if (slot < 1 || slot > static_cast<std::int64_t>(kSlots)) {
+                return false;
+            }
+            const auto index = static_cast<std::size_t>(slot - 1);
+            if (listed[index]) {
+                return false;
+            }
+            listed[index] = true;
+            zoneFrom(a, table[index]);
+        }
+        return publishSlotZones(table);
+    } catch (const nlohmann::json::exception &) {
+        return false;
+    }
 }
 void Sampler::resetVoices() noexcept {
     midiChannels_ = {};
@@ -402,25 +490,9 @@ std::vector<std::uint8_t> Sampler::saveState(const std::string &role) const {
         j["parameters"].push_back(values_[i].load(std::memory_order_relaxed));
     if (messageBank_)
         for (const auto &l : messageBank_->layers) {
-            const auto &z = l.zone;
-            auto range = [](const Range &r) {
-                return std::array{r.low, r.high, r.fadeLow, r.fadeHigh};
-            };
-            j["zones"].push_back(
-                {{"key", range(z.key)},
-                 {"velocity", range(z.velocity)},
-                 {"select", range(z.select)},
-                 {"root", z.root},
-                 {"start", z.start},
-                 {"end", z.end},
-                 {"loopStart", z.loopStart},
-                 {"fade", z.crossfade},
-                 {"loop", z.loop},
-                 {"power", z.constantPower},
-                 {"gain", z.gainDb},
-                 {"pan", z.pan},
-                 {"detune", z.detune},
-                 {"voice", nlohmann::json::binary(l.engine->saveState("component"))}});
+            auto zone = zoneJson(l.zone);
+            zone["voice"] = nlohmann::json::binary(l.engine->saveState("component"));
+            j["zones"].push_back(std::move(zone));
         }
     return nlohmann::json::to_cbor(j);
 }
@@ -440,23 +512,11 @@ bool Sampler::loadState(const std::string &role, const std::vector<std::uint8_t>
         for (const auto &a : j.at("zones")) {
             Layer l;
             auto &z = l.zone;
-            auto range = [](const nlohmann::json &r) {
-                auto v = r.get<std::array<double, 4>>();
-                return Range{v[0], v[1], v[2], v[3]};
-            };
-            z.key = range(a.at("key"));
-            z.velocity = range(a.at("velocity"));
-            z.select = range(a.at("select"));
-            z.root = a.at("root");
-            z.start = a.at("start");
-            z.end = a.at("end");
-            z.loopStart = a.at("loopStart");
-            z.crossfade = a.at("fade");
-            z.loop = a.at("loop");
-            z.constantPower = a.at("power");
-            z.gainDb = a.at("gain");
-            z.pan = a.at("pan");
-            z.detune = a.at("detune");
+            // Every field a version 1 state wrote is required, as before.
+            for (const char *name : {"key", "velocity", "select", "root", "start", "end", "loopStart",
+                                     "fade", "loop", "power", "gain", "pan", "detune"})
+                (void)a.at(name);
+            zoneFrom(a, z);
             if (!valid(z))
                 return false;
             l.engine = std::make_unique<OneShot>();

@@ -202,14 +202,17 @@ public:
         if(choice==engine::RouteChoice::NoteExpression)return false;
         route_.store(choice==engine::RouteChoice::Plain?engine::ExpressionRoute::Plain:engine::ExpressionRoute::MpeMidi,std::memory_order_release);return true;
     }
-    void pumpMainThread()override{(void)samples_.collect();}
+    void pumpMainThread()override{(void)samples_.collect();native_->pumpMainThread();}
     std::vector<std::string> stateRoles()const override {
         std::vector<std::string> roles{"state"};
         for(const auto& declaration:declarations_.samples)roles.push_back("sample:"+std::to_string(declaration.id));
+        // SC-483: what the native keeps besides parameters and samples (the Sampler's zones).
+        for(const auto own:native_->stateRoles())roles.emplace_back(own);
         return roles;
     }
     std::vector<std::uint8_t> saveState(const std::string& role)const override {
         if(role!="state") {
+            for(const auto own:native_->stateRoles())if(own==role)return native_->saveState(own);
             for(const auto& declaration:declarations_.samples)if(role=="sample:"+std::to_string(declaration.id)) {
                 const auto found=sampleStates_.find(declaration.id);
                 return Payload::to_cbor(found==sampleStates_.end()?emptyBuiltinSample(info_.uid,declaration.id):found->second);
@@ -226,6 +229,7 @@ public:
     }
     bool loadState(const std::string& role,const std::vector<std::uint8_t>& bytes)override {
         if(role!="state") {
+            for(const auto own:native_->stateRoles())if(own==role)return native_->loadState(own,bytes);
             try {
                 if(bytes.size()>40u*1024u*1024u)return false;
                 const auto value=Payload::from_cbor(bytes);const auto metadata=inspectBuiltinSample(value);

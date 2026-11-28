@@ -7,6 +7,7 @@
 #include "adi/pd_builtins/native_devices.hpp"
 #include "juce/builtin_samples.hpp"
 #include "adi/blob.hpp"
+#include "adi/media/blake3.hpp"
 #include <cstring>
 #include "temp_directory.hpp"
 #include "replace_operator_new.hpp"
@@ -715,7 +716,10 @@ void hybridSession() {
 // and velocity, so a sample dropped into any slot plays at once, and two
 // dropped samples layer, as in Live's Sampler.
 #if ADI_WITH_PD
-double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double volumeDb=-12) {
+// SC-483: `zones` is a zone table committed as the device's "zones" state by
+// an ordinary op; `undone` takes that op back before the project is played.
+double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double volumeDb=-12,
+                   const std::vector<std::uint8_t>* zones=nullptr,bool undone=false) {
     Project project;auto& store=*project.store;auto& db=store.db();
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys')");
     const auto inserted=prepareBuiltinInsert(store,std::string(device::samplerUid),2);
@@ -743,6 +747,18 @@ double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double vol
         OpRequest volume;volume.opType="device.setParam";
         volume.payload={{"dev",inserted.deviceId},{"param","1"},{"norm",(volumeDb+36)/72}};
         check(OpJournal(store).commit(volume).ok,"the Sampler's Volume is set by an ordinary parameter op");
+    }
+    if(zones) {
+        const auto hash=media::blake3Bytes(std::as_bytes(std::span(*zones)));
+        SQLite::Statement blob(db,"INSERT OR IGNORE INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,?)");
+        blob.bind(1,hash.hex);blob.bind(2,zones->data(),static_cast<int>(zones->size()));
+        blob.bind(3,static_cast<std::int64_t>(zones->size()));blob.exec();
+        OpRequest shaped;shaped.opType="device.loadState";shaped.label="Edit Sampler zones";shaped.targetKind="device";shaped.targetId=inserted.deviceId;
+        shaped.payload={{"dev",inserted.deviceId},{"role",std::string(device::samplerZonesRole)},{"hash",hash.hex},{"hint","adi.sampler.zones.cbor.v1"}};
+        check(hash && OpJournal(store).commit(shaped).ok,"the zone table is stored by an ordinary state op");
+        if(undone) {
+            check(History(store).undo().ok,"one Undo takes the zone edit back");
+        }
     }
     db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(5,2,'midi',0,23063040)");
     {
@@ -788,7 +804,7 @@ double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double vol
                 peak=std::max(peak,v);
             }
         }
-        check(slots.empty() || (firstSound>=0 && firstSound<256),"the MIDI clip's note sounds at once");
+        check(slots.empty() || zones!=nullptr || (firstSound>=0 && firstSound<256),"the MIDI clip's note sounds at once");
     }
     return peak;
 }
@@ -870,6 +886,58 @@ void samplerSavedBefore() {
     for(const double probe:probes)finite=finite && std::isfinite(probe);
     check(finite && probes[24]>1 && probes[25]>1,"the saved project sounds");
 }
+// SC-483: the hosted Sampler takes its zone table as the state stream "zones",
+// plays by it, saves it, and a project keeps it through reopening and Undo.
+std::vector<std::uint8_t> samplerZoneTable(std::int32_t slot,Payload zone) {
+    zone["slot"]=slot;
+    const Payload table={{"version",1},{"zones",Payload::array({std::move(zone)})}};
+    return Payload::to_cbor(table);
+}
+void samplerZones() {
+    // A ramp: a frame of the output names the position the sample was read at.
+    std::vector<float> ramp(8192);
+    for(std::size_t i=0;i<ramp.size();++i)ramp[i]=static_cast<float>(i)/8192.f;
+    const auto plain=[&] {
+        auto sampler=load("org.adidaw.builtin.sampler");
+        sampler->prepare(48000,64);
+        // Volume 0 dB, the filter off, velocity at full depth: the sample's own values.
+        check(sampler->setParam("1",ParamValue::withReal(0,0)) && sampler->setParam("9",ParamValue::withReal(0,0)) &&
+              sampler->setParam("23",ParamValue::withReal(0,100)) && sampler->loadState("sample:3",samplerSlotState(3,ramp,1,48000)),
+              "a hosted Sampler with a ramp in slot 3");
+        return sampler;
+    };
+    const std::array<Event,1> c3{{{0,EventType::NoteOn,0,60,1,0,1}}};
+    const auto first=plain();
+    const auto fresh=first->saveState(std::string(device::samplerZonesRole));
+    check(!fresh.empty() && fresh.size()<64 && Payload::from_cbor(fresh).at("zones").empty(),
+          "a Sampler nobody shaped saves a small zone table that lists no slot");
+    check(std::abs(static_cast<double>(samplerRender(*first,c3,256)[0][100])-100./8192)<1e-7,"with a fresh zone C3 plays the sample at its own pitch");
+    const auto rooted=samplerZoneTable(3,{{"root",48},{"gain",-20.0},{"pan",-1.0}});
+    const auto shaped=plain();
+    check(shaped->loadState("zones",rooted),"the hosted Sampler takes a zone table");
+    shaped->pumpMainThread();
+    const auto heard=samplerRender(*shaped,c3,256);
+    check(std::abs(static_cast<double>(heard[0][100])-.1*std::sqrt(2.)*200/8192)<1e-6 && heard[1][100]==0,
+          "root key C2, -20 dB and hard left: C3 reads an octave up, a tenth as loud, on the left only");
+    const auto saved=shaped->saveState("zones");
+    const auto listed=Payload::from_cbor(saved);
+    check(listed.at("zones").size()==1 && listed.at("zones")[0].at("slot")==3 && listed.at("zones")[0].at("root")==48,
+          "it saves the table with the shaped slot");
+    const auto copy=plain();
+    check(copy->loadState("zones",saved) && copy->saveState("zones")==saved && samplerRender(*copy,c3,256)==heard,
+          "a second Sampler given that stream plays the same, sample for sample");
+    check(!copy->loadState("zones",{1,2,3}) && !copy->loadState("zones",samplerZoneTable(40,Payload::object())) &&
+          !copy->loadState("zones",samplerZoneTable(3,{{"key",std::array{80.,20.,0.,0.}}})) && copy->saveState("zones")==saved,
+          "a table that is not one, names slot 40 or holds an invalid range is refused, and the old table stays");
+    // In a project: the note is C3 (key 60). A zone that ends at B2 leaves it
+    // silent, through reopening; Undo brings the sound back.
+    const double one=.5*std::pow(10.,-12./20);
+    const auto below=samplerZoneTable(5,{{"key",std::array{0.,59.,0.,0.}}});
+    const auto around=samplerZoneTable(5,{{"key",std::array{60.,60.,0.,0.}}});
+    check(samplerPeak({5},true,-12,&below)==0,"a zone that ends below the note keeps the slot silent, and again after reopening");
+    check(std::abs(samplerPeak({5},true,-12,&around)-one)<2e-3,"a zone around the note plays it, and again after reopening");
+    check(std::abs(samplerPeak({5},true,-12,&below,true)-one)<2e-3,"after Undo of the zone edit the project plays the note again");
+}
 #endif
 void samplerSession() {
 #if ADI_WITH_PD
@@ -881,7 +949,8 @@ void samplerSession() {
     auto instance=load("org.adidaw.builtin.sampler");
     check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==24,"it consumes notes and has its 24 parameters");
     const auto roles=instance->stateRoles();
-    check(roles.size()==33 && roles.front()=="state" && roles[1]=="sample:1" && roles.back()=="sample:32","32 sample roles beside its state");
+    check(roles.size()==34 && roles.front()=="state" && roles[1]=="sample:1" && roles[32]=="sample:32" && roles.back()==device::samplerZonesRole,
+          "32 sample roles beside its state, and its zone table (SC-483)");
     check(instance->saveState("state").size()<4096,"its parameter state holds no audio");
     const double one=.5*std::pow(10.,-12./20);   // the 0.5 sine at the default -12 dB
     const double slot5=samplerPeak({5},true);
@@ -908,6 +977,7 @@ void samplerSession() {
           !device::builtinSampleStateFits(4u*1024u*1024u+1u,2) && !device::builtinSampleStateFits(0,2),
           "a stereo sample holds at most 4M frames, a mono one 8M");
     samplerSavedBefore();  // SC-483
+    samplerZones();        // SC-483
 #endif
 }
 #if ADI_WITH_PD

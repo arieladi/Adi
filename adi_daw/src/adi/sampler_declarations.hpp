@@ -68,4 +68,8 @@ inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0
 #X obj 300 640 adi.sample \$0 32 Sample_32;
 )ADI_DECL";
 inline constexpr std::string_view samplerUid = "org.adidaw.builtin.sampler";
+// SC-483: the state stream that holds the 32 slots' zones (root key, tuning,
+// level, pan, start and end, loop, and the key, velocity and sample-select
+// ranges with their fades), beside "state" and "sample:1" to "sample:32".
+inline constexpr std::string_view samplerZonesRole = "zones";
 }  // namespace adi::device

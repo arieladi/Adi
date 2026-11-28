@@ -27,6 +27,7 @@
 #include "adi/pd_builtins/hybrid_reverb_sample.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
+#include "adi/sampler_declarations.hpp"
 #include "juce/pd_declarations.hpp"
 #include "adi_native_pd_patches.hpp"
 extern "C" {
@@ -413,6 +414,18 @@ class SamplerNative final : public NativePdDevice {
     }
     bool usesTypedMidi() const noexcept override { return true; }
     void resetTypedMidi() noexcept override { core_.resetVoices(); }
+    // SC-483: the zone table is the Sampler's own state stream.
+    std::span<const std::string_view> stateRoles() const noexcept override {
+        static constexpr std::array<std::string_view, 1> roles{samplerZonesRole};
+        return roles;
+    }
+    std::vector<std::uint8_t> saveState(std::string_view role) const override {
+        return role == samplerZonesRole ? core_.saveSlotZones() : std::vector<std::uint8_t>{};
+    }
+    bool loadState(std::string_view role, std::span<const std::uint8_t> bytes) override {
+        return role == samplerZonesRole && core_.loadSlotZones(bytes);
+    }
+    void pumpMainThread() override { core_.pumpMainThread(); }
     void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         std::array<Sampler::SlotSample, Sampler::kSlots> slots{};
         for (std::size_t i = 0; i < slots.size(); ++i) {

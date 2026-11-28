@@ -36,6 +36,15 @@ class Sampler final : public DeviceInstance {
     /// Message thread (slot mode): the 32 zone shapes, whole, without samples.
     /// Refused, keeping the old table, if any zone is invalid or holds samples.
     bool publishSlotZones(std::span<const Zone, kSlots>);
+    /// Message thread (slot mode), SC-483: the table last published.
+    [[nodiscard]] const std::array<Zone, kSlots> &slotZones() const noexcept { return slotTable_; }
+    /// Message thread (slot mode), SC-483: the zone table as a state stream of
+    /// its own, beside the parameters and the samples. Only the slots that
+    /// differ from a fresh zone are listed, so a Sampler nobody shaped saves an
+    /// empty list. Loading takes a missing field as a fresh zone's and refuses
+    /// the whole table, keeping the old one, if any zone is invalid.
+    [[nodiscard]] std::vector<std::uint8_t> saveSlotZones() const;
+    bool loadSlotZones(std::span<const std::uint8_t>);
     /// Audio thread: every voice of every layer stops (a MIDI reset).
     void resetVoices() noexcept;
     /// Any thread: parameter index to a normalized value, no string lookup.
@@ -85,6 +94,7 @@ class Sampler final : public DeviceInstance {
     void rememberEvents(engine::EventSpan) noexcept;
     std::array<std::unique_ptr<OneShot>, kSlots> slotEngines_{};
     engine::SnapshotPublisher<SlotZones> slotZones_;
+    std::array<Zone, kSlots> slotTable_{};         // message thread: what slotZones_ holds
     std::uint64_t slotZonesSeen_ = 0;              // audio thread
     std::array<std::uint64_t, kSlots> slotSeen_{}; // audio thread
     bool slotMode_ = false;
