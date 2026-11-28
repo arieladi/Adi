@@ -38,8 +38,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     void present(const panel::Record &, double defaultNormalized);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
-    // or Backspace is Return to Default, one gesture to the plug-in's default, one undo step.
+    // Delete and Backspace remove a hosted Configure control or reset its value outside Configure.
     // Up/Down nudge a knob; Enter or a numeric key edits its normalized value.
     // Left and right still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
@@ -279,6 +278,7 @@ class DevicePanelView final : public juce::Component,
     SampleTile *samplerTile() const noexcept { return data && data->instrument ? sample.get() : nullptr; }
     void endRename(bool commit);
     void showParameterList();
+    bool deleteConfigureParameter(std::string parameter);
     void changeParameterPanel(const DevicePanelData &, std::uint64_t menuEpoch,
                               std::optional<std::vector<std::string>> params);
     void closeConfigure();
@@ -318,6 +318,7 @@ class DevicePanelView final : public juce::Component,
         DevicePanelData expected;
         std::uint64_t observed = 0;
         std::vector<std::string> pending;
+        bool openedEditor = false;
     };
     std::optional<ConfigureSession> configureSession_;
     struct ParameterReorder {

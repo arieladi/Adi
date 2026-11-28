@@ -87,10 +87,11 @@ bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
     return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
 }
 bool ParameterControl::keyPressed(const juce::KeyPress &k) {
-    // Live 12 manual 41.6: Return to Default is Delete. Backspace with it, as the device's own
-    // Delete takes both. Handled here, a Delete on a clicked knob never removes the device.
+    // Live's Configure edits the panel. Outside Configure these are the knob's Return to Default.
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
-        returnToDefault();
+        auto *owner = findParentComponentOfClass<DevicePanelView>();
+        if (!owner || !owner->deleteConfigureParameter(parameter))
+            returnToDefault();
         return true; // A refused reset must not bubble into deleting the device or its track.
     }
     if (!record || record->shape != panel::Shape::Continuous || k.getModifiers().isAnyModifierKeyDown())
@@ -2520,8 +2521,36 @@ void DevicePanelView::configure() {
     resized();
     if (!safe) return;
     strip.resized();
-    if (safe && configureSession_)
-        strip.root.openPluginWindow(id);
+    if (safe && configureSession_) {
+        const auto epoch = menuEpoch_;
+        const bool opened = strip.root.openPluginWindow(id);
+        if (opened && safe && safe->configureSession_ && safe->menuEpoch_ == epoch)
+            safe->configureSession_->openedEditor = true;
+    }
+}
+bool DevicePanelView::deleteConfigureParameter(std::string parameter) {
+    if (mixCard_ || !configuring || !data || !data->plugin)
+        return false;
+    if (menuInteraction_)
+        return true;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    const auto expected = *data;
+    const auto epoch = ++menuEpoch_;
+    if (!panelTargetCurrent(expected) || !safe || safe->menuEpoch_ != epoch)
+        return true;
+    const auto feed = strip.latestPublication();
+    if (!safe || safe->menuEpoch_ != epoch)
+        return true;
+    const auto *current = findPanelDevice(feed, expected);
+    if (!current || !samePanelLayout(current->resolved, expected.resolved))
+        return true;
+    auto ids = panelParameterIds(current->resolved);
+    const auto found = std::find(ids.begin(), ids.end(), parameter);
+    if (found != ids.end()) {
+        ids.erase(found);
+        safe->changeParameterPanel(*current, epoch, std::move(ids));
+    }
+    return true;
 }
 void DevicePanelView::showParameterList() {
     const auto safe = SafePointer<DevicePanelView>(this);
@@ -2598,10 +2627,22 @@ void DevicePanelView::changeParameterPanel(const DevicePanelData &current, std::
     if (params ? current.resolved.configured && *params == before : !current.resolved.configured)
         return;
     const auto after = params ? *params : panelParameterIds(panel::resolve({}, current.id, current.declarations()));
-    const auto snapshot = strip.root.current();
+    const auto hides = [&](const auto &parameter) {
+        return std::find(after.begin(), after.end(), parameter) == after.end();
+    };
+    const bool reduces = std::any_of(before.begin(), before.end(), hides);
+    if (reduces) {
+        // ADR-0203 d8: a hosted plug-in needs its own window to remove a panel control.
+        if (configureSession_ && strip.root.pluginWindowOpen(current.id))
+            configureSession_->openedEditor = true;
+        if (!configureSession_ || !configureSession_->openedEditor) {
+            strip.root.say("This plug-in needs its own editor to remove panel controls.");
+            return;
+        }
+    }
+    const auto snapshot = reduces ? strip.root.current() : nullptr;
     const bool hidesAutomation = snapshot && std::any_of(before.begin(), before.end(), [&](const auto &parameter) {
-        return std::find(after.begin(), after.end(), parameter) == after.end() &&
-               hasAuthoredParameterAutomation(*snapshot, current, parameter);
+        return hides(parameter) && hasAuthoredParameterAutomation(*snapshot, current, parameter);
     });
     if (!hidesAutomation) {
         strip.action("device.setPanel", edit);
