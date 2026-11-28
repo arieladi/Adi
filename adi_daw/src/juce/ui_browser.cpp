@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_browser.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "ui_controls.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
@@ -1312,6 +1313,14 @@ bool BrowserPanel::load(int row) {
             const juce::File file(nativeFilePath(entry.file->path));
             open(file);
             return true;
+        }
+        if (entry.file->kind == LibraryFile::Kind::Midi) {
+            const auto path = media::pathUtf8(entry.file->path);
+            const auto name = media::pathUtf8(entry.file->path.stem());
+            const auto current = root_.current();
+            const auto *target = current ? current->findTrack(track) : nullptr;
+            return root_.dropMidiFiles({{path, name}}, target && isMidiTrack(*target) ? track : 0,
+                                       root_.arrangement.geometry.selection.insert, false);
         }
         if (!entry.file->isSample())
             return false;

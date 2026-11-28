@@ -7161,6 +7161,41 @@ void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
     const auto restored = engine::readClipDetails(document->store(), original);
     check(restored.clip && restored.clip->posTicks == 0 && restored.clip->lengthTicks == 4 * beat,
           "Undo restores the exact original MIDI clip interval");
+
+    // A MIDI file the Browser lists loads by a double-click, where Create > Import MIDI File puts it.
+    auto &browser = root.browser;
+    LibraryListing listing;
+    listing.places = {{"MIDI Files", dir, "midi-files"}};
+    listing.files = {{"Scale.mid", path, "midi-files", LibraryFile::Kind::Midi}};
+    browser.setListing(std::move(listing));
+    const auto place = std::ranges::find(browser.sidebar(), std::string("midi-files"), &BrowserPanel::Entry::place);
+    if (place != browser.sidebar().end())
+        browser.choose(static_cast<int>(place - browser.sidebar().begin()));
+    const auto listed = std::ranges::find_if(browser.rows(), [](const BrowserPanel::Row &row) {
+        return row.file != nullptr && row.file->kind == LibraryFile::Kind::Midi;
+    });
+    check(listed != browser.rows().end(), "the Browser lists the MIDI file in its Place");
+    if (listed == browser.rows().end())
+        return;
+    const auto listedRow = static_cast<int>(listed - browser.rows().begin());
+    const auto doubleClick = [&] {
+        browser.list.getListBoxModel()->listBoxItemDoubleClicked(listedRow, pressAt(browser.list, {45.f, 9.f}));
+        root.frame();
+        return engine::readClipDetails(document->store(), root.midiClipForExport());
+    };
+    auto &selection = arrangement.geometry.selection;
+    selection.track = 2;
+    selection.insert = 8 * beat;
+    const auto onSelected = doubleClick();
+    check(onSelected.clip && onSelected.clip->trackId == 2 && onSelected.clip->posTicks == 8 * beat &&
+              onSelected.clip->name == "Scale" && onSelected.clip->notes.size() == 1 && count() == 2,
+          "a double-click on a MIDI file in the Browser imports it on the selected MIDI track at the insert marker");
+    const auto tracksBefore = root.reader().tracks().size();
+    selection.track = 0;
+    const auto onNew = doubleClick();
+    check(onNew.clip && onNew.clip->trackId != 2 && onNew.clip->name == "Scale" && count() == 2 &&
+              root.reader().tracks().size() == tracksBefore + 1,
+          "with no MIDI track selected, the double-click imports the file on a new MIDI track");
 }
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
@@ -20097,8 +20132,29 @@ void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path 
     root.frame();
     vertical = findAudio(root.mixerView);
     check(vertical != nullptr, "SC-269: the Mixer exposes the selected Resampling source");
-    if (vertical)
+    if (vertical) {
         choose(*vertical, {12.f, 38.f}, "Spoken word", "ext:mono:2", "Resampling");
+        root.externalAudioInputs = {};
+        int requests = 0;
+        bool resamplingAvailable = false;
+        vertical->onAudioInputMenu = [&](juce::PopupMenu menu) {
+            ++requests;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == "Resampling" && item.isEnabled && item.action) {
+                    resamplingAvailable = true;
+                    item.action();
+                    break;
+                }
+            }
+        };
+        vertical->mouseDown(pressAt(*vertical, {12.f, 38.f}, juce::ModifierKeys::leftButtonModifier));
+        vertical->onAudioInputMenu = {};
+        root.frame();
+        const auto *track = root.current()->findTrack(4);
+        check(requests == 1 && resamplingAvailable && track && track->inputRef == kResamplingInput,
+              "SC-269: the audio source chooser can select Resampling without a physical input provider");
+    }
     document->release();
 }
 void routingChooserMenus(AppCommands &commands, const std::filesystem::path &dir) {
