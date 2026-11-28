@@ -1,26 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/warp_projection.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include "adi/textproj.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 namespace adi::engine {
 namespace {
-double seconds(const TempoMap& tempo,std::int64_t ticks) {
+double seconds(const auto& tempo,std::int64_t ticks) noexcept {
     return ticks<0?static_cast<double>(ticks)/textproj::kPPQ*60/tempo.bpmAt(0):tempo.ticksToSeconds(ticks);
 }
-double warpClockFrame(const TempoMap& tempo,std::int64_t origin,std::int64_t tick,double rate) {
+double warpClockFrame(const auto& secondsAt,double originSeconds,std::int64_t origin,std::int64_t tick,double rate) {
     if(tick<0 || origin>std::numeric_limits<std::int64_t>::max()-tick || !std::isfinite(rate) || rate<=0)
         throw std::runtime_error("warp source clock is outside its supported range");
-    const double value=(seconds(tempo,origin+tick)-seconds(tempo,origin))*rate;
+    const double value=(secondsAt(origin+tick)-originSeconds)*rate;
     if(!std::isfinite(value) || value<0 || value>0x1p50)throw std::runtime_error("warp source clock exceeds sample precision");
     return value;
 }
 }
 std::int64_t warpSourceSamples(const TempoMap& tempo,std::int64_t origin,std::int64_t tick,double rate) {
-    return static_cast<std::int64_t>(std::llround(warpClockFrame(tempo,origin,tick,rate)));
+    const auto secondsAt = [&](std::int64_t position) { return seconds(tempo,position); };
+    return static_cast<std::int64_t>(std::llround(warpClockFrame(secondsAt,secondsAt(origin),origin,tick,rate)));
 }
 std::vector<audio::WarpAnchor> projectWarpAnchors(std::span<const WarpMarker> markers,const TempoMap& tempo,
                                                 std::int64_t origin,double rate) {
@@ -47,6 +50,17 @@ std::vector<audio::WarpAnchor> projectWarpAnchors(std::span<const WarpMarker> ma
     std::vector<audio::WarpAnchor> result;result.reserve(points.size());
     const bool hasRamps = std::any_of(tempo.events.begin(), tempo.events.end(),
         [](const TempoEvent& point) { return point.curve == 1 || point.curve == 2; });
+    // A directly constructed empty TempoMap retains its existing seconds
+    // projection. Normal stored maps share the prepared exact tempo index.
+    std::optional<WarpArrangementClock> clock;
+    if (!tempo.events.empty()) clock.emplace(tempo,rate);
+    const auto secondsAt = [&](std::int64_t tick) {
+        return clock ? seconds(*clock,tick) : seconds(tempo,tick);
+    };
+    const auto originSeconds = secondsAt(origin);
+    const auto frameAt = [&](std::int64_t tick) {
+        return warpClockFrame(secondsAt,originSeconds,origin,tick,rate);
+    };
     const auto append = [&](const WarpMarker& point, double exactFrame) {
         if(point.sourceFrame<0)throw std::runtime_error("warp source frame is negative");
         const auto frame=static_cast<std::uint64_t>(std::llround(exactFrame));
@@ -67,7 +81,7 @@ std::vector<audio::WarpAnchor> projectWarpAnchors(std::span<const WarpMarker> ma
                                   static_cast<long double>(right.sourceFrame - left.sourceFrame);
             const auto tick = left.tick + std::llround(progress * static_cast<long double>(right.tick-left.tick));
             if (tick > left.tick && tick < right.tick) {
-                const auto midFrame = warpClockFrame(tempo, origin, tick, rate);
+                const auto midFrame = frameAt(tick);
                 const auto rounded = std::llround(midFrame);
                 if (rounded > std::llround(leftFrame) && rounded < std::llround(rightFrame) &&
                     std::abs(midFrame - std::lerp(leftFrame, rightFrame, static_cast<double>(progress))) > 0.25) {
@@ -80,10 +94,10 @@ std::vector<audio::WarpAnchor> projectWarpAnchors(std::span<const WarpMarker> ma
         }
         append(right,rightFrame);
     };
-    auto previous = warpClockFrame(tempo, origin, points.front().tick, rate);
+    auto previous = frameAt(points.front().tick);
     append(points.front(),previous);
     for (std::size_t i=1; i<points.size(); ++i) {
-        const auto next = warpClockFrame(tempo, origin, points[i].tick, rate);
+        const auto next = frameAt(points[i].tick);
         if (hasRamps && points[i].sourceFrame > points[i-1].sourceFrame)
             subdivide(subdivide,points[i-1],previous,points[i],next);
         else append(points[i],next);
