@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_export.hpp"
+#include "adi/media/media_ops.hpp"
 #include "ui_look.hpp"
 #include <algorithm>
 namespace adi::ui {
@@ -13,6 +14,26 @@ void fill(juce::ComboBox &box, const std::vector<juce::String> &items, const juc
     box.setSelectedId(at == items.end() ? 1 : static_cast<int>(at - items.begin()) + 1, juce::dontSendNotification);
 }
 } // namespace
+ExportCompletion exportCompletion(const std::vector<render::Entry> &entries, bool cancelled) {
+    const auto succeeded = static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(), [](const auto &entry) {
+        return entry.result.state == render::JobState::Completed && !entry.result.output.empty();
+    }));
+    if (!entries.empty() && succeeded == entries.size()) {
+        const auto &output = entries.front().result.output;
+        auto message = "Exported " + media::pathUtf8(output.filename());
+        if (succeeded > 1)
+            message += " and " + std::to_string(succeeded - 1) + " more";
+        return {message + ".", output};
+    }
+    const auto failed = std::find_if(entries.begin(), entries.end(), [](const auto &entry) {
+        return entry.result.state == render::JobState::Failed;
+    });
+    auto message = cancelled ? "The export was cancelled."
+                             : "The export failed: " + (failed == entries.end() ? std::string("no output") : failed->result.error);
+    if (succeeded > 0)
+        message += " " + std::to_string(succeeded) + " tracks were exported.";
+    return {std::move(message), {}};
+}
 ExportPage::ExportPage(ExportChoices initial, std::vector<ExportTrack> tracks,
                        std::vector<textproj::Meter> meters)
     : choices_(std::move(initial)), tracks_(std::move(tracks)), meters_(std::move(meters)) {

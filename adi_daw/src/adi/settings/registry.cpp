@@ -441,8 +441,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        {16, 24, 32}, 24));
     r.push_back(choice("export.dither", ex, "Dither",
                        "The dither the export dialog starts with when the depth is below 32-bit. "
-                       "Triangular is Live's default (Live 12 manual 5.1.3.3).",
-                       {"none", "triangular", "rectangular", "pow-r1", "pow-r2", "pow-r3"}, "triangular"));
+                       "New exports start with no dither (SC-469).",
+                       {"none", "triangular", "rectangular", "pow-r1", "pow-r2", "pow-r3"}, "none"));
     r.push_back(make("export.nameTemplate", Type::Text, ex, "File name template",
                      "How exported files are named; {project} and {track} are filled in.",
                      "{project} - {track}"));
@@ -661,7 +661,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("editing.rippleLockedClips", Type::Bool, "Editing", "Ripple moves locked clips",
                      "Ripple editing also moves locked clips (REAPER).", false));
     r.push_back(make("editing.splitAllWithNoSelection", Type::Bool, "Editing", "Split all at the cursor",
-                     "With nothing selected, Split splits every track at the cursor (REAPER).", true));
+                     "With nothing selected, Split splits every track at the cursor (REAPER).", false));
 
     // --- Mixing (catalogue III). No default send level and no New track page: a
     // new send starts at -inf and a new track at Live's defaults (fader 0 dB, in

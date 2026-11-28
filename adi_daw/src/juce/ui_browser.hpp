@@ -97,6 +97,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The logical row before clipping to the scrolling sidebar pane.
     juce::Rectangle<int> sidebarRowBounds(int row) const noexcept;
     juce::Rectangle<int> contentArea() const noexcept { return contentArea_; }
+    bool hasInfoAt(juce::Point<int>) const;
     juce::Rectangle<int> nameHeaderArea() const noexcept { return contentArea_.withHeight(kRowHeight); }
     static juce::Rectangle<int> hideButtonArea() noexcept { return {0, 0, 19, 20}; }
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the

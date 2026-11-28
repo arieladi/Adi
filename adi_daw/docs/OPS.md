@@ -555,10 +555,12 @@ the full typed details row, including future fields or row absence; undo and
 redo restore it. This optional SQL seam adds no dependency on N17's schema.
 
 `clip.move {id,to,track}` and `clip.resize {id,pos,length}` take arrangement
-ticks. Linear clips store the converted position in nanoseconds. A linear
-resize converts both endpoints through the tempo map. A same-track move keeps
-its lane. Undo restores the exact native placement. Historical scalar inverses
-retain their recorded effects.
+ticks. Linear clips store their placement in nanoseconds. An anchored resize
+of unlooped audio with known source bounds preserves the native start and
+cannot extend over the playable end. Other linear resizes convert both
+endpoints through the tempo map. A same-track move keeps its lane. Undo
+restores the exact native placement. Redo preserves the end recorded when
+the resize was committed, including the effects of historical entries.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
@@ -864,12 +866,14 @@ note releases it on the next published playback callback.
 Implemented transform payloads:
 
 - `note.quantize {clip, note_ids[], grid_ticks, origin_ticks, strength, swing,
-  starts, ends}` supplies every setting explicitly. `note_ids` is a nonempty,
+  starts, ends, alternate_grid_ticks?}` supplies every setting explicitly. `note_ids` is a nonempty,
   duplicate-free array of positive uint64 IDs. `grid_ticks` is positive and at
   most INT64_MAX/2; `origin_ticks` is signed. Strength and swing are fixed-point
   percentages from 0 to 10000 (100.00%). Swing delays odd divisions by up to half
-  a grid division. Nearest-grid ties choose the later line; fractional strength
-  rounds the integer movement toward its target on a half tick. Starts and ends
+  a grid division. A positive optional alternate grid adds its lines at the same
+  origin, applying swing to each grid independently. Nearest-grid ties choose the
+  later line; fractional strength rounds the integer movement toward its target
+  on a half tick. Starts and ends
   may be chosen independently. Start-only preserves duration. Independently
   quantized endpoints that collapse keep a one-tick duration. Overflow refuses
   the complete op. All arithmetic uses integers, including above 2^53 ticks.

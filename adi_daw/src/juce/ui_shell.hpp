@@ -38,6 +38,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -363,7 +364,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
-    bool splitAll_ = true;
+    bool splitAll_ = false;
     ClipClipboard clipClipboard_;
 };
 // WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
@@ -426,12 +427,16 @@ class StatusBar final : public juce::Component, public juce::SettableTooltipClie
     void mouseDrag(const juce::MouseEvent &) override;
     void setExportProgress(std::optional<int> percent);
     const juce::String &exportProgressText() const noexcept { return exportProgressText_; }
+    void finishExport(std::string message, std::filesystem::path output = {});
+    juce::TextButton showExportedFile{"Show File"};
+    std::function<void(const std::filesystem::path &)> revealExportedFile;
     juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
     juce::TextButton mixerOptions{""};
 
   private:
+    void setExportedFile(std::filesystem::path);
     AdiRootComponent &root_;
     juce::String audioDeviceProblem_;
     std::vector<std::string> playbackProblems_;
@@ -443,6 +448,7 @@ class StatusBar final : public juce::Component, public juce::SettableTooltipClie
     bool selectorDragged_ = false;
     std::optional<int> exportPercent_;
     juce::String exportProgressText_;
+    std::filesystem::path exportedFile_;
 };
 // The browser's inner edge follows it from one side of the window to the other.
 class BrowserResizer final : public juce::Component {
@@ -707,7 +713,7 @@ class AdiRootComponent final : public juce::Component,
     bool fullScreen() const;
     // What the Info View shows: the element under the mouse, read in the frame.
     const juce::String &infoText() const noexcept { return infoText_; }
-    void hover(juce::Component *);
+    void hover(juce::Component *, juce::Point<int> position = {});
     // Laid-out rectangles, in the root's logical units, for tests and children.
     juce::Rectangle<int> deviceArea() const noexcept { return deviceArea_; }
     juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
@@ -859,7 +865,7 @@ class AdiRootComponent final : public juce::Component,
     // Live's Split (Ctrl/Cmd+E, the Edit menu, a clip's menu; manual 6.9, 41.5): a time selection
     // cuts the clips on its tracks at its edges (inside one clip, at both); else the chosen clip at
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
-    // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
+    // when editing.splitAllWithNoSelection is on. All splits are one undo step.
     bool splitAtMarker();
     bool canReverseAudio() const;
     bool reverseAudio();
@@ -965,6 +971,9 @@ class AdiRootComponent final : public juce::Component,
     std::function<std::shared_ptr<const ParameterPublication>(std::int64_t track)> automationParameters;
     // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
     void showAutomation(std::int64_t track, const AutomationTarget &target);
+    // A manual control touch follows the lane only in Automation Mode.
+    void followAutomation(std::int64_t track, const AutomationTarget &target);
+    void followDeviceAutomation(std::int64_t device, const std::string &parameter);
     // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
     bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
     // The track and target a device parameter's Show Automation would show; none for one the engine
@@ -1112,6 +1121,7 @@ class AdiRootComponent final : public juce::Component,
     void toggleClipViewFull();
     // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
     bool noteEditorHasContext() const;
+    bool canQuantizeArrangement() const noexcept;
     // Whether the Clip View shows a MIDI clip's notes: its folding and scale switches can then be
     // thrown from the menus, with the keyboard anywhere.
     bool noteEditorShown() const;
@@ -1120,6 +1130,7 @@ class AdiRootComponent final : public juce::Component,
   private:
     std::int64_t stoppedSetLocatorTick() const noexcept;
     bool restoreHistoryHead(std::optional<std::int64_t> head);
+    bool quantizeArrangement();
     bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     clip_edit::MidiConsolidation prepareMidiConsolidation() const;
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;

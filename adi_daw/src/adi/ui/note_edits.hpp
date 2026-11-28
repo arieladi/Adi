@@ -697,6 +697,7 @@ inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vecto
 struct QuantizeSettings {
     int strength = 10000, swing = 0;
     bool starts = true, ends = false;
+    std::int64_t alternateGridTicks = 0;
 };
 inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t grid,
                               std::int64_t origin, QuantizeSettings settings = {}) {
@@ -712,9 +713,14 @@ inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector
         return edit;
     // Nothing to write when every start and end that would move is on the grid already; with
     // swing the grid's own lines move, so the engine is asked.
+    const auto offGrid = [&](std::int64_t ticks) {
+        const auto relative = ticks - origin;
+        return relative % grid != 0 &&
+               (settings.alternateGridTicks <= 0 || relative % settings.alternateGridTicks != 0);
+    };
     const bool off = swing != 0 || std::any_of(notes.begin(), notes.end(), [&](const auto *n) {
-        return (settings.starts && ((n->startTicks - origin) % grid) != 0) ||
-               (settings.ends && ((n->startTicks + n->durationTicks - origin) % grid) != 0);
+        return (settings.starts && offGrid(n->startTicks)) ||
+               (settings.ends && offGrid(n->startTicks + n->durationTicks));
     });
     if (!off)
         return edit;
@@ -728,6 +734,8 @@ inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector
                            {"starts", settings.starts},
                            {"ends", settings.ends}},
                           "Quantize Notes"));
+    if (settings.alternateGridTicks > 0)
+        edit.ops.back().payload["alternate_grid_ticks"] = settings.alternateGridTicks;
     return edit;
 }
 

@@ -176,6 +176,12 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
     }
     return false;
 }
+bool timeMagnify(ArrangementGeometry &time, float factor, double pixel) {
+    if (!std::isfinite(factor) || factor <= 0.f || factor == 1.f)
+        return false;
+    time.zoom(factor, std::max(0., pixel));
+    return true;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -1723,7 +1729,7 @@ NoteEditor::ContextEntry NoteEditor::contextEntry(int item) const {
     case kInvertSelection:
         return {"Invert Selection", !clip->notes.empty()};
     case kQuantize:
-        return {"Quantize", !clip->notes.empty()};
+        return {"Quantize", !clip->notes.empty() || anySelected()};
     case kQuantizeSettings:
         return {"Quantize Settings..."};
     case kSplit:
@@ -1800,8 +1806,7 @@ bool NoteEditor::chooseContextItem(int item) {
     case kQuantize:
         return quantize();
     case kQuantizeSettings:
-        panel.setToolsTab(1);
-        return true;
+        return panel.showQuantizeSettings();
     case kSplit:
         return splitOrChop();
     case kJoin:
@@ -2676,13 +2681,9 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
         return true;
     }
     // Quantize, Split or Chop, and Join are the editor's while it has the keyboard.
-    if (k == juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0)) {
-        quantize();
-        return true;
-    }
-    if (k == juce::KeyPress('u', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
-        // Quantize Settings: shown on the tools panel's Functions tab.
-        panel.setToolsTab(1);
+    const auto quantizeCommand = panel.root.commands().manager.getKeyMappings()->findCommandForKeyPress(k);
+    if (quantizeCommand == AppCommands::Quantize || quantizeCommand == AppCommands::QuantizeSettings) {
+        chooseContextItem(quantizeCommand == AppCommands::Quantize ? kQuantize : kQuantizeSettings);
         return true;
     }
     if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) {
@@ -2918,6 +2919,14 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
     }
     mouseMove(e);
     repaint();
+}
+void NoteEditor::mouseMagnify(const juce::MouseEvent &e, float factor) {
+    if (timeMagnify(time, factor, static_cast<double>(e.position.x) - notesArea().getX())) {
+        panel.root.arrangement.followPaused = true;
+        panel.repaint(panel.gridBox());
+        mouseMove(e);
+        repaint();
+    }
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
     auto out = labels_;
@@ -3875,6 +3884,13 @@ void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWh
         repaint();
     }
 }
+void SampleEditor::mouseMagnify(const juce::MouseEvent &e, float factor) {
+    if (timeMagnify(time, factor, e.position.x)) {
+        panel.root.arrangement.followPaused = true;
+        panel.repaint(panel.headerArea());
+        repaint();
+    }
+}
 void SampleEditor::paint(juce::Graphics &g) {
     g.fillAll(look::laneAlt);
     const juce::Rectangle<int> ruler(0, 0, getWidth(), kRulerHeight);
@@ -4156,7 +4172,7 @@ void ClipViewPanel::keepSettings() {
     root.persist();
 }
 juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
-    return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
+    return midi() ? headerArea().reduced(4, 2).removeFromRight(44) : juce::Rectangle<int>();
 }
 juce::PopupMenu ClipViewPanel::gridMenu(int idOffset) const {
     using Geometry = ArrangementGeometry;
@@ -4383,9 +4399,11 @@ bool ClipViewPanel::chooseQuantize(int item) {
     keepSettings();
     return true;
 }
-std::int64_t ClipViewPanel::quantizeGrid() const noexcept {
+std::int64_t ClipViewPanel::quantizeGrid(bool arrangementGrid) const noexcept {
     const auto fixed = kQuantizeValues[quantizeValue_].ticks;
-    return fixed > 0 ? fixed : notes.gridTicks();
+    if (fixed > 0)
+        return fixed;
+    return arrangementGrid ? std::llround(root.arrangement.geometry.gridQuarters() * textproj::kPPQ) : notes.gridTicks();
 }
 QuantizeSettings ClipViewPanel::quantizeSettings() const noexcept {
     QuantizeSettings s;
@@ -4393,7 +4411,95 @@ QuantizeSettings ClipViewPanel::quantizeSettings() const noexcept {
     s.swing = std::clamp(quantizeSwing, 0, 100) * 100;
     s.starts = quantizeStarts;
     s.ends = quantizeEnds;
+    s.alternateGridTicks = kQuantizeValues[quantizeValue_].alternateTicks;
     return s;
+}
+namespace {
+class QuantizeDialogContent final : public juce::Component {
+  public:
+    using Apply = std::function<void(int, bool, bool, int)>;
+    QuantizeDialogContent(int selected, bool adjustStart, bool adjustEnd, int strength, Apply apply) {
+        gridLabel_.setText("Quantize To", juce::dontSendNotification);
+        grid_.setTitle("Quantize To");
+        for (std::size_t i = 0; i < ClipViewPanel::kQuantizeValues.size(); ++i)
+            grid_.addItem(ClipViewPanel::kQuantizeValues[i].name, static_cast<int>(i) + 1);
+        grid_.setSelectedId(selected, juce::dontSendNotification);
+        adjustLabel_.setText("Adjust Note", juce::dontSendNotification);
+        start_.setTitle("Adjust Note Start");
+        end_.setTitle("Adjust Note End");
+        start_.setToggleState(adjustStart, juce::dontSendNotification);
+        end_.setToggleState(adjustEnd, juce::dontSendNotification);
+        amountLabel_.setText("Amount", juce::dontSendNotification);
+        amount_.setTitle("Amount");
+        amount_.setRange(0, 100, 1);
+        amount_.setTextValueSuffix("%");
+        amount_.setValue(strength, juce::dontSendNotification);
+        amount_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 54, 22);
+        for (auto *child : std::initializer_list<juce::Component *>{&gridLabel_, &grid_, &adjustLabel_, &start_, &end_,
+                                                                   &amountLabel_, &amount_, &cancel_, &ok_})
+            addAndMakeVisible(child);
+        cancel_.onClick = [this] { close(); };
+        ok_.onClick = [this, apply = std::move(apply)] {
+            apply(grid_.getSelectedId(), start_.getToggleState(), end_.getToggleState(), juce::roundToInt(amount_.getValue()));
+            close();
+        };
+        ok_.addShortcut(juce::KeyPress(juce::KeyPress::returnKey));
+        setSize(340, 156);
+    }
+    void resized() override {
+        gridLabel_.setBounds(12, 12, 104, 24);
+        grid_.setBounds(124, 12, 204, 24);
+        adjustLabel_.setBounds(12, 45, 104, 24);
+        start_.setBounds(124, 45, 92, 24);
+        end_.setBounds(222, 45, 92, 24);
+        amountLabel_.setBounds(12, 78, 104, 24);
+        amount_.setBounds(124, 78, 204, 24);
+        cancel_.setBounds(180, 120, 68, 24);
+        ok_.setBounds(260, 120, 68, 24);
+    }
+  private:
+    void close() {
+        if (auto *dialog = findParentComponentOfClass<juce::DialogWindow>())
+            dialog->closeButtonPressed();
+    }
+    juce::Label gridLabel_, adjustLabel_, amountLabel_;
+    juce::ComboBox grid_;
+    juce::ToggleButton start_{"Start"}, end_{"End"};
+    juce::Slider amount_{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
+    juce::TextButton cancel_{"Cancel"}, ok_{"OK"};
+};
+} // namespace
+bool ClipViewPanel::showQuantizeSettings(std::function<bool()> apply) {
+    if (!onQuantizeSettings && !root.getPeer())
+        return false;
+    auto content = std::make_unique<QuantizeDialogContent>(static_cast<int>(quantizeValue_) + 1, quantizeStarts,
+        quantizeEnds, quantizeAmount, [safe = SafePointer<ClipViewPanel>(this), apply = std::move(apply)](
+            int grid, bool starts, bool ends, int amount) {
+        if (safe == nullptr)
+            return;
+        safe->quantizeStarts = starts;
+        safe->quantizeEnds = ends;
+        safe->quantizeAmount = amount;
+        safe->chooseQuantize(grid);
+        if (apply)
+            apply();
+        else
+            safe->notes.quantize();
+    });
+    if (onQuantizeSettings) {
+        onQuantizeSettings(std::move(content));
+    } else {
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Quantize Settings";
+        options.content.setOwned(content.release());
+        options.componentToCentreAround = root.getTopLevelComponent();
+        options.associatedComponent = root.getTopLevelComponent();
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = false;
+        options.launchAsync()->setLookAndFeel(&look::liveLook());
+    }
+    return true;
 }
 juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
     const auto area = editorArea();
@@ -6661,7 +6767,16 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto propertiesArea = metadata.withTrimmedLeft(metadata.contains(name) ? name.getWidth() + 5 : 0);
         text(r.sampleProperties, propertiesArea, juce::Justification::centredLeft, look::text, look::fontLabel);
     }
-    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
+    if (const auto grid = gridBox(); !grid.isEmpty()) {
+        controls::chooser(g, grid.toFloat(), {});
+        const auto value = grid.withTrimmedLeft(4).withTrimmedRight(14);
+        labels_.push_back(value);
+        g.setColour(look::text);
+        g.setFont(look::font(look::fontSmall));
+        g.drawFittedText(r.grid, value, juce::Justification::centredLeft, 1, .65f);
+    } else if (!midi()) {
+        text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
+    }
     if (!problem_.empty())
         text(juce::String(problem_), metadata, juce::Justification::centredLeft, look::text, look::fontLabel);
     if (!midi() && !audio()) {

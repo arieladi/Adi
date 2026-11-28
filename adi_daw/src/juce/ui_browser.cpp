@@ -1630,6 +1630,19 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
     if (sidebarArea_.contains(e.getPosition()) && y >= 0)
         sidebarClick(y / kRowHeight, e);
 }
+bool BrowserPanel::hasInfoAt(juce::Point<int> point) const {
+    if (sidebarArea_.contains(point)) {
+        const int y = point.y - sidebarRowBounds(0).getY();
+        const auto row = static_cast<std::size_t>(std::max(0, y) / kRowHeight);
+        return y >= 0 && row < sidebar_.size() && sidebar_[row].name.isNotEmpty();
+    }
+    if (list.getBounds().contains(point)) {
+        const auto position = point - list.getPosition();
+        return list.getRowContainingPosition(position.x, position.y) >= 0;
+    }
+    return hideButtonArea().contains(point) || (!hotSwap_ && nameHeaderArea().contains(point)) ||
+           (previewPeaks_ && selectedSample() && previewWaveformArea().contains(point));
+}
 void BrowserPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) {
     if (sidebarArea_.contains(e.getPosition()) && wheel.deltaY != 0) {
         constexpr double pixelsPerUnit = 300.;

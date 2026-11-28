@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace adi::engine {
 
@@ -19,7 +20,15 @@ void DeviceAutomation::add(const AutomationLaneProgram& lane, std::uint32_t para
     l.program = &lane;
     l.paramId = paramId;
     l.steps = steps;
+    l.playing = &playingValues_.try_emplace(lane.laneId, std::numeric_limits<double>::quiet_NaN()).first->second;
     lanes_.push_back(l);
+}
+
+std::optional<double> DeviceAutomation::playingValue(std::int64_t laneId) const noexcept {
+    const auto slot = playingValues_.find(laneId);
+    if (slot == playingValues_.end()) return std::nullopt;
+    const double value = slot->second.load(std::memory_order_relaxed);
+    return std::isfinite(value) ? std::optional<double>{value} : std::nullopt;
 }
 
 void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std::int64_t sample) noexcept {
@@ -43,6 +52,8 @@ void DeviceAutomation::offer(Lane& lane, EventList& out, std::int32_t frame, std
     }
     lane.last = v;
     lane.sent = true;
+    static_assert(std::atomic<double>::is_always_lock_free);
+    lane.playing->store(v, std::memory_order_relaxed);
 }
 
 void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::int32_t end,

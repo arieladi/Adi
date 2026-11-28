@@ -263,8 +263,8 @@ void testRulings() {
               fileType->choices == std::vector<Value>{"wav", "aiff", "flac", "mp3", "aac"},
           "export: WAV, AIFF, FLAC, MP3 or AAC, WAV by default");
     check(depth && depth->choices == std::vector<Value>{16, 24, 32} && depth->defaultValue == 24 &&
-              dither && dither->defaultValue == "triangular" && dither->choices.size() == 6,
-          "export: 16, 24 or 32 bit, 24 by default; Live's six dither choices, Triangular by default");
+              dither && dither->defaultValue == "none" && dither->choices.size() == 6,
+          "SC-469: 24-bit export starts with No Dither, with all six dither choices available");
     check(normalize && normalize->choices == std::vector<Value>{"off", "peak", "loudness"} &&
               normalize->defaultValue == "off" && dflt("export.loudnessTargetLufs") == -14.0 &&
               dflt("export.truePeakCeilingDb") == -1.0 && dflt("export.nameTemplate") == "{project} - {track}",

@@ -51,6 +51,7 @@ class NoteEditor final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    void mouseMagnify(const juce::MouseEvent &, float factor) override;
     // Editing (manual 10.4 to 10.6): a double-click adds a note or deletes the one under it; a
     // drag moves the selected notes, or their start or end edges; a drag in the Velocity lane
     // changes their velocities; a drag from empty space selects. Each gesture is one undo step.
@@ -444,6 +445,7 @@ class SampleEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    void mouseMagnify(const juce::MouseEvent &, float factor) override;
     static constexpr int kRulerHeight = 18, kScrubHeight = 9, kMarkerHeight = 9;
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;
@@ -595,27 +597,32 @@ class ClipViewPanel final : public juce::Component,
     bool chooseDuration(int item);
     std::int64_t durationTicks() const noexcept;
     juce::Rectangle<int> durationBox() const noexcept;
-    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab; Ctrl/Cmd+U and the
-    // Quantize button use them, Ctrl/Cmd+Shift+U shows them. The value is the editing grid or a
+    // The Functions tab shares the Quantize dialog's settings (manual 10.5.11).
+    // Ctrl/Cmd+U and the Quantize button use them. The value is the editing grid or a
     // fixed one; Start and End say which ends move; the amount is how far towards the grid. Swing
     // is ADI's addition (ADR-0242 d1, from Cubase's quantize panel; the engine's op carries it).
     struct QuantizeValue {
         const char *name;
         std::int64_t ticks; // 0: the editing grid
+        std::int64_t alternateTicks;
     };
-    static constexpr std::array<QuantizeValue, 8> kQuantizeValues = {{{"Grid", 0},
-                                                                     {"1/4", textproj::kPPQ},
-                                                                     {"1/8", textproj::kPPQ / 2},
-                                                                     {"1/8T", textproj::kPPQ / 3},
-                                                                     {"1/16", textproj::kPPQ / 4},
-                                                                     {"1/16T", textproj::kPPQ / 6},
-                                                                     {"1/32", textproj::kPPQ / 8},
-                                                                     {"1/32T", textproj::kPPQ / 12}}};
+    static constexpr std::array<QuantizeValue, 10> kQuantizeValues = {{{"Current Grid", 0, 0},
+                                                                     {"1/4", textproj::kPPQ, 0},
+                                                                     {"1/8", textproj::kPPQ / 2, 0},
+                                                                     {"1/8T", textproj::kPPQ / 3, 0},
+                                                                     {"1/16", textproj::kPPQ / 4, 0},
+                                                                     {"1/16T", textproj::kPPQ / 6, 0},
+                                                                     {"1/32", textproj::kPPQ / 8, 0},
+                                                                     {"1/32T", textproj::kPPQ / 12, 0},
+                                                                     {"1/8 + 1/8T", textproj::kPPQ / 2, textproj::kPPQ / 3},
+                                                                     {"1/16 + 1/16T", textproj::kPPQ / 4, textproj::kPPQ / 6}}};
     std::size_t quantizeValue() const noexcept { return quantizeValue_; }
     juce::PopupMenu quantizeMenu() const;
     bool chooseQuantize(int item);
-    std::int64_t quantizeGrid() const noexcept;
+    std::int64_t quantizeGrid(bool arrangementGrid = false) const noexcept;
     QuantizeSettings quantizeSettings() const noexcept;
+    bool showQuantizeSettings(std::function<bool()> apply = {});
+    std::function<void(std::unique_ptr<juce::Component>)> onQuantizeSettings;
     juce::Rectangle<int> quantizeChooserBox() const noexcept;
     juce::Rectangle<int> quantizeStartBox() const noexcept;
     juce::Rectangle<int> quantizeEndBox() const noexcept;

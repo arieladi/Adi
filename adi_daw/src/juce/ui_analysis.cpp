@@ -362,8 +362,8 @@ namespace {
 bool isMaximumSpectrum(SharedSpectrumView::Mode mode) noexcept {
     return mode == SharedSpectrumView::Mode::SpectrumMaximum || mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum;
 }
-juce::Rectangle<int> filledSpectrumPlot(juce::Rectangle<int> bounds) {
-    auto plot = bounds.reduced(5).withTrimmedTop(16);
+juce::Rectangle<int> filledSpectrumPlot(juce::Rectangle<int> bounds, bool compact) {
+    auto plot = bounds.reduced(5).withTrimmedTop(compact ? 0 : 16);
     if (plot.getWidth() >= 120) plot = plot.withTrimmedRight(30);
     if (plot.getHeight() >= 44) plot = plot.withTrimmedBottom(14);
     return plot;
@@ -907,7 +907,7 @@ bool SharedSpectrumView::updateFilledDisplay() noexcept {
     juce::Point<int> pointer{-1, -1};
     if (const auto *peer = getPeer(); isShowing() && peer && peer->getNativeHandle()) {
         const auto position = getMouseXYRelative();
-        if (filledSpectrumPlot(getLocalBounds()).contains(position)) pointer = position;
+        if (filledSpectrumPlot(getLocalBounds(), compact_).contains(position)) pointer = position;
     }
     if (pointer != filledPointer_) {
         filledPointer_ = pointer;
@@ -1131,11 +1131,13 @@ void SharedSpectrumView::paintFilledSpectrum(juce::Graphics &g) const {
     using namespace filled_spectrum;
     g.fillAll(look::display);
     const auto bounds = getLocalBounds();
-    const auto title = bounds.reduced(5).withHeight(14);
-    g.setFont(look::font(10.f, true));
-    g.setColour(look::textOnBand);
-    g.drawText(frozen_ ? "Filled Spectrum / Frozen" : "Filled Spectrum", title, juce::Justification::centredLeft);
-    const auto axes = filledSpectrumPlot(bounds);
+    if (!compact_) {
+        const auto title = bounds.reduced(5).withHeight(14);
+        g.setFont(look::font(10.f, true));
+        g.setColour(look::textOnBand);
+        g.drawText(frozen_ ? "Filled Spectrum / Frozen" : "Filled Spectrum", title, juce::Justification::centredLeft);
+    }
+    const auto axes = filledSpectrumPlot(bounds, compact_);
     if (axes.getWidth() < 2 || axes.getHeight() < 2) return;
     const auto plot = axes.toFloat();
     const auto xAt = [&](double hz) {
@@ -1419,25 +1421,24 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ColourWaveform) { paintColourWaveform(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
-    const auto area = getLocalBounds().toFloat().reduced(5.f);
-    if (area.isEmpty()) return;
-    g.setColour(look::textOnBand);
-    g.setFont(look::font(10.f, true));
+    const auto bounds = getLocalBounds().toFloat();
     if (compact_) {
-        const auto heading = mode_ == Mode::Spectrogram ? "Spectrogram" : "Spectrum";
-        g.drawText(heading, area.withHeight(14.f), juce::Justification::centredLeft);
-        const auto plot = area.withTrimmedTop(16.f);
+        if (bounds.isEmpty()) return;
         if (mode_ == Mode::Spectrogram) {
             if (raster_ && !raster_->image.isNull()) {
                 g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
-                g.drawImage(raster_->image, plot);
+                g.drawImage(raster_->image, bounds);
             }
         } else if (spectrumMode()) {
-            const auto grid = paintSpectrumGrid(g, plot, spectrumScale_);
+            const auto grid = paintSpectrumGrid(g, bounds, spectrumScale_);
             if (shown_ && scaledSpectrum_) scaledSpectrum_->paint(g, grid);
         }
         return;
     }
+    const auto area = bounds.reduced(5.f);
+    if (area.isEmpty()) return;
+    g.setColour(look::textOnBand);
+    g.setFont(look::font(10.f, true));
     const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
                         "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum", "Cumulative Maximum"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};

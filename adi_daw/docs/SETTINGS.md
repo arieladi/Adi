@@ -284,8 +284,8 @@ folder. Finished takes are published into `Samples/Recorded` in the song folder.
 (on), `audio.reducedLatencyWhenMonitoring` (off), `audio.recordPdcThresholdEnabled`
 (off, as Live: nothing is bypassed while recording; the 10 ms threshold applies
 only when it is on), `settings.logChanges` (on, §3), and the Export page:
-`export.fileType` (wav), `export.bitDepth` (24), `export.dither` (triangular,
-Live's default), `export.nameTemplate`, `export.normalize` (off; peak is Live's
+`export.fileType` (wav), `export.bitDepth` (24), `export.dither` (none, SC-469),
+`export.nameTemplate`, `export.normalize` (off; peak is Live's
 Normalize, loudness aims at `export.loudnessTargetLufs`, -14, under
 `export.truePeakCeilingDb`, -1; D-04 a). The destination stays
 `files.renderFolder`; freeze render settings stay on Devices.

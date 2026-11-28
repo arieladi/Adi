@@ -276,7 +276,7 @@ class MixerStrip final : public juce::Component,
     void volumeMenu();
 
   public:
-    // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
+    // Menus for the mixer controls, including controls with no automation yet.
     juce::PopupMenu volumeMenuItems();
     juce::PopupMenu panMenuItems();
     juce::PopupMenu sendMenuItems(std::size_t index);
@@ -284,6 +284,7 @@ class MixerStrip final : public juce::Component,
 
   private:
     void sendMenu(std::size_t index);
+    void followSendAutomation(std::int64_t returnTrack);
     // A send's tap chosen from its menu (DF-W33): one `routing.setSendTap`.
     void chooseSendTap(std::size_t index, IndividualSendTap tap);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
@@ -408,6 +409,7 @@ class MixerPanel final : public juce::Component {
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
     void showContextMenu(juce::PopupMenu, juce::Point<int>);
+    void showContextMenu(juce::PopupMenu, const juce::PopupMenu::Options &);
     // A presenter can inspect the requested menu without opening a native popup.
     std::function<void(juce::PopupMenu)> contextMenuPresenter;
     // Where the track controls' rows show, level with the arrangement's lanes, in this panel's

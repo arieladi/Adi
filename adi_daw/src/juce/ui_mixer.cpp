@@ -490,8 +490,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(pane
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] {
         auto &root = panel_.root;
-        if (root.automationMode() && kind_ != "master")
-            root.showAutomation(track_, activatorTarget(track_));
+        if (kind_ != "master")
+            root.followAutomation(track_, activatorTarget(track_));
         root.activateTrack(track_);
     };
     active.onMenu = [this] {
@@ -1754,9 +1754,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         else if (!own)
             root.say("This send is off. Right-click it for Enable Send.");
         else if (chooseEnvelope && i < returns_.size())
-            if (const auto snapshot = root.current())
-                if (const auto *send = findSend(snapshot->sends, track_, returns_[i]))
-                    root.showAutomation(track_, sendTarget(send->id, {}));
+            followSendAutomation(returns_[i]);
         return;
     }
     if (e.eventComponent == this) {
@@ -1813,9 +1811,9 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (chooseEnvelope) {
         if (onControl(pan))
-            root.showAutomation(track_, panTarget(track_));
+            root.followAutomation(track_, panTarget(track_));
         else if (onControl(volume))
-            root.showAutomation(track_, volumeTarget(track_));
+            root.followAutomation(track_, volumeTarget(track_));
     }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
@@ -2033,21 +2031,33 @@ bool MixerStrip::keyPressed(const juce::KeyPress &key) {
     }
     return false;
 }
+void MixerStrip::followSendAutomation(std::int64_t returnTrack) {
+    auto &root = panel_.root;
+    if (const auto snapshot = root.current())
+        if (const auto *send = findSend(snapshot->sends, track_, returnTrack))
+            root.followAutomation(track_, sendTarget(send->id, {}));
+}
 void MixerStrip::commitSend(std::size_t index) {
     // From the CURRENT cell, as every action is (ADR-0201).
     const auto current = panel_.root.current();
     if (!current || index >= sends_.size())
         return;
-    auto edit = setSend(*current, track_, returns_[index], sends_[index]->getValue());
+    const auto track = track_, returnTrack = returns_[index];
+    const auto *existing = findSend(current->sends, track, returnTrack);
+    auto edit = setSend(*current, track, returnTrack, sends_[index]->getValue());
     if (!edit.refusal.empty()) {
         // A new row with no routing id left (N39): nothing lands, so the knob goes back to its row's
         // level, fully down without one, and the Status Bar says why.
-        sends_[index]->setValue(std::clamp(sendLevel(findSend(current->sends, track_, returns_[index])), kSendFloorDb, kSendTopDb),
+        sends_[index]->setValue(std::clamp(sendLevel(existing), kSendFloorDb, kSendTopDb),
                                 juce::dontSendNotification);
         panel_.root.say(edit.refusal);
         return;
     }
-    panel_.root.submitEdits(std::move(edit.ops));
+    const auto safe = SafePointer<MixerStrip>(this);
+    // A new send first acquires an automation target when its routing row lands.
+    const bool followNewSend = !existing && panel_.root.automationMode();
+    if (panel_.root.submitEdits(std::move(edit.ops)) && safe && followNewSend && safe->track_ == track)
+        safe->followSendAutomation(returnTrack);
 }
 void MixerStrip::enableSend(std::size_t index, bool on) {
     const auto current = panel_.root.current();
@@ -2069,6 +2079,39 @@ void MixerStrip::enableAllSends() {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
+namespace {
+void addMixerAutomationItems(juce::PopupMenu &menu, AdiRootComponent &root, const engine::Snapshot &snapshot,
+                             std::int64_t track, const AutomationTarget &target) {
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    menu.addItem("Show Automation", [safe = juce::Component::SafePointer<AdiRootComponent>(&root), track, target] {
+        if (safe)
+            safe->showAutomation(track, target);
+    });
+    root.addAutomationDeleteItem(menu, target);
+    root.addReenableAutomation(menu, laneOf(snapshot, target.ownerKind, target.ownerId, target.paramRef));
+}
+void showSendAutomation(AdiRootComponent &root, std::int64_t track, std::int64_t destination) {
+    const auto current = root.current();
+    if (!current || !current->findTrack(track))
+        return;
+    // The popup can stay open as strips are recycled or a return is moved.
+    std::vector<std::int64_t> returns;
+    returnsFor(current->tracks, track, returns);
+    if (std::find(returns.begin(), returns.end(), destination) == returns.end())
+        return;
+    auto preparation = prepareSendAutomation(*current, track, destination);
+    if (!preparation.refusal.empty()) {
+        root.say(std::move(preparation.refusal));
+        return;
+    }
+    if (!root.submitEdits(std::move(preparation.ops)))
+        return;
+    if (const auto snapshot = root.current())
+        if (const auto *send = findSend(snapshot->sends, track, destination))
+            root.showAutomation(track, sendTarget(send->id, {}));
+}
+} // namespace
 juce::PopupMenu MixerStrip::sendMenuItems(std::size_t index) {
     // Live's Enable Send, ticked while the send is on. A track's sends are on from the start; a
     // return's are off until it is chosen (ADR-0203 d3).
@@ -2094,19 +2137,24 @@ juce::PopupMenu MixerStrip::sendMenuItems(std::size_t index) {
                     safe->chooseSendTap(index, which);
             });
         }
-    }
-    // The envelope belongs to this send's routing row.
-    if (const auto current = panel_.root.current())
-        if (const auto *send = findSend(current->sends, track_, returns_[index])) {
-            panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
-            panel_.root.addAutomationDeleteItem(m, sendTarget(send->id, "Send Level"));
+        const auto destination = returns_[index];
+        if (const auto *send = findSend(current->sends, track_, destination))
+            addMixerAutomationItems(m, panel_.root, *current, track_, sendTarget(send->id, {}));
+        else {
+            m.addSeparator();
+            m.addItem("Show Automation", !panel_.root.editStore().readOnly(), false,
+                      [safe = SafePointer<AdiRootComponent>(&panel_.root), track = track_, destination] {
+                          if (safe)
+                              showSendAutomation(*safe, track, destination);
+                      });
         }
+    }
     return m;
 }
 void MixerStrip::sendMenu(std::size_t index) {
-    auto m = sendMenuItems(index);
-    if (m.getNumItems() > 0)
-        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
+    auto menu = sendMenuItems(index);
+    if (menu.getNumItems() > 0)
+        panel_.showContextMenu(std::move(menu), juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 void MixerStrip::chooseSendTap(std::size_t index, IndividualSendTap tap) {
     // From the CURRENT cell (ADR-0201), as every send edit.
@@ -2153,28 +2201,21 @@ juce::PopupMenu MixerStrip::panMenuItems() {
     // Live's Split Stereo Pan Mode (ADR-0203 d9) needs a pan mode and two pans per
     // strip in the format and the mixer: the engine's (collab/window.md, N12).
     m.addItem(2, "Split Stereo Pan", false, false);
-    // Live's Re-Enable Automation for the pan (AU-04).
-    if (const auto current = panel_.root.current())
-        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
-    panel_.root.addAutomationDeleteItem(m, panTarget(track_));
+    if (const auto current = panel_.root.current(); current && current->findTrack(track_))
+        addMixerAutomationItems(m, panel_.root, *current, track_, panTarget(track_));
     return m;
 }
 void MixerStrip::panMenu() {
-    panMenuItems().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
+    panel_.showContextMenu(panMenuItems(), juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
-// The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
-// track with no Volume lane has nothing to offer, and the fader shows no menu.
 juce::PopupMenu MixerStrip::volumeMenuItems() {
     juce::PopupMenu m;
-    if (const auto current = panel_.root.current())
-        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "volume"));
-    panel_.root.addAutomationDeleteItem(m, volumeTarget(track_));
+    if (const auto current = panel_.root.current(); current && current->findTrack(track_))
+        addMixerAutomationItems(m, panel_.root, *current, track_, volumeTarget(track_));
     return m;
 }
 void MixerStrip::volumeMenu() {
-    auto m = volumeMenuItems();
-    if (m.getNumItems() > 0)
-        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&volume));
+    panel_.showContextMenu(volumeMenuItems(), juce::PopupMenu::Options{}.withTargetComponent(&volume));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {
     setWantsKeyboardFocus(vertical_);
@@ -2639,11 +2680,16 @@ void MixerPanel::contextMenu(juce::Point<int> where) {
     showContextMenu(std::move(m), where);
 }
 void MixerPanel::showContextMenu(juce::PopupMenu menu, juce::Point<int> where) {
+    showContextMenu(std::move(menu), juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+void MixerPanel::showContextMenu(juce::PopupMenu menu, const juce::PopupMenu::Options &options) {
+    if (menu.getNumItems() == 0)
+        return;
     if (contextMenuPresenter) {
         contextMenuPresenter(std::move(menu));
         return;
     }
-    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+    menu.showMenuAsync(options);
 }
 void MixerPanel::scrollSendsBy(int rows, std::size_t shown) {
     const auto first = firstSend(shown);

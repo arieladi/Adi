@@ -48,7 +48,7 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
     std::span<const Move>,const Options&);
 /// Build a scope from exact native material extents for an interactive drag.
 [[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,std::span<const Move>,const Options&);
-/// Keeps the native start fixed; left trim and Crop are separate intents.
+/// Keeps the native start fixed and clamps unlooped audio extensions at the playable end.
 [[nodiscard]] clip_edit::PreparedEdit prepareResizeEnd(Store&,const EditScope&,
     ResizeEnd,const Options&);
 
