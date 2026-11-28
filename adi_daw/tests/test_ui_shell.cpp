@@ -20372,6 +20372,100 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.devices.removeSelection = {};
         root.devices.moveSelection = {};
     }
+    // SC-300: Paste from a track title uses the device clipboard and appends through the normal placement path.
+    if (peer && clipboard) {
+        constexpr std::int64_t sourceTrack = 2, destinationTrack = 3, destinationClip = 50;
+        auto &selection = root.arrangement.geometry.selection;
+        auto &headers = root.arrangement.headers;
+        auto savedBoard = std::exchange(commands.clipClipboard().held, std::monostate{});
+        const auto click = [&](juce::Component &component, juce::Point<int> local) {
+            const auto at = host.getLocalPoint(&component, local).toFloat();
+            for (const auto flags : {0, static_cast<int>(juce::ModifierKeys::leftButtonModifier), 0}) {
+                const juce::ModifierKeys mods(flags);
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+            }
+        };
+        const auto clickHeader = [&](std::int64_t track) {
+            click(headers, {42, laneTop(root, track) + 9});
+            refresh();
+            return headers.hasKeyboardFocus(false) && selection.track == track;
+        };
+        const auto copyDeviceTitle = [&] {
+            if (!clickHeader(sourceTrack) || root.devices.panels.empty())
+                return false;
+            auto &device = *root.devices.panels.front();
+            const auto id = device.id;
+            click(device.title, device.title.getLocalBounds().getCentre());
+            return root.devices.focusedDevice() == id && key('c');
+        };
+        const auto destination = [&] {
+            std::vector<std::int64_t> out;
+            SQLite::Statement rows(document->store().db(),
+                "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=? ORDER BY d.ord,d.id");
+            rows.bind(1, destinationTrack);
+            while (rows.executeStep())
+                out.push_back(rows.getColumn(0).getInt64());
+            return out;
+        };
+        const bool ready = document->pasteDevice(*clipboard, destinationTrack, {}) &&
+                           root.submitEdit("clip.create", {{"id", destinationClip}, {"track", destinationTrack},
+                                                           {"kind", "midi"}, {"pos", 0}, {"length", textproj::kWhole}},
+                                           "Create MIDI Clip");
+        check(ready, "SC-300: the destination starts with its own device and MIDI clip");
+        if (ready) {
+            refresh();
+            const auto sourceOrder = chain();
+            const auto destinationOrder = destination();
+            const auto trackCount = [&] { return document->view().current()->tracks.size(); };
+            const auto beforeCount = trackCount();
+            const auto targetClipUnchanged = [&] {
+                const auto *track = document->view().current()->findTrack(destinationTrack);
+                return track && track->clips.size() == 1 && track->clips.front()->id == destinationClip &&
+                       track->clips.front()->posTicks == 0 &&
+                       track->clips.front()->lengthTicks == textproj::kWhole;
+            };
+            const auto undoPaste = [&](decltype(head()) before) {
+                const bool undone = head() != before && root.command(AppCommands::Undo);
+                refresh();
+                return undone && head() == before && trackCount() == beforeCount && chain() == sourceOrder &&
+                       destination() == destinationOrder && targetClipUnchanged();
+            };
+            const auto pasteDevice = [&] {
+                const auto before = head();
+                const bool titleFocused = clickHeader(destinationTrack);
+                commands.activate(root);
+                juce::ApplicationCommandInfo info(AppCommands::Paste);
+                commands.getCommandInfo(AppCommands::Paste, info);
+                const bool handled = key('v');
+                refresh();
+                const auto after = destination();
+                check(titleFocused && (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && handled &&
+                          head() != before && label() == "Paste Device" && after.size() == destinationOrder.size() + 1 &&
+                          std::equal(destinationOrder.begin(), destinationOrder.end(), after.begin()) &&
+                          chain() == sourceOrder && trackCount() == beforeCount && targetClipUnchanged(),
+                      "SC-300: a track title enables Paste and Ctrl/Cmd+V appends the device to that track only");
+                return head() != before && undoPaste(before);
+            };
+            check(copyDeviceTitle() && pasteDevice(), "SC-300: one Undo restores both tracks after the title paste");
+
+            const bool trackCopied = clickHeader(sourceTrack) && key('c') &&
+                                     std::holds_alternative<AppCommands::TrackCopy>(commands.clipClipboard().held);
+            const auto beforeTrackPaste = head();
+            const bool trackPasted = trackCopied && clickHeader(destinationTrack) && key('v');
+            refresh();
+            const bool addedTrack = trackCount() == beforeCount + 1 && destination() == destinationOrder &&
+                                    label() == "Paste Track";
+            const bool trackUndone = undoPaste(beforeTrackPaste);
+            check(trackPasted && addedTrack && trackUndone,
+                  "SC-300: a more recent track copy keeps its ordinary title paste and one Undo");
+
+            const bool deviceCopied = copyDeviceTitle();
+            check(deviceCopied && pasteDevice(),
+                  "SC-300: a fresh device copy takes precedence over the earlier track copy at the title");
+        }
+        commands.clipClipboard().held = std::move(savedBoard);
+    }
     host.removeChildComponent(&root);
     document->release();
 }
@@ -20871,6 +20965,146 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     check(show && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"},
           "choosing Show on Device Panel also adds the latest touch in order");
 
+    {
+        // The old lane reference is decimal while the CLAP control's stored panel ID is hexadecimal.
+        automation::LaneSpec lane;
+        lane.id = 91;
+        lane.ownerKind = "device";
+        lane.ownerId = id;
+        lane.paramRef = "31";
+        lane.paramName = "Cutoff";
+        lane.enabled = false;
+        auto points = automation::writePoints(92, lane.id, nullptr, Payload::array({
+            {{"id", 1}, {"time", textproj::kPPQ}, {"value", .65}, {"curve", 1}, {"tension", 0.}}
+        }));
+        const bool saved = document->ops().submit({automation::createLane(lane), std::move(points)}).ok &&
+                           document->synchronise();
+        const auto bytes = document->store().getAutomationData(lane.id, {});
+        check(saved && bytes && !bytes->empty(), "SC-326: the panel includes a control with a disabled legacy automation lane");
+        if (saved && bytes && !bytes->empty()) {
+            const auto automationIntact = [&] {
+                SQLite::Statement row(document->store().db(), "SELECT param_ref,enabled FROM automation_lanes WHERE id=?");
+                row.bind(1, lane.id);
+                return row.executeStep() && row.getColumn(0).getString() == lane.paramRef && row.getColumn(1).getInt() == 0 &&
+                       document->store().getAutomationData(lane.id, {}) == bytes;
+            };
+            panel.configureButton.onClick();
+            frame();
+            const std::vector<std::string> full{original.front(), "0000001f", "gain"};
+            const std::vector<std::string> withoutCutoff{original.front(), "gain"};
+            int warnings = 0;
+            juce::String warningText;
+            std::function<void(bool)> pendingWarning;
+            panel.onPanelRemovalWarning = [&](juce::MessageBoxOptions options, std::function<void(bool)> reply) {
+                ++warnings;
+                warningText = options.getTitle() + " " + options.getMessage();
+                pendingWarning = std::move(reply);
+            };
+            const auto chooseParameter = [&](const juce::String &name) {
+                bool found = false;
+                panel.onParameterListMenu = [&](juce::PopupMenu menu, std::function<void(int)> choose) {
+                    for (juce::PopupMenu::MenuItemIterator at(menu); at.next();) {
+                        const auto &item = at.getItem();
+                        if (item.text == name && item.isEnabled) {
+                            found = true;
+                            choose(item.itemID);
+                            return;
+                        }
+                    }
+                    choose(0);
+                };
+                panel.parameterList.onClick();
+                panel.onParameterListMenu = {};
+                return found;
+            };
+            const auto answer = [&](bool confirmed) {
+                if (auto reply = std::exchange(pendingWarning, {})) reply(confirmed);
+            };
+            const auto before = OpJournal(document->store()).headSeq();
+            const auto edits = panelEdits;
+            check(chooseParameter("Cutoff") && warnings == 1 && pendingWarning && warningText.containsIgnoreCase("automation") &&
+                      ordered() == full && OpJournal(document->store()).headSeq() == before,
+                  "SC-326: requesting removal warns before touching the automated control or the journal");
+            answer(false);
+            frame();
+            check(ordered() == full && panelEdits == edits && OpJournal(document->store()).headSeq() == before && automationIntact(),
+                  "SC-326: cancelling the warning writes no operation and leaves the panel and lane intact");
+            check(chooseParameter("Cutoff") && warnings == 2 && pendingWarning,
+                  "SC-326: removing the control again asks for confirmation");
+            answer(true);
+            frame();
+            const auto step = document->ops().nextUndo();
+            check(ordered() == withoutCutoff && panelEdits == edits + 1 && step && step->opCount == 1 && automationIntact(),
+                  "SC-326: confirming removes only the control in one undo step and keeps the authored lane and points");
+            check(root.command(AppCommands::Undo) && ordered() == full && automationIntact(),
+                  "SC-326: one Undo restores the panel's exact order and leaves the lane intact");
+            frame();
+            check(chooseParameter("Gain") && warnings == 2 && !pendingWarning &&
+                      ordered() == std::vector<std::string>{original.front(), "0000001f"} && automationIntact(),
+                  "SC-326: an unautomated control can be removed without a warning");
+            frame();
+            check(chooseParameter("Clear panel") && warnings == 3 && pendingWarning,
+                  "SC-326: clearing the panel also warns before dropping an automated control");
+            answer(false);
+
+            const bool restored = document->deviceAction("device.setPanel", {{"dev", id}, {"params", full}});
+            frame();
+            check(restored && chooseParameter("Cutoff") && warnings == 4 && pendingWarning,
+                  "SC-326: an automated-control warning can remain open while the panel changes elsewhere");
+            const std::vector<std::string> reordered{"gain", "0000001f", original.front()};
+            const bool changed = document->deviceAction("device.setPanel", {{"dev", id}, {"params", reordered}});
+            const auto reorderedHead = OpJournal(document->store()).headSeq();
+            const auto reorderedEdits = panelEdits;
+            answer(true);
+            frame();
+            check(changed && ordered() == reordered && panelEdits == reorderedEdits &&
+                      OpJournal(document->store()).headSeq() == reorderedHead && automationIntact(),
+                  "SC-326: accepting a stale warning cannot overwrite a new order with the same controls");
+
+            const auto control = std::find_if(panel.controls.begin(), panel.controls.end(), [](const auto &candidate) {
+                return candidate->parameter == "0000001f";
+            });
+            auto *peer = surface.getPeer();
+            const auto cutoffBefore = knobs->getParam("0000001f").normalized;
+            bool handled = false;
+            if (peer && control != panel.controls.end() && (*control)->isShowing()) {
+                (*control)->grabKeyboardFocus();
+                handled = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey));
+            }
+            check(panel.configuring && handled && warnings == 5 && pendingWarning && ordered() == reordered &&
+                      OpJournal(document->store()).headSeq() == reorderedHead,
+                  "SC-326: Delete on a focused configured control uses the same warning before removing it");
+            answer(true);
+            frame();
+            check(ordered() == std::vector<std::string>{"gain", original.front()} && panelEdits == reorderedEdits + 1 &&
+                      knobs->getParam("0000001f").normalized == cutoffBefore && automationIntact(),
+                  "SC-326: confirmed Delete removes the configured control and preserves its value and automation");
+
+            panel.configureButton.onClick();
+            const auto editorKey = AdiRootComponent::pluginWindowKey(id);
+            host.close(editorKey);
+            host.collect();
+            auto editor = std::exchange(root.pluginEditor, [](std::int64_t, std::string &why) {
+                why = "This plug-in has no editor.";
+                return AdiRootComponent::PluginEditorView{};
+            });
+            panel.configureButton.onClick();
+            frame();
+            const auto editorlessHead = OpJournal(document->store()).headSeq();
+            const auto editorlessEdits = panelEdits;
+            check(!host.contains(editorKey) && panel.configuring && chooseParameter("Gain") &&
+                      ordered() == std::vector<std::string>{"gain", original.front()} && warnings == 5 &&
+                      panelEdits == editorlessEdits && OpJournal(document->store()).headSeq() == editorlessHead,
+                  "SC-326: Configure cannot remove a visible control when the plug-in has no editor");
+            check(chooseParameter("Cutoff") && ordered() == std::vector<std::string>{"gain", original.front(), "0000001f"} &&
+                      panelEdits == editorlessEdits + 1 && automationIntact(),
+                  "SC-326: the Parameter List can still add controls when the plug-in has no editor");
+            root.pluginEditor = std::move(editor);
+            panel.onPanelRemovalWarning = {};
+            panel.configureButton.onClick();
+        }
+    }
+
     check(reset(), "reset the panel before choosing a touched parameter without Device View demand");
     root.setAutomationMode(false);
     root.devices.suspendParameters(true);
@@ -20893,6 +21127,98 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     check(chooseHiddenTouch && root.automationMode() && hiddenTarget.ownerId == id && hiddenTarget.paramRef == "31" &&
               ordered() == std::vector<std::string>{original.front(), "0000001f"} && hasNoLiveDemand(),
           "SC-317: the Arrangement chooser pins and shows a hidden device's last touch without retaining live demand");
+
+    // SC-326: dragging the displayed controls changes the authored order as one Configure edit.
+    root.devices.suspendParameters(false);
+    root.setAutomationMode(false);
+    const std::vector<std::string> beforeDrag{original.front(), "0000001f", "gain"};
+    const bool listed = document->deviceAction("device.setPanel", {{"dev", id}, {"params", beforeDrag}});
+    frame();
+    frame();
+    panel.configureButton.onClick();
+    frame();
+    auto *peer = surface.getPeer();
+    const auto pointOf = [&](std::string_view parameter, bool lower) -> std::optional<juce::Point<float>> {
+        const auto control = std::find_if(panel.controls.begin(), panel.controls.end(), [parameter](const auto &entry) {
+            return entry->parameter == parameter && entry->isShowing();
+        });
+        if (control == panel.controls.end())
+            return std::nullopt;
+        const auto &controlView = **control;
+        return surface.getLocalPoint(&controlView, juce::Point<int>{controlView.getWidth() / 2,
+                                 lower ? controlView.getHeight() - 4 : 5}).toFloat();
+    };
+    const auto source = pointOf("0000001f", false);
+    const auto afterGain = pointOf("gain", true);
+    const bool dragReady = listed && peer && panel.configuring && source && afterGain;
+    check(dragReady, "SC-326: Configure shows the two known controls and retains the missing panel entry");
+    if (dragReady) {
+        auto when = juce::Time::currentTimeMillis();
+        const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
+            juce::ModifierKeys::currentModifiers = mods;
+            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+        };
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+        const auto start = head();
+        const auto edits = panelEdits;
+        const auto cutoff = knobs->getParam("0000001f").normalized;
+        const auto gain = knobs->getParam("gain").normalized;
+        mouse(*source, {});
+        mouse(*source, left);
+        mouse(*afterGain, left);
+        check(ordered() == beforeDrag && head() == start && panelEdits == edits,
+              "SC-326: the drag previews without writing the panel order");
+        mouse(*afterGain, {});
+        frame();
+        check(ordered() == std::vector<std::string>{original.front(), "gain", "0000001f"} &&
+                  panelEdits == edits + 1 && head() != start && knobs->getParam("0000001f").normalized == cutoff &&
+                  knobs->getParam("gain").normalized == gain,
+              "SC-326: dropping Cutoff after Gain reorders exactly once and preserves both parameter values");
+        if (head() != start) {
+            const bool undone = root.command(AppCommands::Undo);
+            frame();
+            check(undone && ordered() == beforeDrag && head() == start,
+                  "SC-326: one Undo restores the original control order and previous history step");
+        }
+
+        const auto startAgain = pointOf("0000001f", false);
+        const auto overGain = pointOf("gain", true);
+        check(startAgain && overGain, "SC-326: both controls remain available after restoring their order");
+        if (startAgain && overGain) {
+            const auto outside = surface.getLocalPoint(&panel, juce::Point<int>{panel.getWidth() + 35,
+                                                                               panel.getHeight() / 2}).toFloat();
+            const auto beforeCancel = panelEdits;
+            const auto shownLane = volumeTarget(2);
+            root.showAutomation(2, shownLane);
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*overGain, left);
+            mouse(outside, left);
+            mouse(outside, {});
+            frame();
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      root.automationTarget(2) == shownLane,
+                  "SC-326: releasing beyond the device changes neither the panel nor the chosen lane");
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*overGain, left);
+            mouse(*startAgain, left);
+            mouse(*startAgain, {});
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      root.automationTarget(2) == shownLane,
+                  "SC-326: a drag back to the source does not select the source lane");
+            mouse(*startAgain, {});
+            mouse(*startAgain, left);
+            mouse(*startAgain, {});
+            const auto chosenLane = root.automationTarget(2);
+            check(ordered() == beforeDrag && head() == start && panelEdits == beforeCancel &&
+                      chosenLane.ownerKind == "device" && chosenLane.ownerId == id && chosenLane.paramRef == "31",
+                  "SC-326: clicking a Configure label selects its lane without editing the panel");
+        }
+    }
+    if (panel.configuring)
+        panel.configureButton.onClick();
     root.pluginHost = nullptr;
 }
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
