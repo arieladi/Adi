@@ -481,13 +481,14 @@ enum class WorkerCueCase {
     RapidRepeat, ColdRapidRepeat, StopRapidRepeat, ShortInheritedRepeat,
 };
 
-void workerLegato(WorkerCueCase testCase, bool immediate = false) {
+void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidResets = 2) {
     const auto coldRapid = testCase == WorkerCueCase::ColdRapidRepeat;
     const auto stopRapid = testCase == WorkerCueCase::StopRapidRepeat;
     const auto shortInherited = testCase == WorkerCueCase::ShortInheritedRepeat;
     const auto rapid = testCase == WorkerCueCase::RapidRepeat || coldRapid || stopRapid || shortInherited;
-    const auto bpm = rapid ? 240.0 : 120.0;
-    const auto framesPerQuarter = rapid ? rate / 4 : rate / 2;
+    const auto beatsPerMinute = rapid ? 80 * (rapidResets + 1) : 120;
+    const auto bpm = static_cast<double>(beatsPerMinute);
+    const auto framesPerQuarter = 60 * rate / static_cast<std::uint32_t>(beatsPerMinute);
     const auto deferred = testCase == WorkerCueCase::ImmediateDeferred || testCase == WorkerCueCase::ImmediateDeferredStop;
     const auto stopAtRestart = testCase == WorkerCueCase::ImmediateDeferredStop;
     const auto coldShortWrap = testCase == WorkerCueCase::ColdShortTwoWraps;
@@ -529,10 +530,10 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
         : heldImmediate ? savedStart-1000 : repeat ? 4*page-1 : page-1;
     const auto nextAt = due+restartDelay;
     const auto releaseWrap = nextAt+initialAge+(deferred ? restartDelay : nearTail);
-    const auto extent = (rapid ? 20 : 10) * quarter;
-    const auto stopGrid = due+3*repeatPeriod;
-    require(!rapid || (2*repeatPeriod < firstSlice && 3*repeatPeriod >= firstSlice),
-            "the shortened due callback contains exactly two saved-grid resets");
+    const auto extent = 240000 * quarter / framesPerQuarter;
+    const auto stopGrid = due+(rapidResets+1)*repeatPeriod;
+    require(!rapid || (rapidResets*repeatPeriod < firstSlice && stopGrid >= due+firstSlice),
+            "the following saved-grid reset lies outside the shortened due callback");
     constexpr std::uint64_t incarnation = 111;
     test::TempDirectory folder{"scheduled_r3_legato",refused ? "cold" : "warm"};
     StoreError error{};
@@ -544,7 +545,11 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
             "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
             "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
             "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1)");
-    if (rapid) db.exec("UPDATE tempo_map SET bpm=240");
+    if (rapid) {
+        SQLite::Statement tempo(db,"UPDATE tempo_map SET bpm=?");
+        tempo.bind(1,bpm);
+        tempo.exec();
+    }
     addSlot(*store,101,10,.55f,extent,initialAge+140,false,{},framesPerQuarter);
     const std::array restartAttack{Pulse{savedStart+120,-.65f},Pulse{loopHead+300,.7f},
                                    Pulse{savedStart+repeatPeriod+120,.7f}};
@@ -615,6 +620,16 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
     const auto project = readClipProject(*store,rows::readModel(*store),true);
     TempoMap clock;
     clock.events.push_back({0,bpm,0});
+    if (rapid) {
+        const auto entry = frameToTick(due);
+        require(entry % (quarter/8) == 0 && extent * framesPerQuarter == 240000 * quarter,
+                "the quantized entry and saved 1:1 R3 markers use the same frame clock");
+        for (int reset = 0; reset <= rapidResets+1; ++reset) {
+            const auto tick = entry+reset*(quarter/8);
+            require(std::llround(clock.ticksToSeconds(tick)*rate) == due+reset*repeatPeriod,
+                    "each authored reset has its independently specified frame at this tempo");
+        }
+    }
     std::vector<std::string> problems;
     const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems);
     const auto* target = bank ? bank->clip(102) : nullptr;
@@ -655,7 +670,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
         : heldImmediate ? releaseWrap+delay+512
         : repeat ? due+2*repeatPeriod+delay+blockFrames : onset+delay+blockFrames;
     std::vector<float> pcm(static_cast<std::size_t>(finish));
-    struct Events { std::array<LaunchTransition,5> edges{}; std::size_t count = 0; } events;
+    struct Events { std::array<LaunchTransition,7> edges{}; std::size_t count = 0; } events;
     const auto through = [&](std::int64_t end) {
         while (transport.position() < end) {
             LaunchBlock block;
@@ -761,7 +776,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
         gate.armed.store(true,std::memory_order_release);
     through(due-initialAge);
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"start the saved dry slot");
-    const auto pressAt = immediate ? due : due - (rapid ? 1000 : repeat ? 2000 : 12000);
+    const auto pressAt = immediate ? due : due - (rapid ? repeatPeriod / 2 : repeat ? 2000 : 12000);
     through(pressAt);
     std::array<LaunchTrackStatus,1> rows{};
     LaunchStatusHeader status{};
@@ -815,11 +830,15 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
             auto& reader = *referenceClip->pageReader();
             if (rapid) {
                 const auto oneLap = static_cast<std::size_t>(repeatPeriod);
-                auto firstReset = oracle.subspan(oneLap,oneLap);
-                auto secondReset = oracle.subspan(2*oneLap);
-                require(readReady(reader,savedStart,firstReset) && *std::min_element(firstReset.begin(),firstReset.end()) < -.5f,
+                const auto saved = oracle.subspan(oneLap,oneLap);
+                require(readReady(reader,savedStart,saved) && *std::min_element(saved.begin(),saved.end()) < -.5f,
                         "measure the exact page-crossing saved Start away from the gated worker");
-                std::ranges::copy(firstReset.first(secondReset.size()),secondReset.begin());
+                auto remaining = oracle.subspan(2*oneLap);
+                while (!remaining.empty()) {
+                    const auto count = std::min(remaining.size(),saved.size());
+                    std::ranges::copy(saved.first(count),remaining.begin());
+                    remaining = remaining.subspan(count);
+                }
                 oracle = oracle.first(oneLap);
             }
             if (shortWrap) {
@@ -868,16 +887,20 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
     through(due+firstSlice);
     require(driver.readStatus(rows,status),"read the post-grid state");
     const auto loopsAtDue = rows[0].completedLoops;
+    const auto rapidEdges = 2 + static_cast<std::size_t>(rapidResets);
     if (rapid) {
         if (coldRapid) {
             require(events.count == 1 && rows[0].clip == 101 && rows[0].run == run,
                     "the cold saved Start refuses the entire held Repeat before its first reset");
         } else {
-            require(events.count == 4 && rows[0].clip == 102 && events.edges[1].sample == due &&
-                    events.edges[1].sourceTick == phase &&
-                    events.edges[2].sample == due+repeatPeriod && events.edges[2].sourceTick == startTick &&
-                    events.edges[3].sample == due+2*repeatPeriod && events.edges[3].sourceTick == startTick,
-                    "two same-callback resets enter the same saved Start while the worker is held");
+            require(events.count == rapidEdges && rows[0].clip == 102 && events.edges[1].sample == due &&
+                    events.edges[1].sourceTick == phase,
+                    "every expected same-callback reset is rendered while the worker is held");
+            for (int reset = 1; reset <= rapidResets; ++reset) {
+                const auto& edge = events.edges[static_cast<std::size_t>(reset+1)];
+                require(edge.sample == due+reset*repeatPeriod && edge.newClip == 102 && edge.sourceTick == startTick,
+                        "each reset enters the same saved Start on its authored grid");
+            }
         }
     }
     if (roundedWrap)
@@ -941,9 +964,10 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
     }
     const auto exactRapidRepeat = [&] {
         if (!std::equal(expected.begin(),expected.end(),pcm.begin()+due+delay)) return false;
-        if (!stopRapid) return events.count == 4 && pcm[static_cast<std::size_t>(stopGrid+delay+120)] > .5f;
-        return events.count == 5 && rows[0].clip == 0 && events.edges[4].sample == stopGrid &&
-            events.edges[4].newClip == 0 &&
+        if (!stopRapid)
+            return events.count == rapidEdges && pcm[static_cast<std::size_t>(stopGrid+delay+120)] > .5f;
+        return events.count == rapidEdges+1 && rows[0].clip == 0 && events.edges[rapidEdges].sample == stopGrid &&
+            events.edges[rapidEdges].newClip == 0 &&
             std::all_of(pcm.begin()+stopGrid+delay,pcm.end(),[](float value) { return value == 0.0f; });
     };
     const auto pass = refused ? (events.count == 1 && rows[0].run == run && pcm[heardAttack] == .55f)
@@ -961,6 +985,9 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
            (!(laterRestart || deferred) ||
              std::equal(expectedLater.begin(),expectedLater.end(),pcm.begin()+nextAt+delay)));
     const auto lost = pages.underrunSamples() - underrunsBefore;
+    if (rapid)
+        std::printf("Rapid worker Repeat: BPM %d, resets %d, period %d, next grid %d, cold Start %d, Stop %d\n",
+            beatsPerMinute,rapidResets,repeatPeriod,stopGrid,coldRapid ? 1 : 0,stopRapid ? 1 : 0);
     if (shortWrap)
         std::printf("Short worker loop: %d projected wraps, lap %d, first %d, rounded mismatch %d, clip %lld\n",
             shortWraps,shortLap,firstWrap,roundedWrap ? 1 : 0,static_cast<long long>(rows[0].clip));
@@ -1216,6 +1243,11 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase,
 
 int main() {
     try {
+        for (const auto resets : {3,4}) {
+            workerLegato(WorkerCueCase::ShortInheritedRepeat,false,resets);
+            workerLegato(WorkerCueCase::ColdRapidRepeat,false,resets);
+        }
+        workerLegato(WorkerCueCase::StopRapidRepeat,false,4);
         workerLegato(WorkerCueCase::ShortInheritedRepeat);
         workerLegato(WorkerCueCase::RapidRepeat);
         workerLegato(WorkerCueCase::ColdRapidRepeat);
