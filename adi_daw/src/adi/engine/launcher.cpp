@@ -161,13 +161,15 @@ std::int64_t launchSourceTick(const LaunchSlot& target, const LaunchSlot* previo
 LaunchSourceCue launchSourceCue(const LaunchSlot& target, const LaunchSlot* previous,
                                 std::int64_t previousTick, std::int64_t previousFrame = -1) noexcept {
     const auto tick = launchSourceTick(target,previous,previousTick);
-    if (!target.legato) return {tick,-1};
+    // A same-slot retrigger uses the saved Start. Projecting it back
+    // through rounded loop endpoints can move a physical Start.
+    if (!target.legato || !previous || previous->clip == target.clip) return {tick,-1};
     const auto first = physicalLap(&target,false);
     if (first.startFrame < 0) return {tick,-1};
     const auto loop = physicalLap(&target,true);
 
     auto frame = first.startFrame;
-    if (previous && previous->clip != target.clip && previousFrame >= 0 && previous->physicalStartFrame >= 0) {
+    if (previousFrame >= 0 && previous->physicalStartFrame >= 0) {
         frame = legatoUsesPreviousClipRelativePosition
             ? add(first.startFrame,std::max<std::int64_t>(0,previousFrame - previous->physicalStartFrame))
             : std::max(first.startFrame,previousFrame);

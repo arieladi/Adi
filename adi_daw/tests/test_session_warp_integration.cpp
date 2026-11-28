@@ -1368,14 +1368,15 @@ void pinnedRepeatUsesItsLaunchClock() {
     }
 }
 
-std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder, bool ram, int targetBeats = 5) {
+std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder, bool ram, int targetBeats = 5,
+                                            int targetPulse = 3086, int targetStep = 12000) {
     auto store = sceneProject(folder);
     auto& db = store->db();
     db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
     addClip(*store,folder,101,10,7,false,3000,1,12000);
     pinUnwarpedOneShot(*store,50000000,1500000000);
     // The inherited target frame 27,086 carries the third signed pulse.
-    addClip(*store,folder,102,20,targetBeats,true,3086,1,12000);
+    addClip(*store,folder,102,20,targetBeats,true,targetPulse,1,targetStep);
     db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=1000000000,"
             "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
             "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
@@ -1661,6 +1662,97 @@ void physicalLegatoRebasesItsCueOnLaterBank() {
     require(playback.count == 3 && playback.edges[2].newClip == 103 && playback.edges[2].sample == next &&
             std::abs(playback.edges[2].sourceTick - clipTickAt20(next)) <= 1 && pcm[next] < -.4f,
             "the subsequent Warp Legato inherits the physical phase on the new geometry");
+}
+
+void physicalLegatoRepeat() {
+    constexpr auto first = 22286; // Beat one with 120 BPM for half a beat, then 140 BPM.
+    constexpr auto gridSecond = 42857, gridThird = 63429;
+    for (const bool ram : {true, false}) {
+        for (const auto variant : {0, 1, 2}) {
+            const bool explicitGrid = variant == 1, loop = variant == 2;
+            const auto start = loop ? 4801 : 4800;
+            test::TempDirectory folder{"physical_legato_repeat", ram ? "ram" : "paged"};
+            auto store = physicalLegatoProject(folder.path(), ram, 5, start, first);
+            auto& db = store->db();
+            db.exec("UPDATE clip_launch SET launch_mode=3 WHERE clip_id=102");
+            if (!explicitGrid) db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
+            if (loop) {
+                // Start lies inside the loop. It rounds up by one sample
+                // while the two loop pins round down.
+                SQLite::Statement edit(db, "UPDATE clips SET loop_enabled=1,loop_start_ticks=?,loop_len_ticks=? WHERE id=102");
+                edit.bind(1, quarter / 10);
+                edit.bind(2, 8 * quarter / 5);
+                edit.exec();
+                db.exec("UPDATE clip_playback_details SET content_offset_ns=100010625,"
+                        "loop_begin_ns=50010208,loop_end_ns=850010208,source_end_ns=1050000000 WHERE clip_id=102;"
+                        "UPDATE clips SET length_ns=949989375 WHERE id=102");
+            }
+            store.reset();
+            StoreError openError{};
+            store = Store::open(folder.path() / "song.adi", openError);
+            require(static_cast<bool>(store), "reopen the saved physical Legato Repeat clip");
+
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store, {}, {2, rate, blockFrames})) throw std::runtime_error(session.error());
+            const auto span = loop ? 40800 - start : rate;
+            const auto second = explicitGrid ? gridSecond : span;
+            const auto third = explicitGrid ? gridThird : 2 * span;
+            const auto finish = third + span;
+            const auto loopAttack = start - 2400;
+            std::vector<float> pcm(static_cast<std::size_t>(finish + blockFrames + (loop ? loopAttack : 0)));
+            Playback playback{session, pcm};
+            playback.paged = !ram;
+            scene(*store, session, 10);
+            playback.through(6000);
+            require(session.setExternalTempoAt(*store, 140, quarter / 2), "publish the performed tempo before Repeat");
+            playback.through(explicitGrid ? 16000 : first);
+            const auto press = [&](bool released) {
+                OpRequest gesture;
+                gesture.opType = "session.launchClip";
+                gesture.payload = {{"track", 1}, {"scene", 20}, {"clip", 102},
+                                   {"incarnation", session.launchIncarnation()}, {"release", released}};
+                require(OpJournal(*store).commit(gesture).ok, "post the saved Repeat press or release");
+            };
+            press(false);
+            if (explicitGrid) {
+                playback.through(16000 + blockFrames);
+                const auto queued = trackState(session).queued;
+                require(queued.legatoSourceFrame == start + first, "the queued Repeat forecasts the exact physical cue");
+            }
+            playback.through(first + 1);
+            const auto inherited = trackState(session);
+            std::printf("Physical Repeat Legato %s %s: initial sample %.6f at %lld, remaining %lld\n",
+                        ram ? "RAM" : "paged", loop ? "loop" : explicitGrid ? "grid" : "end",
+                        static_cast<double>(pcm[first]), static_cast<long long>(playback.edges[1].sample),
+                        static_cast<long long>(inherited.remainingSamples));
+            require(playback.count == 2 && playback.edges[1].sample == first && inherited.clip == 102 &&
+                    (loop || inherited.remainingSamples == span - first - 1) && pcm[first] == -.6f,
+                    "the held Repeat first inherits the outgoing physical frame and remaining extent");
+            playback.through(third + 1);
+            press(true);
+            playback.through(static_cast<std::int64_t>(pcm.size()));
+            std::printf("  repeats at %lld/%lld, expected %d/%d\n",
+                        static_cast<long long>(playback.edges[2].sample), static_cast<long long>(playback.edges[3].sample),
+                        second, third);
+            require(playback.edges[2].sample == second && playback.edges[2].newClip == 102 &&
+                    playback.edges[3].sample == third && playback.edges[3].newClip == 102,
+                    "subsequent repeats restart on the physical End or selected launch grid");
+            require(pcm[static_cast<std::size_t>(second)] == -.5f && pcm[static_cast<std::size_t>(third)] == -.5f,
+                    "the first sample of each held restart is audible at the literal physical Start");
+            if (loop) {
+                require(playback.count == 4 && trackState(session).completedLoops == 1 &&
+                        pcm[static_cast<std::size_t>(finish + loopAttack)] == -.5f,
+                        "release cancels loop retriggers and restores the ordinary physical loop");
+            } else {
+                require(playback.count == 5 && playback.edges[4].sample == finish && playback.edges[4].newClip == 0 &&
+                        std::all_of(pcm.begin() + finish, pcm.end(), [](float frame) { return frame == 0; }),
+                        "release cancels retriggers and leaves the final one-shot to finish normally");
+            }
+            require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                    "Repeat uses the admitted pages without callback allocation or file I/O");
+        }
+    }
 }
 
 void longPagedRepeatKeepsStart() {
@@ -1977,6 +2069,7 @@ int main() {
         physicalLegatoLoopFollowsExternalTempo();
         pinnedRepeatUsesItsLaunchClock();
         longPagedRepeatKeepsStart();
+        physicalLegatoRepeat();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.
