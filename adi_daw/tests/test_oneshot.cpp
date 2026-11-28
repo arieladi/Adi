@@ -511,6 +511,51 @@ void glideModes() {
     const auto sliced = playNotes(d, 2048, {{0, 36}, {1000, 37}});
     check(std::abs(step(sliced, 1010) - 2) < 2e-3, "Slice mode does not glide");
 }
+// SC-482: Pan and Pan < Rnd, under the LFO pan's law: left sqrt(1 - pan),
+// right sqrt(1 + pan), so a 0.5 sample's L^2 + R^2 is 0.5 wherever it sits.
+void panControls() {
+    OneShot d;
+    configure(d);
+    check(d.publishSample(std::vector<float>(8192, .5f), 1, 48000), "pan sample publishes");
+    set(d, OneShot::Mode, 1);  // each note replaces the last: one pan a block
+    std::array<float, 64> l{}, r{};
+    float *out[]{l.data(), r.data()};
+    const auto notes = [&](int count) {
+        std::vector<std::pair<float, float>> heard;
+        d.release();
+        d.prepare(48000, 64);
+        for (int b = 0; b < count; ++b) {
+            const engine::Event e{0, engine::EventType::NoteOn, 0,
+                                  static_cast<std::uint16_t>(60 + b), static_cast<std::uint64_t>(b + 1),
+                                  0, 1};
+            engine::NodeIo io{};
+            io.out = out;
+            io.channels = 2;
+            io.frames = 64;
+            io.events = {&e, 1};
+            d.process(io);
+            heard.emplace_back(l[10], r[10]);
+        }
+        return heard;
+    };
+    set(d, OneShot::Pan, -50);
+    const auto left = notes(1);
+    check(std::abs(left[0].first - .5 * std::sqrt(2.)) < 1e-6 && left[0].second == 0,
+          "Pan 50 L puts a centred note hard left");
+    set(d, OneShot::Pan, 0);
+    bool centred = true;
+    for (const auto &[a, b] : notes(4))
+        centred &= a == .5f && b == .5f;
+    check(centred, "with Pan < Rnd at 0 every note sits in the centre");
+    set(d, OneShot::PanRandom, 100);
+    const auto spread = notes(4);
+    bool power = true, moved = false;
+    for (const auto &[a, b] : spread) {
+        power &= std::abs(a * a + b * b - .5) < 1e-5;
+        moved |= std::abs(a - spread[0].first) > .05f;
+    }
+    check(power && moved, "Pan < Rnd moves each note somewhere else, at the same power");
+}
 // DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
 // a Transient or Manual slice is refused past End and cut at End.
 void sliceKeys() {
@@ -859,6 +904,7 @@ int main() {
     filterCircuits();
     lfoControls();
     glideModes();
+    panControls();
     parameterModulation();
     midiControllers();
     preparedSamples();

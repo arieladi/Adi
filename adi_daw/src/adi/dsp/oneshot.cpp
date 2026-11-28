@@ -101,7 +101,13 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        // one's pitch), both only from a note still sounding.
                        // Off is what OneShot did. The Time range is a reading.
                        {"glide_mode", "Glide", "", 0, 2, 0, 3},
-                       {"glide_time", "Glide time", "ms", 0, 5000, 50, 0}};
+                       {"glide_time", "Glide time", "ms", 0, 5000, 50, 0},
+                       // SC-482: Pan as Live shows it (50 L .. 50 R) and Pan <
+                       // Rnd, a random pan drawn for each note; both add to the
+                       // LFO's pan under its law (centre 1 and 1, hard left
+                       // sqrt 2 and 0).
+                       {"pan", "Pan", "", -50, 50, 0, 0},
+                       {"pan_random", "Pan < Rnd", "%", 0, 100, 0, 0}};
 // SC-482: Filter < Vel at 100 % opens the cutoff this far at full velocity
 // (ADI's span: Live's is a reading still to take); a softer note, less.
 constexpr double kFilterVelocityOctaves = 4;
@@ -211,6 +217,7 @@ void OneShot::prepare(double rate, std::int32_t frames) {
     midiChannels_ = {};
     age_ = 0;
     lfoClock_ = 0;
+    panRng_ = 1;
     sampleSeq_ = 0;
     borrowed_ = false;
     modulation_.fill(0);
@@ -556,6 +563,10 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     if (!std::isnan(from)) {
         v.glide = from - e.dim;
         v.glideStep = v.glide / glideSamples;
+    }
+    if (p[PanRandom] > 0) {
+        panRng_ = 1664525u * panRng_ + 1013904223u;
+        v.randomPan = (static_cast<double>(panRng_) / 2147483648. - 1) * p[PanRandom] / 100.;
     }
     v.begin = begin;
     v.end = end;
@@ -929,7 +940,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             if (p[Slope] > 0)
                                 x = v.filters[c][1].run(x, g, r, d, filterType);
                         }
-                        const double pan = lfo * p[LfoPan] * midi.modulation / 100.;
+                        double pan = lfo * p[LfoPan] * midi.modulation / 100.;
+                        if (p[Pan] != 0 || v.randomPan != 0)
+                            pan += p[Pan] / 50. + v.randomPan;
                         // sqrt(1) is exactly 1: no pan, no square root.
                         acc[c][k] += x * amplitude *
                                      (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));

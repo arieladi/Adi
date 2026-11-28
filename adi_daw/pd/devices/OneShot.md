@@ -30,6 +30,8 @@ its envelopes and its place in the sample, and slides to its own pitch;
 Portamento is polyphonic, each new voice sliding from the pitch of the newest
 note still sounding. Neither glides from silence, and Slice mode never glides.
 Whether Live's legato Glide restarts the sample is a reading still to take.
+Pan (50 L .. 50 R, as Live shows it) and Pan < Rnd (a random pan drawn for each
+note from its own generator) add to the LFO's pan under the same law.
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset

@@ -94,6 +94,8 @@ class OneShot final : public DeviceInstance {
         LfoKey,
         GlideMode,
         GlideTime,
+        Pan,
+        PanRandom,
         Count
     };
     /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
@@ -200,6 +202,8 @@ class OneShot final : public DeviceInstance {
         // SC-482: semitones still to slide to the voice's own pitch, and the
         // slide's step a sample (Glide and Portamento).
         double glide = 0, glideStep = 0;
+        // SC-482: this note's random pan, -1..1 times Pan < Rnd, drawn at note-on.
+        double randomPan = 0;
         std::uint8_t channel = 0;
         double position = 0, begin = 0, end = 0, loop = 0, env = 0, releaseStep = 0, velocity = 1,
                phase = 0, random = 0, tuning = 0, gain = 1;
@@ -235,6 +239,8 @@ class OneShot final : public DeviceInstance {
     /// SC-482: the LFO's free-running phase, 0..1: where a voice's LFO starts
     /// when LFO Retrigger is off. It runs while nothing sounds, too.
     double lfoClock_ = 0;
+    /// SC-482: Pan < Rnd's own generator, so the LFO's random shape is untouched.
+    std::uint32_t panRng_ = 1;
     int rootKey_ = 60;
     bool borrowed_ = false;
     double rate_ = 48000;
