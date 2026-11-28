@@ -584,6 +584,44 @@ void slotPitchWheel() {
     std::puts("PASS -- Session plays and releases its native pitch wheel lane");
 }
 
+void centeredPitchWheelCapture() {
+    Project project;
+    prepareMidiProbe(project, 0.0f);
+    const std::array points{controllers::Point{1, 0, 0.25}, controllers::Point{2, tick(493), 0.75},
+                            controllers::Point{3, tick(600), 0.5}};
+    const auto wheel = controllers::prepareWrite(*project.store, 51, 3, controllers::kPitchBend, points);
+    require(wheel.ok && controllers::commitPrepared(*project.store, wheel).ok, "store a pitch wheel that returns to center");
+    const auto source = project.freeze();
+    std::array<LaunchTransition, 8> edges{};
+    LaunchCaptureBuffer tape(edges);
+    const auto heard = renderMidi(*project.store, &tape);
+    const auto address = static_cast<std::uint32_t>(controllers::kPitchBend);
+    require(heard.size() == 5 && heard[0] == HeardNote{55, EventType::Controller, 3, 0, address, 0.25} &&
+        heard[2] == HeardNote{548, EventType::Controller, 3, 0, address, 0.75} &&
+        heard[3] == HeardNote{655, EventType::Controller, 3, 0, address, 0.5},
+        "Session renders the authored center before the exit with no extra reset");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1, "capture the isolated wheel run");
+    const auto edit = prepareSessionPerformance(*project.store, source, plan, 48000);
+    if (!edit.ok) throw std::runtime_error(edit.error);
+    const auto before = digestProject(*project.store).text;
+    const auto committed = clip_edit::commitPrepared(*project.store, edit);
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    require(project.count("SELECT count(*) FROM event_streams a,event_streams b WHERE a.clip_id=51 "
+        "AND b.clip_id<>51 AND a.stream_kind='pitchbend' AND b.stream_kind='pitchbend' AND a.channel=b.channel "
+        "AND a.controller IS NULL AND b.controller IS NULL AND a.data=b.data") == 1,
+        "Arrangement stores the native pitch wheel stream and its exact bytes");
+    const auto after = digestProject(*project.store).text;
+    project.store.reset();
+    StoreError error{};
+    project.store = Store::open(project.path, error, false);
+    require(project.store && renderMidi(*project.store, nullptr) == heard &&
+        History(*project.store).undo().ok && digestProject(*project.store).text == before &&
+        History(*project.store).redo().ok && digestProject(*project.store).text == after,
+        "reopened Arrangement matches the wheel and note trace through Undo and Redo");
+    std::puts("PASS -- an isolated pitch wheel returning to center replays exact MIDI samples and bytes");
+}
+
 void multipleHeldControllersCapture() {
     Project project;
     prepareMidiProbe(project, 0.0f);
@@ -665,6 +703,7 @@ int main() {
             expressionCapture(shape);
         heldControllerCapture();
         slotPitchWheel();
+        centeredPitchWheelCapture();
         multipleHeldControllersCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {

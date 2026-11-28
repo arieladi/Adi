@@ -93,10 +93,14 @@ struct ControllerProof {
 };
 
 bool matchesControllerStream(SQLite::Database& db, std::int64_t stream, const ControllerProof& expected) {
-    SQLite::Statement row(db, "SELECT data FROM main.event_streams WHERE id=? AND channel=? AND controller=?");
+    const bool pitch = expected.controller == controllers::kPitchBend;
+    SQLite::Statement row(db,
+        "SELECT data FROM main.event_streams WHERE id=? AND channel=? AND stream_kind=? AND controller IS ?");
     row.bind(1, stream);
     row.bind(2, expected.channel);
-    row.bind(3, expected.controller);
+    row.bind(3, pitch ? "pitchbend" : "cc");
+    if (pitch) row.bind(4);
+    else row.bind(4, expected.controller);
     if (!row.executeStep()) return false;
     const auto bytes = row.getColumn(0);
     return !bytes.isNull() && static_cast<std::size_t>(bytes.getBytes()) == expected.data.size() &&
@@ -287,7 +291,10 @@ const Payload* firstController(const Payload& image) {
 const Payload& controllerAt(const Payload& image, std::int64_t channel, std::int64_t controller) {
     const auto& streams = image.at("children").at("event_streams");
     const auto found = std::find_if(streams.begin(), streams.end(), [&](const auto& row) {
-        return isController(row) && row.at("channel") == channel && row.at("controller") == controller;
+        if (!isController(row) || row.at("channel") != channel) return false;
+        if (controller == controllers::kPitchBend)
+            return row.at("stream_kind") == "pitchbend" && row.at("controller").is_null();
+        return row.at("stream_kind") == "cc" && row.at("controller") == controller;
     });
     if (found == streams.end())
         throw std::runtime_error("Session controller address changed during the performance");
@@ -331,9 +338,11 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
     std::vector<ControllerProof> proofs;
     proofs.reserve(read.lanes.size());
     for (auto& lane : read.lanes) {
-        if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty() ||
-            *lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69)
-            throw std::runtime_error("Session capture needs ordinary non-pedal MIDI controller lanes");
+        if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty())
+            throw std::runtime_error("Session capture needs valid MIDI controller lanes");
+        const bool pitch = *lane.controller == controllers::kPitchBend;
+        if (!pitch && (*lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69))
+            throw std::runtime_error("Session capture needs ordinary non-pedal MIDI controller lanes or isolated pitch bend");
         const auto& stream = controllerAt(image, *lane.channel, *lane.controller);
         const auto& bytes = stream.at("data").get_binary();
         const auto frozen = std::as_bytes(std::span(bytes.data(), bytes.size()));
@@ -344,6 +353,8 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
             std::any_of(lane.points.begin(), lane.points.end(), [](const auto& point) {
                 return point.curve != static_cast<std::uint8_t>(Curve::Hold);
             })) throw std::runtime_error("held Session controller knots must lie inside the performed source interval");
+        if (pitch && (multiple || lane.points.back().value != 0.5))
+            throw std::runtime_error("Session pitch-wheel capture needs one lane back at center before the run ends");
 
         const auto& copy = controllerAt(placed, *lane.channel, *lane.controller);
         proofs.push_back({{span.clip, lane.id}, {target.id, detail::signedInteger(copy.at("id"))},
@@ -363,7 +374,7 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
     std::set<std::int64_t> changedSamples;
     for (std::size_t index = 0; index < proofs.size(); ++index) {
         const auto& proof = proofs[index];
-        if (program->address(index) != proof.channel * 128 + proof.controller ||
+        if (program->address(index) != engine::controllerAddress(static_cast<int>(proof.channel), static_cast<int>(proof.controller)) ||
             !program->changesOwnerAt(index, span.begin.sample) || !program->changesOwnerAt(index, span.end.sample))
             throw std::runtime_error("held Session controller interval differs on the Arrangement clock");
         const auto holds = [&](std::int64_t frame, double expected) {
