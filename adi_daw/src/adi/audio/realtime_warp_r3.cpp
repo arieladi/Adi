@@ -92,14 +92,14 @@ bool RealtimeWarpR3::supports(const WarpRenderPlan& plan, std::uint32_t sourceRa
                               std::uint16_t channels) noexcept {
     if (sourceRate < 8000 || sourceRate > 192000 || plan.outputRate < 8000 ||
         plan.outputRate > 192000 || channels == 0 || channels > maxChannels ||
-        !supportsRatio(pitchScale(plan, sourceRate))) return false;
+        !supportsRatio(pitchScale(plan, sourceRate)) || !std::isfinite(plan.formantScale) ||
+        plan.formantScale <= 0 || plan.formantScale > 8) return false;
     switch (plan.mode) {
         case WarpMode::Tones:
             return plan.grainSeconds >= 0.001 && plan.grainSeconds <= 1.0;
         case WarpMode::Complex:
-            return true;
         case WarpMode::ComplexPro:
-            return std::isfinite(plan.formantScale) && plan.formantScale > 0;
+            return true;
         case WarpMode::Beats:
         case WarpMode::Texture:
         case WarpMode::RePitch:
