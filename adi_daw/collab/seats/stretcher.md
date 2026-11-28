@@ -92,6 +92,8 @@ A bounded replay from arbitrary raw history did not recover the active R3 phase.
 
 A second reversed R3 experiment synthesized forward and reflected the integrated clock and output reads. Steady unity was within 0.02259 FS peak and 0.001994 FS RMS. An asymmetric Warp map still reached 0.50011 FS peak or 0.07636 FS RMS against prepared playback. Cold seeks were exact, and the mirrored 120→140 ramp had 116 samples of onset error. The reversed R3 modes keep the prepared path.
 
+The two-tile worker held sustained RMS at unity at 44.1, 48, and 96 kHz. With an abrupt 120→140 change, 9 of 63 pulse landmarks exceeded 2.79 ms. Triggering the change at each voice’s exact input analysis centre increased the failures to 14 of 63. The steady control was exact within one sample, and a command that hit the saved source frame still left the next attack 246 samples late at 44.1 kHz. Both candidates retained full attack levels and had no separated duplicate above 0.30 FS in this fixture. Output-hop timing remains open.
+
 ## Readings owed
 
 - Live 12 describes Beats' zero crossing and envelope, Texture's grain and fluctuation, and Re-Pitch's tape-speed behavior. The manual leaves exact slice fades, grain jitter and mode latency unquantified. Keep the named existing Beats attack and envelope constants and the captured Texture seed until the TM-WT-03 listening work establishes equivalents. The recorded Live 12.4 audit has Beats defaulting to Back-and-Forth. [Live 12 warp modes](https://www.ableton.com/en/live-manual/12/audio-clips-tempo-and-warping/#warping-modes)
