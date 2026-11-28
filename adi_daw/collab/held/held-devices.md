@@ -17,7 +17,35 @@ the cut point is 578c95198. Step 3: core passes on the whole chain (318/318); th
 
 ## For the director
 
-(Filled at step 4.)
+Each question has a one-line reply. Nothing here lands until you answer A.
+
+- **A. Land the chain, and how much of it?**
+  - A1: up to the cut point, 578c95198: the 25 new effects, Hybrid Reverb's cost, the Pd leak's other
+    half, the two contracts.
+  - A2: the whole chain, 086864eee: A1, plus the Pd note output (pd-midi-out) and the `.amxd`
+    translator's steps 3 to 10.
+  - A3: not yet; keep it held and merged up to the base.
+  - **Recommendation: A1, after 3 December, as the lane's log asks.** Before it lands, one Linux and
+    macOS CI run of the cut point (a workflow_dispatch, or the landing window's own run): this lane's
+    seat had no GCC or Clang, none of these 87 commits ever ran in CI, and the DF-E77 sign warning
+    shows that kind of finding is likely. One reply: "A1", "A2" or "A3".
+- **B. The `.amxd` translator, steps 3 to 10 (`devices/amxd-audit`).** ADR-0248 d8 stops DEV-16 at step
+  2 until DEV-10 (your own Pd patches as devices) exists, and DEV-10 is an M7 row not yet built. The
+  steps are finished and audited, and they build and pass with the rest.
+  - B1: keep your ruling: they wait for DEV-10 (they stay out under A1).
+  - B2: lift it for these steps: they land with A2.
+  - **Recommendation: B1.** A translator whose output cannot yet be loaded as a device gives you
+    nothing to use. One reply: "B1" or "B2".
+- **C. The Pd note output (`devices/pd-midi-out`).** A Pd patch's MIDI comes back on its frame, and a
+  patch adds no delay when the buffer is a multiple of 64 (DEV-13, DEV-14 step 1). Nothing reads either
+  yet: the engine's side (DF-E40, DEV-17, DEV-18) is not built.
+  - C1: it waits for the engine's side (out under A1).
+  - C2: it lands now as unused code (with A2).
+  - **Recommendation: C1**, as its seat asks. One reply: "C1" or "C2".
+
+The lane's ONE list of Live readings (readings 17 and 19 to 44, one per new effect) stays the
+devices seat's, in `collab/devices.md` on `devices/log`: each new effect is "built, not verified" until
+its reading comes back.
 
 ## Step 1 — the survey (28 November)
 
@@ -114,4 +142,52 @@ The validators pass on a374b5afa (schema, ops, Pd, CI, parity).
 
 ## Step 4 — the account
 
-(Filled when the proof is done.)
+### What the chain adds that a user would notice (up to the cut point)
+
+Twenty-five more of Live 12's audio effects in the Browser's Audio Effects, each one loadable on a track
+with its controls in today's look, each "built, not verified" until its Live reading (the catalogue goes
+from 21 entries to 46):
+- **Dynamics:** Compressor; Glue Compressor; Gate (its lookahead reported as latency, kept when
+  bypassed); Limiter (Stereo, L/R and M/S; Standard, Soft Clip and True Peak); Drum Buss.
+- **EQ & Filters:** Channel EQ; EQ Three; DJ Filter.
+- **Drive & Color:** Amp; Cabinet; Dynamic Tube; Pedal; Roar; Erosion; Vinyl Distortion.
+- **Delay & Loop:** Filter Delay; Grain Delay; Spectral Time.
+- **Reverb & Resonance:** Corpus; Spectral Resonator.
+- **Pitch & Modulation:** Auto Pan-Tremolo; Auto Shift (on the Tuner's pitch detector and the Shifter).
+- **Utilities:** Align Delay; Tuner; Spectrum (it loads and passes the signal; its graph needs the Mix
+  View seat's tap and worker, per `pd/devices/Spectrum.md`, so the panel shows no spectrum yet).
+
+Also in it:
+- Hybrid Reverb with a long impulse costs less at small buffers: it convolves in non-uniform partitions,
+  under the common 15 % bound at 64 frames.
+- ADI's own brickwall holds a lowered Ceiling from the next sample (Live's Limiter is built on it). This
+  touches the export's brickwall too; `adi_dsp_tests` pass unchanged.
+- Under the hood: the Pd tier stores no copy of an abstraction's empty arguments (the other half of
+  DF-E67 (b)); the LFO and Shaper modulator kernels (DEV-07's device side), which nothing uses until the
+  engine's modulation is built; Beat Repeat's and External Audio Effect's written contracts (no device).
+
+After the cut point (not recommended now, see B and C): a Pd patch's MIDI output with the host's reset
+bang, no added delay on a 64-sample grid, and the `.amxd` translator's steps 3 to 10.
+
+### The devices the director named in SC-456
+
+- **Spectrum:** in the chain (the device; its graph waits on the Mix View seat, above).
+- **The modulators:** only their kernels (LFO, Shaper). There is no modulator a user can load: the
+  routes, the evaluator and the modulator nodes are the engine's DEV-07, right after 3 December
+  (ADR-0249 d3, d8).
+- **More of Bitwig's devices:** none in the chain; the lane built none. ADR-0249 d5: Bitwig's
+  modulators are not taken now, and win owes an item-by-item list after 3 December (DF-E42); SC-456
+  asks for the list against the plan first.
+
+### Left out, and why
+
+- `devices/log`: the seat's log, not work; win lands it with the chain.
+- `land/devices-1123`: already on main through #732.
+- Looper: never built; the seat keeps it for the engine's recording and transport rows.
+- Beat Repeat's core: not built (blocked on reading 18 and the shared two-head reader); only its
+  contract is here.
+
+### Owed before landing (not the director's)
+
+- A Linux and macOS CI run (GCC/Clang, -Wconversion and friends) of the head to land.
+- The seat's notes that ride with the stack: the Spectrum tap (Mix View seat); reading 17 and 19 to 44.
