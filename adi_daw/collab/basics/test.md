@@ -165,6 +165,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-458 | `basics/test-chain-2` at `aa1575ca5` | Select the automation lane when a supported control is touched. Automation, device and mixer seats. | The peerless regression exercises explicit control interaction in and out of Automation Mode. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-347 | `basics/test-chain-2` at `aa1575ca5` | The automation curve gesture and rendering already landed in #830. Automation and Arrangement seats. | The current suite exercises the curve gesture and the stored curve rendering. Physical Option on macOS remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Already on main |
 | SC-448 | `basics/test-chain-2` at `46512e011` | Draw loop repeats with marks at the points where the loop turns. Clips and Arrangement seats. | Software-painted loop fixtures check repeated contents and marks through the Arrangement renderer. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-468 | `basics/test-chain-2` at `89aee0ff3` | Show the horizontal resize pointer over the existing Loop brace end grips. Arrangement seat. | The peerless pointer replay checks both grips, the middle, the band below, and exit. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -321,3 +322,17 @@ Measurements are canvas-local logical pixels from a 1280 × 820 peerless softwar
 The focused peerless fixture ran on the exact preceding chain at `eda879365` with DISPLAY unset. Six SC-448 assertions failed before the fix and all 29 passed with it, including the 4,200-clip redraw check with zero SQLite stream or clip-detail reads. The selected unlooped audio body and border had the same raster checksum `c5a05bca84ef3c2d` before and after. GCC compiled both Arrangement versions and the fixture with warnings as errors.
 
 The registered sheet shows the title and content layout, and the manual documents repeated content and internal clip-loop boundaries. The glyph uses ADI’s existing body rule. For an exact glyph comparison, I recommend a close-up of an extended loop in Win’s next Live reading. [Arrangement sheet](../window/pictures/2026-11-18-arrangement-sheet.png), [Live Arrangement View §§6.7–6.13](https://www.ableton.com/en/live-manual/12/arrangement-view/#moving-and-resizing-clips), [Live Clip View §8.9](https://www.ableton.com/en/live-manual/12/clip-view/#looping-clips).
+
+#### SC-468 Arrangement loop-brace cursor
+
+The peerless 1500 × 900 fixture places the scrub area at (328, 84, 848, 24) in root coordinates. With zero scroll and 100 px per quarter note, the two-quarter loop brace occupies (200, 0, 200, 8) in scrub-local coordinates. The fix changes the cursor only.
+
+| Target | Scrub-local points in the fixture | Before | After |
+| --- | --- | --- | --- |
+| Left end | x 195 through 205 at y 0 through 7 | Scrub hand | Horizontal resize |
+| Right end | x 395 through 405 at y 0 through 7 | Scrub hand | Horizontal resize |
+| Brace bar and adjacent scrub | (300, 4), (194, 4), (200, 8) | Scrub hand | Scrub hand |
+
+The grip limits are the existing drag hit test. Entering at (200, 4) gives the horizontal resize, and leaving the component restores the scrub hand. The test exercises both ±5 px edge limits plus the first point below the 8 px brace. The native-size cursor glyph is supplied by the OS.
+
+The focused Debug fixture built with the existing warnings-as-errors command and ran with DISPLAY unset. It passed five of eight checks against the baseline and all eight against the fix. The scrub and brace bounds measured the same before and after. No window or menu was shown.
