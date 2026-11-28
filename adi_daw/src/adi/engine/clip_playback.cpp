@@ -1224,7 +1224,8 @@ bool ClipPlayback::mediaUnavailable(std::int64_t clipId) const noexcept {
         (problem != impl_->terminalProblems.end() && problem->second.mediaOffline);
 }
 void ClipPlayback::appendPlaybackProblems(std::vector<std::string>& out) const {
-    out.insert(out.end(), impl_->problems.begin(), impl_->problems.end());
+    const auto blocking = fatalProblems();
+    out.insert(out.end(), blocking.begin(), blocking.end());
     for (const auto& [clipId, problem] : impl_->terminalProblems)
         out.push_back("clips#" + std::to_string(clipId) + ": " + problem.detail + "; silent");
 }
