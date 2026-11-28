@@ -101,6 +101,41 @@ std::int64_t stepTick(const TempoEvent& left, double elapsed, double seconds) no
     const auto next = whole + 1;
     return left.posTicks + (static_cast<double>(next) - offset <= noise ? next : whole);
 }
+
+std::int64_t segmentTick(const TempoEvent& left, const TempoEvent& right,
+                         double elapsed, double seconds) noexcept {
+    if (!isRamp(left, right)) return std::min(right.posTicks, stepTick(left, elapsed, seconds));
+    const auto noise = std::min(4 * std::numeric_limits<double>::epsilon() * seconds,
+        0.125 * 60.0 / (std::max(left.bpm, right.bpm) * ticksPerQuarter));
+    auto low = left.posTicks;
+    auto high = right.posTicks;
+    while (low < high) {
+        const auto middle = high - (high - low) / 2;
+        if (elapsed + segmentSeconds(left, right, middle) <= seconds + noise) low = middle;
+        else high = middle - 1;
+    }
+    return low;
+}
+
+long double interpolateTickSeconds(long double ticks, const auto& secondsAtTick) noexcept {
+    if (!std::isfinite(ticks) || ticks >= static_cast<long double>(highestTick))
+        return secondsAtTick(highestTick);
+    const auto anchor = static_cast<std::int64_t>(ticks);
+    const auto start = static_cast<long double>(secondsAtTick(anchor));
+    if (ticks == static_cast<long double>(anchor)) return start;
+    const auto finish = static_cast<long double>(secondsAtTick(anchor + 1));
+    return std::lerp(start, finish, ticks - static_cast<long double>(anchor));
+}
+
+long double interpolateSecondsPosition(long double seconds, const auto& ticksAtSeconds,
+                                       const auto& secondsAtTick) noexcept {
+    const auto anchor = ticksAtSeconds(static_cast<double>(seconds));
+    if (anchor == highestTick) return static_cast<long double>(anchor);
+    const auto start = static_cast<long double>(secondsAtTick(anchor));
+    const auto finish = static_cast<long double>(secondsAtTick(anchor + 1));
+    if (finish <= start) return static_cast<long double>(anchor);
+    return static_cast<long double>(anchor) + std::clamp((seconds - start) / (finish - start), 0.0L, 1.0L);
+}
 }  // namespace
 
 TempoMap TempoMap::fromRows(std::span<const rows::TempoEvent> rows) {
@@ -151,19 +186,7 @@ std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
     for (std::size_t i = 0; i < events.size(); ++i) {
         const auto& right = events[i];
         const auto duration = segmentSeconds(left, right, right.posTicks);
-        if (elapsed + duration >= seconds) {
-            if (!isRamp(left, right)) return std::min(right.posTicks, stepTick(left, elapsed, seconds));
-            const auto noise = std::min(4 * std::numeric_limits<double>::epsilon() * seconds,
-                0.125 * 60.0 / (std::max(left.bpm, right.bpm) * ticksPerQuarter));
-            auto low = left.posTicks;
-            auto high = right.posTicks;
-            while (low < high) {
-                const auto middle = high - (high - low) / 2;
-                if (elapsed + segmentSeconds(left, right, middle) <= seconds + noise) low = middle;
-                else high = middle - 1;
-            }
-            return low;
-        }
+        if (elapsed + duration >= seconds) return segmentTick(left,right,elapsed,seconds);
         elapsed += duration;
         left = right;
     }
@@ -181,28 +204,18 @@ std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexce
 
 long double TempoMap::secondsAtPosition(long double ticks) const noexcept {
     if (ticks < 0) return ticks * 60 / (ticksPerQuarter * bpmAt(0));
-    if (!std::isfinite(ticks) || ticks >= static_cast<long double>(highestTick))
-        return ticksToSeconds(highestTick);
-    const auto anchor = static_cast<std::int64_t>(ticks);
-    const auto start = static_cast<long double>(ticksToSeconds(anchor));
-    if (ticks == static_cast<long double>(anchor)) return start;
-    const auto finish = static_cast<long double>(ticksToSeconds(anchor + 1));
-    return std::lerp(start, finish, ticks - static_cast<long double>(anchor));
+    return interpolateTickSeconds(ticks,[this](std::int64_t tick) { return ticksToSeconds(tick); });
 }
 
 long double TempoMap::positionAtSeconds(long double seconds) const noexcept {
     if (seconds < 0) return seconds * (ticksPerQuarter * bpmAt(0)) / 60;
-    const auto anchor = secondsToTicks(static_cast<double>(seconds));
-    if (anchor == highestTick) return static_cast<long double>(anchor);
-    const auto start = static_cast<long double>(ticksToSeconds(anchor));
-    const auto finish = static_cast<long double>(ticksToSeconds(anchor + 1));
-    if (finish <= start) return static_cast<long double>(anchor);
-    return static_cast<long double>(anchor) + std::clamp((seconds - start) / (finish - start), 0.0L, 1.0L);
+    return interpolateSecondsPosition(seconds,[this](double value) { return secondsToTicks(value); },
+        [this](std::int64_t tick) { return ticksToSeconds(tick); });
 }
 
 struct WarpArrangementClock::Segment {
     TempoEvent left, right;
-    double startFrame, endFrame;
+    double startSeconds, startFrame, endFrame;
 
     [[nodiscard]] long double secondsAtTick(long double tick) const noexcept {
         if (isRamp(left, right)) return rampSeconds(left, right, tick);
@@ -225,7 +238,7 @@ WarpArrangementClock::WarpArrangementClock(const TempoMap& tempo, double sampleR
             const double last = segmentBpm(left, right, static_cast<long double>(right.posTicks));
             minimumBpm_ = std::min({minimumBpm_, first, last});
             maximumBpm_ = std::max({maximumBpm_, first, last});
-            segments_.push_back({left, right, seconds * sampleRate_, (seconds + duration) * sampleRate_});
+            segments_.push_back({left, right, seconds, seconds * sampleRate_, (seconds + duration) * sampleRate_});
             seconds += duration;
         }
         left = right;
@@ -235,7 +248,7 @@ WarpArrangementClock::WarpArrangementClock(const TempoMap& tempo, double sampleR
     // The final point holds its BPM. Discard any performance-only curve span
     // on that point since it has no outgoing destination.
     left.curve = 0;
-    segments_.push_back({left, left, seconds * sampleRate_, std::numeric_limits<double>::infinity()});
+    segments_.push_back({left, left, seconds, seconds * sampleRate_, std::numeric_limits<double>::infinity()});
 }
 
 WarpArrangementClock::~WarpArrangementClock() = default;
@@ -252,6 +265,44 @@ const WarpArrangementClock::Segment& WarpArrangementClock::segmentAtFrame(double
     const auto* next = std::upper_bound(first, first + segments_.size(), frame,
         [](double value, const Segment& segment) { return value < segment.startFrame; });
     return next == first ? *first : *(next - 1);
+}
+
+double WarpArrangementClock::secondsAtTick(std::int64_t tick) const noexcept {
+    const auto* first = segments_.data();
+    const auto* next = std::upper_bound(first,first + segments_.size(),tick,
+        [](std::int64_t value, const Segment& segment) { return value < segment.left.posTicks; });
+    const auto& segment = next == first ? *first : *(next - 1);
+    return segment.startSeconds + segmentSeconds(segment.left,segment.right,tick);
+}
+
+std::int64_t WarpArrangementClock::ticksAtSeconds(double seconds) const noexcept {
+    if (!(seconds > 0) || !std::isfinite(seconds)) return 0;
+    const auto* first = segments_.data();
+    const auto* end = first + segments_.size();
+    const auto* boundary = std::lower_bound(first+1,end,seconds,
+        [](const Segment& segment, double value) { return segment.startSeconds < value; });
+    const auto& segment = *(boundary - 1);
+    if (boundary == end) return stepTick(segment.left,segment.startSeconds,seconds);
+    return segmentTick(segment.left,segment.right,segment.startSeconds,seconds);
+}
+
+long double WarpArrangementClock::secondsAtPosition(long double ticks) const noexcept {
+    if (ticks < 0) {
+        const auto& first = segments_.front();
+        const auto bpm = segmentBpm(first.left,first.right,0);
+        return ticks * 60 / (ticksPerQuarter * bpm);
+    }
+    return interpolateTickSeconds(ticks,[this](std::int64_t tick) { return secondsAtTick(tick); });
+}
+
+long double WarpArrangementClock::positionAtSeconds(long double seconds) const noexcept {
+    if (seconds < 0) {
+        const auto& first = segments_.front();
+        const auto bpm = segmentBpm(first.left,first.right,0);
+        return seconds * (ticksPerQuarter * bpm) / 60;
+    }
+    return interpolateSecondsPosition(seconds,[this](double value) { return ticksAtSeconds(value); },
+        [this](std::int64_t tick) { return secondsAtTick(tick); });
 }
 
 double WarpArrangementClock::frameAtTick(double tick) const noexcept {

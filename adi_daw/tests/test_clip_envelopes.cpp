@@ -3,6 +3,7 @@
 #include "adi/engine/curves.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/engine/param_automation.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/history.hpp"
@@ -131,6 +132,120 @@ void boundariesAndRealtime() {
     transport.locate(96000);transport.loop(96000,96008);output.clear();binding->byDevice.at(3)->emit(output,16);
     check(output.size()>=4 && output.at(0).value==0.1 && output.at(1).frame==5 && output.at(2).frame==8,"transport wraps chase clip envelopes inside a callback");
 }
+// Integrate one quarter independently in the quadratic Bezier parameter.
+// x'(p) is musical progress per unit p, while bpm(p) gives elapsed seconds.
+long double bezierQuarterSeconds(const rows::TempoEvent& left, const rows::TempoEvent& right, long double beat) {
+    const auto tension = static_cast<long double>(left.tension);
+    long double low = 0, high = 1;
+    for (int i = 0; i < 48; ++i) {
+        const auto p = (low + high) / 2;
+        if (p * (1 + tension - tension * p) < beat) low = p;
+        else high = p;
+    }
+    constexpr int panels = 512;
+    const auto step = (low + high) / (2 * panels);
+    long double sum = 0;
+    for (int i = 0; i <= panels; ++i) {
+        const auto p = i * step;
+        const auto y = p * (1 - tension + tension * p);
+        const auto bpm = left.bpm + (right.bpm - left.bpm) * y;
+        const auto weight = i == 0 || i == panels ? 1 : i % 2 == 0 ? 2 : 4;
+        sum += weight * 60 * (1 + tension - 2 * tension * p) / bpm;
+    }
+    return sum * step / 3;
+}
+
+bool matchesDeviceBoundary(const std::shared_ptr<const AutomationProgram>& program, double rate,
+                           std::int64_t at, double before, double after) {
+    const auto& l = lane(*program);
+    Transport transport;
+    transport.locate(at-2);
+    transport.play();
+    const auto binding = bindDeviceAutomation(program,{},transport,rate);
+    const auto device = binding->byDevice.find(3);
+    if (device == binding->byDevice.end()) return false;
+    std::array<Event,8> storage{};
+    EventList events(storage.data(),static_cast<std::int32_t>(storage.size()));
+    std::array<double,4> filled{};
+    {
+        const audio::CallbackScope callback;
+        device->second->emit(events,4);
+        fill(l,at-2,1,filled.size(),filled.data());
+    }
+    const std::array<double,4> expected{before,before,after,after};
+    return automationBoundaryAfter(l,at-1) == at && filled == expected &&
+        events.size() == 2 && events.at(0).frame == 0 && events.at(0).value == before &&
+        events.at(1).frame == 2 && events.at(1).value == after;
+}
+
+void loopBoundariesAfterBezierRamps() {
+    constexpr int lead = 96, laps = 3;
+    constexpr long double pointBeat = 3.0L / 8;
+    std::array<rows::TempoEvent,lead+laps+1> tempo{};
+    for (int i = 0; i <= lead+laps; ++i) {
+        auto& row = tempo[static_cast<std::size_t>(i)];
+        row = {i*Q, static_cast<double>(75 + (37*i)%115), 2, i%2 == 0 ? -0.5 : 0.75};
+    }
+    long double prefix = 0;
+    std::array<long double,2*laps+1> times{};
+    for (std::size_t i = 0; i+1 < tempo.size(); ++i) {
+        if (i >= lead) {
+            times[2*(i-lead)] = prefix;
+            times[2*(i-lead)+1] = prefix + bezierQuarterSeconds(tempo[i],tempo[i+1],pointBeat);
+        }
+        prefix += bezierQuarterSeconds(tempo[i],tempo[i+1],1);
+    }
+    times.back() = prefix;
+    const auto pointNs = std::llround((times[1] - times[0]) * 1e9L);
+    constexpr double low = 0.125, high = 0.875, fallback = 0.25;
+    const std::array<double,2*laps+2> values{fallback,low,high,low,high,low,high,fallback};
+    for (const bool nanos : {false,true}) {
+        auto m = model(nanos,true);
+        m.tempo.assign(tempo.begin(),tempo.end());
+        auto c = clip(10,lead*Q,laps*Q);
+        c.loopEnabled = true;
+        c.loopLenTicks = Q;
+        m.clips.push_back(c);
+        data(m,10,{pt(0,low,0),pt(nanos ? pointNs : 3*Q/8,high,0)},nanos);
+        for (const double rate : {44100.0,48000.0,96000.0}) {
+            const auto program = compileAutomation(m,rate);
+            const auto& l = lane(*program);
+            bool blocksMatch = program->problems().empty() && l.clipRegions.size() == 1;
+            allocations = 0;
+            for (std::size_t i = 0; i < times.size(); ++i) {
+                const auto at = static_cast<std::int64_t>(std::llround(times[i] * rate));
+                blocksMatch &= matchesDeviceBoundary(program,rate,at,values[i],values[i+1]);
+            }
+            std::printf("Bezier loop %s at %.0f Hz: %zu exact boundaries, allocations %u\n",
+                        nanos ? "nanoseconds" : "ticks",rate,blocksMatch ? times.size() : 0u,allocations.load());
+            check(blocksMatch && allocations == 0,
+                  "Bezier lead-in preserves exact loop point and wrap samples in fill and device blocks");
+        }
+    }
+}
+
+void tempoRampPreservesPrefixTies() {
+    // These tick positions land mathematically halfway between two samples.
+    // Read the established rounded boundary through the original TempoMap
+    // conversion because the widened sample product differs by platform.
+    double rates[]{44100.0,48000.0};
+    std::int64_t ticks[]{4576,3003};
+    bool matches = true;
+    allocations = 0;
+    for (std::size_t i = 0; i < std::size(rates); ++i) {
+        auto m = model(false,true);
+        m.tempo = {{0,120,0,0},{Q,120,2,0.5},{2*Q,80,0,0}};
+        m.clips.push_back(clip(10,0,2*Q));
+        data(m,10,{pt(0,0.125,0),pt(ticks[i],0.875,0)});
+        const auto canonical = TempoMap::fromRows(m.tempo);
+        const auto expectedSeconds = canonical.secondsAtPosition(static_cast<long double>(ticks[i]));
+        const auto at = static_cast<std::int64_t>(std::llround(expectedSeconds * static_cast<long double>(rates[i])));
+        const auto program = compileAutomation(m,rates[i]);
+        matches &= program->problems().empty() && matchesDeviceBoundary(program,rates[i],at,0.125,0.875);
+    }
+    check(matches && allocations == 0,"a later ramp preserves the canonical prefix's exact device boundary at a half-sample tie");
+}
+
 void rendersAndStore() {
     auto m=model();m.clips.push_back(clip(10,Q,2*Q));constexpr double db=-6.1234567890123;data(m,10,{pt(0,db)});
     const auto program=compileAutomation(m,48000);const auto binding=bindStripAutomation(program,{});
@@ -176,4 +291,4 @@ void refusals() {
     bad=m;bad.clips[0].loopEnabled=true;bad.clips[0].loopLenTicks=Q;bad.clips[0].lengthTicks=Q*1100000;AutomationProgram huge(bad,48000);check(problem(huge,"repeat budget"),"excessive loop expansion refuses without unbounded allocation");
 }
 } // namespace
-int main(){try{placement();signedPrefixAndNativeEnd();curvesAndTempo();loopsAndOverlap();boundariesAndRealtime();rendersAndStore();refusals();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{placement();signedPrefixAndNativeEnd();curvesAndTempo();loopsAndOverlap();boundariesAndRealtime();loopBoundariesAfterBezierRamps();tempoRampPreservesPrefixTies();rendersAndStore();refusals();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
