@@ -1600,6 +1600,9 @@ void combinedDeclarations(DeviceInstance& device) {
     for (int id = 919; id <= 927; ++id) next(id);
     for (int id = 850; id <= 852; ++id) next(id);
     for (int id = 913; id <= 918; ++id) next(id);
+    for (int id = 853; id <= 855; ++id) next(id); // Sweep stereo offsets
+    for (int id = 877; id <= 912; ++id) next(id); // the Crush hold follower
+    for (int id = 865; id <= 876; ++id) next(id); // Crush bias, treble, jitter and prefilter
     check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
     for (int id : {464, 500, 535, 724})
         check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
