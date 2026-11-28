@@ -19,8 +19,18 @@ not a plain merge (the list and why, under step 2). Step 3: the chain **builds**
 one is the base's own (ui_document), two look like parallel-load flakes (scan cache, library). Details
 and the next steps under step 3. The `all` check has not run yet.
 
-**The next session starts here:** read "Not merged yet" under step 2, then step 3. Merge the base into
-the chain first (`git fetch`, then the BASE rule of the mission).
+Round 2 (28 November, evening): `land/basics-1128c` is on main now, so **BASE is origin/main**; merged
+into the chain (`cd7eb8bb`). The round-1 failures in clap and MIDI capture were read: main's tests
+written while a CLAP wire carried the engine's source note ID and the parser's IDs were 1, 2, 3; DEV-17
+assigns per-instance wire IDs and per-source prefixes. The checks now compare against the note's own
+wire ID or the source's own full identity (`7f09d582`). **DEV-06 (racks and macros) is ported and merged** (`6e115393`); how, under
+step 2. Not yet built: the slot queue held the first round-2 check ("waiting for a build place") for
+over two hours.
+
+**The next session starts here:** step 3's list (round 2). Merge the base into the chain first
+(`git fetch`, then the BASE rule of the mission). The local branch names `held/engine-chain` and
+`held/held-engine-log` may be held by an older worktree; work on any local name and push to the
+origin names (`git push origin <local>:held/engine-chain`).
 
 ## For the director
 
@@ -202,6 +212,9 @@ start, then the ones that need hand work. Merge order does not change what the c
 | 21 | engine/dev24-track-processing-time a16019c0 (DEV-19 x2, DEV-24) | 9d87e58d | As win resolved the same in #723: `Graph::addNode(node, track, fixedLatency)`, the track first so a whole number cannot bind to the latency; realize's `add()` passes both; `tests/test_retap.cpp`'s `addNode(fixed, 0)` became `addNode(fixed, std::nullopt, 0)` (it meant a latency, and would have compiled as a track). `midi_clips.cpp` plays through the branch's `projectMidiClipPlacement`, with main's exact `storedNanosecondsToTicks` for linear clips (DF-E63) and main's `secondsAt` and monitor ranges on top; the local `tickLimit` that would hide the file-scope one removed. `graph.cpp`: main's arrival for every compensated node, the scale timing added to the device-clock condition, main's quantum loop kept. `session.cpp`: the two scale problems join main's `collectProblems` as reports, not export blockers |
 | 22 | engine/dev18-event-transforms 4e749553 (DEV-17, DEV-18) | 51910ac1 | Main's newer code moved onto DEV-17's shared event-source prefix: MIDI clip controllers and tracks take `allocateEventSourcePrefix` (the old controller allocator and track counter go), main's live-input voices and Memory preview notes take `eventIdentity(prefix_, serial)` in place of the removed `kLiveNoteIdPrefix`. `graph.cpp`: a transforming node keeps the bypass it sampled for its transform, every other node main's per-block bypass. Tests: DEV-13's quantum test and DEV-18's three transform tests, all kept |
 
+| 23 | origin/main (BASE from round 2) | cd7eb8bb | clean (main had only documents beyond the round-1 base) |
+| 24 | engine/dev06-rack-macros 0a2e3eb9 (DEV-01, DEV-03, DEV-06; round 2) | 6e115393 | 17 files, 46 hunks against the chain. **Session**: the rack layout (`deviceLayout_`) is read with the rows in main's `readPlayback`, which load and refresh both use now; the staged load (`PendingLoad`) captures the rack-control basis in `finishLoad`; `resolveOne` keeps main's preloaded instance (SC-318) with the branch's layout check. **MIDI hardware output** (main): `graphTrackChain(track, timing, layout*)` and `trackEventPath(track, layout, toHardware)`; a track's notes reach its output before the first top-level stage that stops them, a rack expanded. **Live MIDI input and Memory preview** play every instrument the track's notes reach, inside racks too (main took only the first instrument of a flat chain; for a flat chain this is the same). **Device automation**: one `bindDeviceAutomation(…, steps, activatorAvailable, model, resolve)`; main's `bindResolvedDeviceAutomation` binds macros too, resolving targets through main's stricter `resolvedAutomationDevice`; the branch's `bindPlaybackDevices` is gone; a stepped lane keeps main's hold-and-snap, a macro lane the branch's sum; a parameter a macro maps is not played by its own lane (the Device Activator lane excepted). **Graph**: one latency declaration per node through `Slot::latencyReport()` (main's fixed latency counts as known); main's `fixedDirectFeed` kept. **Realize**: every node a rack places is the track's (`add(node, track)`, DEV-24). **Device paste**: one `preparePaste(copies, requestedIds, …)` holds main's block paste (roles, one instrument, native functions once per channel, one sealed packet) and the branch's rack paste (fragment remap, remark guard); empty `requestedIds` allocates (the branch's `…WithFreshId`); a fragment never takes another pasted root's ID; a staged chain skips every fragment chain ID; a rack's inner native functions join the once-per-channel check. **device.insert with contents**: the branch's placement check, then main's VCA refusal (DF-E55 a) on the restored chain. Tests: both sides' everywhere; the automation test probe answers the test's own declarations first, then the branch's two mapped parameters |
+
 ### Not merged yet (the next session's work)
 
 Each of these collides with code the base rewrote after 22 November. Each needs a port of the branch's
@@ -210,7 +223,6 @@ round 1; nothing of them is on the chain.
 
 | Stack top | Conflicts on the base | What the port is |
 |---|---|---|
-| engine/dev06-rack-macros 0a2e3eb9 (DEV-01, DEV-03, DEV-06) | 13 files, 51 hunks; `session.cpp` 11, `device_copy.cpp` 11, `graph.cpp` 8 | The racks' `DeviceLayout`, `trackEventPath` and `bindPlaybackDevices` onto main's `TimingView` (`graphTrackChain`, the MIDI hardware output node, live MIDI routes with monitoring), the progressive project load (`PendingLoad`, `readPlayback`) and `bindResolvedDeviceAutomation`. `ops_catalog.cpp`'s `device.insert` with contents: keep the branch's placement check and main's VCA refusal (DF-E55 a) after the restore |
 | engine/au08-simplify-envelope be846d1b (AU-02, AU-03 x3, AU-08 Simplify) | 3 files, `automation_splice_store.cpp` 9 hunks | Main's splice store gained row guards, a selection and a label argument (SC-351 adapted this branch's Simplify fitter on 27 November, so AU-08 Simplify itself is on the base by another route; its tests here should still be kept beside main's). Port AU-02/AU-03's `EnvelopeSpliceRequest` (data id, label, actor detail, sub-sample flag) onto main's `prepareEnvelopeSplice(…, label, selection)`; merge AU-03 by its top `engine/au03-guarded-arrangement-passes` if Simplify's own hunks are dropped as carried |
 | engine/au08-envelope-clipboard 9ad32e5e (AU-08 Copy/Paste) | 5 files | Stacked on AU-02: after the port above |
 | engine/tm-fc01-bounce-mixer 8bc053ca (TM-FC-01) | 6 files, `bounce_commands.cpp` 14 hunks | Main's bounce commands were reworked by the basics sessions; port range mute, insert removal and the editable sibling's mixer onto them |
@@ -224,6 +236,25 @@ round 1; nothing of them is on the chain.
 | core | e525ec05 | build failed: `tests/test_midi_clips.cpp` (main's audition test) used `pluginNoteId`, which DEV-17 removed. It now compares the whole runtime IDs (b9716587) |
 | core | **b9716587** | **build OK** (MSVC Debug, /WX); ctest -LE performance: 294 of 300 pass. Failing: `adi_clap_tests` (3: "CLAP volume uses the authored linear amplitude above unity", "the switch sends all 128 original releases before all 16 new-wire attacks", "the next segment first sends the pending release on its original wire, then the new attack"), `adi_link_playback_tests` (10, the native performance generation and restarted Warp tempo checks), `adi_midi_capture_tests` (3: "stored ANOT retains original full uint64 identities…", "native Capture validates binary records, addresses, IDs…"), `adi_scan_cache_tests` (1, cancellation reaps the child), `adi_library_tests` (timeout), `adi_ui_document_tests` (1, "opening yields to the owner between slow plug-in loads") |
 | the six alone, on the base | 16064c0a (base) | only `adi_ui_document_tests` fails, the same check: **on the base already, not the chain's**. scan_cache and library pass alone on the base; on the chain they ran in the full parallel run, where the library timeout is a known parallel-only one (win's wincheck). They need a run alone on the chain before they are counted as the chain's |
+
+**Round 2, read before any build** (the queue held the build place):
+- `adi_clap_tests` (3) and `adi_midi_capture_tests` (3): **the merge's, fixed in `7f09d582`**, tests
+  only. Main's MI-08 volume check wanted `note_id==7`, DF-E56's two switch checks wanted the new CLAP
+  attack's ID to be the source ID (1001 + key, 99), Capture wanted the first stored note ID to be
+  `UINT64_MAX-1` and made a duplicate by writing 1. DEV-17 maps each source ID to an instance wire ID
+  (`PluginNoteIds`, from 1) and gives each source its own prefix (`eventIdentity(prefix, serial)`). The
+  checks now compare with the note-on's own wire ID / a fresh positive wire ID / the source's first
+  note-on identity / the first record's ID. What each check proves is unchanged.
+- `adi_link_playback_tests` (10): not read to a cause yet; the labels are needed (`slot.sh grep 15
+  core.ctest 'FAIL' 1` after a run that includes it). Candidates: `Session::rebuild`'s DEV-19
+  `compileTrackScaleTimeline(playbackModel_, timing->tempo, …)` during `setExternalTempo`'s refresh,
+  or the DEV-24 `addNode(node, track, latency)` argument order in a caller the merge did not see.
+- **Round-2 risks to watch in the first check after DEV-06**: `adi_param_automation_tests` (the probe
+  now declares two more parameters for main's tests), `adi_device_copy_tests` (paste unified),
+  `adi_session_tests`, `adi_device_ops_tests`, `adi_midi_live_*`/preview tests (every rack instrument
+  now monitored). Linux/macOS: the branch compares json with string literals in `device_copy.cpp`
+  (`entry.at("table")=="devices"`); the project's rule wants `get_ref<const std::string&>()`; MSVC
+  accepts both; CI will say.
 
 **What the next session does in step 3** (in this order):
 1. Run the three real failures alone on the chain: `slot.sh run 15 origin/held/engine-chain core '^(adi_clap_tests|adi_link_playback_tests|adi_midi_capture_tests|adi_scan_cache_tests|adi_library_tests)$'`, and read the lines with `slot.sh grep 15 core.ctest 'FAIL' 2`.
