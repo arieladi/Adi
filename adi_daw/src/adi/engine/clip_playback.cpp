@@ -1912,14 +1912,15 @@ void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candida
         clip.request(requested);
     }
 }
-bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::int32_t frames) noexcept {
+bool ClipPlayback::reserveSource(Node& node, const Transport& transport, std::int32_t frames,
+                                 bool requestAhead) noexcept {
     auto* source = dynamic_cast<TrackSource*>(&node);
     if (!source || source->clips.size() != 1 || frames < 1 || frames > source->maxFrames) return false;
     auto& clip = *source->clips.data()[0];
     if (clip.cueAdmitted) return false;
     const auto required = clip.wanted(transport,frames,false);
     clip.trimAdmission(required);
-    clip.request(clip.wanted(transport,frames));
+    if (requestAhead) clip.request(clip.wanted(transport,frames));
     if (required.front() < 0 || clip.errors.load(std::memory_order_relaxed)) {
         clip.releaseAdmission();
         return false;

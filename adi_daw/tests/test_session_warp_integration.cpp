@@ -3047,6 +3047,73 @@ void longPagedLoopCuePages(bool holdCue, bool linked = false, bool noGrid = fals
             "a warm tail and cold head leave the outgoing run and raw PCM intact across the whole callback");
 }
 
+void immediateLongPagedLegato(bool loop, bool warm) {
+    test::TempDirectory folder{"warm_immediate_legato",loop ? "loop" : "one-shot"};
+    auto store = longPagedLoopLegatoProject(folder.path(),{false,LongLoopLaunch::Immediate});
+    auto& db = store->db();
+    db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101");
+    if (!loop) db.exec("UPDATE clips SET loop_enabled=0,loop_start_ticks=0,loop_len_ticks=NULL WHERE id=102;"
+                      "UPDATE clip_playback_details SET loop_begin_ns=NULL,loop_end_ns=NULL WHERE clip_id=102;");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    const auto press = [&](int sceneId, int clip) {
+        OpRequest gesture;
+        gesture.opType = "session.launchClip";
+        gesture.payload = {{"track",1},{"scene",sceneId},{"clip",clip},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(gesture).ok,"submit the saved unquantized clip press");
+    };
+    constexpr auto elapsed = 120000;
+    constexpr auto beforeWrap = 37;
+    const auto switchAt = warm ? elapsed + 10 : 0;
+    const auto handoff = switchAt + elapsed;
+    const auto end = handoff + 8 * blockFrames;
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session,pcm};
+    if (warm) {
+        press(20,102);
+        playback.paged = true;
+        playback.through(switchAt);
+        require(playback.count == 1 && playback.edges[0].sample == 0 && playback.edges[0].newClip == 102 &&
+                pcm[elapsed] == -.6f,"normal target playback audibly crosses the future inherited tail");
+        playback.paged = false;
+    }
+    press(10,101);
+    playback.through(switchAt+1);
+    const auto prior = trackState(session);
+    require(prior.clip == 101,"the old raw run starts normally");
+    playback.through(handoff);
+    press(20,102);
+    playback.through(handoff+(!warm && !loop ? 64 : blockFrames));
+    const auto after = trackState(session);
+    const auto attack = pcm[static_cast<std::size_t>(handoff)];
+    const auto head = pcm[static_cast<std::size_t>(handoff+beforeWrap)];
+    if (!warm) {
+        // A rejected ready-only press must not queue I/O or retry itself.
+        // Wait longer than a normal worker fill. A one-shot's next cue is
+        // in the same page, so a separate press there must still be cold.
+        playback.paged = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        if (!loop) press(20,102);
+    }
+    playback.through(end);
+    std::printf("Immediate %s %s: cut %lld, tail %.6f, +37 %.6f, same run %d, laps %llu\n",
+        loop ? "loop" : "one-shot",warm ? "warm" : "cold",
+        static_cast<long long>(playback.edges[2].sample),static_cast<double>(attack),static_cast<double>(head),
+        after.run == prior.run,static_cast<unsigned long long>(after.completedLoops));
+    if (warm) {
+        require(playback.count == 3 && playback.edges[2].newClip == 102 && playback.edges[2].sample == handoff &&
+                after.run != prior.run && attack == -.6f &&
+                (loop ? head == -.5f && after.completedLoops == 1 : after.completedLoops == 0),
+                "a warm immediate cue starts on that sample and the loop head remains leased through the wrap");
+    } else {
+        require(playback.count == 1 && after.run == prior.run && head == .55f && trackState(session).run == prior.run,
+                "cold immediate presses leave the old PCM intact and never launch later");
+    }
+    require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "ready-only immediate cue admission does no callback allocation or file I/O");
+}
+
 }
 
 int main() {
@@ -3145,6 +3212,10 @@ int main() {
         longPagedLoopLegato(true,LongLoopLaunch::Linked,true);
         longPagedLoopLegato(true,LongLoopLaunch::LinkedStop,true);
         longPagedLoopCuePages(false,true,true);
+        for (const auto loop : {false,true}) {
+            immediateLongPagedLegato(loop,true);
+            immediateLongPagedLegato(loop,false);
+        }
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

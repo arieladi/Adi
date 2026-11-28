@@ -46,8 +46,10 @@ public:
 
     /// Driver only. A successful reservation pins the initial physical cue
     /// and any first wrap across scheduling and overlay until releaseCue().
-    /// A cold cue only queues the worker.
-    [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames) noexcept;
+    /// By default a cold cue queues the worker. A ready-only check does not
+    /// request pages, and a refused gesture leaves the outgoing run intact.
+    [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
+                                  bool requestAhead = true) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader

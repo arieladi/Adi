@@ -62,7 +62,7 @@ public:
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
     /// Driver only. One private source, reserving every page read by the first
     /// render window. Releases partial admission on refusal.
-    [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames) noexcept;
+    [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames, bool requestAhead) noexcept;
     static void releaseSource(Node&) noexcept;
     /// Owner only, before publication. Keep a private physical slot's
     /// Start in the same bounded request as the running reader.

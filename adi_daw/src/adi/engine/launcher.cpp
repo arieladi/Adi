@@ -598,7 +598,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
 
 bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
-                          std::int64_t tick, bool scheduledHandoff) noexcept {
+                          std::int64_t tick, LaunchCueAdmission cueAdmission) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
     if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
@@ -624,7 +624,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,offset,scheduledHandoff)) return false;
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,cueAdmission)) return false;
     }
     track.follow.reset();
     track.repeat.reset();
@@ -814,9 +814,14 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             }
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            const auto scheduledHandoff = (next == &track.user && pending.grid != LaunchQuantization::None &&
-                !pending.sceneGesture) || (next == &track.follow && pending.linkedPhysical);
-            if (transition(track,block,view,sink,pending,cursor,edgeTick,scheduledHandoff)) {
+            auto cueAdmission = LaunchCueAdmission::None;
+            if (next == &track.user && !pending.sceneGesture) {
+                if (pending.grid != LaunchQuantization::None) cueAdmission = LaunchCueAdmission::Scheduled;
+                else if (!pending.repeat) cueAdmission = LaunchCueAdmission::ReadyOnly;
+            } else if (next == &track.follow && pending.linkedPhysical) {
+                cueAdmission = LaunchCueAdmission::Scheduled;
+            }
+            if (transition(track,block,view,sink,pending,cursor,edgeTick,cueAdmission)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();
                 if (pending.prepared) {

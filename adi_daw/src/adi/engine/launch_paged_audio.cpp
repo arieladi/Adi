@@ -122,7 +122,8 @@ void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexce
     ClipPlayback::prefetchSource(*found->playback, candidates);
 }
 
-bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int32_t frames) noexcept {
+bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int32_t frames,
+                                 bool requestAhead) noexcept {
     const auto* found = find(id);
     if (!found || found->latency != 0) return false;
     const auto& source = found->source;
@@ -133,7 +134,7 @@ bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int3
     next.locate(frame);
     next.loop(source.loopBeginFrame,source.loopEndFrame,looping);
     next.play();
-    return ClipPlayback::reserveSource(*found->playback,next,frames);
+    return ClipPlayback::reserveSource(*found->playback,next,frames,requestAhead);
 }
 
 void LaunchPagedAudio::releaseCue(std::int64_t id) noexcept {
