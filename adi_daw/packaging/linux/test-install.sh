@@ -19,6 +19,9 @@ test -x "$prefix/bin/ADI"
 test -x "$prefix/bin/adi_plugin_scanner"
 test -s "$prefix/share/doc/adi/licenses/LICENSE"
 test -s "$prefix/share/icons/hicolor/512x512/apps/org.adi.daw.png"
+starter_drums="$prefix/share/adi/starter-drums"
+test "$(find "$starter_drums/Hits" -maxdepth 1 -name '*.wav' -type f | wc -l)" -eq 12
+test "$(find "$starter_drums/Loops" -maxdepth 1 -name '*.wav' -type f | wc -l)" -eq 4
 desktop-file-validate "$prefix/share/applications/org.adi.daw.desktop"
 grep -Fx 'application/x-adi-project=org.adi.daw.desktop;' "$prefix/share/applications/mimeinfo.cache"
 

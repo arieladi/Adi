@@ -56,9 +56,15 @@ public:
     /// generation. Its sorted IDs are set by the driver before rendering each slice.
     void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
     const std::vector<std::string>& problems() const noexcept;
+    // This clip was dropped while preparing the generation or its reader failed.
+    [[nodiscard]] bool clipUnavailable(std::int64_t clipId) const noexcept;
     // Whether this clip's audio file could not be opened or used. Clip settings
     // that the engine cannot play have separate diagnostics in problems().
     bool mediaUnavailable(std::int64_t clipId) const noexcept;
+    // The owner polls terminal reader failures without blocking on preparation.
+    // Reports whether this generation has new diagnostics to publish.
+    bool pollDecodeProblems();
+    void appendPlaybackProblems(std::vector<std::string>&) const;
     // A clip whose source file is absent already contributes silence.
     void appendExportBlockingProblems(std::vector<std::string>&) const;
     // Off-callback owner view of the external files successfully selected

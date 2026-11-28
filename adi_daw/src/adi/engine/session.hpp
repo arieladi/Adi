@@ -237,6 +237,8 @@ public:
     /// chain but kept alive, because a graph the audio thread may still be
     /// rendering holds their nodes. Then rebuild.
     bool refresh(const Store& store);
+    /// Owner-thread audition, exclusive per track. Zero restores the main lane.
+    bool auditionTakeLane(const Store&, std::int64_t track, std::int64_t lane);
     /// Apply a single material edit admitted by the document's current view.
     /// Empty means the ordinary refresh path must handle the edit.
     std::optional<bool> refreshLocalEdit(const Store&, const ProjectView&);
@@ -278,6 +280,12 @@ public:
     /// reenableAutomation resumes it. True for an absent/already-overridden
     /// lane too; false if rebuilding the requested binding failed (error()).
     bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
+    /// Host bypass is automatable for loaded audio effects. The message
+    /// thread reads the published state and falls back to the stored bit
+    /// until an active binding has been sampled by the graph.
+    [[nodiscard]] bool deviceActivatorAvailable(std::int64_t deviceId) const noexcept;
+    [[nodiscard]] std::optional<bool> deviceActivatorPlaying(std::int64_t deviceId) const noexcept;
+    bool overrideDeviceActivator(std::int64_t deviceId);
 
     // Document-owner recording policy. Queue matching gate changes to each
     // recorder's producer separately; these methods never touch its SPSC ring.
@@ -424,7 +432,8 @@ public:
     /// expression event may use ID zero.
     /// Returns false for invalid events or a full queue. Rebind the producer
     /// when the driver restarts its sample clock.
-    bool enqueueMidiInput(std::int64_t streamSample, const Event&, std::int64_t inputSample = -1) noexcept;
+    bool enqueueMidiInput(std::int64_t streamSample, const Event&, std::int64_t inputSample = -1,
+                          std::uint64_t port = 0) noexcept;
     /// Discard queued events and release held live notes on the next callback.
     /// Call when the producer disconnects or replaces its port configuration.
     void resetMidiInput() noexcept;
@@ -471,7 +480,7 @@ public:
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
     [[nodiscard]] const rows::Model& model() const noexcept { return model_; }
-    bool validateDeviceKey(const rows::Model& candidate,std::string& error); // owner, no SDK prepare
+    bool validateRouting(const rows::Model& candidate,std::string& error); // owner, no SDK prepare
     /// Owner-side runtime notifications for this loaded Store connection.
     /// No Store/SQLite pointer survives in the revocable source token.
     [[nodiscard]] const AppliedSource& appliedNotifications() const noexcept { return appliedSource_; }
@@ -511,6 +520,9 @@ public:
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
     /// Ephemeral monitoring choice for the live stereo device pair.
     void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
+    // The application owns the single player. Attach before starting the
+    // driver, and keep it alive until the driver has stopped.
+    void setSamplePreview(SamplePreview *player) noexcept { cueMonitor_.setSamplePreview(player); }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
@@ -565,6 +577,11 @@ public:
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
     bool configureArrangementLoopRecording(AudioRecordingSpec&, std::string& error) const;
+    /// The published recording start is at or beyond Loop End. An active
+    /// roll passes its driver position; a stopped start uses the song start
+    /// override or insert marker, like RenderBlock::startPlayback.
+    [[nodiscard]] bool recordingStartsAfterLoop(std::int64_t insertTick,
+                                                std::optional<std::int64_t> playingSample) const noexcept;
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Selection arming is a live session choice. Explicit arms stay in the project.
@@ -575,6 +592,11 @@ public:
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
+    [[nodiscard]] bool clipPlaybackUnavailable(std::int64_t clipId) noexcept {
+        const auto* playback = clips();
+        const auto* midi = midiClips();
+        return (playback && playback->clipUnavailable(clipId)) || (midi && midi->clipUnavailable(clipId));
+    }
 
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
@@ -625,7 +647,12 @@ private:
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
     [[nodiscard]] const std::vector<rows::TimeSignature>& playbackSignatures(const rows::Model&) const noexcept;
     // Every node a track's events reach, which is MIDI's controller route identity.
-    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
+    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&, const TimingView&);
+    [[nodiscard]] std::vector<Node*> graphTrackChain(std::int64_t, const TimingView&);
+    [[nodiscard]] const device::DeviceInstance* resolvedAutomationDevice(
+        std::int64_t id, const rows::Model&, bool requireAudioEffect = false) const noexcept;
+    [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindResolvedDeviceAutomation(
+        std::shared_ptr<const AutomationProgram>, const std::set<std::int64_t>& suspended, const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row,
@@ -649,6 +676,11 @@ private:
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    struct MidiHardwareNode;
+    std::uint64_t midiHardwareNodeSerial_ = 0; // owner, identifies a prepared output node
+    const MidiHardwareSink* midiHardwareSink_ = nullptr; // driver, during graph processing
+    std::int64_t midiHardwareStreamSample_ = 0;
+    std::uint64_t midiHardwareRouting_ = 0;
     std::map<std::int64_t, std::shared_ptr<LiveMidiInput::History>> midiHistories_;
     std::int64_t lastMidiHistoryId_ = 0; // owner only
     // Device nodes persist across graph swaps and Undo. Their audition voices
@@ -680,6 +712,10 @@ private:
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
+        std::map<std::int64_t, std::shared_ptr<MidiHardwareNode>> midiHardware;
+        std::uint64_t midiHardwareRouting = 0;
+        std::vector<PlayTempoPoint> playQuantizeTempo;
+        std::uint32_t playQuantizeRate = 0;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
@@ -701,6 +737,7 @@ private:
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
         [[nodiscard]] LaunchBlock launchBlock(std::int32_t frames) const noexcept;
     };
+    void prepareMidiHardware(TimingView&, const rows::Model&, const TimingView* previous);
     void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     void prepareMidiPreview(TimingView&, const rows::Model&);
     [[nodiscard]] const LiveMidiInput::PreviewRoute* midiPreviewRoute(std::int64_t track) const noexcept;
@@ -822,6 +859,7 @@ private:
     bool prepareFormat(double sampleRate, std::int32_t maxFrames, bool workerPolicyChanged);
     std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
+    std::map<std::int64_t, std::int64_t> auditionedTakeLanes_;
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
         std::string row;
@@ -840,7 +878,6 @@ private:
     std::unordered_map<std::int64_t, std::size_t> byId_;   ///< device id -> entries_
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
-    std::vector<std::string> placeholderProblems_;
     std::string error_;
     std::unique_ptr<PendingLoad> pendingLoad_;
     std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport

@@ -138,7 +138,7 @@ void SlotInputRecorder::process(const AudioIo& io, std::optional<SlotRecordingWi
                     !isNoteStream(event.event.type)) continue;
                 auto local = event.event;
                 local.frame -= offset;
-                midi_.record(event.scheduledSample, event.inputSample, local);
+                midi_.record(event.scheduledSample, event.inputSample, local, 0);
             }
             if (midi_.state() != MidiCaptureState::Recording) {
                 finish(SlotRecordingState::InputFailure);

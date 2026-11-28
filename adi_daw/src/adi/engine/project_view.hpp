@@ -64,6 +64,8 @@ public:
     /// Keep a previously current stamp after a specifically known
     /// one-row advisory write, provided SQLite changed no dependent rows.
     void acknowledgeAdvisoryWrite(const Store&) noexcept;
+    // A caller-owned metadata transaction can account for more than one row.
+    void acknowledgeAdvisoryWrite(const Store&, std::int64_t writtenRows) noexcept;
     [[nodiscard]] std::optional<LocalEdit> prepareLocalEdit(const Store&, const OpRequest&) const;
     bool applyLocalEdit(const Store&, LocalEdit);
     [[nodiscard]] const std::optional<LocalEdit>& localEdit() const noexcept { return localEdit_; }

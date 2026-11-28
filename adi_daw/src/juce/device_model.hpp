@@ -645,6 +645,9 @@ public:
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
+    [[nodiscard]] engine::EventFlow eventFlowAfterBypass(bool bypass) const noexcept override;
+    [[nodiscard]] std::int64_t tailSamplesAfterBypass(bool bypass) const noexcept override;
+    void didSuspendAfterBypass(bool bypass) noexcept override;
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {

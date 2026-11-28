@@ -3,6 +3,7 @@
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/bounce_commands.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/engine/timeline_clip_sql.hpp"
@@ -23,6 +24,8 @@
 #include "adi/edit_time.hpp"
 #include "adi/device_param_ref.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "adi/library/index.hpp"
+#include "adi/sample_defaults.hpp"
 #include "juce/builtin_samples.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -34,6 +37,7 @@
 #include <condition_variable>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <system_error>
 #include <set>
 #include <thread>
@@ -86,10 +90,12 @@ struct ProjectDocument::MidiRecording {
             bool monitored = false;
         };
         std::optional<engine::Session::MidiRecordMonitor> monitor;
+        engine::MidiInputFilter filter;
         std::int64_t quantizeGrid = 0;
         std::vector<notes::NoteValues> notes;
         std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
+        std::map<std::pair<int, int>, std::vector<controllers::Point>> controllerPoints;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
@@ -107,6 +113,17 @@ struct ProjectDocument::MidiRecording {
             return tick;
         const auto next = tempo->ticksToSeconds(tick + 1);
         return next - seconds < seconds - tempo->ticksToSeconds(tick) ? tick + 1 : tick;
+    }
+
+    bool monitorsAt(const Track &track, std::int64_t sample) const noexcept {
+        if (!track.monitor)
+            return false;
+        if (overdub)
+            return true;
+        const auto &ranges = track.monitor->blockedRanges;
+        const auto range = std::upper_bound(ranges.begin(), ranges.end(), sample,
+            [](std::int64_t at, const engine::MidiMonitorRange &span) { return at < span.end; });
+        return range == ranges.end() || sample < range->start;
     }
 
     void ingest(const engine::MidiCapturePacket &packet) {
@@ -129,25 +146,35 @@ struct ProjectDocument::MidiRecording {
             return;
         }
         const auto &event = packet.event;
-        if (!started || event.noteId == 0 || event.type == engine::EventType::Controller)
+        const bool channelPitch = capture::isChannelPitchWheel(event);
+        const bool control = event.type == engine::EventType::Controller || channelPitch;
+        if (!started || (!control && event.noteId == 0))
+            return;
+        const auto address = channelPitch ? controllers::kPitchBend : event.paramId;
+        const auto controlValue = channelPitch ? capture::channelPitchWheelValue(event.value) : event.value;
+        if (control && (event.channel >= 16 || !controllers::validController(address) ||
+                        !std::isfinite(controlValue) || controlValue < 0. || controlValue > 1.))
             return;
         const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
+            if (!track.filter.matches(packet.port, event.channel))
+                continue;
             auto &take = preview[i];
             const auto held = track.held.find(event.noteId);
             // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
-            bool monitored = held != track.held.end() && held->second.monitored;
-            if (event.type == engine::EventType::NoteOn && track.monitor) {
-                const auto& ranges = track.monitor->blockedRanges;
-                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
-                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
-                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
-            }
+            const bool monitored = control || event.type == engine::EventType::NoteOn
+                ? monitorsAt(track, packet.timelineSample)
+                : held != track.held.end() && held->second.monitored;
             // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
             const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
             const auto at = std::clamp(tick, take.start, take.end - 1);
-            if (event.type == engine::EventType::NoteOn) {
+            if (control) {
+                if (!monitored && packet.inputSample < firstStreamSample)
+                    continue;
+                auto &lane = track.controllerPoints[{event.channel, static_cast<int>(address)}];
+                lane.push_back({lane.size() + 1, at - take.start, controlValue});
+            } else if (event.type == engine::EventType::NoteOn) {
                 if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
@@ -205,11 +232,13 @@ struct ProjectDocument::MidiRecording {
 
     struct Placement {
         std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+        std::vector<std::vector<recording::MidiControllerLane>> controllers;
         std::vector<recording::MidiLinearTake> takes;
     };
     Placement placements(RowIds &rows, const SnapshotReader &current) {
         Placement placement;
         placement.expressions.resize(tracks.size());
+        placement.controllers.resize(tracks.size());
         placement.takes.reserve(tracks.size());
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
@@ -220,10 +249,17 @@ struct ProjectDocument::MidiRecording {
                 if (!points.empty())
                     placement.expressions[i].push_back({key.first, key.second, points});
             }
+            for (auto &[address, points] : track.controllerPoints) {
+                // Crossing a Monitor Auto boundary can change the clock for the next control.
+                std::stable_sort(points.begin(), points.end(), [](const auto &a, const auto &b) {
+                    return a.timeTicks < b.timeTicks;
+                });
+                placement.controllers[i].push_back({address.first, address.second, points});
+            }
             auto name = shownTrackName(current, span.track);
             placement.takes.push_back({span.track, rows.next("clips"), span.start, span.end - span.start,
                                        name.empty() ? std::string("Take") : std::move(name),
-                                       track.notes, placement.expressions[i], overdub});
+                                       track.notes, placement.expressions[i], overdub, placement.controllers[i]});
         }
         return placement;
     }
@@ -251,12 +287,19 @@ struct ProjectDocument::TakePublication {
     }
 };
 
+struct ProjectDocument::RecoveryWork {
+    std::stop_source stop;
+    std::future<recording::RecoveryTake> result;
+    ~RecoveryWork() { stop.request_stop(); }
+};
+
 struct ProjectDocument::SaveJob {
     using Phase = SaveProgress::Phase;
     std::filesystem::path path;
     SaveKind kind;
     StoreFileCollision collision;
     std::optional<media::FileIdentity> expectedTarget;
+    bool keepUndoHistory;
     Phase phase = Phase::waitingForRecording;
     bool wasRecording;
     bool keptTake = false;
@@ -272,9 +315,10 @@ struct ProjectDocument::SaveJob {
     std::future<std::string> retirement;
 
     SaveJob(std::filesystem::path output, SaveKind operation, bool recording, StoreFileCollision collisionMode,
-            const media::FileIdentity *confirmedTarget)
+            const media::FileIdentity *confirmedTarget, bool keepUndo)
         : path(std::move(output)), kind(operation), collision(collisionMode),
-          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt), wasRecording(recording) {}
+          expectedTarget(confirmedTarget ? std::optional{*confirmedTarget} : std::nullopt),
+          keepUndoHistory(keepUndo), wasRecording(recording) {}
     ~SaveJob() { stop.request_stop(); }
     bool terminal() const noexcept {
         return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
@@ -298,6 +342,16 @@ struct ProjectDocument::TrackRenderWork {
     std::jthread worker;
 };
 namespace {
+void appendSharedStorageWarning(const Store &store, std::string &warning) {
+    if (!store.synchronizedLocation())
+        return;
+    if (!warning.empty())
+        warning += ' ';
+    warning += store.readOnly() ? "This read-only project is in a synced or network folder."
+                               : "This project is in a synced or network folder. Committed edits are kept in its .adi file. "
+                                 "Close it before copying it or opening it elsewhere.";
+}
+
 bool ordinaryTrack(const engine::TrackNode &track) {
     return track.kind == "audio" || track.kind == "midi" || track.kind == "instrument";
 }
@@ -331,6 +385,16 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
     return end > 0 ? end + tailSeconds : 0;
 }
 
+std::unique_ptr<library::Index> openSampleDefaults(const std::filesystem::path &file) {
+    if (file.empty() || !std::filesystem::exists(file))
+        return {};
+    std::string error;
+    auto index = library::Index::open(file, error, false);
+    if (!index)
+        throw std::runtime_error("cannot read sample defaults from the Library: " + error);
+    return index;
+}
+
 // The waveform worker checks out its read-only store for a build. A Save As
 // can release the idle reader immediately, and an in-flight build hands it
 // back only if the document still uses its file.
@@ -349,7 +413,10 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
                 return refused;
             }
         }
-        if (mediaId) return media::buildMediaPeaks(*reader, *mediaId, 4096, stop);
+        constexpr std::uint32_t fineBinsPerChannel = 65536;
+        if (mediaId)
+            return media::buildMediaPeaks(*reader, *mediaId, fineBinsPerChannel, stop, nullptr,
+                                         media::PeakCacheResolution::PreferRequested);
         try {
             if (stop.stop_requested()) return media::PeakResult{media::PeakProblem::cancelled, {}, {}};
             const auto bytes = reader->getStateBlob(stateHash);
@@ -364,9 +431,20 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
 }
 } // namespace
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
-    : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
+    : store_(std::move(s)), name_(std::move(name)), dailyHistory_(*store_),
+      dailyHistorySource_(appliedSource(*store_)), dailyHistorySequence_(dailyHistorySource_.sequence()),
+      ops_(*store_, view_), views_(*store_),
       sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
-      waveforms_(peaksFrom(waveformSource_)) {
+      waveforms_(peaksFrom(waveformSource_), [source = waveformSource_](std::int64_t mediaId, const std::string &hash,
+                                                                      std::stop_token stop) {
+          WaveformSource::Read read(*source);
+          auto &reader = read.store;
+          if (!reader) {
+              StoreError error{};
+              reader = Store::open(read.file, error, true);
+          }
+          return reader ? media::buildMediaTransients(*reader, mediaId, hash, stop) : std::vector<std::uint64_t>{};
+      }) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());
@@ -513,6 +591,66 @@ std::unique_ptr<ProjectDocument::OpenJob> ProjectDocument::startOpen(const std::
     return std::unique_ptr<OpenJob>(new OpenJob(path, create, std::move(loader), defaults));
 }
 
+ProjectDocument::HistoryReload ProjectDocument::reopenAtStoredHistory(HistoryRestoreTarget target,
+                                                                       std::int64_t nowUtc) {
+    HistoryReload out;
+    if (!deviceStopped_.load(std::memory_order_acquire)) {
+        out.error = "Stop the audio device before restoring a stored version.";
+        return out;
+    }
+    if (recording() || landingTake()) {
+        out.error = "Wait for the take to finish before restoring a version.";
+        return out;
+    }
+    if (!settleParameters()) {
+        out.error = error_;
+        return out;
+    }
+    History history(*store_);
+    const auto priorHead = history.head();
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    const auto *snapshot = std::get_if<HistorySnapshotTarget>(&target);
+    const auto result = snapshot ? history.revertToSnapshot(snapshot->id, nowUtc, prepared)
+                                 : history.moveTo(std::get<HistoryHeadTarget>(target).seq, nowUtc, prepared);
+    if (!result.ok) {
+        out.error = result.error;
+        return out;
+    }
+    if (!result.sessionReloadRequired) {
+        if (result.opsApplied != 0) {
+            view_.refresh(*store_, session_.overriddenLanes());
+            if (!synchronise())
+                out.error = error_;
+        }
+        return out;
+    }
+    out.replayBaseChanged = true;
+    updateDailyHistory();
+    const auto opening = store_->openingHistory();
+    const auto reopen = [&](std::string& error) {
+        auto document = open(store_->path(), false, renderLoader_, error);
+        if (document && opening)
+            document->store_->retainOpeningHistory(opening->seq);
+        return document;
+    };
+    out.document = reopen(out.error);
+    if (out.document)
+        return out;
+    const auto rollback = history.moveTo(priorHead, nowUtc, prepared);
+    if (!rollback.ok) {
+        out.error += " The previous version could not be restored: " + rollback.error;
+        return out;
+    }
+    updateDailyHistory();
+    std::string reloadError;
+    out.document = reopen(reloadError);
+    if (out.document)
+        out.error += " The previous version was reopened.";
+    else
+        out.error += " Reopen the project to return to the previous version: " + reloadError;
+    return out;
+}
+
 std::unique_ptr<ProjectDocument> ProjectDocument::OpenJob::takeDocument() {
     return phase_ == Phase::ready ? std::move(document_) : nullptr;
 }
@@ -590,6 +728,7 @@ void ProjectDocument::OpenJob::advance() {
         doc.parameterOps_.attachSession(doc.session_);
         doc.feed_.publish(doc.session_, doc.realisedGeneration_);
         doc.persistReportedLatencies();
+        appendSharedStorageWarning(*doc.store_, doc.warning_);
         phase_ = Phase::ready;
     } catch (const std::exception &error) {
         fail(error.what());
@@ -695,6 +834,7 @@ bool ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake)
             warning_ += ' ';
         warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
+    appendSharedStorageWarning(*store_, warning_);
     error_.clear();
     return refreshError.empty();
 }
@@ -711,13 +851,14 @@ bool refuseExisting(const std::filesystem::path &path, const char *what, std::st
     return false;
 }
 } // namespace
-bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
+bool ProjectDocument::saveCopy(const std::filesystem::path &path, bool keepUndoHistory) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
     if (!capturePluginState())
         return false;
-    const auto result = store_->saveCopy(path);
+    const auto result = store_->saveCopy(path, StoreFileCollision::Fail,
+        keepUndoHistory ? StoreCopyPolicy::shareWithUndo : StoreCopyPolicy::share);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
         return false;
@@ -729,14 +870,14 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 
 bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind, StoreFileCollision collision,
-                                const media::FileIdentity *expectedTarget) {
+                                const media::FileIdentity *expectedTarget, bool keepUndoHistory) {
     if (saveJob_) return false;
     warning_.clear();
     const bool switching = kind != SaveKind::copy;
     if (collision == StoreFileCollision::Fail && refuseExisting(path, switching ? "Save As" : "Save a Copy", error_))
         return false;
     error_.clear();
-    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget);
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_, collision, expectedTarget, keepUndoHistory);
     if (saveJob_->wasRecording) stopRecording();
     advanceSave();
     return true;
@@ -807,7 +948,9 @@ void ProjectDocument::advanceSave() {
             const auto kind = job.kind == SaveKind::firstSave ? StoreSaveKind::firstSave
                             : switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
             const auto prepared = store_->prepareFileSave(job.path, kind, job.file, job.collision,
-                                                          job.expectedTarget ? &*job.expectedTarget : nullptr);
+                                                          job.expectedTarget ? &*job.expectedTarget : nullptr,
+                                                          job.keepUndoHistory ? StoreCopyPolicy::shareWithUndo
+                                                                              : StoreCopyPolicy::share);
             if (!prepared.ok) {
                 fail(prepared.error, prepared.warning);
                 return;
@@ -905,7 +1048,7 @@ bool ProjectDocument::collectAllAndSave() {
     error_.clear();
     return true;
 }
-bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
+bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
     if (!capturePluginState())
@@ -913,12 +1056,13 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     out.stateWarning = pluginStateWarning_;
+    out.keepUndoHistory = keepUndoHistory;
     error_.clear();
     return true;
 }
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        auto result = media::collectExport(job.project, job.zip, control);
+        auto result = media::collectExport(job.project, job.zip, control, job.keepUndoHistory);
         appendWarning(result.warning, job.stateWarning);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
@@ -956,7 +1100,28 @@ bool ProjectDocument::synchronise() {
     // or one a gesture set since the last frame, reaches the snapshot now.
     followOverrides();
     syncMonitorInputs(); // a track added or removed is fed or let go (N65)
+    updateDailyHistory();
     return true;
+}
+void ProjectDocument::updateDailyHistory(bool closing) {
+    if (!dailyHistoryClock_ || store_->readOnly())
+        return;
+    const auto source = appliedSource(*store_);
+    const auto sequence = source.sequence();
+    if (!closing && source.sameConnection(dailyHistorySource_) && sequence == dailyHistorySequence_)
+        return;
+    auto* database = store_->db().getHandle();
+    if (!sqlite3_get_autocommit(database))
+        return;
+    const auto [nowUtc, utcOffsetMinutes] = dailyHistoryClock_();
+    const bool viewWasCurrent = view_.storeCurrent(*store_);
+    const auto before = sqlite3_total_changes64(database);
+    dailyHistory_.poll(nowUtc, utcOffsetMinutes);
+    dailyHistorySource_ = source;
+    dailyHistorySequence_ = sequence;
+    const auto written = sqlite3_total_changes64(database) - before;
+    if (viewWasCurrent && written > 0)
+        view_.acknowledgeAdvisoryWrite(*store_, written);
 }
 void ProjectDocument::setExternalAudioInputs(std::vector<ExternalAudioInput> inputs) {
     externalAudioInputs_ = std::move(inputs);
@@ -1572,8 +1737,9 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
-    if(op=="device.remove" || op=="device.setEnabled") {
-        const auto id=r.payload.value("id",std::int64_t{});
+    const bool activator = op == "device.setEnabled";
+    const auto id = activator || op == "device.remove" ? r.payload.value("id", std::int64_t{}) : 0;
+    if (id != 0) {
         const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
             [id](const auto& device){return device.id==id;});
         const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
@@ -1583,8 +1749,15 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
+    // The requested played value can equal the saved switch. In that case the
+    // durable operation succeeds but refresh sees no manual baseline change.
+    const bool followed = !activator || session_.overrideDeviceActivator(id);
+    if (activator)
+        followOverrides();
     feed_.publish(session_, realisedGeneration_);
-    return true;
+    if (!followed)
+        error_ = session_.error();
+    return followed;
 }
 namespace {
 bool readClipboardDevice(Store &store, std::int64_t id, DeviceCopy &out, std::string &error) {
@@ -1755,17 +1928,20 @@ PreparedBuiltinInsert prepareDeviceDrop(Store &store, bool midi, const Recording
 } // namespace
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
                                     const RecordingDefaults *defaults, bool exclusiveArm) {
+    const preset::Identity identity{"internal", uid, {}};
     if (track != 0)
-        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId(), {}, exclusiveArm));
+        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId(), {}, exclusiveArm),
+                            identity);
     const auto *info = findBuiltin(uid);
     return finishInsert(prepareDeviceDrop(*store_, info && info->instrument, defaults,
         [&](std::int64_t id, std::span<const OpRequest> newTrack) {
             return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack, exclusiveArm);
-        }));
+        }), identity);
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
-    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()),
+                        {ref.format, ref.uid, ref.shellId});
 }
 bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
                                  const RecordingDefaults *defaults, bool exclusiveArm) {
@@ -1777,7 +1953,7 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
         return finishInsert(prepareDeviceDrop(*store_, ref.subtype == "instrument" || ref.subtype == "midi_effect", defaults,
             [&](std::int64_t id, std::span<const OpRequest> newTrack) {
                 return preparePluginInsert(*store_, ref, id, before, options, retainedDeviceId(), newTrack);
-            }));
+            }), {ref.format, ref.uid, ref.shellId});
     if (ref.subtype == "instrument") {
         try {
             SQLite::Statement kind(store_->db(), "SELECT kind FROM tracks WHERE id=?");
@@ -1796,10 +1972,12 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
     return insertPlugin(ref, track, before, options);
 }
 
-bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std::filesystem::path &library,
-                                       const std::string &name, std::filesystem::path &saved) {
-    if (!deviceTargetCurrent(target.id, target.runtime, target.instance))
-        return false;
+std::optional<preset::Preset> ProjectDocument::captureDevicePreset(const DevicePanelData &target) {
+    error_.clear();
+    if (!deviceTargetCurrent(target.id, target.runtime, target.instance)) {
+        if (error_.empty()) error_ = "The device is no longer current.";
+        return std::nullopt;
+    }
     try {
         preset::Preset values;
         {
@@ -1817,11 +1995,43 @@ bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std:
         }
         auto current = parameterOps_.readDevicePresetState(target.id, error_);
         if (!current)
-            return false;
-        values.name = name;
+            return std::nullopt;
         values.parameters = std::move(current->parameters);
         values.state = std::move(current->state);
-        saved = preset::write(library, values);
+        const auto &panels = session_.model().devicePanels;
+        const auto panel = std::find_if(panels.begin(), panels.end(), [&](const auto &row) { return row.deviceId == target.id; });
+        if (panel != panels.end())
+            values.panel = panel->params;
+        return values;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return std::nullopt;
+    }
+}
+
+bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std::filesystem::path &library,
+                                       const std::string &name, std::filesystem::path &saved) {
+    auto values = captureDevicePreset(target);
+    if (!values)
+        return false;
+    try {
+        values->name = name;
+        saved = preset::write(library, *values);
+        error_.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
+bool ProjectDocument::saveDefaultDevicePreset(const DevicePanelData &target, const std::filesystem::path &library) {
+    auto values = captureDevicePreset(target);
+    if (!values)
+        return false;
+    try {
+        values->name = "Default";
+        (void)preset::writeDefault(library, *values);
         error_.clear();
         return true;
     } catch (const std::exception &e) {
@@ -1909,7 +2119,7 @@ std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, cons
         return 0;
     auto prepared = prepareBuiltinReplacement(*store_, uid, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
-    return finishInsert(std::move(prepared)) ? id : 0;
+    return finishInsert(std::move(prepared), {"internal", uid, {}}) ? id : 0;
 }
 
 std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const rows::PluginRef &ref) {
@@ -1917,7 +2127,7 @@ std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const
         return 0;
     auto prepared = preparePluginReplacement(*store_, ref, target.id, retainedDeviceId());
     const auto id = prepared.deviceId;
-    return finishInsert(std::move(prepared)) ? id : 0;
+    return finishInsert(std::move(prepared), {ref.format, ref.uid, ref.shellId}) ? id : 0;
 }
 
 bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t slot,
@@ -1945,14 +2155,21 @@ std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, prese
         error_ = "The exact plug-in for this preset is unavailable.";
         return 0;
     }
-    return finishDevicePreset(std::move(prepared), std::move(presetValue), inPlace);
+    return finishDevicePreset(std::move(prepared), std::move(presetValue), inPlace ? PresetLoad::InPlace : PresetLoad::Insert);
 }
 
 std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared, preset::Preset presetValue,
-                                                 bool inPlace) {
+                                                 PresetLoad load) {
     try {
         if (!prepared.ok)
             throw std::runtime_error(prepared.error);
+        const bool inPlace = load == PresetLoad::InPlace;
+        if (!inPlace && prepared.sourceFile != deviceCopyIdentity())
+            throw std::runtime_error("The project changed while preparing the device preset.");
+        const std::string label = load == PresetLoad::Default ? prepared.requests.front().label
+                                  : inPlace ? "Hot-Swap Device Preset" : "Load Device Preset";
+        if (prepared.newTrack)
+            prepared.requests.front().selBefore = sessionState_.advisory();
 
         const auto device = prepared.deviceId;
         const auto source = appliedSource(*store_);
@@ -2047,9 +2264,11 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
             addState(role, std::move(bytes));
         for (const auto &[param, normalized] : presetValue.parameters)
             addParam(param, normalized);
+        if (presetValue.panel)
+            add("device.setPanel", {{"dev", device}, {"params", *presetValue.panel}});
         add("device.setPreset", {{"dev", device}, {"preset", presetValue.name}});
         for (auto &request : prepared.requests)
-            request.label = inPlace ? "Hot-Swap Device Preset" : "Load Device Preset";
+            request.label = label;
 
         const auto result = ops_.commitPrepared(prepared.requests, [&](Store &store, Actor) {
             return OpJournal(store).commitCaptured(prepared.requests, source, prepared.options, inputs);
@@ -2064,7 +2283,7 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
                 return 0;
             }
         }
-        feed_.publish(session_, realisedGeneration_);
+        publishDeviceEdit(prepared.newTrack);
         return device;
     } catch (const std::exception &e) {
         error_ = e.what();
@@ -2072,10 +2291,21 @@ std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared,
     }
 }
 
-bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
+bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared, const preset::Identity &identity) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
         return false;
+    }
+    if (devicePresetLibrary) {
+        try {
+            const auto library = devicePresetLibrary();
+            if (!library.empty())
+                if (auto saved = preset::readDefault(library, identity))
+                    return finishDevicePreset(std::move(prepared), std::move(*saved), PresetLoad::Default) != 0;
+        } catch (const std::exception &e) {
+            error_ = std::string("The default device preset could not be read. ") + e.what();
+            return false;
+        }
     }
     const auto newTrack = prepared.newTrack;
     if (newTrack)
@@ -2086,6 +2316,10 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
+    publishDeviceEdit(newTrack);
+    return true;
+}
+void ProjectDocument::publishDeviceEdit(std::optional<std::int64_t> newTrack) {
     feed_.publish(session_, realisedGeneration_);
     if (newTrack) {
         auto selected = sessionState_.selection();
@@ -2096,7 +2330,6 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
         selected.start = selected.end = selected.insert;
         (void)sessionState_.select(selected, error_);
     }
-    return true;
 }
 std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {
     std::vector<DeviceKeyChoice> choices;
@@ -2139,7 +2372,7 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
     if(!prepared.ok){error_=prepared.error;return false;}
     // Removing edges cannot introduce feedback or an unavailable tap. Keep
     // recovery possible when another stored key is already unavailable.
-    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_)) {
+    if(source && !prepared.requests.empty() && !session_.validateRouting(prepared.candidate,error_)) {
         error_=error_.find("cycle")!=std::string::npos
             ? "That sidechain would feed back into its own source. Choose an earlier tap or another channel."
             : "That sidechain source or input is unavailable. Choose another source or remove the unavailable key.";
@@ -2383,6 +2616,18 @@ bool ProjectDocument::relinkClipMedia(const ClipRelinkTarget &target, const std:
     }
     return relinkMediaFile(target.mediaId, path);
 }
+bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, std::string_view expectedHash,
+                                      const std::filesystem::path &path) {
+    {
+        SQLite::Statement current(store_->db(), "SELECT hash_blake3 FROM media_files WHERE id=? AND embedded=0");
+        current.bind(1, mediaId);
+        if (!current.executeStep() || current.getColumn(0).getString() != expectedHash) {
+            error_ = "The project media entry changed while the file chooser was open. Choose it again.";
+            return false;
+        }
+    }
+    return relinkMediaFile(mediaId, path);
+}
 bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &path) {
     const auto result = media::relinkMedia(*store_, mediaId, path);
     if (!result.ok) {
@@ -2405,7 +2650,8 @@ bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesyste
     error_ = "Sample relinked. Playback could not refresh: " + error_;
     return false;
 }
-bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out,
+                                    const std::filesystem::path &defaultsIndex) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
     // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
@@ -2424,6 +2670,16 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
         error_ = "That file holds no audio ADI can play.";
         return false;
     }
+    out.savedDefaults.reset();
+    try {
+        if (auto index = openSampleDefaults(defaultsIndex)) {
+            if (auto saved = clip_edit::loadSampleDefaults(*store_, *index, result, captured))
+                out.savedDefaults = std::make_shared<library::SampleSettings>(std::move(*saved));
+        }
+    } catch (const std::exception &e) {
+        error_ = utf8Path + " was not imported: " + e.what();
+        return false;
+    }
     out.mediaId = result.mediaId;
     out.sampleRate = result.audio->sampleRate;
     out.frames = result.audio->frames;
@@ -2431,9 +2687,18 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+bool ProjectDocument::saveSampleDefaults(std::int64_t clip, const std::filesystem::path &defaultsIndex) {
+    auto index = library::Index::open(defaultsIndex, error_, false);
+    if (!index) {
+        error_ = "Cannot open the Library to save sample defaults: " + error_;
+        return false;
+    }
+    const auto rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    return clip_edit::saveSampleDefaults(*store_, clip, rate, *index, error_) == library::SampleSettingsProblem::None;
+}
 ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
                                                           std::int64_t atTicks, const ImportChoices &choices,
-                                                          std::int64_t nowUtc) const {
+                                                          std::int64_t nowUtc, edit_plan::EditPolicy placementPolicy) const {
     MaterialJob job;
     job.project = store_->path();
     job.source = pathFromUtf8(utf8Path);
@@ -2441,6 +2706,7 @@ ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf
     job.atTicks = atTicks;
     job.importedUtc = nowUtc;
     job.choices = choices;
+    job.placementPolicy = placementPolicy;
     job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
     // The next free ids as the project stands; a project changed before the commit refuses as stale.
     RowIds rows(store_->db()); // DF-E16: never an id a remark still holds
@@ -2469,31 +2735,119 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
     options.stop = stop;
-    out = clip_edit::prepareImportAudio(*store, options, job.rate);
+    options.arrangementPlacement = job.placementPolicy;
+    try {
+        auto index = openSampleDefaults(job.defaultsIndex);
+        out = clip_edit::prepareImportAudio(*store, options, job.rate, index.get());
+    } catch (const std::exception &e) {
+        out.edit.error = e.what();
+    }
     return out;
 }
+namespace {
+std::string importRefusal(const std::filesystem::path &path, const std::string &why) {
+    const std::string file = media::pathUtf8(path.filename());
+    if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
+        return file + ": ADI found no steady beat to warp it by. Import it with Warp off, then enter the source BPM in the Clip View.";
+    return file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
+}
+} // namespace
 std::int64_t ProjectDocument::commitMaterial(clip_edit::MaterialEdit &material, const MaterialJob &job) {
-    const auto name = job.source.filename().u8string();
-    const std::string file(name.begin(), name.end());
     if (!material.edit.ok) {
         // The engine's words, with the file named; an indeterminate beat with Warp on says what to do.
-        const auto &why = material.edit.error;
-        if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
-            error_ = file + ": ADI found no steady beat to warp it by. Import it with Warp off.";
-        else
-            error_ = file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
+        error_ = importRefusal(job.source, material.edit.error);
         return 0;
     }
     const auto result = ops_.commitPrepared(material.edit.requests, [&](Store &s, Actor actor) {
         return clip_edit::commitMaterial(s, material, actor);
     });
     if (!result) {
-        error_ = result.stale ? "The project changed while " + file + " was being prepared: drop it again."
+        error_ = result.stale ? "The project changed while " + media::pathUtf8(job.source.filename()) +
+                                    " was being prepared: drop it again."
                               : result.error;
         return 0;
     }
     error_.clear();
     return job.clipId;
+}
+ProjectDocument::MaterialBatchJob ProjectDocument::materialBatchJob(
+        const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t atTicks,
+        bool separate, const ImportChoices &choices, const RecordingDefaults &defaults, std::int64_t nowUtc) const {
+    if (files.empty()) throw std::runtime_error("Drop an audio file.");
+    const auto current = view_.current();
+    if (!current) throw std::runtime_error("Dropping audio needs an open project.");
+    if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
+        throw std::runtime_error(std::move(refusal));
+    SQLite::Transaction read(store_->db(), SQLite::TransactionBehavior::DEFERRED);
+    MaterialBatchJob job;
+    job.project = store_->path();
+    job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    job.batch.expectedHead = OpJournal(*store_).headSeq();
+    job.batch.consecutive = !separate;
+    auto index = static_cast<std::int64_t>(current->tracks.size());
+    RowIds rows(store_->db());
+    const auto addTrack = [&] {
+        const auto id = rows.next("tracks");
+        audio_drop_detail::appendAudioTrack(job.batch.createTracks, id, index++, &defaults, "Import Audio");
+        return id;
+    };
+    const auto first = track == 0 ? addTrack() : track;
+    job.batch.imports.reserve(files.size());
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        clip_edit::ImportOptions options;
+        options.source = pathFromUtf8(files[i].first);
+        options.track = separate && i > 0 ? addTrack() : first;
+        options.clipId = rows.next("clips");
+        options.mediaId = rows.next("media_files");
+        options.importedUtc = nowUtc;
+        options.at = {0, std::max<std::int64_t>(0, atTicks)};
+        options.copyIn = choices.copyIn;
+        options.warp = choices.warp;
+        options.edgeFades = choices.edgeFades;
+        options.warpMode = choices.mode;
+        job.batch.imports.push_back(std::move(options));
+    }
+    return job;
+}
+clip_edit::MaterialEdit ProjectDocument::prepareMaterialBatch(MaterialBatchJob job, std::stop_token stop) {
+    StoreError error{};
+    auto store = Store::open(job.project, error, false);
+    if (!store) {
+        clip_edit::MaterialEdit refused;
+        refused.edit.error = "The project could not be read for the import: " + std::string(toString(error));
+        return refused;
+    }
+    for (auto &options : job.batch.imports) options.stop = stop;
+    try {
+        auto index = openSampleDefaults(job.defaultsIndex);
+        return clip_edit::prepareImportAudioBatch(*store, job.batch, job.rate, index.get());
+    } catch (const std::exception &failure) {
+        clip_edit::MaterialEdit refused;
+        refused.edit.error = failure.what();
+        return refused;
+    }
+}
+bool ProjectDocument::commitMaterialBatch(clip_edit::MaterialEdit &material, const MaterialBatchJob &job) {
+    if (!material.edit.ok) {
+        error_ = material.edit.error;
+        if (const auto failed = material.refusedImport; failed && *failed < job.batch.imports.size()) {
+            error_ = importRefusal(job.batch.imports[*failed].source, material.edit.error);
+            const auto untried = job.batch.imports.size() - *failed - 1;
+            if (job.batch.imports.size() > 1)
+                error_ += " (0 files imported; " + std::to_string(untried) + " not tried.)";
+        }
+        return false;
+    }
+    const auto result = ops_.commitPrepared(material.edit.requests, [&](Store &store, Actor actor) {
+        return clip_edit::commitMaterial(store, material, actor);
+    });
+    if (!result) {
+        error_ = result.stale ? "The project changed while the drop was being prepared: drop the files again."
+                              : result.error;
+        return false;
+    }
+    error_.clear();
+    return true;
 }
 bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &expected,
                                           std::uint64_t stamp) {
@@ -3058,7 +3412,8 @@ bool ProjectDocument::mixerDrag(double coordinate) {
     }
     if (realised && committed == view_.committedGeneration())
         realisedGeneration_ = view_.generation();
-    if(updated.preview)recordMixerValues(updated.preview->requests());
+    if (updated.preview)
+        recordMixerValues(updated.preview->requests());
     error_.clear();
     return true;
 }
@@ -3163,6 +3518,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             error_ = "Transport command queue is full";
             return false;
         }
+        captureReady_.store(false, std::memory_order_release);
         recording_ = true;
         session_.setAutomationWriteState(true, true);
         session_.setRecordingForDevices(true);
@@ -3170,7 +3526,11 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return true;
     }
     const auto availableInputs = static_cast<std::uint32_t>(std::max(0, inputs));
-    if (!armed.audio.empty() && availableInputs == 0 && !externalAudioInputs_) {
+    if (availableInputs == 0 && !externalAudioInputs_ &&
+        std::any_of(armed.audio.begin(), armed.audio.end(), [&](std::int64_t id) {
+            const auto *track = current->findTrack(id);
+            return !track || track->inputRef != kResamplingInput;
+        })) {
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
         return false;
     }
@@ -3179,12 +3539,13 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     engine::AudioRecordingSpec spec;
-    if (current->transport.loopEnabled) {
+    const auto playingSample = playing ? std::optional{mailbox_.position()} : std::nullopt;
+    if (current->transport.loopEnabled && !session_.recordingStartsAfterLoop(insertTick, playingSample)) {
         if (!armed.midi.empty()) {
             error_ = "Loop recording supports audio tracks. Disarm MIDI tracks or turn off the loop.";
             return false;
         }
-        if (!session_.configureArrangementLoopRecording(spec, error_))
+        if (!armed.audio.empty() && !session_.configureArrangementLoopRecording(spec, error_))
             return false;
     }
     if (!playing && !mailbox_.hasRoom()) {
@@ -3204,8 +3565,11 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             const auto track = armed.midi[i];
             midi->preview[i].track = track;
             auto &timing = midi->tracks[i];
-            if (const auto *node = source.findTrack(track); node && node->recording.recordEnabled)
-                timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            if (const auto *node = source.findTrack(track)) {
+                timing.filter = engine::midiInputFilter(node->inputRef);
+                if (node->recording.recordEnabled)
+                    timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
+            }
             timing.monitor = session_.midiRecordMonitor(track);
         }
     }
@@ -3230,6 +3594,12 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
     for (const auto id : armed.audio) {
         const auto *track = current->findTrack(id);
+        if (track && track->inputRef == kResamplingInput) {
+            // Main is already on the project's callback clock. The hardware
+            // input's round-trip correction does not apply to this stereo bus.
+            spec.targets.push_back({id, {0, 1}, 0, engine::RecordingSource::MainMix});
+            continue;
+        }
         const auto channels = track ? channelsForInput(track->inputRef, inputs) : std::span<const std::uint32_t>{};
         if (channels.empty() || std::any_of(channels.begin(), channels.end(), [availableInputs](auto channel) {
                 return channel >= availableInputs;
@@ -3245,6 +3615,14 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                                 keep ? std::optional<std::int64_t>{0} : std::nullopt});
     }
     std::string why;
+    if (!spec.targets.empty() && recordingRecoveryEnabled_) {
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
+        if (!recording::configureRecovery(*store_, spec, why)) {
+            error_ = "Recording recovery could not be prepared. " + why;
+            return false;
+        }
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
+    }
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
         error_ = "Recording did not start: " + why;
         return false;
@@ -3286,10 +3664,10 @@ void ProjectDocument::stopRecording() {
         session_.recording().stop();
     if (midiRecording_)
         session_.midiInputCapture().stop();
+    landing_ = recordingAudio_ || static_cast<bool>(midiRecording_);
     recording_ = false;
-    session_.setRecordingForDevices(false);
-    landing_ = recordingAudio_ || midiRecording_ != nullptr;
     session_.setAutomationWriteState(automationArmed(), false);
+    session_.setRecordingForDevices(false);
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
     const auto *midi = midiRecording_.get();
@@ -3299,11 +3677,53 @@ std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
         return {};
     return midi->preview;
 }
+bool ProjectDocument::startTakeRecovery(const engine::recording_recovery::LaunchTake &take) {
+    if (recording_ || landing_ || store_->readOnly()) {
+        error_ = store_->readOnly() ? "Project is read-only." : "Finish the current recording first.";
+        return false;
+    }
+    const auto project = store_->path();
+    try {
+        auto work = std::make_unique<RecoveryWork>();
+        work->result = std::async(std::launch::async, [project, take, stop = work->stop.get_token()] {
+            StoreError opened{};
+            auto snapshot = Store::open(project, opened, true);
+            if (!snapshot)
+                return recording::RecoveryTake{recording::RecoveryStatus::Refused, {}, toString(opened)};
+            return recording::prepareInterrupted(*snapshot, take.directory.parent_path(), take.directory,
+                                                 take.recordingId, stop);
+        });
+        recoveryWork_ = std::move(work);
+        landing_ = true;
+        error_.clear();
+        return true;
+    } catch (const std::exception &failure) {
+        error_ = failure.what();
+        return false;
+    }
+}
 void ProjectDocument::pollRecording(bool deviceStopped) {
     if (!recording_ && !landing_)
         return;
     if (takePublication_) {
         pollTakePublication();
+        return;
+    }
+    if (recoveryWork_) {
+        if (recoveryWork_->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        auto recovered = recoveryWork_->result.get();
+        recoveryWork_.reset();
+        if (recovered.status == recording::RecoveryStatus::Ready) {
+            audioTake_ = std::move(recovered.capture);
+            landTake();
+        } else {
+            landing_ = false;
+            const auto message = recovered.status == recording::RecoveryStatus::AlreadyPlaced
+                ? "The interrupted take has already been recovered."
+                : "Could not recover the interrupted take. " + recovered.error;
+            landed_ = TakeLanded{false, {}, message};
+        }
         return;
     }
     if (!recordingAudio_ && !midiRecording_) {
@@ -3324,6 +3744,7 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
     if (midiDone && audioDone) {
         captureReady_.store(false, std::memory_order_release);
         recording_ = false;
+        session_.setAutomationWriteState(automationArmed(), false);
         session_.setRecordingForDevices(false);
         landTake();
     }
@@ -3361,7 +3782,8 @@ std::string midiRecordingFailure(engine::MidiCaptureState state) {
     }
 }
 std::string retainedCaptureLocation(const engine::AudioRecordingResult &result) {
-    return " Look for the recorded WAV files in " + media::pathUtf8(result.directory()) + ".";
+    const auto &original = result.recovered() ? result.recoverySource() : result.directory();
+    return " Look for the recorded WAV files in " + media::pathUtf8(original) + ".";
 }
 std::string recordedTakeMessage(std::size_t clips, const std::string &audioProblem,
                                 const std::string &midiProblem, bool hasAudio, bool hasMidi,
@@ -3414,7 +3836,7 @@ void ProjectDocument::finishMidiTake(const MidiRecording &midi, const recording:
             targets.push_back({landing.clip, landing.sourceStart, span.start, span.end - span.start, grid, landing.noteIds});
     }
     if (keptInTakeLane)
-        outcome.message += " Kept overdub notes in a Take Lane where merging would change other material.";
+        outcome.message += " Kept overdub in a Take Lane where merging would change other material.";
     if (targets.empty())
         return;
     auto quantized = recording::prepareRecordQuantize(*store_, targets);
@@ -3476,7 +3898,8 @@ ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t posi
     if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
     std::erase_if(histories, [this](const auto& history) {
         if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
-                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller ||
+                       capture::isChannelPitchWheel(event.event);
             })) return false;
         session_.consumeMidiHistories(std::span(&history, 1));
         return true;
@@ -3631,6 +4054,8 @@ void ProjectDocument::landTake() {
         const auto passes = audio->passes().size();
         outcome.message = passes == 1 ? "Recorded one pass of the loop."
                                       : "Recorded " + std::to_string(passes) + " passes of the loop, a take each.";
+        if (audio->recovered()) outcome.message = "Recovered the interrupted loop recording.";
+        if (!audio->recoveryWarning().empty()) outcome.message += " " + audio->recoveryWarning();
         if (!audioProblem.empty())
             outcome.message += " Capture stopped because " + audioProblem + ".";
         landed_ = std::move(outcome);
@@ -3754,6 +4179,8 @@ void ProjectDocument::pollTakePublication() {
         take.outcome.clips.insert(take.outcome.clips.begin(), edit.placedAudioClips.begin(), edit.placedAudioClips.end());
         take.outcome.message = recordedTakeMessage(take.outcome.clips.size() + edit.midiLandings.size(), recordingFailure(take.recorded),
                                                    take.midiProblem, true, take.midi != nullptr);
+        if (take.recorded.recovered()) take.outcome.message = "Recovered the interrupted audio recording.";
+        if (!take.recorded.recoveryWarning().empty()) take.outcome.message += " " + take.recorded.recoveryWarning();
         const auto skippedAudioTracks = take.ids.size() - edit.placedAudioClips.size();
         if (skippedAudioTracks > 0) {
             take.outcome.message += skippedAudioTracks == 1

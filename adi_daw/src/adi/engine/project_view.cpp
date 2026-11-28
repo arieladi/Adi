@@ -73,12 +73,17 @@ bool ProjectView::storeCurrent(const Store& store) const {
 
 void ProjectView::acknowledgeAdvisoryWrite(const Store& store) noexcept {
     if (!storeStamp_) return;
+    const auto direct = sqlite3_changes64(store.db().getHandle());
+    if (direct <= 1)
+        acknowledgeAdvisoryWrite(store, direct);
+}
+void ProjectView::acknowledgeAdvisoryWrite(const Store& store, std::int64_t writtenRows) noexcept {
+    if (!storeStamp_) return;
     try {
         const auto source = appliedSource(store);
         const auto observed = stamp(store);
-        const auto direct = sqlite3_changes64(store.db().getHandle());
         if (base_.source.sameConnection(source) && base_.sequence == source.sequence() &&
-            direct <= 1 && observed[0] - (*storeStamp_)[0] == direct &&
+            writtenRows >= 0 && observed[0] - (*storeStamp_)[0] == writtenRows &&
             std::equal(observed.begin() + 1, observed.end(), storeStamp_->begin() + 1)) storeStamp_ = observed;
     } catch (const std::exception&) { }
 }
