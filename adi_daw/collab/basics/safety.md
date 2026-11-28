@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 and SC-184 follow-ups are published. SC-158 is next.
+SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344, SC-184 and SC-158 follow-ups are published. SC-169 is next.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -10,6 +10,7 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 | SC-155 | `basics/sc-155-undo-open-state` at `0864420e` | Undo History captures the current cursor when it opens a project. The bottom row returns to that cursor from either direction. Earlier history remains accessible and any creation snapshot has its own row. Touched window/window-fn's history panel and UI submitter. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. History, history-move and window-state passed. The full shell ran the reopened-cursor regression. Native Xvfb reproduced the old four-to-two-track loss and verified the fix restored four from five with Redo intact. Acceptance passed 3/3. Known timing failures are below. | Ready for Windows check |
 | SC-344 | `basics/sc-344-automation-drag-undo` at `8146a636` | Main already commits a line drag in one Undo. The follow-up cancels the pending point on an editing mode or target change, on focus loss, or when a drag encounters a hidden target. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The complete shell passed 5,407 checks and window-state passed 195. A native Xvfb check passed both held mode round trips and the normal drag, Undo, and Redo. Acceptance passed 3/3. The document timing result is below. | Ready for Windows check |
 | SC-184 | `basics/sc-184-split-undo` at `3789b35a` | Split keeps a time range across Ctrl/Cmd-picked tracks and cuts explicitly picked clips together at the marker. A split keeps each original clip ID on the left. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. Clip edit, full shell (5,426 checks), window-state (195), and document (1,048) all passed. Native Xvfb verified both gestures, original note bytes on Undo, and exact Redo. Acceptance passed 3/3. | Ready for Windows check |
+| SC-158 | `basics/sc-158-audio-drop-undo` at `01d9c088` | A plain drop of differently named files with identical bytes creates both named clips using the same media row. Main already groups the prompted drop. The window test now covers that path with Warp, Fades and Copy all on. | Linux Debug with JUCE/Pd/Werror/acceptance. Full shell (5,438 checks), window-state (195), material commands and UI seams passed. Warp import passed 33 checks on retry. Native Xvfb verified both the identical-byte drop and the three-option drop. Acceptance passed 3/3. The document timing results are below. | Ready for Windows check |
 
 ### SC-159 verification
 
@@ -49,14 +50,20 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 - The native Linux app at `3789b35a` preserved the two picked tracks and entire time range, and left the track between them whole. The explicit clip selection split both chosen clips, retaining their left-piece IDs in the selection. Each case wrote two `clip.split` operations in one transaction. One Undo recovered all original placements and note streams. Redo recovered the exact split placements and note streams.
 - The shell also covered the marker on the anchor clip's boundary. It left that anchor whole and cut only its picked neighbour. All three acceptance tests passed. Built-in realtime took 2,329 seconds with the local 5,400-second timeout.
 
+### SC-158 verification
+
+- The previous native app accepted the two-file X11 transfer, then reported a uniqueness error for `media_files.hash_blake3`. Nothing from the drop reached the project or history. A one-file control imported at the same location. The new app kept both clip names, shared one media row, and restored the complete drop with one Undo and one Redo.
+- A native Ctrl+drop with Warp, Fades and Copy on created two clips on separate tracks at the same tick. Both had Beats warp, three valid markers, positive fades, and byte-identical project audio copies. The seven ops shared one history transaction. Undo removed the new track, clips and media rows, and Redo restored the exact markers and file links.
+- The first core Warp import run passed the storage and Session load checks, then failed at the five-second PCM preparation call. The identical binary passed all 33 checks in a fresh D-backed temporary directory. The full document suite passed 1,046 of 1,048 checks with the known device-loss and SC-415 timing failures. Built-in realtime passed in 2,356 seconds with the local 5,400-second timeout.
+
 ## Build storage
 
 The safety session's dedicated Linux VM runs from `D:\adi-basics-safety-linux\ubuntu.img`.
 It occupied 15,741,485,056 bytes (14.66 GiB) at the check. The original C: image
 path is clear and the verified pre-migration image is archived on D:. C: had
 17,119,453,184 bytes (15.94 GiB) free at 18:17 on 27 November. New build
-trees, caches and downloads use D:. At 02:53 on 28 November the active image was
-15,741,616,128 bytes (14.66 GiB) and C: had 15,219,154,944 bytes (14.17 GiB) free.
+trees, caches and downloads use D:. At 08:07 on 28 November the active image was
+15,741,616,128 bytes (14.66 GiB) and C: had 18,109,263,872 bytes (16.87 GiB) free.
 
 ## For the director
 
