@@ -276,8 +276,9 @@ D-03 / A6-37), `devices.pdExternalsFolders` (embedded libpd only, A6-31),
 `mixing.defaultSendLevelDb`, `transport.runFxWhenStoppedMs` (effects always
 keep running when stopped, as Live) and the five `newtrack.*` keys with their
 page (Live's Save as Default Audio/MIDI Track replaces it, a later feature).
-`library.recordFolder` is now `files.recordFolder`, on File & Folder; empty
-means the project's own folder, as Live.
+`library.recordFolder` is now `files.recordFolder`, on File & Folder. It holds
+in-progress audio and takes kept for recovery. An empty setting uses the song
+folder. Finished takes are published into `Samples/Recorded` in the song folder.
 
 **Added:** `midi.chaseNotes` (on; amends ADR-0155 d3), `midi.envelopeAutoReset`
 (on), `audio.reducedLatencyWhenMonitoring` (off), `audio.recordPdcThresholdEnabled`

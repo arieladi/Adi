@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <utility>
 #include <vector>
 namespace adi { class Store; }
@@ -26,7 +27,7 @@ const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
-                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr);
+                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false);
     ~ClipPlayback();
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
@@ -36,7 +37,21 @@ public:
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;
     /// Owner only, before priming or publishing this source generation.
     void useMonitoredInput(std::int64_t track) noexcept;
+    /// Owner only, before publishing. The span object outlives rendering of this
+    /// generation. Its sorted IDs are set by the driver before rendering each slice.
+    void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
     const std::vector<std::string>& problems() const noexcept;
+    // This clip was dropped while preparing the generation or its reader failed.
+    [[nodiscard]] bool clipUnavailable(std::int64_t clipId) const noexcept;
+    // Whether this clip's audio file could not be opened or used. Clip settings
+    // that the engine cannot play have separate diagnostics in problems().
+    bool mediaUnavailable(std::int64_t clipId) const noexcept;
+    // The owner polls terminal reader failures without blocking on preparation.
+    // Reports whether this generation has new diagnostics to publish.
+    bool pollDecodeProblems();
+    void appendPlaybackProblems(std::vector<std::string>&) const;
+    // A clip whose source file is absent already contributes silence.
+    void appendExportBlockingProblems(std::vector<std::string>&) const;
     // Off-callback owner view of the external files successfully selected
     // by this generation, including Session's frozen-source substitutions.
     // Names the original input to decode/warp, not a second media resolver or
@@ -45,21 +60,27 @@ public:
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
-    bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
+    // Wait for preparation independently of the page-read timeout. Offline
+    // renders use this before reading their first block of a cold Warp clip.
+    bool waitForWarp(std::stop_token stop = {}) const;
     // Owner only, BEFORE publishing a candidate source generation: request and
     // wait for the pages selected by an immutable, owner-owned transport value.
     // Unlike prime(), this never reads the live driver Transport. Construct the
     // value from captured sample/loop state; copying a running Transport on the
     // owner is not safe. Do not process this candidate concurrently: its request
     // slots have one producer. False on callback use, read failure, or timeout;
-    // the caller must retain its previous graph on failure.
+    // the caller must retain its previous graph on failure. Live edits can
+    // request pages without waiting for Warp jobs that are still preparing.
     bool primeAt(const Transport& snapshot,
-                 std::chrono::milliseconds timeout = std::chrono::seconds(10));
+                 std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                 bool waitForPendingWarp = true);
     // Prime two possible adoption positions under one request, e.g. the
     // current position and a retimed loop head. Refuses if their combined
     // page set cannot fit the existing bounded page slots.
     bool primeAt(const Transport& snapshot,const Transport& alternate,
-                 std::chrono::milliseconds timeout = std::chrono::seconds(10));
+                 std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                 bool waitForPendingWarp = true);
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }
@@ -96,7 +117,8 @@ public:
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
-    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds);
+    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
+                      std::stop_token stop = {});
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

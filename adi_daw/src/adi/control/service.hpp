@@ -49,6 +49,9 @@
 
 namespace adi::control {
 
+class AgentWriteGate;
+class ProjectAccess;
+
 /// AI-AGENT §2. Ordered: a higher tier can do everything a lower one can.
 enum class Tier { Observe = 0, Propose = 1, Apply = 2 };
 [[nodiscard]] std::string_view toString(Tier);
@@ -76,12 +79,33 @@ private:
     std::unordered_map<std::string, Tier> tiers_;
 };
 
-/// ADR-0232 d2: the `meta` sibling of `params`.
+enum class RunOrigin { Direct, MarkerPrompt };
+struct ConsentDestination;
+
+/// One host-owned model run. All tools dispatched for the run share this state.
+struct RunPolicy {
+    explicit RunPolicy(bool usesEgress) : egress(usesEgress) {}
+    const bool egress;
+    std::atomic<bool> readRemarks{false};
+};
+
+/// The wire's `meta` (ADR-0232 d2) and trusted metadata from the run host.
 struct RequestMeta {
     /// Outer: check at all. Inner nullopt: the root, nothing done yet.
     std::optional<std::optional<std::int64_t>> expectHead;
     std::optional<std::int64_t> deadlineMs;
     std::optional<std::string> idempotencyKey;
+    /// The host sets this when the user starts a run from a marker. It is
+    /// never set from JSON: a model cannot change the origin of its run.
+    RunOrigin runOrigin = RunOrigin::Direct;
+    std::shared_ptr<RunPolicy> runPolicy = {};
+    /// An egress destination supplied by the authenticated transport or host.
+    std::shared_ptr<const ConsentDestination> readDestination = {};
+    /// Captured by a trusted transport before a frame waits in its own queue.
+    std::optional<std::uint64_t> receivedAgentEpoch = {};
+    /// The open project instance a trusted host started this run for.
+    /// A copied file can have the same wire handle.
+    std::shared_ptr<const ProjectAccess> boundProject = {};
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
@@ -112,6 +136,7 @@ struct CallContext {
     const Principal& who;
     Tier tier;                  ///< the granted tier
     const RequestMeta& meta;
+    std::optional<std::uint64_t> agentWriteEpoch = {};
 };
 
 struct MethodSpec {
@@ -133,6 +158,10 @@ struct MethodSpec {
     /// of op payloads -- then costs the owner thread nothing.
     std::function<std::optional<Outcome>(CallContext&, Json& params)> screen;
     std::function<Outcome(CallContext&, const Json& params)> run;
+    /// Project and application tier caps. Checked before replay and again on
+    /// the owner. The API cannot give the caller a higher tier.
+    std::function<Tier(Tier, const Json& params, const RequestMeta&)> restrictTier = {};
+    const AgentWriteGate* agentWrites = nullptr;
 };
 
 enum class CallState : int { Pending = 0, Taken = 1, Abandoned = 2 };

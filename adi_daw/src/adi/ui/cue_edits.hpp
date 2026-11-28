@@ -62,4 +62,14 @@ inline TrackEdit cueOutputEdit(const engine::Snapshot &snapshot, int first) {
         edit.ops.push_back(track_edits_detail::op("cue.setOutput", {{"first", first}}, "Change Cue Out"));
     return edit;
 }
+inline TrackEdit mainOutputEdit(const engine::Snapshot &snapshot, int first) {
+    TrackEdit edit;
+    if (first < 0 || first > 62 || first % 2 != 0) {
+        edit.refusal = "Main Out is a stereo pair of the audio device's outputs.";
+        return edit;
+    }
+    if (first != snapshot.cue.firstMainOutputChannel)
+        edit.ops.push_back(track_edits_detail::op("mixer.setMainOutput", {{"first", first}}, "Change Main Out"));
+    return edit;
+}
 } // namespace adi::ui

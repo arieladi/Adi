@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -330,16 +331,6 @@ struct RecordingDefaults {
     std::string quantize = "1/16";
     bool keepMonitoringLatency = true;
 };
-// Live's monitoring for a new audio or MIDI track: Auto (N67, ruled by win under ADR-0203 d1), where
-// `track.create` stores Off. Carried in the creating batch, the same undo step.
-inline constexpr std::int64_t kNewTrackMonitorMode = 2; // `tracks.monitor_mode`: 0 Off, 1 In, 2 Auto
-inline OpRequest newTrackMonitorOp(std::int64_t track, const char *label) {
-    OpRequest r;
-    r.opType = "track.setMonitorMode";
-    r.payload = {{"id", track}, {"mode", kNewTrackMonitorMode}};
-    r.label = label;
-    return r;
-}
 inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const RecordingDefaults &defaults, const char *label) {
     auto ops = trackRecordingDefaults(track, defaults.quantize, defaults.keepMonitoringLatency);
     for (auto &o : ops)
@@ -379,7 +370,8 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
                            {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
-    edit.ops.push_back(newTrackMonitorOp(id, label));
+    if (midi)
+        edit.ops.push_back(op("track.setMonitorMode", {{"id", id}, {"mode", 2}}, label));
     if (defaults != nullptr)
         for (auto &o : recordingDefaultOps(id, *defaults, label))
             edit.ops.push_back(std::move(o));
@@ -505,6 +497,42 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
         auto stay = children(tracks, parent);
         stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
         renumber(edit.ops, stay, label);
+    }
+    return edit;
+}
+// Move selected tracks one sibling slot without changing their parents. A selected group carries
+// its descendants, and each run of selected siblings passes one unselected sibling of its rank.
+inline TrackEdit nudgeTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, bool down) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const std::set<std::int64_t> picked(ids.begin(), ids.end());
+    std::set<std::int64_t> moving, parents;
+    for (const auto &track : tracks) {
+        if (!track || rank(*track) == 2 || !picked.contains(track->id))
+            continue;
+        auto *parent = find(tracks, track->parent);
+        for (std::size_t depth = 0; parent && depth < tracks.size() && !picked.contains(parent->id); ++depth)
+            parent = find(tracks, parent->parent);
+        if (!parent) {
+            moving.insert(track->id);
+            parents.insert(track->parent);
+        }
+    }
+    const char *label = moving.size() > 1 ? "Move Tracks" : "Move Track";
+    for (const auto parent : parents) {
+        auto order = children(tracks, parent);
+        bool changed = false;
+        for (std::size_t step = 1; step < order.size(); ++step) {
+            const auto from = down ? order.size() - step - 1 : step;
+            const auto to = down ? from + 1 : from - 1;
+            if (moving.contains(order[from]->id) && !moving.contains(order[to]->id) &&
+                rank(*order[from]) == rank(*order[to])) {
+                std::swap(order[from], order[to]);
+                changed = true;
+            }
+        }
+        if (changed)
+            renumber(edit.ops, order, label);
     }
     return edit;
 }

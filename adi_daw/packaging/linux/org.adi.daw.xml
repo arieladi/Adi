@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-adi-project">
+    <comment>ADI project</comment>
+    <glob pattern="*.adi"/>
+    <magic priority="80">
+      <match type="string" offset="0" value="SQLite format 3\0">
+        <match type="big32" offset="68" value="0x41444931"/>
+      </match>
+    </magic>
+  </mime-type>
+</mime-info>

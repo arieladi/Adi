@@ -18,6 +18,8 @@ enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 // Single-delivery policies. Replace binds the requested ordinary file at
 // preflight; an absent endpoint uses atomic no-clobber publication instead.
 enum class Collision { Fail, Increment, Replace };
+enum class PcmContainer { Wav, Aiff };
+[[nodiscard]] const char* pcmSuffix(PcmContainer);
 
 // ADR-0071/0205: application job state, never project operations. This first
 // runner exports direct wet sources as WAV, or NI Stems through niStems. Noise
@@ -61,6 +63,9 @@ struct Job {
     // The complete literal WAV filename chosen by the single-export save
     // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
     std::optional<std::string> exactWavFilename;
+    PcmContainer container = PcmContainer::Wav;
+    // The complete literal filename from a single PCM delivery's save dialog.
+    std::optional<std::string> exactPcmFilename;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -180,6 +185,9 @@ struct Control {
     // cancelled job. Without it the caller is the owner. Rendering always
     // processes on the caller's thread and never overlaps an owner action.
     std::function<void(std::function<void()>)> onHost{};
+    // WAV work fraction, including preroll and normalization. 1.0 means the
+    // delivery has been published. The written-frame callback above is separate.
+    std::function<void(JobId, double)> wavProgress{};
 };
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
@@ -221,6 +229,15 @@ void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHo
 // Single-owner synchronous queue. The caller chooses its execution thread;
 // snapshots are independent values for posting to a UI. No callback runs on an
 // audio driver. A running job is immutable; callbacks may edit pending jobs.
+struct QueueObserver {
+    // At the job's start, return its individual stop token. No token means
+    // the producer cancelled the pending job, so it is removed without rendering.
+    std::function<std::optional<std::stop_token>(JobId)> start;
+    // The renderer has settled and any successful publication already happened.
+    // Observers run on the queue owner and may not mutate the queue.
+    std::function<void(JobId, const Result&)> finished;
+};
+
 class Queue {
 public:
     JobId add(Job);
@@ -231,7 +248,7 @@ public:
     // Valid until the next run/destruction; copy it for longer retention.
     // Unstarted run members remain Pending in the queue (not Cancelled).
     [[nodiscard]] const RunReport& lastRun() const noexcept { return lastRun_; }
-    void run(engine::DeviceLoader = {}, Control = {});
+    void run(engine::DeviceLoader = {}, Control = {}, const QueueObserver& = {});
 private:
     std::vector<Entry> jobs_;
     JobId next_ = 1;

@@ -188,21 +188,30 @@ std::filesystem::path defaultScannerExecutable() {
 #endif
 }
 std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
-                                        std::string_view extension) {
+                                        std::string_view extension, std::vector<Failure>* unreadable) {
     if (audio::onAudioThread) return {};
     namespace fs = std::filesystem;
     std::vector<fs::path> pending;
     for (const auto& bytes : roots)
         pending.emplace_back(std::u8string(bytes.begin(), bytes.end()));
-    std::set<fs::path> visited;
+    std::set<fs::path> visited, reported;
     std::set<std::string> candidates;
+    const auto reportDenied = [&](const fs::path& path, const std::error_code& error) {
+        if (unreadable && isAccessDenied(error) && reported.insert(path).second)
+            unreadable->push_back({utf8(path), "Cannot read this search location: " + error.message(), State::UnreadablePath});
+    };
     const fs::directory_iterator end;
     while (!pending.empty()) {
-        std::error_code ec;
-        const auto dir = fs::canonical(pending.back(), ec);
+        auto path = std::move(pending.back());
         pending.pop_back();
-        if (ec || !visited.insert(dir).second) continue;
-        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+        std::error_code ec;
+        const auto dir = fs::canonical(path, ec);
+        if (ec) {
+            reportDenied(path, ec);
+            continue;
+        }
+        if (!visited.insert(dir).second) continue;
+        fs::directory_iterator it(dir, ec);
         for (; !ec && it != end; it.increment(ec)) {
             auto suffix = utf8(it->path().extension());
             for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
@@ -210,10 +219,12 @@ std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
             if (suffix == extension) {
                 const auto module = fs::canonical(it->path(), entryError);
                 if (!entryError) candidates.insert(utf8(module));
-                continue; // A bundle is a candidate, not another search directory.
+            } else if (it->is_directory(entryError)) {
+                pending.push_back(it->path());
             }
-            if (it->is_directory(entryError)) pending.push_back(it->path());
+            reportDenied(it->path(), entryError);
         }
+        reportDenied(dir, ec);
     }
     return {candidates.begin(), candidates.end()};
 }

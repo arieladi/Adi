@@ -2,6 +2,7 @@
 #include "adi/automation_splice.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -124,6 +125,115 @@ void retainDomain(SplicedKnot &output, std::span<const SpliceKnot> source, std::
     output.knot.slice = engine::CurveSlice{lo, hi, whole.sourceFirst, whole.sourceLast};
     output.rangeOrigin = SpliceOrigin{SplicePart::Original, index};
 }
+constexpr auto hold = static_cast<std::uint8_t>(engine::CurveShape::Hold);
+constexpr auto linear = static_cast<std::uint8_t>(engine::CurveShape::Linear);
+constexpr auto exponential = static_cast<std::uint8_t>(engine::CurveShape::Exp);
+constexpr auto logarithmic = static_cast<std::uint8_t>(engine::CurveShape::Log);
+
+double phaseAt(std::int64_t sample, std::span<const SpliceKnot> points) {
+    return static_cast<double>(sample - points.front().sample) /
+           static_cast<double>(points.back().sample - points.front().sample);
+}
+
+// Linear segments need only knot checks. For an exponential or logarithm,
+// the error between neighboring source knots can also peak where slopes match.
+bool fitsCurve(std::span<const SpliceKnot> points, std::uint8_t curve, float tension,
+               double tolerance) {
+    const double first = points.front().point.value, last = points.back().point.value;
+    double scale = 0;
+    for (const auto &point : points)
+        scale = std::max(scale, std::abs(point.point.value));
+    const auto allowed = tolerance - 16 * (std::numeric_limits<double>::epsilon() * scale +
+                                           std::numeric_limits<double>::denorm_min());
+    const auto fits = [&](double phase, double value) {
+        return std::abs(engine::curveValue(first, last, phase, curve, tension) - value) <= allowed;
+    };
+    for (const auto &point : points)
+        if (!fits(phaseAt(point.sample, points), point.point.value))
+            return false;
+
+    if (curve == linear)
+        return true;
+    // Log with t is the reflected exponential with -t.
+    const double k = static_cast<double>(tension) * engine::kExpRange *
+                     (curve == logarithmic ? -1.0 : 1.0);
+    if (k == 0)
+        return true;
+    const double startSlope = (last - first) * (k / std::expm1(k));
+    if (startSlope == 0 || !std::isfinite(startSlope))
+        return false;
+    const auto logStartSlope = std::log(std::abs(startSlope));
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        const auto &a = points[i - 1], &b = points[i];
+        const auto left = phaseAt(a.sample, points), right = phaseAt(b.sample, points);
+        const auto sourceSlope = (b.point.value - a.point.value) / (right - left);
+        if (!std::isfinite(sourceSlope))
+            return false;
+        if (sourceSlope == 0 || std::signbit(sourceSlope) != std::signbit(startSlope))
+            continue;
+        const auto extremum = (std::log(std::abs(sourceSlope)) - logStartSlope) / k;
+        if (extremum > left && extremum < right &&
+            !fits(extremum, std::lerp(a.point.value, b.point.value,
+                                     (extremum - left) / (right - left))))
+            return false;
+    }
+    return true;
+}
+
+std::optional<SpliceKnot> fitSegment(std::span<const SpliceKnot> points, double tolerance) {
+    auto fitted = points.front();
+    fitted.point.curve = linear;
+    fitted.point.tension = 0;
+    if (fitsCurve(points, linear, 0, tolerance))
+        return fitted;
+    const auto &middle = points[points.size() / 2];
+    const auto delta = points.back().point.value - points.front().point.value;
+    if (delta == 0 || !std::isfinite(delta))
+        return {};
+    const auto desired = (middle.point.value - points.front().point.value) / delta;
+    if (!(desired > 0 && desired < 1))
+        return {};
+    const auto phase = phaseAt(middle.sample, points);
+    const auto curve = desired < phase ? exponential : logarithmic;
+    double lower = 0, upper = 1;
+    for (int iteration = 0; iteration < 32; ++iteration) {
+        const double tension = (lower + upper) * 0.5;
+        const auto actual = engine::curveShape(curve, phase, tension);
+        if (curve == exponential ? actual > desired : actual < desired)
+            lower = tension;
+        else
+            upper = tension;
+    }
+    fitted.point.curve = curve;
+    fitted.point.tension = static_cast<float>((lower + upper) * 0.5);
+    return fitsCurve(points, curve, fitted.point.tension, tolerance) ? std::optional(fitted)
+                                                                    : std::nullopt;
+}
+
+void appendReducedRun(std::span<const SpliceKnot> original, std::size_t first, std::size_t last,
+                      double tolerance, std::vector<SplicedKnot> &out) {
+    if (last == first + 1) {
+        out.push_back(retained(original[first], SplicePart::Original, first));
+        return;
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> pending{{first, last}};
+    while (!pending.empty()) {
+        const auto [left, right] = pending.back();
+        pending.pop_back();
+        if (right == left + 1) {
+            out.push_back(retained(original[left], SplicePart::Original, left));
+        } else if (const auto fitted = fitSegment(original.subspan(left, right - left + 1), tolerance)) {
+            out.push_back({*fitted, {SplicePart::Original, left}, {}});
+        } else {
+            // Balanced splits bound fit work to O(n log n), including noisy
+            // runs where nearly every recorded point needs to survive.
+            const auto middle = left + (right - left) / 2;
+            pending.emplace_back(middle, right);
+            pending.emplace_back(left, middle);
+        }
+    }
+}
+
 } // namespace
 SplicePlan planEnvelopeSplice(std::span<const SpliceKnot> original, double defaultValue,
                               SpliceBounds bounds, std::span<const SpliceKnot> replacement,
@@ -185,6 +295,71 @@ SplicePlan planEnvelopeSplice(std::span<const SpliceKnot> original, double defau
         }
         for (std::size_t i = suffix; i < original.size(); ++i)
             result.knots.push_back(retained(original[i], SplicePart::Original, i));
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+        result.knots.clear();
+    }
+    return result;
+}
+SplicePlan planEnvelopeSimplification(std::span<const SpliceKnot> original, SpliceBounds bounds,
+                                      double tolerance, std::size_t pointBudget) {
+    SplicePlan result;
+    try {
+        require(pointBudget > 0 && pointBudget <= hardPointLimit && original.size() <= pointBudget,
+                "automation splice point budget exceeded");
+        require(std::isfinite(tolerance) && tolerance >= 0,
+                "Simplify Envelope needs a finite nonnegative tolerance");
+        require(bounds.begin.native >= 0 && bounds.begin.native < bounds.end.native &&
+                    bounds.begin.sample >= 0 && bounds.begin.sample < bounds.end.sample &&
+                    bounds.end.sample <= sampleLimit,
+                "Simplify Envelope needs ordered native and sample bounds");
+        validate(original);
+        validateCut(original, bounds.begin);
+        validateCut(original, bounds.end);
+        if (original.size() > 1)
+            require(std::any_of(original.begin(), original.end() - 1,
+                        [](const auto &knot) { return knot.point.curve != hold; }),
+                    "Simplify Envelope does not change a Hold envelope");
+
+        const auto eligible = [&](std::size_t left) {
+            if (left + 1 >= original.size())
+                return false;
+            const auto &a = original[left], &b = original[left + 1];
+            return a.point.time >= bounds.begin.native && b.point.time <= bounds.end.native &&
+                   a.sample < b.sample && !a.slice && (a.point.curve == linear || a.point.curve == hold);
+        };
+        result.knots.reserve(original.size());
+        for (std::size_t i = 0; i < original.size();) {
+            if (!eligible(i)) {
+                result.knots.push_back(retained(original[i], SplicePart::Original, i));
+                ++i;
+                continue;
+            }
+            const auto first = i;
+            const auto curve = original[first].point.curve;
+            while (eligible(i) && original[i].point.curve == curve)
+                ++i;
+            if (curve == linear) {
+                appendReducedRun(original, first, i, tolerance, result.knots);
+            } else {
+                // On a continuous lane, retain held steps larger than the bound
+                // and thin only redundant or near-identical recorded levels.
+                result.knots.push_back(retained(original[first], SplicePart::Original, first));
+                auto anchor = first;
+                for (auto j = first + 1; j < i; ++j) {
+                    const auto level = original[j].point.value;
+                    if (std::abs(level - original[anchor].point.value) > tolerance ||
+                        std::abs(level - original[j - 1].point.value) > tolerance ||
+                        std::abs(level - original[j + 1].point.value) > tolerance) {
+                        result.knots.push_back(retained(original[j], SplicePart::Original, j));
+                        anchor = j;
+                    }
+                }
+            }
+        }
+        if (result.knots.size() == original.size())
+            result.knots.clear();
         result.ok = true;
     } catch (const std::exception &error) {
         result.error = error.what();

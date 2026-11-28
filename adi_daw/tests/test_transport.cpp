@@ -25,15 +25,13 @@ void check(bool ok, const std::string& name) {
 }
 
 // The slow truth: where the playhead is after `steps` samples, walked one at a
-// time. A position already at or past the loop end re-enters the loop first,
-// which is what sampleAt does for a playhead the user located past the end.
+// time. A position at or past Loop End cannot encounter that boundary again.
 struct Model {
     std::int64_t position = 0, begin = 0, end = 0;
     bool looping = false;
 
     std::int64_t at(std::int64_t steps) const {
         std::int64_t p = position;
-        if (looping && p >= end) p = begin + (p - begin) % (end - begin);
         for (std::int64_t i = 0; i < std::max<std::int64_t>(0, steps); ++i) {
             ++p;
             if (looping && p == end) p = begin;
@@ -77,14 +75,14 @@ void loopShapes() {
 }
 
 void pastTheEnd() {
-    // The case the drone got wrong: located past the end of an active loop.
     Transport t;
     t.locate(150);
     t.loop(0, 100, true);
-    check(t.sampleAt(0) == 50, "past the end, offset 0 re-enters the loop at (150 - 0) mod 100");
-    check(t.sampleAt(50) == 0, "past the end, offset 50 lands exactly on the loop start");
-    check(t.contiguousFrames(50, 30) == 30, "30 frames from the loop start do not reach the end");
-    check(t.contiguousFrames(0, 80) == 50, "from 50, only 50 frames remain before the wrap");
+    check(t.sampleAt(0) == 150, "SC-445: locating past Loop End keeps the chosen position");
+    check(t.sampleAt(50) == 200, "SC-445: after Loop End, the offset advances linearly");
+    check(t.contiguousFrames(0, 80) == 80, "SC-445: a block past Loop End stays contiguous");
+    t.locate(100);
+    check(t.sampleAt(1) == 101, "SC-445: a locate exactly at Loop End also continues forward");
 }
 
 void stoppedAndEmptyAdvance() {
@@ -126,7 +124,7 @@ void againstTheModel() {
                             const std::int64_t got = t.contiguousFrames(off, count);
                             // contiguousFrames promises frames up to (not including) the wrap.
                             const std::int64_t want =
-                                m.looping ? std::min(count, end - m.at(off)) : count;
+                                m.looping && m.position < end ? std::min(count, end - m.at(off)) : count;
                             if (got != want) ++mismatches;
                         }
                     }

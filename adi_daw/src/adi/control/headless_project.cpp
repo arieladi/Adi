@@ -158,16 +158,6 @@ bool makeScratch(fs::path& out, std::string& error) {
     return false;
 }
 
-std::string metaValue(Store& store, const char* key) {
-    try {
-        SQLite::Statement st(store.db(), "SELECT value FROM adi_meta WHERE key = ?");
-        st.bind(1, key);
-        if (st.executeStep() && !st.getColumn(0).isNull()) return st.getColumn(0).getString();
-    } catch (const std::exception&) {
-    }
-    return {};
-}
-
 /// The undo head on `store`, reporting failure instead of reading it as the
 /// root (OpJournal::headSeq answers nullopt for both).
 std::optional<std::int64_t> headOf(Store& store, std::string& error) {
@@ -224,7 +214,8 @@ std::shared_ptr<HeadlessProject> HeadlessProject::open(const fs::path& file, std
 
     // ADR-0232 d2's explicit project: the file's project_uuid when it has one
     // (AGT-02 writes it), else a stable opaque handle. A path never leaves.
-    p->handle_ = metaValue(*reader, "project_uuid");
+    p->projectUuid_ = reader->projectUuid();
+    p->handle_ = p->projectUuid_;
     if (p->handle_.empty()) {
         const std::string id = utf8(fs::weakly_canonical(absolute, ec));
         const auto hash = media::blake3Bytes(std::as_bytes(std::span(id.data(), id.size())));
@@ -353,6 +344,13 @@ bool HeadlessProject::refreshSnapshotLocked(std::string& error) {
         return false;
     }
     return true;
+}
+
+std::optional<Tier> HeadlessProject::agentTierOverride() {
+    std::string error;
+    auto reader = openReader(error);
+    if (!reader) return Tier::Observe;
+    return readProjectAgentTier(*reader);
 }
 
 agent::Preview HeadlessProject::preview(const agent::Changeset& cs, const agent::Limits& limits) {

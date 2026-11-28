@@ -148,7 +148,9 @@ void refusalAndLifecycle() {
 }
 void mapping() {
     Scope::Settings settings;
-    check(Scope::mapNormalized({},settings) && settings.threshold==0 && settings.gain==1 && settings.columnsPerSample==.1 &&
+    // libm can round pow(10, -1) to a different adjacent double than the literal 0.1.
+    check(Scope::mapNormalized({},settings) && settings.threshold==0 && settings.gain==1 &&
+          std::abs(settings.columnsPerSample - .1) < 1e-15 &&
           settings.holdoffSamples==1, "normalized midpoint equations are explicit");
     const auto saved=settings;
     auto bad=Scope::Normalized{}; bad.amplitude=std::numeric_limits<float>::infinity();

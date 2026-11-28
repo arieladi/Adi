@@ -17,15 +17,25 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
 #include "adi/control/projection.hpp"
+#include "adi/freeze_commands.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/ops.hpp"
+#include "adi/render/freeze_capture.hpp"
+#include "adi/render/queue.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
 #include "adi/textproj.hpp"
+#include "adi/ui/project_document.hpp"
+#include "adi/ui/track_edits.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -33,6 +43,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -364,6 +375,145 @@ void testLevel2(const rows::Model& m) {
           "past the note cap: the cap's worth, and notesTruncated");
 }
 
+void testEmptyTracks() {
+    section("SC-438: a project with an empty group and then only Main");
+    test::TempDirectory temp("control_projection", "empty-tracks");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "original.adi", true, {}, error);
+    check(doc != nullptr, "create the normal song: " + error);
+    if (!doc)
+        return;
+    const auto initial = rows::readModel(doc->store());
+    const auto main = std::ranges::find(initial.tracks, "master", &rows::Track::kind);
+    const auto audio = std::ranges::find(initial.tracks, "audio", &rows::Track::kind);
+    check(main != initial.tracks.end() && audio != initial.tracks.end(), "the default song has Main and a regular track");
+    if (main == initial.tracks.end() || audio == initial.tracks.end())
+        return;
+    const auto master = main->id;
+    auto grouped = ui::groupTracks(doc->view().current()->tracks, {audio->id});
+    const auto group = grouped.select;
+    const auto made = doc->ops().submit(std::move(grouped.ops));
+    const bool groupReady = made.ok && group > 0 && doc->synchronise();
+    check(groupReady, "create the group through the normal edit");
+    if (!groupReady)
+        return;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", RowIds(doc->store().db()).next("clips")},
+                    {"track", audio->id}, {"kind", "audio"}, {"name", "Take"},
+                    {"pos", 0}, {"length", W}};
+    OpRequest route;
+    route.opType = "routing.connect";
+    route.payload = {{"id", RowIds(doc->store().db()).next("routing")},
+                     {"srcKind", "track"}, {"src", audio->id},
+                     {"dstKind", "track"}, {"dst", group}, {"kind", "main"}};
+    const auto populated = doc->ops().submit({std::move(clip), std::move(route)});
+    check(populated.ok, "populate the child with an audio clip and an explicit route to its group: " + populated.error);
+    if (!populated.ok)
+        return;
+    const auto deleteTrack = [](std::int64_t id) {
+        OpRequest request;
+        request.opType = "track.delete";
+        request.payload = {{"id", id}};
+        return request;
+    };
+    std::vector<OpRequest> remove;
+    for (const auto &track : initial.tracks)
+        if (track.id != master)
+            remove.push_back(deleteTrack(track.id));
+    const auto emptied = doc->ops().submit(std::move(remove));
+    const bool groupEmptied = emptied.ok && doc->synchronise();
+    check(groupEmptied, "delete the child and every other non-Main track, keeping the empty group");
+    if (!groupEmptied)
+        return;
+
+    const auto reopen = [&](const char *name) {
+        const auto path = temp.path() / name;
+        const bool saved = doc->saveAs(path);
+        check(saved, "save a sparse project: " + doc->error());
+        if (!saved)
+            return false;
+        doc.reset();
+        doc = ui::ProjectDocument::open(path, false, {}, error);
+        check(doc != nullptr, "reopen the saved sparse project: " + error);
+        return doc != nullptr;
+    };
+    constexpr int rate = 48000, frames = 129;
+    const auto quietExport = [&](const char *name, std::int64_t source) {
+        render::Job job;
+        job.project = doc->store().path();
+        job.directory = temp.path();
+        job.nameTemplate = name;
+        job.session = {2, rate, 64};
+        job.source.trackId = source;
+        job.endSample = frames;
+        job.encoding.format = audio::WavFormat::Float32;
+        const auto result = render::renderWav(job, {});
+        check(result.state == render::JobState::Completed, "render the silent project or group: " + result.error);
+        if (result.state != render::JobState::Completed)
+            return;
+        audio::WavReader wave(result.output);
+        std::array<float, frames * 2> pcm{};
+        check(wave.frames() == frames && wave.channels() == 2 && wave.read(pcm.data(), frames) == frames &&
+                  std::ranges::all_of(pcm, [](float sample) { return sample == 0.f; }),
+              "the explicit export interval contains exactly 129 silent stereo frames");
+    };
+    const auto agentRead = [&] {
+        return projectLevel(rows::readModel(doc->store()), 2, ReadScope{}, OpJournal(doc->store()).headSeq(), "song");
+    };
+    if (!reopen("empty-group.adi"))
+        return;
+    auto model = rows::readModel(doc->store());
+    auto plan = engine::planGraph(model);
+    check(model.tracks.size() == 2 && model.routing.empty() &&
+              freeze::groupMembers(model, group) == std::set{group} && plan.problems.empty() &&
+              std::ranges::any_of(plan.edges, [&](const auto &edge) {
+                  return plan.nodes[edge.from].trackId == group && plan.nodes[edge.to].trackId == master;
+              }), "the reopened empty group has its regular route to Main and no deleted children");
+    const auto groupRead = agentRead();
+    const auto *groupRow = byId(groupRead.at("tracks"), group);
+    check(groupRead.at("tracks").size() == 2 && groupRow && groupRow->at("kind") == "group" &&
+              groupRow->at("clips") == 0 && groupRead.at("clips").empty() && groupRead.at("routing").empty(),
+          "the agent sees the empty group and Main, with the deleted clip and route gone");
+    quietExport("empty-group", group);
+    quietExport("main-with-empty-group", 0);
+
+    check(!doc->freezeTrack(group) && !doc->error().empty() && !doc->trackRenderRunning(),
+          "the ordinary Freeze action rejects a group cleanly without starting a render");
+    render::FreezeCaptureSpec freezeSpec;
+    freezeSpec.tracks = {group};
+    freezeSpec.wholeGroups = true;
+    freezeSpec.endSample = frames;
+    freezeSpec.session = {2, rate, 64};
+    auto capture = render::captureFreezeAudio(doc->store(), freezeSpec);
+    check(capture.ready() && capture.streams().size() == 1 && capture.streams().front().contributors.empty(),
+          "whole-group freeze captures the group itself with no missing contributors: " + capture.error());
+    if (capture.ready()) {
+        auto prepared = freeze::prepareFreeze(doc->store(), std::move(capture), 0, 101);
+        const auto frozen = freeze::commitFreeze(doc->store(), prepared, 0);
+        check(frozen.ok && freeze::groupState(doc->store().db(), group).at("members") == Json::array(),
+              "an empty frozen group writes an empty membership image: " + frozen.error);
+        if (frozen.ok)
+            check(doc->synchronise() && doc->unfreezeTrack(group), "unfreeze the empty group through the document");
+    }
+
+    const auto removed = doc->ops().submit(deleteTrack(group));
+    const bool mainOnly = removed.ok && doc->synchronise();
+    check(mainOnly, "delete the last group without creating a replacement track");
+    if (!mainOnly || !reopen("main-only.adi"))
+        return;
+    model = rows::readModel(doc->store());
+    plan = engine::planGraph(model);
+    check(model.tracks.size() == 1 && model.tracks.front().id == master && model.routing.empty() && plan.problems.empty(),
+          "Main alone survives save and reopen with a valid graph and no stale route rows");
+    const auto mainRead = agentRead();
+    check(idsOf(mainRead.at("tracks")) == std::vector{master} && mainRead.at("clips").empty() &&
+              mainRead.at("routing").empty(), "the agent sees only Main and no dangling routing or clips");
+    check(!doc->freezeTrack(master) && !doc->error().empty() && !doc->trackRenderRunning(),
+          "Main alone has no freeze action and opens no pending job");
+    quietExport("main-only", 0);
+}
+
 // --- helpers ------------------------------------------------------------------------------
 
 void testTicksAtBar(const rows::Model& m) {
@@ -394,6 +544,7 @@ int runAll() {
     testLevel0(m);
     testLevel1(m);
     testLevel2(m);
+    testEmptyTracks();
     testTicksAtBar(m);
     testNoteName();
     auto anchored = m;

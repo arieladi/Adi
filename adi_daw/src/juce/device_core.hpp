@@ -110,7 +110,7 @@ public:
     /// monitors.
     void process(float* const* out, std::int32_t numOut,
                  const float* const* in, std::int32_t numIn,
-                 std::int32_t frames) noexcept;
+                 std::int32_t frames, engine::OutputChannelMap outputs = {}) noexcept;
 
     // --- observable state, so tests assert on what happened ----------------
 

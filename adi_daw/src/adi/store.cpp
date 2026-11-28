@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/appdata.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
@@ -19,6 +20,28 @@
 #include <stdexcept>
 #include <system_error>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/mount.h>
+#elif defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+// Older Linux headers lack some filesystem IDs. Keep recognizing the same mounts.
+#ifndef CEPH_SUPER_MAGIC
+#define CEPH_SUPER_MAGIC 0x00c36400
+#endif
+#ifndef CIFS_SUPER_MAGIC
+#define CIFS_SUPER_MAGIC 0xFF534D42
+#endif
+#ifndef SMB2_SUPER_MAGIC
+#define SMB2_SUPER_MAGIC 0xFE534D42
+#endif
+#endif
+
 namespace adi {
 namespace {
 
@@ -27,9 +50,111 @@ std::string sqlitePath(const std::filesystem::path& path) {
     return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
 }
 
+namespace fs = std::filesystem;
+
+bool insideFolder(const fs::path& path, const fs::path& configuredRoot) {
+    if (!configuredRoot.is_absolute()) return false;
+    std::error_code error;
+    const auto root = fs::canonical(configuredRoot, error);
+    if (error) return false;
+    auto part = path.begin();
+    for (const auto& component : root) {
+        if (part == path.end()) return false;
+#if defined(_WIN32)
+        if (CompareStringOrdinal(part->c_str(), -1, component.c_str(), -1, TRUE) != CSTR_EQUAL) return false;
+#else
+        if (*part != component) return false;
+#endif
+        ++part;
+    }
+    return true;
+}
+
+bool networkFolder(const fs::path& folder) {
+#if defined(_WIN32)
+    const auto& name = folder.native();
+    if (name.starts_with(L"\\\\?\\UNC\\") ||
+        (name.starts_with(L"\\\\") && !name.starts_with(L"\\\\?\\") && !name.starts_with(L"\\\\.\\")))
+        return true;
+    std::wstring volume(32768, L'\0');
+    return GetVolumePathNameW(folder.c_str(), volume.data(), static_cast<DWORD>(volume.size())) &&
+           GetDriveTypeW(volume.c_str()) == DRIVE_REMOTE;
+#elif defined(__APPLE__)
+    struct statfs volume{};
+    return ::statfs(folder.c_str(), &volume) == 0 && (volume.f_flags & MNT_LOCAL) == 0;
+#elif defined(__linux__)
+    struct statfs volume{};
+    if (::statfs(folder.c_str(), &volume) != 0) return false;
+    switch (static_cast<std::uint32_t>(volume.f_type)) {
+        case NFS_SUPER_MAGIC:
+        case SMB_SUPER_MAGIC:
+        case SMB2_SUPER_MAGIC:
+        case CIFS_SUPER_MAGIC:
+        case CEPH_SUPER_MAGIC:
+        case AFS_SUPER_MAGIC:
+        case NCP_SUPER_MAGIC:
+        case CODA_SUPER_MAGIC:
+            return true;
+        default:
+            return false;
+    }
+#else
+    (void)folder;
+    return false;
+#endif
+}
+
+bool synchronizedProject(const fs::path& path) {
+    if (path.empty() || path == fs::path(":memory:")) return false;
+    std::error_code error;
+    const auto canonical = fs::canonical(path, error);
+    if (error) return false;
+    for (const char* key : {"OneDrive", "OneDriveConsumer", "OneDriveCommercial", "ADI_SYNC_PROJECTS"})
+        if (insideFolder(canonical, appdata::environmentPath(key))) return true;
+#if defined(__APPLE__)
+    const auto library = appdata::environmentPath("HOME") / "Library";
+    if (insideFolder(canonical, library / "Mobile Documents" / "com~apple~CloudDocs") ||
+        insideFolder(canonical, library / "CloudStorage")) return true;
+#endif
+    return networkFolder(canonical.parent_path());
+}
+
+void prepareSynchronizedJournal(SQLite::Database& db) {
+    // EXTRA also syncs the containing directory when DELETE unlinks the rollback journal.
+    db.exec("PRAGMA synchronous = EXTRA");
+    if (db.execAndGet("PRAGMA journal_mode = DELETE").getString() != "delete")
+        throw std::runtime_error("SQLite did not enter rollback journal mode");
+}
+
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
     return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+std::string newClientId();
+
+std::string readProjectUuid(SQLite::Database& db) {
+    SQLite::Statement row(db, "SELECT value FROM adi_meta WHERE key='project_uuid'");
+    return row.executeStep() && !row.getColumn(0).isNull() ? row.getColumn(0).getString() : std::string{};
+}
+
+void writeProjectUuid(SQLite::Database& db, bool replace = false) {
+    if (!replace && !readProjectUuid(db).empty()) return;
+    auto hex = newClientId();
+    hex[12] = '4';
+    const char nibble = hex[16];
+    const int bits = nibble <= '9' ? nibble - '0' : nibble - 'a' + 10;
+    hex[16] = "89ab"[bits & 3];
+    const auto uuid = hex.substr(0, 8) + '-' + hex.substr(8, 4) + '-' + hex.substr(12, 4) +
+                      '-' + hex.substr(16, 4) + '-' + hex.substr(20);
+    SQLite::Statement row(db, replace
+        ? "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+          "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        : "INSERT INTO adi_meta(key,value) VALUES('project_uuid',?) "
+          "ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+          "WHERE adi_meta.value IS NULL OR adi_meta.value=''");
+    row.bind(1, uuid);
+    row.exec();
 }
 
 std::vector<std::byte> toBytes(const void* p, std::size_t n) {
@@ -124,7 +249,9 @@ std::vector<std::string> tablesAddedAfter(int fromMinor) {
     return out;
 }
 
-bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
+namespace {
+bool migrateSchema(SQLite::Database& db, int fromMinor, std::string& error,
+                   const std::function<void()>& beforeUpgrade = {}) {
     const auto& steps = migrationSteps();
     // The table must cover every minor exactly once, in order; a gap would
     // leave a file claiming a version whose objects it lacks.
@@ -145,7 +272,14 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
 
     try {
         const auto& objects = currentSchemaObjects();
-        SQLite::Transaction txn(db);
+        db.setBusyTimeout(5000);
+        SQLite::Transaction txn(db, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto version = db.execAndGet("PRAGMA user_version").getInt();
+        // Another opener can finish the migration while we acquire the writer lock.
+        if (version == kUserVersion) return true;
+        if (version != kSchemaMajor * 1000 + fromMinor)
+            throw std::runtime_error("project version changed before upgrade");
+        if (beforeUpgrade) beforeUpgrade();
         for (const auto& step : steps) {
             if (step.toMinor <= fromMinor) continue;
             for (const auto& name : step.objects) {
@@ -184,6 +318,7 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
             "UPDATE adi_meta SET value = ? WHERE key = 'schema_minor'");
         meta.bind(1, std::to_string(kSchemaMinor));
         meta.exec();
+        writeProjectUuid(db);
         db.exec("PRAGMA user_version = " + std::to_string(kUserVersion));
         txn.commit();
         return true;
@@ -193,18 +328,29 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
     }
 }
 
+} // namespace
+
+bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
+    return migrateSchema(db, fromMinor, error);
+}
+
 const char* toString(StoreError e) {
     switch (e) {
         case StoreError::Ok:            return "ok";
         case StoreError::AlreadyExists: return "a file already exists at that path";
         case StoreError::CannotCreate:  return "could not create the database";
         case StoreError::CannotOpen:    return "could not open the database";
+        case StoreError::ExclusiveAccessRequired: return "the project requires exclusive access for headless Apply";
         case StoreError::NotAnAdiFile:  return "not a .adi file (application_id mismatch)";
         case StoreError::SchemaTooNew:  return "schema is newer than this build; opened read-only";
         case StoreError::SchemaCorrupt: return "schema present but unreadable";
         case StoreError::SqlError:      return "sql error";
+        case StoreError::MigrationBackupFailed:
+            return "could not save a safety copy before upgrade. The project was left unchanged.";
         case StoreError::MigrationFailed:
             return "an older 1.x file could not be upgraded; it was left unchanged";
+        case StoreError::SyncJournalUnavailable:
+            return "could not prepare single-file journaling in the synced or network folder";
     }
     return "unknown";
 }
@@ -246,6 +392,19 @@ bool Store::setClientId(std::string id) {
     return true;
 }
 
+std::string Store::projectUuid() const {
+    try {
+        if (db_) return readProjectUuid(*db_);
+    } catch (const SQLite::Exception&) {
+        // A read-only open of an unsupported major may have different metadata.
+    }
+    return {};
+}
+
+void Store::renewProjectUuid(SQLite::Database& db) {
+    writeProjectUuid(db, true);
+}
+
 Store::~Store() {
     // Best effort. close() is where the result can actually be reported, which
     // is why it is public and why callers who care should call it.
@@ -253,20 +412,27 @@ Store::~Store() {
         gesture::detail::invalidateSource(*this);
         detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
         closeFinalized();
+        if(untitledCleanupReady_)finishUntitledSave();
     } catch (...) {
     }
 }
 
 bool Store::applySessionPragmas() {
-    // SPEC §3.2. WAL is what makes autosave-during-playback cheap and lets the
-    // render path read a consistent snapshot while the user keeps editing.
+    // Local WAL lets a worker pin a snapshot while the owner keeps editing.
+    // In a sync or network folder, each completed transaction belongs in the
+    // main file. SQLite recovers any previous WAL before leaving WAL mode.
     try {
-        if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
-        db_->exec("PRAGMA synchronous = NORMAL");
-        db_->exec("PRAGMA foreign_keys = ON");
+        synchronizedLocation_ = synchronizedProject(path_);
         db_->exec("PRAGMA busy_timeout = 5000");
+        if (!readOnly_ && synchronizedLocation_) {
+            prepareSynchronizedJournal(*db_);
+        } else {
+            if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
+            db_->exec("PRAGMA synchronous = NORMAL");
+        }
+        db_->exec("PRAGMA foreign_keys = ON");
         return true;
-    } catch (const SQLite::Exception& e) {
+    } catch (const std::exception& e) {
         lastError_ = e.what();
         return false;
     }
@@ -301,29 +467,17 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
     if (!store) return nullptr;
     try {
         SQLite::Transaction root(store->db());
-        // ADR-0209 section 10 d10 keeps Live's default Set. Templates such as
-        // CTZ are separate; New does not silently choose the CTZ hierarchy.
-        // Returns use compiled built-in identities (N15), wet-only, with the
-        // regular tracks' sends at the mixer's -infinity floor, Post by default.
-        // Each track stores its colour, the palette's first seven in order (ADR-0211 d2), so none
-        // moves when a track is inserted or grouped before it.
-        // Their names are numbered ones, "# MIDI" and "# Audio", shown "1 MIDI" … "4 Audio": as Live's,
-        // they renumber when a track is inserted or grouped before them (walk-B B13; manual 18.2).
-        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode,color) VALUES"
-            "(1,'master','Main',6,0,6),(2,'midi','# MIDI',0,2,0),(3,'midi','# MIDI',1,2,1),"
-            "(4,'audio','# Audio',2,2,2),(5,'audio','# Audio',3,2,3),"
-            "(6,'return','A Reverb',4,0,4),(7,'return','B Delay',5,0,5);"
-            "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
-            "INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES"
-            "(1,'internal','org.adidaw.builtin.reverb','ADI','Reverb','1','effect'),"
-            "(2,'internal','org.adidaw.builtin.delay','ADI','Delay','1','effect');"
-            "INSERT INTO device_chains(id,track_id,name) VALUES(1,6,'Devices'),(2,7,'Devices');"
-            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(1,1,1,'Reverb'),(2,2,2,'Delay');"
-            "INSERT INTO plugin_params(device_id,param_id,name,normalized_value,real_value,display,unit) VALUES"
-            "(1,'31','Mix',1.0,100.0,'100 %','%'),(2,'25','Mix',1.0,100.0,'100 %','%');"
-            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pre_fader,enabled) "
-            "SELECT (t.id-2)*2+(r.id-5),'track',t.id,'track',r.id,'send',r.id-6,-150.0,0,1 "
-            "FROM tracks t CROSS JOIN tracks r WHERE t.id BETWEEN 2 AND 5 AND r.id IN(6,7);"
+        // SC-437: New has four source tracks and Main. A saved project or template
+        // supplies its own tracks, devices and routing when opened.
+        // Store each colour so inserting or grouping a track does not recolour the rest.
+        // The numbered names display as 1 MIDI … 4 Audio and follow later track order.
+        SQLite::Statement seedTracks(store->db(),
+            "INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode,color) VALUES"
+            "(1,'master','Main',4,0,6),(2,'midi','# MIDI',0,2,0),(3,'midi','# MIDI',1,2,1),"
+            "(4,'audio','# Audio',2,:audioMonitor,2),(5,'audio','# Audio',3,:audioMonitor,3)");
+        seedTracks.bind(1, kNewAudioTrackMonitorMode);
+        seedTracks.exec();
+        store->db().exec("INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
         SQLite::Statement recording(store->db(),
@@ -408,24 +562,25 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             meta.bind(2, k);
             meta.exec();
         }
+        writeProjectUuid(*db);
         if (failNextCreate.exchange(false, std::memory_order_relaxed))
             throw SQLite::Exception("injected create fault (test seam)", 1 /* SQLITE_ERROR */);
         create.commit();
 
         auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false,lease));
         if (!store->applySessionPragmas()) {
+            err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
             // As the catch below: no schema-only file left at the user's path.
             // Close SQLite first (on Windows it holds the file without
             // FILE_SHARE_DELETE); removeCreated still keeps a file another
             // reader has already opened.
             store.reset();
             if(lease)(void)lease->removeCreated(ec);
-            err = StoreError::SqlError;
             return nullptr;
         }
         err = StoreError::Ok;
         return store;
-    } catch (const SQLite::Exception&) {
+    } catch (const std::exception&) {
         // Do not leave a half-built file behind for someone to open later.
         if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
@@ -435,12 +590,26 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
                                    bool readOnly) {
+    return openWithLease(path, err, readOnly, false);
+}
+
+std::unique_ptr<Store> Store::openForHeadlessApply(const std::filesystem::path& path, StoreError& err) {
+    return openWithLease(path, err, false, true);
+}
+
+std::unique_ptr<Store> Store::openWithLease(const std::filesystem::path& path, StoreError& err,
+                                           bool readOnly, bool exclusive) {
     if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
     std::shared_ptr<media::ProjectFileLease> lease;
     std::error_code leaseError;
     if(!path.empty() && path!=std::filesystem::path(":memory:")){
-        lease=media::ProjectFileLease::openShared(path,leaseError);
-        if(!lease){err=StoreError::CannotOpen;return nullptr;}
+        lease = exclusive ? media::ProjectFileLease::openExclusive(path, leaseError)
+                          : media::ProjectFileLease::openShared(path, leaseError);
+        if (!lease) {
+            err = exclusive && leaseError != std::errc::no_such_file_or_directory
+                ? StoreError::ExclusiveAccessRequired : StoreError::CannotOpen;
+            return nullptr;
+        }
     }
     std::unique_ptr<SQLite::Database> db;
     try {
@@ -500,15 +669,32 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     // place readers are protected, rather than a guard in every reader.
     // A newer minor is never touched (SPEC §11): `minor < kSchemaMinor` only.
     std::optional<int> upgradedFrom;
+    std::filesystem::path upgradeBackup;
     int openedMinor = minor;
     if (major == kSchemaMajor && minor < kSchemaMinor) {
         if (!effectiveReadOnly) {
+            // Refuse a still-busy WAL before any schema writes can succeed and leave a
+            // newer on-disk project after the application reports a failed open.
+            if (synchronizedProject(path)) {
+                try {
+                    prepareSynchronizedJournal(*db);
+                } catch (const std::exception&) {
+                    err = StoreError::SyncJournalUnavailable;
+                    return nullptr;
+                }
+            }
             std::string why;
-            if (!migrateToCurrent(*db, minor, why)) {
-                err = StoreError::MigrationFailed;
+            bool copying = false;
+            if (!migrateSchema(*db, minor, why, [&] {
+                copying = true;
+                upgradeBackup = copyBeforeMigration(*db, minor, nowUtcMicros(), lease);
+                copying = false;
+            })) {
+                err = copying ? StoreError::MigrationBackupFailed : StoreError::MigrationFailed;
                 return nullptr;
             }
-            upgradedFrom = minor;
+            if (!upgradeBackup.empty())
+                upgradedFrom = minor;
             openedMinor = kSchemaMinor;
         } else {
             try {
@@ -530,9 +716,18 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     store->major_ = major;
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
+    store->upgradeBackup_ = std::move(upgradeBackup);
     if (!store->applySessionPragmas()) {
-        err = StoreError::SqlError;
+        err = store->synchronizedLocation() ? StoreError::SyncJournalUnavailable : StoreError::SqlError;
         return nullptr;
+    }
+    if (!effectiveReadOnly && major == kSchemaMajor && minor == kSchemaMinor) {
+        try {
+            writeProjectUuid(store->db());
+        } catch (const std::exception&) {
+            err = StoreError::SqlError;
+            return nullptr;
+        }
     }
     err = result;
     return store;
@@ -557,7 +752,7 @@ bool Store::closeFinalized() {
     if (closed_ || !db_) return true;
     closed_ = true;
 
-    if (readOnly_) {
+    if (readOnly_ || synchronizedLocation_) {
         db_.reset();
         fileLease_.reset();
         return true;

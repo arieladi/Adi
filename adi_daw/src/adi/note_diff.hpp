@@ -118,6 +118,11 @@ struct PreparedDiff {
 /// one final stream write and at most one journal operation.
 [[nodiscard]] PreparedDiff prepareBatch(const Snapshot&, std::span<const OpRequest>);
 
+/// Commit one note-editor gesture as a single Undo transaction, writing each
+/// clip's note stream at most once. An empty optional leaves a batch outside
+/// the scalar note gesture path, so its caller can commit the original ops.
+[[nodiscard]] std::optional<CommitResult> commitScalarGesture(Store&, std::span<const OpRequest>);
+
 /// Owner connection: check source-file identity, stamp actor, then commit via
 /// OpJournal with the captured expected head (including a real null head).
 [[nodiscard]] CommitResult commitDiff(Store&, const PreparedDiff&, Actor = Actor::User);

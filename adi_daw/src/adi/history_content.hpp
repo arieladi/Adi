@@ -7,4 +7,6 @@ namespace adi::history_detail {
 // absent from the current pool. Rewrites refresh the optional content link.
 // Older read-only backups may lack the new main-schema content tables.
 void visitCheckpointState(SQLite::Database&,const std::function<bool(Payload&)>&,bool write);
+// Owner transaction: remove old objects left behind by rewritten roots.
+void pruneCheckpointContent(SQLite::Database&, const std::function<void()>& checkCancellation);
 }

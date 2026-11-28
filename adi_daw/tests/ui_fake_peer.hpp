@@ -1,12 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
-// A peer that exercises JUCE's real input dispatch without an OS window/display.
-// Test-only subclasses may model state such as minimisation without creating an OS peer.
+#include <memory>
+// This peer exercises JUCE's input dispatch and supplies test geometry and focus.
 class UiFakePeer : public juce::ComponentPeer {
   public:
-    explicit UiFakePeer(juce::Component &c) : ComponentPeer(c, 0), bounds(c.getBounds()) {}
-    void *getNativeHandle() const override { return nullptr; }
+    explicit UiFakePeer(juce::Component &c) : ComponentPeer(c, 0), bounds(c.getBounds()) {
+#if JUCE_LINUX || JUCE_BSD
+        // X11 defines the cursor as part of synthetic mouse dispatch. Give it an unmapped handle
+        // while leaving the fixture's component tree, focus and input on this software peer.
+        if (!juce::Desktop::getInstance().isHeadless()) {
+            cursorTarget = std::make_unique<juce::Component>();
+            cursorTarget->setSize(1, 1);
+            cursorTarget->addToDesktop(windowIsTemporary | windowIgnoresMouseClicks | windowIgnoresKeyPresses);
+        }
+#endif
+    }
+    void *getNativeHandle() const override {
+#if JUCE_LINUX || JUCE_BSD
+        if (const auto *peer = cursorTarget ? cursorTarget->getPeer() : nullptr)
+            return peer->getNativeHandle();
+#endif
+        return nullptr;
+    }
     void setVisible(bool v) override { visible = v; }
     void setTitle(const juce::String &) override {}
     void setBounds(const juce::Rectangle<int> &b, bool) override { bounds = b; }
@@ -43,6 +59,9 @@ class UiFakePeer : public juce::ComponentPeer {
   private:
     juce::Rectangle<int> bounds;
     bool visible = true;
+#if JUCE_LINUX || JUCE_BSD
+    std::unique_ptr<juce::Component> cursorTarget;
+#endif
 };
 class UiPeerRoot final : public juce::Component {
   public:

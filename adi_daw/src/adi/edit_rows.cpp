@@ -12,10 +12,10 @@
 
 namespace adi::edit {
 namespace {
-constexpr std::array<RowSpec,20> specs={{
+constexpr std::array<RowSpec,21> specs={{
     {"lanes","id"},
     {"clips","id"},{"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
-    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},{"clip_properties","clip_id"},
+    {"automation_lanes","id"},{"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},{"clip_properties","clip_id"},
     {"tempo_map","id"},{"time_signature_map","id"},{"key_map","id"},{"markers","id"},
     {"marker_details","marker_id"},{"project","id"},{"arranger_sections","id"},
     {"key_map_tunings","key_map_id"},{"key_map_degrees","key_map_id","degree"},{"arranger_chain","id"}
@@ -179,23 +179,30 @@ bool validateRows(OpContext& context,const Payload& payload,std::string& error) 
 bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
     try {
         const auto changes=decode(context.db,payload.at("changes"));guardReferences(context.db,changes);
-        // A take lane is a parent of clips. Restore it before creating any root.
-        for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="lanes")
-            detail::restoreRow(context.db,"lanes",change.after);
+        auto lane=[](const Change& change) {
+            const std::string table=change.spec->table;
+            return table=="lanes" || table=="automation_lanes";
+        };
+        // Take and automation lanes must exist before their clips and streams.
+        for(const auto& change:changes)if(change.before.is_null() && lane(change))
+            detail::restoreRow(context.db,change.spec->table,change.after);
         // Insert every root with links temporarily NULL, so a captured alias
         // forest (even a legacy cycle) need not depend on insertion order.
         for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="clips") {
             auto root=change.after;root["alias_of"]=nullptr;detail::restoreRow(context.db,"clips",root);
         }
-        auto timeMap=[](const Change& change) {
+        auto segmentRange=[](const Change& change) {
+            return std::string(change.spec->table)=="automation_segment_ranges";
+        };
+        auto timeMap=[&](const Change& change) {
             const std::string table=change.spec->table;
-            return table=="tempo_map" || table=="time_signature_map" || table=="key_map" || table=="automation_segment_ranges";
+            return table=="tempo_map" || table=="time_signature_map" || table=="key_map" || segmentRange(change);
         };
-        auto coordinate=[](const Change& change) {
-            return std::string(change.spec->table)=="automation_segment_ranges"?"record_index":"pos_ticks";
+        auto coordinate=[&](const Change& change) {
+            return segmentRange(change)?"record_index":"pos_ticks";
         };
-        auto partition=[](const Change& change) {
-            return std::string(change.spec->table)=="automation_segment_ranges"?
+        auto partition=[&](const Change& change) {
+            return segmentRange(change)?
                 std::string(change.spec->table)+":"+std::to_string(detail::signedInteger(change.before.at("data_id"))):
                 std::string(change.spec->table);
         };
@@ -205,7 +212,7 @@ bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
         std::map<std::string,int> direction;
         for(const auto& change:changes)if(!change.after.is_null() && !change.before.is_null()) {
             updates.push_back(&change);
-            if(timeMap(change)) {
+            if(timeMap(change) && !segmentRange(change)) {
                 const auto before=detail::signedInteger(change.before.at(coordinate(change)));
                 const auto after=detail::signedInteger(change.after.at(coordinate(change)));
                 const int sign=after>before?1:(after<before?-1:0);
@@ -224,6 +231,15 @@ bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
                 if(group!=otherGroup)return group<otherGroup;
                 const auto left=detail::signedInteger(a->before.at(coordinate(*a)));
                 const auto right=detail::signedInteger(b->before.at(coordinate(*b)));
+                if(segmentRange(*a)) {
+                    // A splice can shift different parts of one stream in
+                    // opposite directions. For retained ranges, an occupied
+                    // destination is vacated by a move in the same direction.
+                    const bool leftMovesRight=detail::signedInteger(a->after.at("record_index"))>left;
+                    const bool rightMovesRight=detail::signedInteger(b->after.at("record_index"))>right;
+                    if(leftMovesRight!=rightMovesRight)return leftMovesRight;
+                    return leftMovesRight?left>right:left<right;
+                }
                 return direction[group]>0?left>right:left<right;
             }
             return a->id<b->id;
@@ -238,17 +254,17 @@ bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
         // A tuning binding is a parent of its composite-key degree overrides.
         for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="key_map_tunings")detail::restoreRow(context.db,change.spec->table,change.after);
         for(const auto& change:changes)if(change.before.is_null()) {
-            if(std::string(change.spec->table)=="key_map_tunings" || std::string(change.spec->table)=="lanes")continue;
+            if(std::string(change.spec->table)=="key_map_tunings" || lane(change))continue;
             if(std::string(change.spec->table)=="clips")detail::restoreRow(context.db,"clips",change.after,"id");
             else if(!root(change))detail::restoreRow(context.db,change.spec->table,change.after);
         }
         // Children first. Every cascading effect was checked against the same
         // captured transaction state; no REPLACE can destroy a child implicitly.
         for(const auto& change:changes)
-            if(change.after.is_null() && !timeMap(change) && std::string(change.spec->table)!="clips" && std::string(change.spec->table)!="lanes")erase(context.db,change);
+            if(change.after.is_null() && !timeMap(change) && std::string(change.spec->table)!="clips" && !lane(change))erase(context.db,change);
         for(const auto& change:changes)if(change.after.is_null() && std::string(change.spec->table)=="clips")erase(context.db,change);
-        // Deleting the lane first would SET NULL on its still-present clips.
-        for(const auto& change:changes)if(change.after.is_null() && std::string(change.spec->table)=="lanes")erase(context.db,change);
+        // Children are gone before either kind of lane is erased.
+        for(const auto& change:changes)if(change.after.is_null() && lane(change))erase(context.db,change);
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }

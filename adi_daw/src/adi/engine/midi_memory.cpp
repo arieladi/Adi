@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/midi_memory.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/controller_data.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -35,7 +36,7 @@ bool MidiMemory::push(const Event& event,std::int64_t sample) noexcept {
     }
     if(sample<0 || sample==std::numeric_limits<std::int64_t>::max() || event.frame<0 || !std::isfinite(event.value))return invalid();
     if(event.type==EventType::Controller) {
-        if(event.channel>15 || event.paramId>127 || event.value<0 || event.value>1)return invalid();
+        if(event.channel>15 || !controllers::validController(event.paramId) || event.value<0 || event.value>1)return invalid();
     } else if(event.type==EventType::NoteOn || event.type==EventType::NoteOff || event.type==EventType::NoteExpression) {
         const bool channelOk=channels_==NoteChannelBase::Zero?event.channel<=15:event.channel>=1 && event.channel<=16;
         if(!channelOk)return invalid();

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/track_image.hpp"
 #include "adi/row_capture.hpp"
+#include "adi/row_ids.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
 #include <cctype>
 #include <limits>
 #include <map>
+#include <optional>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -286,6 +289,234 @@ void restoreImage(SQLite::Database& db, const std::string& rootTable, std::int64
 Payload captureTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);Image image(db,catalog);image.collect("tracks",root);return image.encode(root);
 }
+namespace {
+Identity identityOf(const std::string &table, const Payload &id) {
+    return {table, Payload{{"id", id}}.dump()};
+}
+std::string endpointTable(const Payload &kind) {
+    if (kind == "track") return "tracks";
+    if (kind == "device") return "devices";
+    if (kind == "clip") return "clips";
+    if (kind == "routing") return "routing";
+    return {};
+}
+using CopyRows = std::map<Identity, Row>;
+using CopyKeys = std::map<Identity, std::int64_t>;
+using ForeignByChild = std::map<std::string, std::vector<const ForeignKey *>>;
+// R12 will settle whether a copied track starts armed.
+constexpr bool kCopyArmState = false;
+
+Payload pooledKeys(SQLite::Database &db, const Catalog &catalog, const Payload &capture) {
+    Payload keys = Payload::object();
+    for (const auto &[table, columns] : {std::pair{"media_files", "hash_blake3"},
+                                        std::pair{"plugin_refs", "format,uid,shell_id"}}) {
+        const auto references = catalog.references.find(table);
+        if (references == catalog.references.end())
+            continue;
+        std::set<std::int64_t> ids;
+        for (const auto &entry : capture.at("rows")) {
+            if (!entry.at("after").is_null())
+                continue;
+            for (const auto &foreign : references->second) {
+                if (entry.at("table") != foreign.child || foreign.to.size() != 1 || foreign.to.front() != "id")
+                    continue;
+                const auto &value = entry.at("before").at(foreign.from.front());
+                if (!value.is_null())
+                    ids.insert(signedInteger(value));
+            }
+        }
+        for (const auto id : ids) {
+            SQLite::Statement read(db, std::string("SELECT ") + columns + " FROM " + table + " WHERE id=?");
+            read.bind(1, id);
+            if (!read.executeStep())
+                throw std::runtime_error("The track's original media or plug-in is missing from the project.");
+            keys[table][std::to_string(id)] = record(read);
+        }
+    }
+    return keys;
+}
+// Form the referenced row's original identity using the foreign key's column
+// names. Pooled rows and connections to an existing external track keep their
+// original identity because they have no row in the clipboard image.
+std::optional<Identity> referencedRow(const ForeignKey &foreign, const Payload &source) {
+    Payload key = Payload::object();
+    for (std::size_t i = 0; i < foreign.from.size(); ++i) {
+        const auto &value = source.at(foreign.from[i]);
+        if (value.is_null())
+            return std::nullopt;
+        key[foreign.to[i]] = value;
+    }
+    return Identity{foreign.parent, key.dump()};
+}
+class TrackCopyImage {
+  public:
+    TrackCopyImage(SQLite::Database &db, const Catalog &catalog, const Payload &capture, std::int64_t retainedDeviceId)
+        : originalRoot_(signedInteger(capture.at("root"))) {
+        for (const auto &entry : capture.at("rows")) {
+            if (!entry.at("after").is_null())
+                continue; // The deletion image can contain changes to surviving tracks.
+            const auto name = entry.at("table").get<std::string>();
+            const auto &source = entry.at("before");
+            const auto &table = catalog.get(name);
+            fullRow(table, source);
+            auto key = keyOf(table, source);
+            const Identity identity{name, key.dump()};
+            rows_.emplace(identity, Row{name, std::move(key), source, nullptr});
+        }
+        const auto root = rows_.find(identityOf("tracks", originalRoot_));
+        if (root == rows_.end())
+            throw std::runtime_error("The clipboard has no track.");
+        for (const auto &entry : catalog.references)
+            for (const auto &link : entry.second)
+                links_[link.child].push_back(&link);
+
+        std::set<Identity> omitted;
+        const auto owned = [&](const std::string &table, const Payload &id) {
+            return !table.empty() && rows_.contains(identityOf(table, id));
+        };
+        const auto endpointExists = [&](const std::string &table, const Payload &id) {
+            return table.empty() || owned(table, id) || !current(db, catalog.get(table), Payload{{"id", id}}).is_null();
+        };
+        for (const auto &[identity, row] : rows_) {
+            const auto &values = row.before;
+            if (row.table == "tracks" && values.at("kind") == "master")
+                throw std::runtime_error("The Main track cannot be copied.");
+            if (row.table == "routing") {
+                const auto source = endpointTable(values.at("src_kind")), destination = endpointTable(values.at("dst_kind"));
+                const bool ownSource = owned(source, values.at("src_id"));
+                const bool ownDestination = owned(destination, values.at("dst_id"));
+                const bool sidechain = values.at("kind") == "sidechain";
+                const bool copyRoute = sidechain ? ownDestination : ownSource;
+                if (!copyRoute ||
+                    !endpointExists(source, values.at("src_id")) || !endpointExists(destination, values.at("dst_id")))
+                    omitted.insert(identity);
+            } else if (row.table == "frozen_renders" || row.table == "frozen_groups") {
+                // Cache fingerprints describe the original track identities.
+                omitted.insert(identity);
+            } else if (row.table == "automation_data" && (!owned("automation_lanes", values.at("lane_id")) ||
+                       (!values.at("clip_id").is_null() && !owned("clips", values.at("clip_id"))))) {
+                omitted.insert(identity);
+            } else if (row.table == "macro_mappings" &&
+                       (!owned("macros", values.at("macro_id")) || !owned("devices", values.at("target_device_id")))) {
+                omitted.insert(identity);
+            }
+        }
+
+        // Drop rows owned by an excluded route or dependency, including the
+        // track-format's polymorphic automation and controller links.
+        std::size_t previous;
+        do {
+            previous = omitted.size();
+            for (const auto &[identity, row] : rows_) {
+                if (omitted.contains(identity))
+                    continue;
+                if (const auto target = polymorphicOwner(row); target && omitted.contains(*target))
+                    omitted.insert(identity);
+                if (const auto found = links_.find(row.table); found != links_.end())
+                    for (const auto *foreign : found->second)
+                        if (foreign->action == "CASCADE")
+                            if (const auto target = referencedRow(*foreign, row.before); target && omitted.contains(*target))
+                                omitted.insert(identity);
+            }
+        } while (previous != omitted.size());
+        for (const auto &identity : omitted)
+            rows_.erase(identity);
+
+        RowIds allocator(db);
+        if (retainedDeviceId > 0)
+            allocator.reserve("devices", retainedDeviceId);
+        for (const auto &[identity, row] : rows_)
+            if (row.key.size() == 1 && row.key.contains("id"))
+                allocator.reserve(identity.first, signedInteger(row.key.at("id")));
+        for (const auto &[identity, row] : rows_)
+            if (row.key.size() == 1 && row.key.contains("id"))
+                keys_.emplace(identity, allocator.next(identity.first));
+    }
+
+    Payload clone(SQLite::Database &db, const Catalog &catalog, std::int64_t parent, std::int64_t index) const {
+        const auto rootKey = identityOf("tracks", originalRoot_);
+        const auto id = keys_.at(rootKey);
+        Image image(db, catalog);
+        for (const auto &[identity, row] : rows_) {
+            auto values = row.before;
+            for (auto at = values.begin(); at != values.end(); ++at)
+                at.value() = remapCell(identity, row, at.key(), 0);
+            if (row.table == "tracks") {
+                values["frozen"] = 0;
+                values["freeze_media_id"] = nullptr;
+                if (!kCopyArmState)
+                    values["record_armed"] = 0;
+                if (values.contains("role"))
+                    values["role"] = nullptr; // A project has only one Reference track.
+                if (identity == rootKey) {
+                    values["parent_id"] = parent == 0 ? Payload(nullptr) : Payload(parent);
+                    values["index_in_parent"] = index;
+                }
+            }
+
+            auto key = keyOf(catalog.get(row.table), values);
+            const Identity newIdentity{row.table, key.dump()};
+            if (!image.rows.emplace(newIdentity,
+                                    Row{row.table, std::move(key), std::move(values), nullptr}).second)
+                throw std::runtime_error("The duplicate would reuse a row identity.");
+        }
+        return image.encode(id);
+    }
+
+  private:
+    static std::optional<Identity> polymorphicOwner(const Row &row) {
+        if (row.table == "automation_lanes")
+            return identityOf(endpointTable(row.before.at("owner_kind")), row.before.at("owner_id"));
+        if (row.table == "controller_maps")
+            return identityOf(endpointTable(row.before.at("target_kind")), row.before.at("target_id"));
+        return std::nullopt;
+    }
+    Payload remapCell(const Identity &identity, const Row &row, const std::string &column, std::size_t depth) const {
+        if (depth > rows_.size())
+            throw std::runtime_error("The track copy contains a circular foreign key.");
+        if (column == "id")
+            if (const auto id = keys_.find(identity); id != keys_.end())
+                return id->second;
+        if (const auto links = links_.find(row.table); links != links_.end())
+            for (const auto *foreign : links->second)
+                for (std::size_t i = 0; i < foreign->from.size(); ++i)
+                    if (foreign->from[i] == column)
+                        if (const auto target = referencedRow(*foreign, row.before))
+                            if (const auto found = rows_.find(*target); found != rows_.end())
+                                return remapCell(*target, found->second, foreign->to[i], depth + 1);
+        std::optional<Identity> polymorphic;
+        if (row.table == "routing" && (column == "src_id" || column == "dst_id"))
+            polymorphic = identityOf(endpointTable(row.before.at(column == "src_id" ? "src_kind" : "dst_kind")),
+                                     row.before.at(column));
+        else if ((row.table == "automation_lanes" && column == "owner_id") ||
+                 (row.table == "controller_maps" && column == "target_id"))
+            polymorphic = polymorphicOwner(row);
+        if (polymorphic)
+            if (const auto id = keys_.find(*polymorphic); id != keys_.end())
+                return id->second;
+        return row.before.at(column);
+    }
+    CopyRows rows_;
+    CopyKeys keys_;
+    ForeignByChild links_;
+    std::int64_t originalRoot_;
+};
+} // namespace
+Payload captureTrackForCopy(SQLite::Database &db, std::int64_t root) {
+    const Catalog catalog(db);
+    Image image(db, catalog);
+    image.collect("tracks", root);
+    auto capture = image.encode(root);
+    capture["assets"] = pooledKeys(db, catalog, capture);
+    return capture;
+}
+Payload copyTrackContents(SQLite::Database &db, const Payload &capture, std::int64_t parent, std::int64_t index,
+                          std::int64_t retainedDeviceId) {
+    const Catalog catalog(db);
+    if (capture.at("assets") != pooledKeys(db, catalog, capture))
+        throw std::runtime_error("The track's media or plug-in identities have changed since it was copied.");
+    return TrackCopyImage(db, catalog, capture, retainedDeviceId).clone(db, catalog, parent, index);
+}
 Payload captureTrackSource(SQLite::Database &db, std::int64_t root) {
     const Catalog catalog(db);
     Image image(db, catalog, true);
@@ -296,6 +527,9 @@ void deleteTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);
     Image image(db, catalog);
     image.collect("tracks", root);
+    for (const auto& [key, row] : image.rows)
+        if (key.first == "tracks" && row.after.is_null() && row.before.at("kind") == "master")
+            throw std::runtime_error("The Main track cannot be deleted.");
     removeImage(db, catalog, image);
 }
 void restoreTrack(SQLite::Database& db,std::int64_t root,const Payload& packet) {

@@ -63,7 +63,7 @@ bool sameStructure(const ParameterPublication *a, const ParameterPublication *b)
 }
 } // namespace
 struct StackTab::State : juce::ScrollBar::Listener {
-    explicit State(StackTab &s) : owner(s), model(stack::mixChannelGeometry(look::densityId())) {
+    explicit State(StackTab &s) : owner(s), model(stack::mixChannelGeometry(appliedDensity)) {
         scrollbar.addListener(this);
     }
     ~State() override { scrollbar.removeListener(this); }
@@ -71,6 +71,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
         if (!syncing) owner.effects(model.scrollTo(start, owner.now()), false);
     }
     StackTab &owner;
+    DensityId appliedDensity = look::densityId();
     StackModel model;
     stack::SnapshotRows input;
     std::vector<stack::ChainDeviceInput> chain;
@@ -260,14 +261,8 @@ void StackRow::present(const stack::RowGeo &input) {
         if (!alive || !panel || state_->presentation != presentation) return;
         if (panel->wrench.isVisible())
             panel->wrench.setToggleState(stack_.root.pluginWindowOpen(data->id), juce::dontSendNotification);
-        if (panel->sample) {
-            const engine::SampleSlotNode *slot = nullptr;
-            if (const auto *snapshot = stack_.root.reader().get())
-                for (const auto &candidate : snapshot->sampleSlots)
-                    if (candidate && candidate->deviceId == data->id &&
-                        candidate->slot == panel->sample->slot) slot = candidate.get();
-            panel->sample->show(slot);
-        }
+        if (panel->sample)
+            panel->sample->refresh();
         if (!alive || !panel || state_->presentation != presentation) return;
         panel->setBounds(static_cast<int>(std::round(item.x - lane.x)),
                                 static_cast<int>(std::round(item.top - geo.top)) + 2,
@@ -614,6 +609,16 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
     if (root.devices.parameterDemand && (state_->parametersSuspended || !isShowing())) {
         updateParameterDemand({});
         return;
+    }
+    const auto density = look::densityId();
+    if (state_->appliedDensity != density && !model().capture() && rowSize.getThumbBeingDragged() < 0) {
+        state_->appliedDensity = density;
+        effects(model().setChannelDensity(density, root.state().mixStackBaseHeight, time), false);
+        if (!alive) return;
+        rowSize.setRange(model().constants().baseMin, model().constants().baseMax, 1);
+        rowSize.setValue(model().windowView().baseHeight, juce::dontSendNotification);
+        resized();
+        if (!alive) return;
     }
     syncStoredPins(time);
     if (!alive) return;

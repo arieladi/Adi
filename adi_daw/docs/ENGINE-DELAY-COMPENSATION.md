@@ -46,7 +46,9 @@ the sample count and identity of each loaded device published by the document.
 A loaded zero-latency device reports zero. An unavailable device has no entry.
 The owner refreshes the report from settled settings during the existing
 document update or immediately before Save. The report can be read with the
-project closed.
+project closed. A shared copy with fresh Undo history binds a current
+report to the equivalent musical state at its new baseline. A report for an
+older state is omitted from that copy.
 
 The `devices.latency_samples` field still follows the explicit
 `device.setLatency` edit and Undo. Opening the project prepares the devices and

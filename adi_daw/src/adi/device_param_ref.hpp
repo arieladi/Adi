@@ -15,6 +15,9 @@
 
 namespace adi {
 
+/// Host device activator, independent of a plug-in's native parameter IDs.
+inline constexpr std::string_view kDeviceActivatorParamRef = "enabled";
+
 /// Parse `text` as a decimal uint32 device parameter id. Returns true for any
 /// non-empty ASCII-digit string whose numeric value fits in uint32_t (including
 /// legacy leading zeros such as "001"); sets `*canonical` to true iff `text` is

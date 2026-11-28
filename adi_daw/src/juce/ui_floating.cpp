@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ui_floating.hpp"
+#if JUCE_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <chrono>
 namespace adi::ui {
 namespace {
@@ -83,7 +92,7 @@ std::string zoomKey(const std::string &key) { return "floating:" + key; }
 struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
-    bool closing = false, scaled = true, hidden = false, onTop = false;
+    bool closing = false, scaled = true, hidden = false, onTop = false, userResizable = false;
     // WIN-03: an owned window (a plug-in's editor, a device's view) goes with the main window: no task
     // bar button, minimised and back with it, above it. The Mix View's window is a normal one.
     bool ownedKind = false, byOwner = false;
@@ -136,7 +145,7 @@ struct FloatingHost::Entry {
             }
             if (e.key == "Mix View" && (id == AppCommands::FocusBrowser || id == AppCommands::SearchBrowser))
                 return h.root_.mixViewPanel.focusChannelSearch();
-            return h.commands_.key(k, h.root_);
+            return h.commands_.key(k, h.root_, !e.ownedKind);
         }
         // A key held from here comes up here: the main window lets it go.
         bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
@@ -156,6 +165,15 @@ struct FloatingHost::Entry {
             DocumentWindow::resized();
             place.moved();
         }
+        // SC-328: a plug-in window resized from its edges has an edge to take. A plug-in's own native
+        // view covers the window's content to the pixel, so the edge outside it is all the mouse can
+        // grab; one pixel of it, as the desk showed with Surge XT's CLAP, is none in practice.
+        juce::BorderSize<int> getBorderThickness() const override {
+            if (e.userResizable && !isFullScreen() && !isKioskMode() && !isUsingNativeTitleBar())
+                return juce::BorderSize<int>(kResizableEdge);
+            return DocumentWindow::getBorderThickness();
+        }
+        static constexpr int kResizableEdge = 6;
         void parentSizeChanged() override {
             DocumentWindow::parentSizeChanged();
             if (keepReachable(*this, isResizable()))
@@ -198,10 +216,12 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
     if (raw->owned && !raw->scaled) {
-        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
-        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        // A plug-in's own window takes the plug-in's size: the window fits it; it is resized from
+        // outside only when the plug-in can be (`userResizable`, SC-328), each size then asked of the
+        // plug-in, and that is decided here, before the window is on the screen (SC-322). A kept place
+        // moves it, never sizes it.
         raw->window->setContentNonOwned(raw->component.getComponent(), true);
-        raw->window->setResizable(false, false);
+        raw->window->setResizable(raw->userResizable, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
             raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
         else if (const auto screens = currentMonitors(); !screens.empty()) {
@@ -271,7 +291,8 @@ bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Compone
 }
 bool FloatingHost::openView(const std::string &key, std::int64_t id,
                             std::unique_ptr<juce::Component> component,
-                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title) {
+                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title,
+                            bool userResizable) {
     auto e = std::make_unique<Entry>();
     e->key = key;
     e->title = std::move(title);
@@ -280,6 +301,7 @@ bool FloatingHost::openView(const std::string &key, std::int64_t id,
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
     e->scaled = scaled;
+    e->userResizable = userResizable;
     e->ownedKind = true;
     return install(std::move(e));
 }
@@ -339,8 +361,53 @@ void FloatingHost::setAlwaysOnTop(const std::string &key, bool onTop) {
     if (it == entries_.end())
         return;
     it->second->onTop = onTop;
-    if (it->second->window)
-        it->second->window->setAlwaysOnTop(onTop);
+    if (!it->second->window)
+        return;
+    // SC-313: an owned window floats above ADI's own window, not above every program.
+    if (native_ && it->second->ownedKind &&
+        floatAboveOwner(*it->second->window, root_.getTopLevelComponent(), onTop)) {
+        it->second->window->setAlwaysOnTop(false);
+        return;
+    }
+    it->second->window->setAlwaysOnTop(onTop);
+}
+bool FloatingHost::floatAboveOwner(juce::Component &window, juce::Component *owner, bool on) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner != nullptr ? owner->getPeer() : nullptr;
+    if (peer == nullptr || (on && ownerPeer == nullptr))
+        return false;
+    const auto hwnd = static_cast<HWND>(peer->getNativeHandle());
+    // A topmost window stays topmost whatever its owner: take that off first.
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT,
+                      on ? reinterpret_cast<LONG_PTR>(static_cast<HWND>(ownerPeer->getNativeHandle())) : 0);
+    return true;
+#else
+    juce::ignoreUnused(window, owner, on);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyOwnedBy(juce::Component &window, juce::Component &owner) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner.getPeer();
+    return peer != nullptr && ownerPeer != nullptr &&
+           GetWindow(static_cast<HWND>(peer->getNativeHandle()), GW_OWNER) == static_cast<HWND>(ownerPeer->getNativeHandle());
+#else
+    juce::ignoreUnused(window, owner);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyTopmost(juce::Component &window) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    return peer != nullptr &&
+           (GetWindowLongPtrW(static_cast<HWND>(peer->getNativeHandle()), GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+#else
+    juce::ignoreUnused(window);
+    return false;
+#endif
 }
 bool FloatingHost::alwaysOnTop(const std::string &key) const {
     const auto it = entries_.find(key);
@@ -433,7 +500,9 @@ void FloatingHost::close(const std::string &key) {
         e.component->setBounds(e.dockBounds);
     }
     // The content before its window: a plug-in's editor tears its native view down while the
-    // window that parents it still exists.
+    // window that parents it still exists. Its frame callback goes first: an editor that pumps
+    // messages as it closes lets the window's clock fire, which must not reach the freed editor (SC-321).
+    e.onFrame = nullptr;
     e.zoomed.reset();
     e.owned.reset();
     entries_.erase(it);
@@ -472,7 +541,8 @@ void FloatingHost::closeAll(bool remember) {
             e.component->setBounds(e.dockBounds);
         }
         // The content before its window: a plug-in's editor tears its native view down while
-        // the window that parents it still exists.
+        // the window that parents it still exists; its frame callback first (SC-321).
+        e.onFrame = nullptr;
         e.zoomed.reset();
         e.owned.reset();
         entries_.erase(entries_.begin());
@@ -535,6 +605,7 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     const auto &settings = root.mixViewPanel.analysis.detail;
     pane->view.setClassicControls(settings.view.classicControls());
     pane->setMode(settings.mode());
+    pane->view.setFilledSpectrumCurve(settings.view.filledSpectrumCurve());
     pane->setPoint(settings.point());
     pane->view.setChannel(settings.view.channel());
     pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);

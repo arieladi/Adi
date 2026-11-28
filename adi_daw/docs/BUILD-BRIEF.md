@@ -168,8 +168,8 @@ Follow `docs/STEP-7-PLAN.md` parts 7.2 to 7.6 with these rulings applied as they
   Live's inserts, Ctrl+S Take Snapshot, Ctrl+Shift+S Save As, Ctrl+Alt+F Create Fade;
 - zoom around the selection; per-window interface zoom; the device strip's fixed minimum; it
   grows upward only; no touch-only paths (they wait for ADI Mobile);
-- the Info View as Live's, tooltips on at 600 ms, remark marks; the AI chat a collapsed tab at the
-  foot of the browser; the Status Bar, where a failing plug-in and a failed rebuild are named;
+- the Info View inside the Browser's column (ADR-0261 d17), tooltips on at 600 ms, remark marks; the
+  agent under the Browser's AI label, shown when it can answer (ADR-0261 d1, d2); the Status Bar, where a failing plug-in and a failed rebuild are named;
 - the mixer strip (7.6) with send knobs and return strips, Split Stereo Pan, the loudness meter on
   the master only, the small scope and spectrum in each strip (drawn only while visible), the
   summing dial and flavour menu on groups and the master;

@@ -63,11 +63,21 @@ public:
     /// Session model may masquerade as the newly observed committed SQL base.
     virtual PresentationStatus adoptCommitted(const Store&, const Base&,
                                               const AppliedBatch* provenance) = 0;
+    /// The complete immutable image from a successful committed adoption.
+    /// The coordinator independently checks that its Store stamp is current.
+    virtual std::optional<OpPresentationImageGuard> adoptedImage(const Base&) const noexcept { return {}; }
     /// Scratch is visible here. Copy rows/ClipProject/settings/Snapshot only.
     /// No Session::refresh, plugin calls, file opens, source workers, graph
     /// preparation/publication, freeze cache remember, or live node mutation.
     virtual CaptureResult capture(const Store& scratch, const Base&,
         const OwnerToken&, Strategy, std::span<const OpRequest>) = 0;
+    /// A verified image identifies the exact committed state before an isolated
+    /// fader write, allowing its projection to read only the changed values.
+    virtual CaptureResult captureVerified(const Store& scratch, const Base& base,
+        const OwnerToken& owner, Strategy strategy, std::span<const OpRequest> requests,
+        const OpPresentationImageGuard&) {
+        return capture(scratch, base, owner, strategy, requests);
+    }
     /// Called only after explicit successful SQL rollback. Heavy engine/source
     /// preparation may occur here, with zero mutation of the current generation.
     virtual PrepareResult prepare(std::unique_ptr<const CapturedPresentation>) = 0;
@@ -98,8 +108,11 @@ public:
     ~EnginePresentation() override;
     PresentationStatus adoptCommitted(const Store&, const Base&,
                                       const AppliedBatch*) override;
+    std::optional<OpPresentationImageGuard> adoptedImage(const Base&) const noexcept override;
     CaptureResult capture(const Store&, const Base&, const OwnerToken&, Strategy,
                           std::span<const OpRequest>) override;
+    CaptureResult captureVerified(const Store&, const Base&, const OwnerToken&, Strategy,
+                                  std::span<const OpRequest>, const OpPresentationImageGuard&) override;
     PrepareResult prepare(std::unique_ptr<const CapturedPresentation>) override;
     PresentationStatus publish(std::unique_ptr<PreparedPresentation>) override;
     PresentationStatus promote(const Store&, const Base&, const OwnerToken&,

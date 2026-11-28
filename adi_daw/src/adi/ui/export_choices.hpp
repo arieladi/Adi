@@ -22,10 +22,19 @@
 #include <string_view>
 #include <vector>
 namespace adi::ui {
+enum class ExportTracks { One, All, Selected };
+struct ExportTrack {
+    std::int64_t id;
+    std::string name;
+    bool selected = false;
+    bool hasAudio = true;
+};
 struct ExportChoices {
     std::int64_t track = 0;                  // Rendered Track: 0 is Main, else the track's id
+    ExportTracks tracks = ExportTracks::One;
+    std::vector<std::int64_t> stemTracks;
     std::int64_t startTicks = 0, lengthTicks = 0; // Render Start and Render Length
-    bool includeReturnAndMain = true;        // Live's default; for a single track only
+    bool includeReturnAndMain = false;       // Direct track exports are available
     bool renderAsLoop = false;
     bool convertToMono = false;
     bool normalize = false;
@@ -34,39 +43,43 @@ struct ExportChoices {
     bool encodePcm = true;
     std::string fileType = "WAV";            // WAV, AIFF, FLAC
     int bitDepth = 24;                       // 16, 24, 32 (float)
-    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, POW-r 1, 2, 3
+    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, Shaped 1, 2, 3
     bool encodeMp3 = false;
     bool video = false;
+    render::Normalization normalization{render::NormalizeMode::Peak, -14, 0};
 };
-inline constexpr std::array<int, 6> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000};
-inline constexpr std::array<const char *, 3> kExportFileTypes{"WAV", "AIFF", "FLAC"};
+inline constexpr std::array<int, 8> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
+inline constexpr std::array<const char *, 4> kExportFileTypes{"WAV", "AIFF", "FLAC", "AAC"};
+inline render::PcmContainer exportContainer(const ExportChoices &c) {
+    return c.fileType == "AIFF" ? render::PcmContainer::Aiff : render::PcmContainer::Wav;
+}
 inline constexpr std::array<int, 3> kExportBitDepths{16, 24, 32};
 inline constexpr std::array<const char *, 6> kExportDithers{"No Dither", "Rectangular", "Triangular",
-                                                            "POW-r 1", "POW-r 2", "POW-r 3"};
+                                                            "Shaped 1", "Shaped 2", "Shaped 3"};
 // Why a choice cannot be made yet, for the page to show beside it; empty when the renderer takes it.
 inline std::string unsupported(const ExportChoices &c, const char *choice) {
     const std::string what(choice);
     // The renderer takes a track's own signal after its fader; a track through the returns and Main is
     // the engine's through-Main stems, not on main yet. Main always renders whole.
-    if (what == "includeReturnAndMain" && c.track != 0 && c.includeReturnAndMain)
-        return "A track through the returns and Main waits for the engine's stems (EX-07); turn Include Return "
-               "and Main Effects off to render the track's own signal.";
+    if (what == "includeReturnAndMain" && (c.track != 0 || c.tracks != ExportTracks::One) &&
+        c.includeReturnAndMain)
+        return "Turn Include Return and Main Effects off to export individual track signals.";
     if (what == "renderAsLoop" && c.renderAsLoop)
-        return "Render as Loop waits for the engine's export (EX-07).";
+        return "Loop export is unavailable. Turn off Render as Loop to export the selected range.";
     if (what == "convertToMono" && c.convertToMono)
-        return "Convert to Mono waits for the engine's export (EX-07).";
+        return "Mono export is unavailable. Turn off Convert to Mono to export in stereo.";
     if (what == "createAnalysisFile" && c.createAnalysisFile)
-        return "Analysis files wait for the engine's export (EX-07).";
-    if (what == "fileType" && c.fileType != "WAV")
-        return c.fileType + " waits for the engine's encoders (EX-08); WAV renders now.";
-    if (what == "dither" && c.dither.rfind("POW-r", 0) == 0)
-        return "The shaped dithers wait for the engine's noise shaping (EX-06).";
+        return "Analysis files are unavailable. Turn off Create Analysis File to export audio.";
+    if (what == "fileType" && c.fileType != "WAV" && c.fileType != "AIFF")
+        return c.fileType + " export is unavailable. Choose WAV or AIFF.";
+    if (what == "dither" && c.dither.starts_with("Shaped "))
+        return "Shaped dither is unavailable. Choose triangular, rectangular or no dither.";
     if (what == "encodeMp3" && c.encodeMp3)
-        return "MP3 waits for the engine's encoders (EX-08).";
+        return "MP3 export is unavailable. Turn off Encode MP3 to export audio.";
     if (what == "video" && c.video)
-        return "Video export is not part of ADI yet (P2, ADR-0206 d4).";
+        return "Video export is unavailable. Turn off Export Video to export audio.";
     if (what == "encodePcm" && !c.encodePcm)
-        return "With PCM off there is nothing to render until MP3 does.";
+        return "Turn on Encode PCM to export an audio file.";
     return {};
 }
 // Every reason the choices cannot render now, in the dialog's order: empty when Export can go.
@@ -78,6 +91,8 @@ inline std::vector<std::string> exportRefusals(const ExportChoices &c) {
             out.push_back(std::move(why));
     if (c.lengthTicks <= 0)
         out.push_back("Render Length is zero: there is nothing to render.");
+    if (c.tracks != ExportTracks::One && c.stemTracks.empty())
+        out.push_back("Choose at least one track with audio to export.");
     return out;
 }
 // Render Length as Live's field shows it: bars, beats and sixteenths, each from 0, in the meter in force at
@@ -140,6 +155,7 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     job.directory = file.parent_path();
     auto stem = file.stem().u8string();
     job.nameTemplate = literalTemplate(std::string(stem.begin(), stem.end()));
+    job.container = exportContainer(c);
     job.session.sampleRate = static_cast<double>(c.sampleRate);
     job.session.exporting = true;
     job.session.offline = true;
@@ -154,13 +170,29 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     job.encoding.dither = c.dither == "No Dither" ? audio::WavDither::None
                           : c.dither == "Rectangular" ? audio::WavDither::Rectangular
                                                       : audio::WavDither::Triangular;
-    if (c.normalize) {
-        job.normalization.mode = render::NormalizeMode::Peak;
-        job.normalization.truePeakCeilingDb = 0;
-    }
+    if (c.normalize)
+        job.normalization = c.normalization;
     // The page moves a file the user chose to replace to the trash before it renders; a file that appeared
     // since is not overwritten.
     job.collision = render::Collision::Fail;
     return job;
+}
+inline std::vector<render::Job> exportJobs(const ExportChoices &c, const std::filesystem::path &project,
+                                           const std::filesystem::path &file, const engine::TempoMap &tempo) {
+    auto job = exportJob(c, project, file, tempo);
+    if (c.tracks == ExportTracks::One) {
+        const auto filename = file.filename().u8string();
+        job.exactPcmFilename = std::string(filename.begin(), filename.end());
+        return {std::move(job)};
+    }
+    job.nameTemplate += " - {track}";
+    job.collision = render::Collision::Increment;
+    std::vector<render::Job> jobs;
+    jobs.reserve(c.stemTracks.size());
+    for (const auto track : c.stemTracks) {
+        job.source.trackId = track;
+        jobs.push_back(job);
+    }
+    return jobs;
 }
 } // namespace adi::ui

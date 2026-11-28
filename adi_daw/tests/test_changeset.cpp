@@ -16,6 +16,7 @@
 #include "adi/changeset.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -136,6 +137,38 @@ void testGuardrails() {
 
     Fixture f("guard");
     if (!f.store) return;
+    OpJournal journal(*f.store);
+    check(journal.commit(op("marker.create", {{"id", 1}, {"pos", 0}})).ok,
+          "the user can create a marker");
+    check(journal.commit(op("marker.setPrompt", {{"id", 1}, {"text", "Original prompt"}})).ok,
+          "the user can set the marker prompt");
+    const auto markerHead = journal.headSeq();
+    const auto markerBefore = edit::row(f.db(), "marker_details", 1).value();
+    auto markerAfter = markerBefore;
+    markerAfter["prompt"] = "New prompt";
+    const auto splice = op("arranger.splice",
+                           {{"id", 0}, {"changes", Payload::array({
+                               {{"table", "marker_details"}, {"id", 1},
+                                {"before", markerBefore}, {"after", markerAfter}}
+                           })}});
+    for (const auto& edit : {op("marker.setPrompt", {{"id", 1}, {"text", "New prompt"}}),
+                            op("marker.create", {{"id", 2}, {"pos", 0}, {"prompt", "New prompt"}}),
+                            splice}) {
+        auto markerEdit = begin(*f.store, "write a prompt", "m", kT0);
+        markerEdit.ops.push_back(edit);
+        check(preview(*f.store, markerEdit).refusal == Refusal::OpNotAllowed,
+              edit.opType + " cannot write a prompt during an agent preview");
+        const auto applied = apply(*f.store, markerEdit);
+        check(applied.refusal == Refusal::OpNotAllowed && journal.headSeq() == markerHead,
+              edit.opType + " cannot commit a prompt from an agent");
+        if (applied.ok) check(History(*f.store).undo().ok, "restore the fixture before the next case");
+    }
+    check(agentMayEmit("marker.create") && !agentMayEmit("marker.setPrompt"),
+          "marker creation stays available while setting prompts is reserved for the user");
+    check(edit::row(f.db(), "marker_details", 1) == markerBefore,
+          "the user's prompt stays as written");
+
+    const auto baselineOps = count(*f.store, "SELECT COUNT(*) FROM ops");
     Changeset empty = begin(*f.store, "nothing", "m", kT0);
     check(preview(*f.store, empty).refusal == Refusal::Empty, "an empty changeset is refused");
 
@@ -145,7 +178,7 @@ void testGuardrails() {
     const auto pr = preview(*f.store, big, two);
     check(pr.refusal == Refusal::TooManyOps, "three ops over a cap of two: preview refuses: " + pr.error);
     const auto ar = apply(*f.store, big, two);
-    check(ar.refusal == Refusal::TooManyOps && count(*f.store, "SELECT COUNT(*) FROM ops") == 2,
+    check(ar.refusal == Refusal::TooManyOps && count(*f.store, "SELECT COUNT(*) FROM ops") == baselineOps,
           "and so does apply, writing nothing");
 
     Changeset transport = begin(*f.store, "play it", "m", kT0);
@@ -225,6 +258,65 @@ void testPreviewDoesNotWrite() {
               p2.changes[1].before->at("name") == "Keys",
           "a creation shows only after, a deletion only what it removes");
     check(count(s, "SELECT COUNT(*) FROM tracks") == 2, "and neither happened");
+
+    s.db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main')");
+    const auto before = digestProject(s).text;
+    auto main = begin(s, "remove Main", "m", kT0);
+    main.ops.push_back(op("track.delete", {{"id", 9}}));
+    check(!preview(s, main).ok && !apply(s, main).ok && digestProject(s).text == before,
+          "SC-01: a changeset cannot delete Main in either preview or apply");
+}
+
+void testBulkClipImpact() {
+    section("AGT-09: measured clip writes, including cascades, count by distinct clip");
+    Fixture f("clip-impact");
+    if (!f.store) return;
+    Store& s = *f.store;
+    f.db().exec("INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES"
+                "(1,1,'midi','One',0,960),(2,1,'midi','Two',960,960),"
+                "(3,2,'midi','Three',0,960),(4,2,'midi','Four',960,960),(5,2,'midi','Five',1920,960)");
+    const auto originalHead = OpJournal(s).headSeq();
+    const auto originalOps = count(s, "SELECT COUNT(*) FROM ops");
+    const auto originalDigest = digestProject(s).text;
+
+    Limits limits;
+    limits.measureClipImpact = true;
+    auto renames = begin(s, "rename clips", "m", kT0);
+    renames.ops = {op("clip.setName", {{"id", 1}, {"name", "Temporary"}}),
+                   op("clip.setName", {{"id", 1}, {"name", "One"}})};
+    const auto normal = preview(s, renames);
+    check(normal.ok && !normal.bulkClipEdit, "measurement is opt-in");
+    const auto one = preview(s, renames, limits);
+    check(one.ok && one.bulkClipEdit == false, "one clip touched twice is exactly 20%: " + one.error);
+    renames.ops.push_back(op("clip.setName", {{"id", 2}, {"name", "Temporary"}}));
+    renames.ops.push_back(op("clip.setName", {{"id", 2}, {"name", "Two"}}));
+    const auto two = preview(s, renames, limits);
+    check(two.ok && two.bulkClipEdit == true && two.unifiedDiff.empty(),
+          "two clips touched still count after their changes were reversed: " + two.error);
+
+    auto remove = begin(s, "remove a track", "m", kT0);
+    remove.ops.push_back(op("track.delete", {{"id", 1}}));
+    const auto cascaded = preview(s, remove, limits);
+    check(cascaded.ok && cascaded.bulkClipEdit == true,
+          "the track delete also touches both clips it removes: " + cascaded.error);
+
+    auto signatures = begin(s, "change clip signatures", "m", kT0);
+    signatures.ops = {op("clip.setTimeSignature", {{"id", 1}, {"num", 3}, {"den", 4}}),
+                      op("clip.setTimeSignature", {{"id", 2}, {"num", 3}, {"den", 4}})};
+    const auto sideTable = preview(s, signatures, limits);
+    check(sideTable.ok && sideTable.bulkClipEdit == true,
+          "editing clip properties in a child table touches both clips: " + sideTable.error);
+
+    auto marker = begin(s, "rename a marker", "m", kT0);
+    marker.ops.push_back(op("marker.create", {{"id", 1}, {"pos", 0}, {"name", "Intro"}}));
+    const auto nonClip = preview(s, marker, limits);
+    check(nonClip.ok && nonClip.bulkClipEdit == false, "non-clip edits do not touch clips: " + nonClip.error);
+
+    check(count(s, "SELECT COUNT(*) FROM ops") == originalOps && OpJournal(s).headSeq() == originalHead &&
+              digestProject(s).text == originalDigest,
+          "measured previews leave the head, op journal and project unchanged");
+    check(count(s, "SELECT COUNT(*) FROM temp.sqlite_schema WHERE name LIKE 'adi_agent_%'") == 0,
+          "rolling back also removes the temporary counter and triggers");
 }
 
 void testDescribeByContent() {
@@ -608,6 +700,7 @@ int runAll() {
     std::printf("adi_changeset_tests -- ADR-0145 d9, AI-AGENT 6, ADR-0148\n\n");
     testGuardrails();
     testPreviewDoesNotWrite();
+    testBulkClipImpact();
     testDescribeByContent();
     testApplyIsOneStep();
     testStale();

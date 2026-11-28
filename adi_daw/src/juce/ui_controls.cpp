@@ -156,6 +156,15 @@ void groupCell(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour fill) {
     g.setColour(fill);
     g.fillRoundedRectangle(r.reduced(2.f), std::min(look::radiusPanel, r.getHeight() / 2 - 2.f));
 }
+void frozenTrackBadge(juce::Graphics &g, juce::Rectangle<float> bounds) {
+    g.setColour(look::value);
+    g.fillEllipse(bounds);
+    g.setColour(look::ink);
+    const auto centre = bounds.getCentre();
+    const auto radius = bounds.getWidth() * .31f;
+    for (const float angle : {0.f, 60.f, 120.f})
+        g.drawLine({polar(centre, radius, angle), polar(centre, radius, angle + 180.f)}, 1.f);
+}
 float ringWidth(float radius) noexcept { return std::max(2.2f, radius * 0.17f); }
 void ringKnob(juce::Graphics &g, juce::Point<float> c, float r, float value, const KnobLook &k) {
     value = std::clamp(value, 0.f, 1.f);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/scan_prune.hpp"
 #include "adi/plugin_registry.hpp"
+#include "adi/plugin_scanner.hpp"
 #include "adi/scan_registry_schema.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -12,11 +13,16 @@
 namespace adi::scan {
 namespace {
 namespace fs = std::filesystem;
+std::string utf8(const fs::path& path) { const auto u=path.u8string();return {u.begin(),u.end()}; }
 struct Refusal : std::runtime_error {
     ScanPruneStatus status;
+    std::string unreadablePath;
     Refusal(ScanPruneStatus s, const std::string& why) : std::runtime_error(why), status(s) {}
+    Refusal(const std::string& why,const fs::path& path,const std::error_code& error)
+        : Refusal(ScanPruneStatus::Incomplete,why) {
+        if(isAccessDenied(error))unreadablePath=utf8(path);
+    }
 };
-std::string utf8(const fs::path& path) { const auto u=path.u8string();return {u.begin(),u.end()}; }
 void stop(const ScanPruneRequest& request) {
     if(request.cancel && request.cancel->load())throw Refusal(ScanPruneStatus::Cancelled,"scan pruning cancelled");
 }
@@ -51,7 +57,7 @@ struct Walk {
 void rootStable(const Root& root) {
     std::error_code ec;const auto now=withoutTrailingSeparator(fs::canonical(root.original,ec));
     if(ec || now!=root.canonical || !fs::is_directory(now,ec) || ec)
-        throw Refusal(ScanPruneStatus::Incomplete,"scan root changed or cannot be checked: "+utf8(root.original));
+        throw Refusal("scan root changed or cannot be checked: "+utf8(root.original),root.original,ec);
 }
 Walk resolveRoots(const ScanPruneRequest& request, ScanPruneResult& result) {
     if(request.roots.size()>1024)throw Refusal(ScanPruneStatus::Invalid,"too many scan roots");
@@ -62,7 +68,7 @@ Walk resolveRoots(const ScanPruneRequest& request, ScanPruneResult& result) {
             utf8(root.path).find('\0')!=std::string::npos)
             throw Refusal(ScanPruneStatus::Invalid,"invalid scan pruning root");
         std::error_code ec;const auto original=withoutTrailingSeparator(fs::absolute(root.path,ec).lexically_normal());
-        if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cannot resolve scan root: "+utf8(root.path));
+        if(ec)throw Refusal("cannot resolve scan root: "+utf8(root.path),root.path,ec);
         const auto status=fs::symlink_status(original,ec);
         if(absent(ec,status)) {
             ++result.missingRootsSkipped;
@@ -70,13 +76,13 @@ Walk resolveRoots(const ScanPruneRequest& request, ScanPruneResult& result) {
             out.excluded.push_back({root.format,ec?original:withoutTrailingSeparator(std::move(excluded))});
             continue;
         }
-        if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cannot inspect scan root: "+utf8(original)+": "+ec.message());
+        if(ec)throw Refusal("cannot inspect scan root: "+utf8(original)+": "+ec.message(),original,ec);
         const auto canonical=withoutTrailingSeparator(fs::canonical(original,ec));
         if(ec==std::errc::no_such_file_or_directory) {
             ++result.missingRootsSkipped;out.excluded.push_back({root.format,original});continue;
         }
         if(ec || !fs::is_directory(canonical,ec) || ec)
-            throw Refusal(ScanPruneStatus::Incomplete,"scan root is not an accessible directory: "+utf8(original));
+            throw Refusal("scan root is not an accessible directory: "+utf8(original),original,ec);
         if(std::none_of(out.roots.begin(),out.roots.end(),[&](const Root& r){return r.format==root.format && r.canonical==canonical;}))
             out.roots.push_back({root.format,original,canonical});
     }
@@ -90,7 +96,7 @@ Walk walk(const ScanPruneRequest& request,Walk out, ScanPruneResult& result) {
             stop(request);auto dir=std::move(pending.back());pending.pop_back();
             if(!visited.insert(dir).second)continue;
             std::error_code ec;fs::directory_iterator it(dir,fs::directory_options::none,ec),end;
-            if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cannot enumerate scan directory: "+utf8(dir)+": "+ec.message());
+            if(ec)throw Refusal("cannot enumerate scan directory: "+utf8(dir)+": "+ec.message(),dir,ec);
             for(;it!=end;it.increment(ec)) {
                 if(ec)break;
                 stop(request);
@@ -100,7 +106,7 @@ Walk walk(const ScanPruneRequest& request,Walk out, ScanPruneResult& result) {
                 for(char& c:extension)if(c>='A' && c<='Z')c=static_cast<char>(c-'A'+'a');
                 const bool candidate=extension=="."+root.format;
                 const auto entryStatus=it->symlink_status(ec);
-                if(ec)throw Refusal(ScanPruneStatus::Incomplete,"scan entry cannot be inspected: "+utf8(path)+": "+ec.message());
+                if(ec)throw Refusal("scan entry cannot be inspected: "+utf8(path)+": "+ec.message(),path,ec);
                 // Directory enumeration already supplies ordinary type info.
                 // Unrelated regular files need no canonicalization/seen entry.
                 if(!candidate && !fs::is_directory(entryStatus) && !alias(entryStatus))continue;
@@ -114,14 +120,14 @@ Walk walk(const ScanPruneRequest& request,Walk out, ScanPruneResult& result) {
                     out.excluded.push_back({root.format,path});out.excluded.push_back({root.format,target});
                     continue; // confirmed dangling aliases reserve their old scope; they are not a partial walk
                 }
-                if(ec)throw Refusal(ScanPruneStatus::Incomplete,"scan entry cannot be resolved: "+utf8(path)+": "+ec.message());
+                if(ec)throw Refusal("scan entry cannot be resolved: "+utf8(path)+": "+ec.message(),path,ec);
                 if(!within(canonical,root.canonical))continue; // alias targets outside this walked root are not owned
                 if(candidate){out.seen.emplace(root.format,canonical);continue;} // module/bundle leaf
                 const bool directory=it->is_directory(ec);
-                if(ec)throw Refusal(ScanPruneStatus::Incomplete,"scan entry cannot be inspected: "+utf8(path)+": "+ec.message());
+                if(ec)throw Refusal("scan entry cannot be inspected: "+utf8(path)+": "+ec.message(),path,ec);
                 if(directory)pending.push_back(canonical);
             }
-            if(ec)throw Refusal(ScanPruneStatus::Incomplete,"scan directory traversal failed: "+utf8(dir)+": "+ec.message());
+            if(ec)throw Refusal("scan directory traversal failed: "+utf8(dir)+": "+ec.message(),dir,ec);
         }
         rootStable(root);++result.rootsWalked;
     }
@@ -137,7 +143,7 @@ bool missingOwned(const Key& key,const Walk& walked,ScanPruneResult& result) {
     rootStable(*root);
     std::error_code ec;const auto status=fs::symlink_status(key.path,ec);
     if(!absent(ec,status)) {
-        if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cached module cannot be inspected: "+key.text+": "+ec.message());
+        if(ec)throw Refusal("cached module cannot be inspected: "+key.text+": "+ec.message(),key.path,ec);
         if(alias(status))return false;
         // On a case-insensitive volume the old spelling can still resolve.
         // Only retire it when the same directory's canonical leaf was actually
@@ -177,7 +183,7 @@ ScanPruneResult bindScanPruneRoots(ScanPruneRequest& request) {
         stop(request);auto resolved=resolveRoots(request,result);stop(request);
         auto binding=std::make_shared<ScanPruneBinding>();binding->requested=request.roots;binding->initial=std::move(resolved);
         request.binding=std::move(binding);result.status=ScanPruneStatus::Complete;
-    }catch(const Refusal& e){result.status=e.status;result.error=e.what();}
+    }catch(const Refusal& e){result.status=e.status;result.error=e.what();result.unreadablePath=e.unreadablePath;}
     catch(const std::exception& e){result.status=ScanPruneStatus::Failed;result.error=e.what();}
     catch(...){result.status=ScanPruneStatus::Failed;result.error="scan root binding failed";}
     return result;
@@ -268,7 +274,7 @@ ScanPruneResult pruneMissingScans(const std::filesystem::path& registryPath,cons
         transaction.commit();
         result.cacheRowsRemoved=caches;result.failureRowsRemoved=failures;result.automaticBlocksRemoved=blocks;
         result.status=ScanPruneStatus::Complete;
-    }catch(const Refusal& e){result.status=e.status;result.error=e.what();}
+    }catch(const Refusal& e){result.status=e.status;result.error=e.what();result.unreadablePath=e.unreadablePath;}
     catch(const std::exception& e){result.status=ScanPruneStatus::Failed;result.error=e.what();}
     catch(...){result.status=ScanPruneStatus::Failed;result.error="scan pruning failed";}
     return result;

@@ -13,17 +13,28 @@ void fill(juce::ComboBox &box, const std::vector<juce::String> &items, const juc
     box.setSelectedId(at == items.end() ? 1 : static_cast<int>(at - items.begin()) + 1, juce::dontSendNotification);
 }
 } // namespace
-ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t, std::string>> tracks,
+ExportPage::ExportPage(ExportChoices initial, std::vector<ExportTrack> tracks,
                        std::vector<textproj::Meter> meters)
     : choices_(std::move(initial)), tracks_(std::move(tracks)), meters_(std::move(meters)) {
-    std::vector<juce::String> trackNames{"Main"};
-    juce::String currentTrack = "Main";
-    for (const auto &[id, name] : tracks_) {
-        trackNames.push_back(juce::String::fromUTF8(name.c_str()));
-        if (id == choices_.track)
-            currentTrack = trackNames.back();
+    renderedTrack.addItem("Main", 1);
+    renderedTrack.addItem("All Individual Tracks", 2);
+    renderedTrack.addItem("Selected Tracks Only", 3);
+    renderedTrack.setItemEnabled(3, std::any_of(tracks_.begin(), tracks_.end(), [](const ExportTrack &track) {
+        return track.selected && track.hasAudio;
+    }));
+    int currentTrack = choices_.tracks == ExportTracks::All ? 2 : 1;
+    if (choices_.tracks == ExportTracks::Selected && renderedTrack.isItemEnabled(3))
+        currentTrack = 3;
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        const auto &track = tracks_[i];
+        if (track.id == 0)
+            continue;
+        const int item = static_cast<int>(i) + 4;
+        renderedTrack.addItem(juce::String::fromUTF8(track.name.c_str()), item);
+        if (choices_.tracks == ExportTracks::One && choices_.track == track.id)
+            currentTrack = item;
     }
-    fill(renderedTrack, trackNames, currentTrack);
+    renderedTrack.setSelectedId(currentTrack, juce::dontSendNotification);
     std::vector<juce::String> rates;
     for (const int r : kExportSampleRates)
         rates.push_back(juce::String(r));
@@ -104,8 +115,15 @@ ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t
 }
 ExportPage::~ExportPage() = default;
 void ExportPage::read() {
-    const int track = renderedTrack.getSelectedId() - 1;
-    choices_.track = track <= 0 || track > static_cast<int>(tracks_.size()) ? 0 : tracks_[static_cast<std::size_t>(track - 1)].first;
+    const int source = renderedTrack.getSelectedId();
+    const int track = source - 4;
+    choices_.tracks = source == 2 ? ExportTracks::All : source == 3 ? ExportTracks::Selected : ExportTracks::One;
+    choices_.track = track < 0 || track >= static_cast<int>(tracks_.size()) ? 0 : tracks_[static_cast<std::size_t>(track)].id;
+    choices_.stemTracks.clear();
+    if (choices_.tracks != ExportTracks::One)
+        for (const auto &stem : tracks_)
+            if (stem.hasAudio && (choices_.tracks == ExportTracks::All || stem.selected))
+                choices_.stemTracks.push_back(stem.id);
     if (const auto at = parsePosition(start.getText().toStdString()))
         if (const auto tick = tickOf(*at, meters_)) {
             choices_.startTicks = *tick;
@@ -141,6 +159,7 @@ void ExportPage::read() {
     choices_.video = video.getToggleState();
 }
 void ExportPage::judge() {
+    includeReturnAndMain.setEnabled(choices_.tracks != ExportTracks::One || choices_.track != 0);
     refusals_ = exportRefusals(choices_);
     if (!startOk_)
         refusals_.insert(refusals_.begin(), "Render Start is not a position in the song (bar.beat.sixteenth).");

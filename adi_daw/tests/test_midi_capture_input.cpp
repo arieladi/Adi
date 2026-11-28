@@ -69,7 +69,7 @@ void allKeysAndReset() {
           routed[2].noteId==routed[0].noteId && routed[3].noteId==routed[1].noteId,
           "the actual router receives a release for each retriggered voice");
 }
-void controllers() {
+void captureChannelControllers() {
     MpeParser parser;Sink sink;
     for(std::uint16_t controller=0;controller<128;++controller)feed(parser,sink,0xb2,static_cast<std::uint8_t>(controller),static_cast<std::uint8_t>((controller*3)%128),controller);
     bool exact=sink.count==128;
@@ -153,6 +153,6 @@ void initialExpressionRouting() {
     check(exactBend,"the MPE MIDI router prepares the exact bend before the attack");
 }
 }
-int main(){try{chordsAndRouting();allKeysAndReset();controllers();malformedAndRejection();initialExpressionRouting();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
+int main(){try{chordsAndRouting();allKeysAndReset();captureChannelControllers();malformedAndRejection();initialExpressionRouting();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture_input: %d checks, %d failures\n",checks,failures);return failures?1:0;}

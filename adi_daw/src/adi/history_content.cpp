@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 namespace adi::history_detail {
 namespace {
@@ -129,6 +130,38 @@ void visitCheckpointState(SQLite::Database& db,const std::function<bool(Payload&
     SQLite::Statement update(db,"UPDATE history_checkpoint SET state=? WHERE id=1");update.bind(1,bytes.data(),static_cast<int>(bytes.size()));update.exec();
     if(exists("history_checkpoint_content")){
         const auto hash=storeCheckpointContent(db,*state);SQLite::Statement link(db,"INSERT INTO history_checkpoint_content(id,state_hash) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_hash=excluded.state_hash");link.bind(1,hash);link.exec();
+    }
+}
+void pruneCheckpointContent(SQLite::Database& db, const std::function<void()>& checkCancellation) {
+    db.exec("DELETE FROM history_state_manifests AS m WHERE NOT EXISTS "
+            "(SELECT 1 FROM history_roots WHERE state_hash=m.hash) AND NOT EXISTS "
+            "(SELECT 1 FROM history_checkpoint_content WHERE state_hash=m.hash)");
+    std::set<std::string> needed;
+    {
+        SQLite::Statement manifests(db, "SELECT hash FROM history_state_manifests");
+        while (manifests.executeStep()) {
+            checkCancellation();
+            const auto manifest = decodeObject(db, "history_state_manifests", manifests.getColumn(0).getString());
+            for (const auto& table : manifest.at("tables"))
+                for (const auto& hash : table.at("row_hashes"))
+                    needed.insert(hash.get<std::string>());
+        }
+    }
+    std::vector<std::string> obsolete;
+    {
+        SQLite::Statement rows(db, "SELECT hash FROM history_state_rows");
+        while (rows.executeStep()) {
+            checkCancellation();
+            auto hash = rows.getColumn(0).getString();
+            if (!needed.contains(hash)) obsolete.push_back(std::move(hash));
+        }
+    }
+    SQLite::Statement remove(db, "DELETE FROM history_state_rows WHERE hash=?");
+    for (const auto& hash : obsolete) {
+        checkCancellation();
+        remove.reset();
+        remove.bind(1, hash);
+        remove.exec();
     }
 }
 } // namespace adi::history_detail

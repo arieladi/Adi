@@ -55,6 +55,11 @@ enum class EngineImpact {
     RequiresPause,  // cannot be done live: engine stops, applies, restarts
 };
 
+/// These operations log transport navigation without writing project material.
+[[nodiscard]] constexpr bool isEphemeralTransportNavigation(std::string_view type) noexcept {
+    return type == "transport.play" || type == "transport.stop" || type == "transport.seek";
+}
+
 /// OPS.md §8.1. The accountability column: "what did the agent change, and
 /// when" is a query, not a forensic exercise.
 enum class Actor { User, Agent, Script, Import, Migration, Remote };

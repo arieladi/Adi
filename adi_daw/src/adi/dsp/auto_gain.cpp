@@ -73,20 +73,6 @@ Biquad AutoGain::kShelf(double fs) noexcept {
     return c;
 }
 
-Biquad AutoGain::kHighPass(double fs) noexcept {
-    const double f0 = 38.13547087602444;
-    const double q = 0.5003270373238773;
-    const double k = std::tan(kPi * f0 / fs);
-    const double a0 = 1.0 + k / q + k * k;
-    Biquad c;
-    c.b0 = 1.0;
-    c.b1 = -2.0;
-    c.b2 = 1.0;
-    c.a1 = 2.0 * (k * k - 1.0) / a0;
-    c.a2 = (1.0 - k / q + k * k) / a0;
-    return c;
-}
-
 void AutoGain::prepare(double sampleRate) noexcept {
     sr_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     shelf_ = kShelf(sr_);

@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -413,6 +414,11 @@ int saveStates(adi::engine::Session& session, adi::Store& store) {
 /// (`prime`), which only an offline driver may do.
 int renderOffline(adi::engine::Session& session, int channels, double rate, int block, double seconds,
                   bool requirePeakSet, double requirePeak, juce::AudioBuffer<float>* capture = nullptr) {
+    if (auto* clips = session.clips(); clips && !clips->waitForWarp()) {
+        std::printf("FAILED -- Warp preparation failed\n");
+        for (const auto& problem : clips->decodeProblems()) std::printf("  %s\n", problem.c_str());
+        return 1;
+    }
     if (capture != nullptr) {
         const double frames = seconds * rate;
         if (channels < 1 || !std::isfinite(frames) || frames < 1 || frames > std::numeric_limits<int>::max()) {
@@ -643,7 +649,8 @@ int main(int argc, char** argv) {
     if (!o.noPlay) {
         session.transport().locate(static_cast<std::int64_t>(std::llround(o.from * rate)));
         session.transport().play(true);
-        if (auto* clips = session.clips()) clips->prime();
+        if (auto* clips = session.clips(); clips && o.render <= 0.0)
+            clips->primeAt(session.transport(), std::chrono::seconds(10), false);
         std::printf("  transport playing from %.3f s%s\n", o.from,
                     session.clips() != nullptr ? "" : "  (no audio clips in this project)");
     }
@@ -788,11 +795,16 @@ int main(int argc, char** argv) {
     }
     const float peakLast = metered.takePeak();
 
+    const auto runningProblem = bridge.takeDeviceProblem();
     mgr.removeAudioCallback(callback);
     timer.stop();
     const auto nativeXrunsAtStop=dev?dev->getXRunCount():-1;
     const auto managerXrunsAtStop=mgr.getXRunCount();const auto managerCpuAtStop=mgr.getCpuUsage();
     mgr.closeAudioDevice();
+    // Removing our callback deliberately stops its bridge.
+    bridge.acknowledgeDeviceSetup();
+    const auto closingProblem = bridge.takeDeviceProblem();
+    const auto& deviceProblem = runningProblem.isNotEmpty() ? runningProblem : closingProblem;
 
     const adi::device::DeviceCore& core = bridge.core();
     const adi::engine::Session::Stats& ss = session.stats();
@@ -849,8 +861,8 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- the device opened but produced no callbacks.\n");
         return 1;
     }
-    if (bridge.lastError().isNotEmpty()) {
-        std::printf("\nFAILED -- device error: %s\n", bridge.lastError().toRawUTF8());
+    if (deviceProblem.isNotEmpty()) {
+        std::printf("\nFAILED -- device error: %s\n", deviceProblem.toRawUTF8());
         return 1;
     }
     if (resizeMissed) {

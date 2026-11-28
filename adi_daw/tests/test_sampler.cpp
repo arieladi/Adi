@@ -125,6 +125,42 @@ std::vector<float> renderSlots(device::Sampler &d, int count, std::span<const en
     }
     return output;
 }
+void midiControllers() {
+    using S = device::Sampler;
+    constexpr auto cc = engine::EventType::Controller;
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    S d(S::slotBacked);
+    set(d, "attack", .1);
+    set(d, "release", 1);
+    set(d, "volume", 0);
+    set(d, "filter_on", 0);
+    set(d, "vel_to_vol", 100);
+    set(d, "lfo_on", 1);
+    set(d, "lfo_shape", 1);
+    set(d, "lfo_pitch", 12);
+    std::vector<float> ramp(4096);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+        ramp[i] = static_cast<float>(i) / 4096.f;
+    const auto prepared = device::OneShot::prepareSample(ramp, 1, 48000);
+    check(prepared != nullptr, "controller test's slot sample prepares");
+    const engine::Event events[]{
+        {0, cc, 3, 0, 0, 1, 0},
+        {16, engine::EventType::NoteExpression, 3, pitch, 0, 0, 12},
+        {32, cc, 3, 0, 0, 64, 1},
+        {64, engine::EventType::NoteOn, 3, 60, 1, 0, 1},
+        {80, cc, 3, 0, 0, 1, 1},
+        {96, engine::EventType::NoteOff, 3, 60, 1, 0, 0},
+        {160, cc, 3, 0, 0, 64, 0},
+    };
+    const auto heard = renderSlots(d, 256, events, [&](int at, SlotArray &slots) {
+        if (at >= 64)
+            slots[2] = {prepared.get(), 1};
+    });
+    check(heard[63] == 0.f && heard[79] == 30.f / 4096 && heard[81] == 36.f / 4096,
+          "a filled Sampler layer inherits pitch and modulation from when the slot was empty");
+    check(heard[159] == 348.f / 4096 && heard[224] == 0.f,
+          "a new Sampler layer inherits sustain and releases at pedal up");
+}
 void slotMode() {
     using S = device::Sampler;
     const std::vector<float> dc(65536, .5f);
@@ -245,6 +281,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     slotMode();
+    midiControllers();
     declarations();
 
     device::Sampler d;

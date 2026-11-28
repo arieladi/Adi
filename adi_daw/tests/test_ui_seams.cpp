@@ -15,6 +15,7 @@
 // use-after-free under the design this one replaced.
 
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 
 #include "adi/automation_lanes.hpp"
 #include "adi/clip_commands.hpp"
@@ -968,6 +969,8 @@ void groupAndUngroupAsBatches() {
               order() == Order{{2, 0}, {7, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}} &&
               sub.nextUndo()->label == "Insert Audio Track",
           "an audio track inserted with Kick selected: right after Kick, the group and Bass after it, one step");
+    const auto *insertedTrack = view.current()->findTrack(7);
+    check(insertedTrack && insertedTrack->monitorMode == 0, "SC-249: Insert Audio Track starts with Monitor Off");
     check(sub.undo().ok && order() == before, "undo removes it");
     auto inGroup = ui::insertTrack(view.current()->tracks, 3, true);
     check(inGroup.ops.front().payload["parent"] == 6 && sub.submit(std::move(inGroup.ops)).ok &&
@@ -1442,15 +1445,14 @@ void audioDropAsOneStep() {
 
     // The same file again, below the tracks: the pool row is reused, and a new audio track holds it.
     auto again = ui::dropAudio(*view.current(), 0, 0, "snare", capture(2));
-    check(again.refusal.empty() && again.ops.size() == 4 && again.ops[0].opType == "track.create" &&
+    check(again.refusal.empty() && again.ops.size() == 3 && again.ops[0].opType == "track.create" &&
               again.ops[0].payload["kind"] == "audio" && again.ops[0].payload["id"] == 5 &&
-              again.ops[1].opType == "track.setMonitorMode" && again.ops[1].payload["mode"] == 2 &&
-              again.ops[2].payload["track"] == 5 && again.ops[3].payload["media"] == 1 && again.select == 5 &&
+              again.ops[1].payload["track"] == 5 && again.ops[2].payload["media"] == 1 && again.select == 5 &&
               again.clip == 2,
-          "the drop area: a new audio track monitoring on Auto (N67), the pool's row reused");
+          "the drop area creates a new audio track and reuses the pool row");
     check(sub.submit(std::move(again.ops)).ok && view.current()->findTrack(5) != nullptr &&
-              view.current()->findTrack(5)->clips.size() == 1,
-          "and lands");
+              view.current()->findTrack(5)->clips.size() == 1 && view.current()->findTrack(5)->monitorMode == 0,
+          "SC-249: the drop lands on a new audio track with Monitor Off");
     check(sub.undo().ok && view.current()->findTrack(5) == nullptr, "undo takes the new track away with its clip");
     check(sub.undo().ok && view.current()->findTrack(1)->clips.empty(), "and the first drop");
     check(ui::dropAudio(*view.current(), 1, 0, "x", ui::AudioImport{}).refusal == "That file holds no audio ADI can play." &&
@@ -1917,8 +1919,8 @@ void insertReturnTrackStandsBeforeMain() {
     section("Insert Return Track: after the returns, before Main; every index its own (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-return");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);
@@ -2587,7 +2589,11 @@ void heldIdsAreSkipped() {
     const auto next = rows.next("tracks");
     auto made2 = ui::insertTrack(view.current()->tracks, 0, false, nullptr, next);
     check(next == 5 && !made2.ops.empty() && made2.ops.front().payload["id"] == 5, "Insert Audio Track takes 5 from RowIds");
-    auto dropped = ui::newAudioTrack(*view.current());
+    ui::AudioImport preparedAudio;
+    preparedAudio.mediaId = 1;
+    preparedAudio.sampleRate = 48000;
+    preparedAudio.frames = 480;
+    const auto dropped = ui::dropAudio(*view.current(), 0, 0, "Sample", std::move(preparedAudio));
     check(!dropped.ops.empty() && dropped.ops.front().payload["id"] == 5, "a dropped file's new track takes 5 too");
     check(sub.submit(std::move(made2.ops)).ok && view.current()->findTrack(5) != nullptr, "and lands");
     check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(4) != nullptr, "Undo brings Kick back, with its id");
@@ -2648,11 +2654,11 @@ void anEmptyRenameGivesTheDefaultNameBack() {
           "a return and Main keep the name they have");
 }
 void insertTrackMovesTheReturnsAndMainDown() {
-    section("Insert Track in the default project: every later track down one, the returns and Main too (manual 18.2)");
+    section("Insert Track in a saved project: every later track down one, the returns and Main too (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-foot");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);

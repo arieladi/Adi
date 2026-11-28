@@ -17,5 +17,7 @@ std::int64_t rootForPoint(SQLite::Database &, std::optional<std::int64_t>);
 std::int64_t materializeRoot(Store &, std::optional<std::int64_t>, const std::string &verifiedHash);
 UndoCompactionResult compactStoredUndo(Store &, const UndoRetentionPolicy &);
 void syncCurrentRoot(Store &);
+// The caller has cleared the old journal and owns the staging transaction.
+std::int64_t seedShareBaseline(Store &);
 } // namespace history_detail
 } // namespace adi

@@ -44,6 +44,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -87,6 +88,7 @@ struct DeviceTransport {
     int numerator = 4;
     int denominator = 4;
     bool playing = false;
+    bool recording = false; ///< SC-333: playing while ADI records a take (VST3 kRecording, CLAP IS_RECORDING)
     bool looping = false;
     std::int64_t loopBegin = 0;
     std::int64_t loopEnd = 0;
@@ -201,6 +203,11 @@ public:
     virtual void emitAtInput(EventList& out, std::int32_t frames, std::int32_t) noexcept {
         emit(out, frames);
     }
+    /// Sample an optional host bypass lane once per physical block.
+    /// Called on the audio thread before forwarding any events.
+    virtual bool selectBypassForBlock(bool manualBypass, std::int32_t /*arrival*/) noexcept {
+        return manualBypass;
+    }
 };
 
 /// One processing node.
@@ -244,6 +251,10 @@ public:
     /// history across rebuilds. Bypass never removes the declared latency.
     [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
     [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Graph-selected bypass state, sampled before forwarding for this block.
+    [[nodiscard]] virtual EventFlow eventFlowAfterBypass(bool) const noexcept { return eventFlow(); }
+    [[nodiscard]] virtual std::int64_t tailSamplesAfterBypass(bool) const noexcept { return tailSamples(); }
+    virtual void didSuspendAfterBypass(bool) noexcept { didSuspend(); }
     /// Called only after the graph sampled bypass for this block. Do not
     /// re-read the switch: a concurrent toggle must not select undelayed dry.
     virtual void processActive(const NodeIo& io) noexcept { process(io); }
@@ -934,6 +945,7 @@ public:
     /// what makes a group a node with no device rather than a special case
     /// (ADR-0044).
     bool connect(NodeId from, NodeId to, Bus bus = Bus::Main);
+    bool connectTrackRoute(NodeId from, NodeId to, Bus bus, std::int64_t sourceTrack);
 
     /// How many nodes have been added. Lets a caller assert what it built
     /// rather than describe it -- realisation's decision to emit no node for a
@@ -1017,6 +1029,9 @@ public:
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const AudioIo& io) noexcept override;
+    // Skip the outgoing routes of the sorted track IDs for this physical slice.
+    void processWithExcludedTracks(const AudioIo&, std::span<const std::int64_t>) noexcept;
+    [[nodiscard]] bool copyMainOutput(const AudioIo& io) const noexcept { return copyNodeOutput(output_, io); }
     void release() override;
 
     /// Processing owner only, after process and before the next process.
@@ -1047,9 +1062,9 @@ public:
     /// trust the comment.
     [[nodiscard]] static std::int32_t maxFloorFor(double sampleRate) noexcept;
 
-    /// Spare ring capacity on every compensated edge, in samples, so a
-    /// plugin's latency can change while the graph runs without anyone
-    /// allocating (ADR-0079).
+    /// Spare ring capacity on each edge that can need compensation, in
+    /// samples, so a plugin's latency can change while the graph runs
+    /// without anyone allocating (ADR-0079).
     ///
     /// THE DEFAULT IS 8192, AND IT IS MEASURED (ADR-0088). It was 0, and 0
     /// switches the feature off: with no headroom every change misses its
@@ -1244,11 +1259,16 @@ private:
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
         bool hasBypass = false;
+        bool bypassForBlock = false;
+        EventFlow eventFlowForBlock = EventFlow::Through;
+        std::uint64_t bypassStateBlock = 0;
         std::uint64_t bypassTransitionBlock = 0;
         bool serviceBypassTransition = false;
         DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
+        // Empty for buses without track-to-track routes, otherwise parallel to the inputs.
+        std::vector<std::int64_t> inputTrackIds, sidechainTrackIds;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
         std::vector<DelayLine> sideDelays;   ///< parallel to `sidechains`
         std::int32_t arrival = 0;            ///< ADR-0058: when this node's input is whole
@@ -1314,6 +1334,7 @@ private:
     /// sums every mix point (ADR-0207 d2, Audio Fact Sheet 38.2.4). `wide` is
     /// the double accumulator for this bus.
     bool mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+             const std::vector<std::int64_t>& trackIds,
              std::vector<float*>& dst, std::vector<double*>& wide,
              std::int32_t begin, std::int32_t frames) noexcept;
 
@@ -1323,6 +1344,7 @@ private:
     /// the reads skipped cannot disagree: the message thread moves `busy()`
     /// (an offer, a collection) between any two reads of it.
     [[nodiscard]] static bool idle(const Slot& src, const DelayLine& delay) noexcept;
+    [[nodiscard]] bool excludedTrack(const std::vector<std::int64_t>& trackIds, std::size_t edge) const noexcept;
 
     /// Accumulate one input's segment into a mix buffer. `first` copies, the
     /// rest add -- which is the whole of ADR-0044's summing, and why a group
@@ -1339,6 +1361,7 @@ private:
     /// and the sum is left in `wide` for the node (or narrowed by the caller
     /// for a node that does not process double).
     bool mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                 const std::vector<std::int64_t>& trackIds,
                  std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept;
 
     /// One segment of a double sum, converted to the float a node reads.
@@ -1396,6 +1419,7 @@ private:
     void publishPdcOwner() noexcept;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
+    std::span<const std::int64_t> excludedTracks_;
 
     std::vector<std::vector<NodeId>> levels_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare

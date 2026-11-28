@@ -11,8 +11,11 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -26,6 +29,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <new>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 using namespace adi;
 using namespace adi::engine;
 namespace fs = std::filesystem;
@@ -104,11 +113,8 @@ void liveInputMonitoring() {
             if(!OpJournal(*f.store).commit(r).ok || !f.session.refresh(*f.store))
                 throw std::runtime_error("refreshing the track monitor controls failed");
         };
-        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
-            f.session.transport().locate(start);
-            f.session.transport().play(playing);
-            if (playing && !f.session.clips()->prime())
-                throw std::runtime_error("could not prime the Arrangement clip");
+        std::int64_t stream = 0;
+        auto renderBlock = [&](bool haveRight = true) {
             std::array<float,64> a{}, b{}, c{};
             a.fill(0.125f); b.fill(0.25f); c.fill(0.5f);
             const float* in[]{haveRight ? a.data() : nullptr, b.data(), c.data()};
@@ -116,11 +122,45 @@ void liveInputMonitoring() {
             std::array<double,128> wide{};
             float* out[]{pcm.data(),pcm.data()+64};
             double* out64[]{wide.data(),wide.data()+64};
-            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, 0};
+            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, stream};
             if (precision == Precision::Float64) io.out64 = out64;
             { const audio::CallbackScope callback; f.session.process(io); }
+            stream += io.frames;
             if (precision == Precision::Float32) std::copy(pcm.begin(),pcm.end(),wide.begin());
             return wide;
+        };
+        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
+            f.session.transport().locate(start);
+            f.session.transport().play(playing);
+            if (playing && !f.session.clips()->prime())
+                throw std::runtime_error("could not prime the Arrangement clip");
+            return renderBlock(haveRight);
+        };
+        auto& recorder = f.session.recording();
+        auto startCapture = [&] {
+            AudioRecordingSpec spec;
+            spec.workFolder = f.dir.path();
+            spec.sampleRate = 48000;
+            spec.maxFrames = 64;
+            spec.ringFrames = 4096;
+            spec.targets = {{1, {2, 0}}};
+            std::string error;
+            if (!f.session.startRecording(spec, error))
+                throw std::runtime_error(error);
+        };
+        auto checkCapture = [&](std::uint64_t frames, std::int64_t start) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (auto result = recorder.poll()) {
+                    check(result->failure == RecordingFailure::None && result->hasAttachableAudio() &&
+                              result->frames == frames && result->startSample == start,
+                          "the take has the expected recorded interval");
+                    check(!result->discard(), "remove the test take after the writer closed it");
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            throw std::runtime_error("recording writer did not finish");
         };
         const auto unarmed = render(false);
         check(std::all_of(unarmed.begin(),unarmed.end(),[](double sample){return sample==0;}),
@@ -138,6 +178,48 @@ void liveInputMonitoring() {
                 exact = exact && playing[channel*64+frame] == wanted;
             }
         check(exact, "Auto returns to the live input at the exact Arrangement clip end");
+
+        // Start in an existing clip. The callback crosses the end of the count-in,
+        // so only its suffix is recorded and must play the armed track's input.
+        startCapture();
+        auto& transport = f.session.transport();
+        transport.locate(17);
+        transport.play();
+        if (!f.session.clips()->prime())
+            throw std::runtime_error("could not prime the clip under the recording start");
+        transport.countIn(7);
+        const auto recorded = renderBlock();
+        check(std::all_of(recorded.begin() + 7, recorded.begin() + 64,
+                          [](double sample) { return sample == 0.5; }) &&
+                  std::all_of(recorded.begin() + 71, recorded.end(),
+                              [](double sample) { return sample == 0.125; }),
+              "SC-245: armed Auto plays only the input over the existing clip once capture starts");
+        recorder.stop();
+        check(render(true) == playing, "stopping capture while playing restores Auto clip playback");
+        checkCapture(57, 17);
+
+        const auto punchTicks = [&] {
+            auto clock = f.session.beginRender();
+            return std::pair{clock.tickAtSample(23), clock.tickAtSample(39)};
+        }();
+        change("transport.setLoop", {{"on",false},{"start",punchTicks.first},{"end",punchTicks.second}});
+        change("transport.setPunch", {{"in",true},{"out",true}});
+        startCapture();
+        const auto punched = render(true);
+        bool punchExact = true;
+        for (std::size_t channel = 0; channel < 2; ++channel)
+            for (std::size_t frame = 0; frame < 64; ++frame) {
+                const double input = channel == 0 ? 0.5 : 0.125;
+                const auto expected = frame >= 23 && frame < 39 ? input : playing[channel * 64 + frame];
+                punchExact = punchExact && punched[channel * 64 + frame] == expected;
+            }
+        check(punchExact && transport.playing() && transport.position() == 64,
+              "Auto hears the old clip before Punch-In and after Punch-Out while playback keeps advancing");
+        (void)recorder.poll(); // publish the automatic punch-out stop
+        (void)renderBlock(); // the next callback acknowledges it
+        checkCapture(16, 23);
+        change("transport.setPunch", {{"in",false},{"out",false}});
+
         f.session.transport().loop(5,41,true);
         const auto looped = render(true,true,35);
         bool loopExact = true;
@@ -167,6 +249,11 @@ void liveInputMonitoring() {
         const auto off = render(true);
         check(off[0]==0 && off[16]==0 && off[17]==f.media[0] && off[48]==f.media[62] &&
               off[49]==0 && off[63]==0, "Off keeps Arrangement PCM and discards hardware even when armed");
+        startCapture();
+        check(render(true) == off, "Monitor Off keeps the old clip audible during capture pending R45");
+        recorder.stop();
+        (void)render(false);
+        checkCapture(64, 0);
         check(f.session.setAudioMonitorInputs({}), "disconnect all runtime inputs");
     }
 }
@@ -191,6 +278,212 @@ void placement() {
     f.load(4096);f.session.transport().locate(2300);const auto out=f.render(4096);
     check(out[99]==0 && out[100]==f.media[0] && out[101]==f.media[2],"tick placement integrates tempo map");
 }
+void unwarpedTempoChanges() {
+    constexpr auto start = textproj::kPPQ;
+    constexpr int sourceFrames = 800;
+    for (const bool trimmed : {false, true}) {
+        Fixture f(48000, 2, sourceFrames);
+        f.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+        const auto drop = ui::dropAudio(*SnapshotBuilder::fromStore(*f.store), 1, start,
+            "Source", ui::AudioImport{1, 48000, sourceFrames, {}, 0});
+        if (!OpJournal(*f.store).commit(drop.ops).ok)
+            throw std::runtime_error("could not place the unwarped test clip");
+        const int audible = trimmed ? 600 : sourceFrames;
+        if (trimmed) {
+            OpRequest resize;
+            resize.opType = "clip.resize";
+            resize.payload = {{"id", drop.clip}, {"pos", start}, {"length", 144144}};
+            if (!OpJournal(*f.store).commit(resize).ok)
+                throw std::runtime_error("could not trim the unwarped test clip");
+        }
+        f.load(1024);
+        const auto atTempo = [&](int bpm, const char* checkName) {
+            const auto snapshot = SnapshotBuilder::fromStore(*f.store);
+            const auto* track = snapshot->findTrack(1);
+            const auto& clip = *track->clips.front();
+            const auto first = 48000 * 60 / bpm;
+            f.session.transport().locate(first - 1);
+            const auto out = f.render(1024);
+            const auto end = std::llround(snapshot->tempo->ticksToSeconds(clip.posTicks + clip.lengthTicks) * 48000);
+            bool exact = clip.posTicks == start && end == first + audible;
+            for (std::size_t channel = 0; channel < 2; ++channel) {
+                for (std::size_t frame = 0; frame < 1024; ++frame) {
+                    const auto expected = frame > 0 && frame <= static_cast<std::size_t>(audible)
+                        ? f.media[(frame - 1) * 2 + channel] : 0.0f;
+                    exact = exact && out[channel * 1024 + frame] == expected;
+                }
+            }
+            check(exact, checkName);
+        };
+        atTempo(120, "unwarped clip starts on its beat and plays its authored span");
+        for (const int bpm : {240, 60}) {
+            const auto edit = ui::setTempoAt(SnapshotBuilder::fromStore(*f.store)->tempo->events, 0, std::to_string(bpm), true);
+            if (!OpJournal(*f.store).commit(edit.ops).ok || !f.session.refresh(*f.store))
+                throw std::runtime_error("could not change the tempo for unwarped playback");
+            atTempo(bpm, bpm == 240
+                ? "raising the tempo preserves unwarped PCM and its full projected duration"
+                : "lowering the tempo preserves unwarped PCM and leaves no silent arrangement tail");
+        }
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store), "undo the slower tempo");
+        atTempo(240, "tempo undo restores the exact unwarped endpoint");
+        check(History(*f.store).redo().ok && f.session.refresh(*f.store), "redo the slower tempo");
+        atTempo(60, "tempo redo restores the exact unwarped endpoint");
+    }
+}
+void reversedSource() {
+    constexpr int start=73, source=37, length=21001, block=317;
+    const auto addReversed = [](Fixture& fixture) {
+        fixture.add(1,start,length,source,length);
+        fixture.store->db().exec("UPDATE audio_clips SET reverse=1");
+    };
+    Fixture f(48000,2,30000);
+    addReversed(f);
+    f.load(block);
+    bool exact=true;
+    for(int at=0;at<start+length+block;at+=block) {
+        const auto out=f.render(block);
+        for(int channel=0;channel<2;++channel)for(int frame=0;frame<block;++frame) {
+            const auto local=at+frame-start;
+            const auto expected=local<0 || local>=length ? 0.0f :
+                f.media[static_cast<std::size_t>(2*(source+length-1-local)+channel)];
+            exact=exact && out[static_cast<std::size_t>(channel*block+frame)]==expected;
+        }
+    }
+    check(exact && f.session.problems().empty() && f.session.clips()->underrunSamples()==0,
+          "native reverse plays the source window frame-exactly with intact channels across disk pages");
+
+    Fixture forward(48000,2,30000);
+    forward.add(1,start,length,source,length);
+    for(int i=0;i<length/2;++i)for(int c=0;c<2;++c)
+        std::swap(forward.media[static_cast<std::size_t>(2*(source+i)+c)],
+                  forward.media[static_cast<std::size_t>(2*(source+length-1-i)+c)]);
+    {
+        audio::WavWriter writer(forward.dir.path()/"audio.wav",48000,2,audio::WavFormat::Float32);
+        writer.write(forward.media.data(),30000);
+        writer.close();
+    }
+    Fixture reversed(48000,2,30000);
+    addReversed(reversed);
+    reversed.load(block,44100);
+    forward.load(block,44100);
+    bool resampled=true;
+    for(const auto at:{13000,200,7500}) {
+        reversed.session.transport().locate(at);
+        forward.session.transport().locate(at);
+        resampled=resampled && reversed.render(block)==forward.render(block);
+    }
+    check(resampled,"reverse seeks and resampling match a physically reversed source window");
+}
+void reverseSelectedRange() {
+    constexpr int source=37, block=512;
+    constexpr auto quarter=textproj::kPPQ;
+    Fixture f(48000,2,40000);
+    f.add(1,0,24000,source,30000);
+    const auto hash = media::blake3File(f.dir.path() / "audio.wav");
+    if (!hash) {
+        check(false,"hash the Reverse selection's source file");
+        return;
+    }
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
+    const std::array clips{std::int64_t{1}};
+    const auto edit=clip_edit::prepareReverse(*f.store,clips,std::pair{quarter/4,quarter/2},48000);
+    if (!edit.ok) {
+        check(false,edit.error.c_str());
+        return;
+    }
+    const auto committed = clip_edit::commitPrepared(*f.store,edit);
+    if (!committed.ok) {
+        check(false,committed.error.c_str());
+        return;
+    }
+    check(edit.requests.size()==1,"Reverse captures both cuts and the selected audio in one edit");
+    f.load(block);
+    const auto matches=[&](bool reversed) {
+        bool exact=true;
+        f.session.transport().locate(0);
+        for(int at=0;at<24000;at+=block) {
+            const auto out=f.render(block);
+            for(int i=0;i<block && at+i<24000;++i) {
+                const auto t=at+i;
+                const auto material=reversed && t>=6000 && t<12000?17999-t:t;
+                exact=exact && out[static_cast<std::size_t>(i)]==f.media[static_cast<std::size_t>(2*(source+material))];
+            }
+        }
+        return exact;
+    };
+    check(matches(true),"the reversed middle plays only the selected audio with forward material on both sides");
+    check(History(*f.store).undo().ok && f.session.refresh(*f.store) && matches(false),
+          "one undo restores the original uninterrupted playback");
+}
+void reverseSelectedRepeats() {
+    constexpr int block=256, loopSource=7, nextSource=500;
+    const auto at=[](std::int64_t frame) {return frame*textproj::kPPQ/24000;};
+    Fixture f(48000,2,2000);
+    f.add(1,0,1200,loopSource,300);
+    f.add(2,1200,120,nextSource,120);
+    const auto hash=media::blake3File(f.dir.path()/"audio.wav");
+    if(!hash){check(false,"hash the looping Reverse selection source");return;}
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
+    f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=24024 WHERE id=1;"
+                       "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,48048);"
+                       "INSERT INTO clip_playback_details(clip_id,source_end_ns,loop_begin_ns,loop_end_ns,in_begin_ns,in_end_ns) "
+                       "VALUES(1,4166667,2083333,4166667,0,520833);");
+    const std::array both{std::int64_t{1},std::int64_t{2}};
+    const std::array loop{std::int64_t{1}};
+    const auto head=OpJournal(*f.store).headSeq();
+    const auto mixed=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(250)},48000);
+    check(!mixed.ok && mixed.error.find("intro")!=std::string::npos && OpJournal(*f.store).headSeq()==head,
+          "an intro followed by loop wraps refuses without changing any clip");
+
+    const auto read=[&] {
+        std::array<float,1320> pcm{};
+        f.session.transport().locate(0);
+        for(int start=0;start<1320;start+=block) {
+            const auto out=f.render(block);
+            std::copy_n(out.begin(),std::min(block,1320-start),pcm.data()+start);
+        }
+        return pcm;
+    };
+    f.load(block);
+    const auto original=read();
+    const auto matches=[&](auto&& originalIndex) {
+        const auto pcm=read();
+        for(int i=0;i<1320;++i)
+            if(pcm[static_cast<std::size_t>(i)]!=original[static_cast<std::size_t>(originalIndex(i))])return false;
+        return true;
+    };
+    const auto reversed=clip_edit::prepareReverse(*f.store,both,std::pair{at(900),at(1250)},48000);
+    check(reversed.ok && reversed.requests.size()==1,"a late repeat and its neighbor can be reversed in one prepared edit");
+    if(reversed.ok && clip_edit::commitPrepared(*f.store,reversed).ok && f.session.refresh(*f.store)) {
+        check(matches([](int frame) {
+            if(frame>=900 && frame<1200)return 2099-frame;
+            if(frame>=1200 && frame<1250)return 2449-frame;
+            return frame;
+        }),"Reverse changes only the selected later repeats and the covered portion of the neighboring clip");
+        if(!History(*f.store).undo().ok || !f.session.refresh(*f.store)) {
+            check(false,"one Undo restores both selected clips");
+            return;
+        }
+        check(read()==original,"one Undo restores the initial loop phase and neighboring PCM");
+    } else if(reversed.ok) {
+        check(false,"commit the single captured Reverse edit for both clips");
+        return;
+    }
+
+    const auto firstPass=clip_edit::prepareReverse(*f.store,loop,std::pair{at(50),at(175)},48000);
+    const bool committed=firstPass.ok && clip_edit::commitPrepared(*f.store,firstPass).ok && f.session.refresh(*f.store);
+    check(committed && matches([](int frame) {
+        return frame>=50 && frame<175?224-frame:frame;
+    }),"the intro and uninterrupted first pass reverse as a one-shot, keeping the surrounding loop intact");
+}
 void takeLanePlayback() {
     Fixture f;
     f.add(1, 0, 500, 11, 1000);
@@ -207,6 +500,21 @@ void takeLanePlayback() {
         }
     }
     check(exact, "main comp plays sample-exactly while a stored take overlaps it");
+    const auto history = OpJournal(*f.store).headSeq();
+    check(f.session.auditionTakeLane(*f.store, 1, 7), "SC-253: auditioning a lane rebuilds the live timeline");
+    f.session.transport().locate(0);
+    const auto audition = f.render(512);
+    bool takeExact = true;
+    for (std::size_t channel = 0; channel < 2; ++channel)
+        for (std::size_t frame = 0; frame < 512; ++frame) {
+            const auto expected = frame < 500 ? f.media[(frame + 51) * 2 + channel] : 0.0f;
+            takeExact = takeExact && audition[channel * 512 + frame] == expected;
+        }
+    check(takeExact && OpJournal(*f.store).headSeq() == history,
+          "SC-253: the take replaces the main playback during audition without an Undo entry");
+    check(f.session.auditionTakeLane(*f.store, 1, 0), "SC-253: turning off audition restores the main lane");
+    f.session.transport().locate(0);
+    check(f.render(512) == out, "SC-253: turning audition off restores the sample-exact comp");
     f.store->db().exec("DELETE FROM clips WHERE id=1");
     if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
     f.session.transport().locate(0);
@@ -236,6 +544,44 @@ void properties() {
         Fixture m;m.add(1,0,100,0,100);m.store->db().exec("UPDATE audio_clips SET channel_mode="+std::to_string(mode));m.load(128);o=m.render(128);
         const float want=mode==1?m.media[20]:(m.media[20]+m.media[21])*0.5f;
         check(o[10]==want && o[138]==want,"left and mono-sum channel modes");
+    }
+}
+void legacyUnwarpedLoopPastSource() {
+    for (const auto offset : {0, 96096}) {
+        Fixture f;
+        f.add(1, 0, 2000, 7, 300);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                           "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                           "content_offset_ticks=" + std::to_string(offset));
+        f.load(512);
+        const auto audio = f.render(512);
+        check(audio.front() == f.media[14] && audio[299] == f.media[612] && audio[300] == 0,
+              "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
+    }
+}
+void legacyUnwarpedLoopRetainsEnd() {
+    for (const bool physicalEnd : {false, true}) {
+        for (const auto &[offsetTicks, firstFrame] : {std::pair{0, 0}, std::pair{6006, 50},
+                                                        std::pair{24024, 0}, std::pair{96096, 0}}) {
+            Fixture f;
+            f.add(1, 0, 2000, 7, 300);
+            f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                               "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                               "content_offset_ticks=" + std::to_string(offsetTicks));
+            if (physicalEnd)
+                f.store->db().exec("INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,2500000)");
+            else
+                f.store->db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,15015)");
+            f.load(512);
+            const auto pcm = f.render(512);
+            const auto endFrame = physicalEnd ? 120 : 125;
+            const auto played = static_cast<std::size_t>(endFrame - firstFrame);
+            check(pcm.front() == f.media[static_cast<std::size_t>(7 + firstFrame) * 2] &&
+                      pcm[played - 1] == f.media[static_cast<std::size_t>(7 + endFrame - 1) * 2] &&
+                      std::all_of(pcm.begin() + static_cast<std::ptrdiff_t>(played), pcm.begin() + 512,
+                                  [](float sample) { return sample == 0.f; }),
+                  "the nonloop fallback respects End and resets only offsets outside that interval");
+        }
     }
 }
 void editedFades() {
@@ -968,6 +1314,106 @@ void conversion() {
     const double rms=std::sqrt(energy/4096);std::printf("SRC 96000->48000 30kHz rejection %.3f dB\n",20*std::log10((0.5/std::sqrt(2.0))/rms));
     check(rms<1e-5,"downsampling rejects above-Nyquist sine");
 }
+
+void stereoConversionMatchesSinc() {
+    constexpr std::uint32_t frames = 62000;
+    Fixture stereo(44100, 2, frames);
+    Fixture left(44100, 1, frames);
+    Fixture right(44100, 1, frames, 19999);
+    std::uint32_t random = 1234;
+    for (std::size_t i = 0; i < frames; ++i) {
+        random = random * 1664525u + 1013904223u;
+        left.media[i] = static_cast<float>(random >> 16) / 65536.0f - 0.5f;
+        stereo.media[2 * i] = left.media[i];
+        stereo.media[2 * i + 1] = right.media[i];
+    }
+    for (auto* f : {&stereo, &left, &right}) {
+        const auto channels = static_cast<std::uint16_t>(f == &stereo ? 2 : 1);
+        audio::WavWriter wav(f->dir.path() / "audio.wav", 44100, channels, audio::WavFormat::Float32);
+        wav.write(f->media.data(), frames);
+        wav.close();
+        f->add(1, 0, 65000, 17, 60000);
+        f->load(1024);
+    }
+    float peak = 0;
+    for (const int start : {0, 8191, 37123, 64900}) {
+        for (auto* f : {&stereo, &left, &right}) f->session.transport().locate(start);
+        const auto combined = stereo.render(1024);
+        const auto monoLeft = left.render(1024);
+        const auto monoRight = right.render(1024);
+        for (std::size_t i = 0; i < 1024; ++i)
+            peak = std::max({peak, std::abs(combined[i] - monoLeft[i]), std::abs(combined[1024 + i] - monoRight[i])});
+    }
+    std::printf("SRC 44100->48000 stereo vs mono sinc-best peak %.9g\n", static_cast<double>(peak));
+    check(peak < 5e-7f, "stereo conversion matches sinc-best at the start, seams, seeks, and tail");
+}
+
+// Run explicitly in a Release build. A shared CI runner cannot guarantee the
+// callback cadence of a device, so keep wall-clock deadlines out of the suite.
+void realtimeConversion() {
+    constexpr int tracks = 32, block = 256, callbacks = 480;
+    for (const auto sourceRate : {48000u, 44100u}) {
+        Fixture f(sourceRate, 2, 4 * sourceRate, 997);
+        auto& db = f.store->db();
+        SQLite::Statement track(db, "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(?,'audio','Audio',?)");
+        SQLite::Statement media(db, "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(?,?,?,'wav')");
+        SQLite::Statement assign(db, "UPDATE clips SET track_id=? WHERE id=?");
+        SQLite::Statement source(db, "UPDATE audio_clips SET media_id=? WHERE clip_id=?");
+        for (int i = 0; i < tracks; ++i) {
+            const int clipId = i + 1;
+            const int trackId = i + 100;
+            const auto path = "track-" + std::to_string(clipId) + ".wav";
+            fs::copy_file(f.dir.path() / "audio.wav", f.dir.path() / path);
+            track.bind(1, trackId); track.bind(2, trackId); track.exec(); track.reset();
+            media.bind(1, trackId); media.bind(2, "test-" + std::to_string(clipId));
+            media.bind(3, path); media.exec(); media.reset();
+            f.add(clipId, 0, 4 * 48000, 0, 4 * sourceRate);
+            assign.bind(1, trackId); assign.bind(2, clipId); assign.exec(); assign.reset();
+            source.bind(1, trackId); source.bind(2, clipId); source.exec(); source.reset();
+        }
+        f.load(block);
+        const auto primeStart = std::chrono::steady_clock::now();
+        if (!f.session.clips()->prime(std::chrono::seconds(5))) throw std::runtime_error("could not prime 32-track project");
+        const double primeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - primeStart).count();
+        std::array<float, block * 2> pcm{};
+        float* out[] = {pcm.data(), pcm.data() + block};
+        const auto process = [&] {
+            const audio::CallbackScope callback;
+            f.session.process({out, nullptr, 2, 0, block, 0});
+        };
+        // A running device reads ahead at the stopped playhead. Start at a
+        // different, cold position and give it 250 ms before pressing Play.
+        f.session.transport().play(false);
+        f.session.transport().locate(48000);
+        const auto stopped = std::chrono::steady_clock::now();
+        for (int i = 0; i < 47; ++i) {
+            std::this_thread::sleep_until(stopped + std::chrono::duration<double>(static_cast<double>(i * block) / 48000));
+            process();
+        }
+        std::this_thread::sleep_until(stopped + std::chrono::milliseconds(250));
+        f.session.transport().play();
+        int gaps = 0, firstSecondGaps = 0;
+        bool heardAudio = false;
+        auto underruns = f.session.clips()->underrunSamples();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < callbacks; ++i) {
+            std::this_thread::sleep_until(start + std::chrono::duration<double>(static_cast<double>(i * block) / 48000));
+            process();
+            heardAudio = heardAudio || std::abs(pcm[block - 1]) > 0.01f;
+            const auto next = f.session.clips()->underrunSamples();
+            if (next != underruns) {
+                ++gaps;
+                if (i * block < 48000) ++firstSecondGaps;
+            }
+            underruns = next;
+        }
+        std::printf("SC-407 %u->48000, %d tracks: initial prime %.1f ms, %d/%d callbacks with gaps (%d in first second), %u missing clip frames\n",
+                    sourceRate, tracks, primeMs, gaps, callbacks, firstSecondGaps, underruns);
+        check(heardAudio && f.session.transport().position() == 48000 + callbacks * block,
+              "the benchmark drives the playing graph at the requested device cadence");
+        check(gaps == 0 && f.session.clips()->readErrors() == 0, "32 tracks sustain the device callback rate without gaps");
+    }
+}
 void refreshAndVariableBlocks() {
     Fixture f;f.add(1,31,70000,0,70000);f.load(4096);
     bool exact=true;int at=0;
@@ -1146,14 +1592,50 @@ void segmentsAndCrop() {
     bool exact=true;
     for(int i=0;i<4096;++i)exact=exact && output[static_cast<std::size_t>(i)]==(i>=63?f.media[static_cast<std::size_t>(i-63+9)*2]:0);
     check(exact,"sub-block offsets address the original block buffers and clock");
+
+    Fixture looped;
+    looped.add(1,12,5,100,5);
+    looped.add(2,24,4,200,4);
+    looped.add(3,38,4,300,4);
+    looped.add(4,60,10,400,10);
+    looped.load(96);
+    looped.session.transport().loop(10,40);
+    looped.session.transport().locate(30);
+    if(!looped.session.clips()->prime())throw std::runtime_error("looped segment prime");
+    auto loopSources=looped.session.clips()->sourcesFor(1);
+    std::array<float,192> loopPcm{};
+    float* loopOut[]{loopPcm.data(),loopPcm.data()+96};
+    constexpr std::array slices{std::pair{0,8},std::pair{8,64},std::pair{72,24}};
+    for(const auto& [offset,frames]:slices) {
+        NodeIo io;io.out=loopOut;io.channels=2;io.frames=frames;io.blockOffset=offset;io.sampleRate=48000;
+        audio::CallbackScope callback;loopSources.at(0)->process(io);
+    }
+    bool exactLoop=true;
+    for(int frame=0;frame<96;++frame) {
+        const auto time=frame<10?30+frame:10+(frame-10)%30;
+        int sourceFrame=-1;
+        if(time>=12 && time<17)sourceFrame=100+time-12;
+        if(time>=24 && time<28)sourceFrame=200+time-24;
+        if(time>=38)sourceFrame=300+time-38;
+        for(std::size_t channel=0;channel<2;++channel) {
+            const auto wanted=sourceFrame<0?0.0f:looped.media[static_cast<std::size_t>(sourceFrame)*2+channel];
+            exactLoop=exactLoop && loopPcm[channel*96+static_cast<std::size_t>(frame)]==wanted;
+        }
+    }
+    check(exactLoop,"nonzero-offset slices include clips before, after and across repeated loop wraps");
+
     Fixture crop(44100,1,88200,997);crop.add(1,0,48000,123,44100);crop.load(4096);crop.session.transport().locate(8100);
     const auto out=crop.render(4096);double peak=0;
     for(int i=0;i<4096;++i)peak=std::max(peak,std::abs(static_cast<double>(out[static_cast<std::size_t>(i)])-0.5*std::sin(2*std::numbers::pi*997*(123.0/44100+(8100.0+i)/48000))));
     check(peak<1e-4,"converted cropped window keeps phase across page boundary");
     Transport t;t.loop(10,110);t.locate(100);t.play();
     check(t.sampleAt(250)==50,"multiple loop wraps inside one callback");
-    t.locate(std::numeric_limits<std::int64_t>::max());
     check(t.sampleAt(std::numeric_limits<std::int64_t>::max())>=10 && t.sampleAt(std::numeric_limits<std::int64_t>::max())<110,"large transport offsets avoid signed overflow");
+    // At or past the brace's End playback runs on and never loops, as Live's does: the largest
+    // offset then stops at the largest sample instead of folding back into the brace.
+    t.locate(std::numeric_limits<std::int64_t>::max());
+    check(!t.looping() && t.sampleAt(std::numeric_limits<std::int64_t>::max())==std::numeric_limits<std::int64_t>::max(),
+          "a transport past the loop runs on, and its large offsets avoid signed overflow");
 }
 // Tests set ADI_HOME, so a decoded clip's cache is a temporary folder and not
 // the user's (ADR-0149). The one place this suite writes an environment variable.
@@ -1179,6 +1661,160 @@ void externalSourceSnapshots() {
     bool refused=false;
     {audio::CallbackScope callback;refused=f.session.clips()->externalSources().empty();}
     check(refused,"source descriptor copy refuses callback use without allocation or I/O");
+}
+
+#if defined(__linux__)
+struct ResidentMemory {
+    double currentMiB = 0, peakMiB = 0;
+};
+ResidentMemory residentMemory() {
+    constexpr double bytesPerMiB = 1024.0 * 1024.0;
+    std::ifstream stat("/proc/self/statm");
+    std::uint64_t totalPages = 0, residentPages = 0;
+    const auto pageSize = sysconf(_SC_PAGESIZE);
+    struct rusage usage{};
+    if (!(stat >> totalPages >> residentPages) || pageSize <= 0 || getrusage(RUSAGE_SELF, &usage) != 0)
+        throw std::runtime_error("read clip benchmark resident memory");
+    return {static_cast<double>(residentPages) * static_cast<double>(pageSize) / bytesPerMiB,
+            static_cast<double>(usage.ru_maxrss) / 1024.0};
+}
+#endif
+
+void largeClipMemory() {
+    constexpr int clipCount = 1200, sampleRate = 48000, block = 64;
+    constexpr int clipFrames = 2 * 8192 + 128, pageBoundaryOffset = 8192 - block / 2;
+    const auto sourceStart = [](int index) { return (index % 23) * 37; };
+    const auto placement = [](int index) { return std::int64_t{index} * sampleRate; };
+    Fixture f(sampleRate, 2, clipFrames + 1024);
+    {
+        SQLite::Transaction addClips(f.store->db());
+        for (int index = 0; index < clipCount; ++index)
+            f.add(index + 1, placement(index), clipFrames, sourceStart(index), clipFrames);
+        addClips.commit();
+    }
+#if defined(__linux__)
+    const auto beforeOpen = residentMemory();
+#endif
+    const auto beforeAllocations = callbackAllocations.load();
+    const auto beforeFileIo = audio::callbackFileIo.load();
+    f.load(block, sampleRate);
+    auto *clips = f.session.clips();
+    check(clips && clips->externalSources().size() == clipCount, "the open generation admits every unmuted WAV clip");
+    if (!clips) return;
+#if defined(__linux__)
+    const auto opened = residentMemory();
+#endif
+    const auto visit = [&](int index) {
+        f.session.transport().locate(placement(index) + pageBoundaryOffset);
+        const auto output = f.render(block, true, std::chrono::seconds(3));
+        const auto first = static_cast<std::size_t>(sourceStart(index) + pageBoundaryOffset);
+        for (std::size_t frame = 0; frame < block; ++frame) {
+            if (output[frame] != f.media[(first + frame) * 2] || output[block + frame] != f.media[(first + frame) * 2 + 1])
+                return false;
+        }
+        return true;
+    };
+    check(visit(0), "the first primed callback matches stereo PCM across a page boundary");
+#if defined(__linux__)
+    const auto started = residentMemory();
+#endif
+    // Consecutive placements are a second apart, beyond the worker's lookahead.
+    bool allExact = true;
+    for (int index = 1; index < clipCount; ++index) allExact = visit(index) && allExact;
+    check(allExact && clips->underrunSamples() == 0 && clips->readErrors() == 0,
+          "all 1,200 cold seeks reproduce exact PCM without underruns or source failures");
+#if defined(__linux__)
+    const auto visited = residentMemory();
+#endif
+    f.session.transport().locate(placement(clipCount + 1));
+    const auto silence = f.render(block, true, std::chrono::seconds(3));
+    check(std::all_of(silence.begin(), silence.end(), [](float sample) { return sample == 0; }),
+          "moving outside the placements plays silence");
+#if defined(__linux__)
+    const auto movedAway = residentMemory();
+#endif
+    check(visit(0), "revisiting the first clip after the sweep reproduces exact stereo PCM");
+    check(callbackAllocations.load() == beforeAllocations && audio::callbackFileIo.load() == beforeFileIo,
+          "the large song's callbacks do not allocate or perform file I/O");
+#if defined(__linux__)
+    const auto finish = residentMemory();
+    std::printf("SC-418 %d stereo clips, RSS / peak MiB: before %.1f / %.1f, open %.1f / %.1f, playback %.1f / %.1f, "
+                "after all cold seeks %.1f / %.1f, outside clips %.1f / %.1f, revisit %.1f / %.1f\n",
+                clipCount, beforeOpen.currentMiB, beforeOpen.peakMiB, opened.currentMiB, opened.peakMiB,
+                started.currentMiB, started.peakMiB, visited.currentMiB, visited.peakMiB,
+                movedAway.currentMiB, movedAway.peakMiB, finish.currentMiB, finish.peakMiB);
+    check(opened.currentMiB - beforeOpen.currentMiB < 120.0, "opening the large song keeps resident growth below 120 MiB");
+    check(finish.peakMiB - beforeOpen.currentMiB < 160.0, "visiting all clips keeps peak resident growth below 160 MiB");
+#endif
+}
+
+// Reproduce the descriptor budget of the Windows CRT on hosts that normally
+// run the suite with a higher limit. Leave any lower host limit in effect.
+struct ClipFileLimit {
+#if defined(_WIN32)
+    int previous = _getmaxstdio();
+    ClipFileLimit() {
+        if (_setmaxstdio(std::min(previous, 512)) < 0)
+            throw std::runtime_error("could not set the clip test file limit");
+    }
+    ~ClipFileLimit() { (void)_setmaxstdio(previous); }
+#else
+    struct rlimit previous{};
+    ClipFileLimit() {
+        if (getrlimit(RLIMIT_NOFILE, &previous) != 0)
+            throw std::runtime_error("could not get the clip test file limit");
+        auto limit = previous;
+        limit.rlim_cur = std::min(limit.rlim_cur, rlim_t{512});
+        if (setrlimit(RLIMIT_NOFILE, &limit) != 0)
+            throw std::runtime_error("could not set the clip test file limit");
+    }
+    ~ClipFileLimit() { (void)setrlimit(RLIMIT_NOFILE, &previous); }
+#endif
+};
+void sharedWavReaders() {
+    constexpr int clipCount = 600;
+    constexpr int frames = 64;
+    constexpr int sampleRate = 48000;
+    Fixture f(sampleRate, 1, clipCount * frames);
+    const auto sourceStart = [](int i, int edit) {
+        return ((i * 37 + edit) % clipCount) * frames;
+    };
+    for (int i = 0; i < clipCount; ++i)
+        f.add(i + 1, i * frames, frames, sourceStart(i, 0), frames);
+
+    const ClipFileLimit limit;
+    f.load(frames);
+    const auto keepFirstGeneration = f.session.clips()->readiness();
+    for (int edit = 0; edit < 2; ++edit) {
+        if (edit != 0) {
+            f.store->db().exec("UPDATE audio_clips SET src_start_frames=(src_start_frames + 64) % 38400");
+            if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+            f.session.graph().collect();
+        }
+
+        const auto* playback = f.session.clips();
+        const auto admitted = playback->externalSources().size();
+        bool independentOpen = false;
+        try {
+            audio::WavReader waveformReader(f.dir.path() / "audio.wav");
+            independentOpen = waveformReader.frames() == f.media.size();
+        } catch (const std::exception&) {}
+
+        f.session.transport().locate(0);
+        int heard = 0;
+        for (int i = 0; i < clipCount; ++i) {
+            const auto block = f.render(frames);
+            const auto expected = f.media.begin() + sourceStart(i, edit);
+            if (std::equal(block.begin(), block.begin() + frames, expected) &&
+                std::equal(block.begin() + frames, block.end(), expected)) ++heard;
+        }
+        std::printf("SC-408 generation %d: %zu/%d admitted, %d/%d exact, %zu errors, independent WAV open %s\n",
+                    edit + 1, admitted, clipCount, heard, clipCount, playback->problems().size(),
+                    independentOpen ? "yes" : "no");
+        check(keepFirstGeneration && admitted == clipCount && heard == clipCount &&
+              playback->problems().empty() && independentOpen,
+              "600 clips share a source under the file limit across an edit with the old generation alive");
+    }
 }
 void decodedPins() {
     // ADR-0156: a decoded clip pins its cache copy while a generation reads
@@ -1213,13 +1849,38 @@ void decodedPins() {
     check(pins()==0,"closing the session gives every pin back");
 }
 void unsupported() {
-    for(int kind=0;kind<3;++kind) {
+    for(int kind=0;kind<4;++kind) {
         Fixture f;f.add(1,0,500,0,1000);
+        f.add(2,0,500,0,1000);
+        f.store->db().exec("UPDATE clips SET muted=1 WHERE id=2");
         if(kind==0)f.store->db().exec("UPDATE audio_clips SET warp_enabled=1");
-        if(kind==1)f.store->db().exec("UPDATE audio_clips SET reverse=1");
+        if(kind==1)f.store->db().exec("UPDATE audio_clips SET formant_shift=1 WHERE clip_id=1");
         if(kind==2){std::ofstream file(f.dir.path()/"audio.wav",std::ios::binary|std::ios::trunc);file<<"not WAV";}
+        if(kind==3)f.store->db().exec("UPDATE audio_clips SET transpose_semis=49 WHERE clip_id=1");
         f.load(512);const auto o=f.render(512);
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
+        check(f.session.clipPlaybackUnavailable(1) && !f.session.clipPlaybackUnavailable(2),
+              "a dropped audio clip is tagged by ID, and an intentionally muted clip is not");
+    }
+}
+void missingMediaOnUnplayedClips() {
+    for (const bool missing : {false, true}) {
+        Fixture f;
+        f.add(1, 0, 500, 0, 1000);
+        f.add(2, 0, 500, 0, 1000);
+        f.store->db().exec("UPDATE clips SET muted=1 WHERE id=1;"
+                           "UPDATE audio_clips SET formant_shift=1 WHERE clip_id=2");
+        if (missing) fs::rename(f.dir.path() / "audio.wav", f.dir.path() / "moved.wav");
+        f.load(64);
+        const auto* playback = f.session.clips();
+        check(playback->mediaUnavailable(1) == missing, "a muted clip reports whether its source file is missing");
+        check(playback->mediaUnavailable(2) == missing, "an unsupported clip reports whether its source file is missing");
+        const auto& problems = playback->problems();
+        check(problems.size() == 1 && problems.front().find("unwarped formant shift unsupported") != std::string::npos,
+              "the unsupported clip reports its playback problem even when the source file is missing");
+        const auto pcm = f.render(64);
+        check(playback->externalSources().empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0.f; }),
+              "checking skipped clip media leaves both clips out of playback");
     }
 }
 
@@ -1395,21 +2056,27 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
+        if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();reverseSelectedRepeats();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
-        if(only=="all" || only=="properties")properties();
+        if(only=="all" || only=="properties"){properties();legacyUnwarpedLoopPastSource();legacyUnwarpedLoopRetainsEnd();}
         if(only=="all" || only=="fades"){editedFades();shortenedFade();resizeClampsFades();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
-        if(only=="all" || only=="conversion")conversion();
+        if(only=="all" || only=="conversion"){conversion();stereoConversionMatchesSinc();}
+        if(only=="realtime-conversion")realtimeConversion();
         if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();absoluteLinearEndSamples();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
+        if(only=="all" || only=="unplayed-media")missingMediaOnUnplayedClips();
         if(only=="all" || only=="segments")segmentsAndCrop();
         if(only=="all" || only=="ahead")readAhead();
         if(only=="all" || only=="relative")relativeProject();
         if(only=="all" || only=="endpoint"){fractionalEndpoint();anchoredTrimPlayback();trimAcrossTempoWithSourceEnd();signedPhysicalAudioOffset();pinnedMarkerOrderWitness();}
         if(only=="all" || only=="highRates")highRates();
+        if(only=="all" || only=="shared-wav")sharedWavReaders();
+        if(only=="--large-clip-memory-only")largeClipMemory();
         if(only=="all" || only=="pins")decodedPins();
         if(only=="all" || only=="inputs")externalSourceSnapshots();
     }

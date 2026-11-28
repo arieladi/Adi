@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/dsp/colour_waveform.hpp"
+#include "adi/dsp/period_scope.hpp"
 #include "adi/dsp/spectrum.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/dsp/triggered_scope.hpp"
@@ -27,6 +29,7 @@ class SharedAnalysis final {
     struct State;
     struct Domain;
     struct CumulativeHistory;
+    struct FilledHistory;
     struct CaptureDomain;
     struct BarScopeDomain;
     struct FocusLagJob;
@@ -43,14 +46,17 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
+    enum class FilledCurve { RealtimeAverage, RealtimeMaximum, HeldMaximum, Average };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128
+        RealtimeMaximum = 64, CumulativeMaximum = 128, FilledSpectrum = 256, PeriodScope = 512,
+        ColourWaveform = 1024
     };
     struct StereoMeterProfile {
         bool midSide = false;
         dsp::StereoEnvelopeMeter::Weighting weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
         bool linkedDynamic = false;
+        bool kScale = false;
         auto operator<=>(const StereoMeterProfile &) const = default;
     };
     struct Request {
@@ -74,6 +80,11 @@ class SharedAnalysis final {
         std::shared_ptr<const std::vector<float>> binsDbfs;
         std::int64_t firstSequence = 0;
     };
+    struct FilledSpectrumResult {
+        // Coherently calibrated magnitudes, indexed by FilledCurve.
+        std::array<std::vector<float>, 4> magnitudes;
+        std::uint64_t processedWindows = 0;
+    };
     struct Result {
         Request request;
         std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
@@ -96,6 +107,9 @@ class SharedAnalysis final {
         std::size_t nonFiniteSamples = 0;
         std::int64_t pendingFrames = 0;
         bool advancing = false, discontinuity = false, budgetLimited = false, historyLimited = false;
+        std::shared_ptr<const FilledSpectrumResult> filledSpectrum;
+        std::shared_ptr<const dsp::PeriodScopeReading> periodScope;
+        std::shared_ptr<const dsp::ColourWaveformReading> colourWaveform;
     };
     enum class AverageStatus { Waiting, Ready, InvalidInput, Unavailable };
     // Optional sidecar keeps the Raw Result layout/allocation path unchanged.
@@ -148,6 +162,7 @@ class SharedAnalysis final {
         std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
         std::shared_ptr<const MaximumResult> readMaximum(Output) const noexcept;
         bool restartCumulativeMaximum() noexcept;
+        bool restartFilledSpectrum() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
@@ -155,10 +170,12 @@ class SharedAnalysis final {
         // sample count, independent of analysis backlog or publication revisions.
         SourcePosition sourcePosition() const noexcept;
       private:
-        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>);
+        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>,
+              std::shared_ptr<FilledHistory>);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
         std::shared_ptr<CumulativeHistory> cumulative_;
+        std::shared_ptr<FilledHistory> filled_;
         std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };

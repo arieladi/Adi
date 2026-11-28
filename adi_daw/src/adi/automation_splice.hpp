@@ -58,4 +58,9 @@ inline constexpr std::size_t kSplicePointBudget = 1u << 20;
                                             double defaultValue, SpliceBounds,
                                             std::span<const SpliceKnot> replacement,
                                             std::size_t pointBudget = kSplicePointBudget);
+/// Simplify only whole segments whose authored endpoints are inside the bounds.
+/// An empty successful plan means no point count reduction.
+[[nodiscard]] SplicePlan planEnvelopeSimplification(std::span<const SpliceKnot> original,
+                                                    SpliceBounds, double maxValueError,
+                                                    std::size_t pointBudget = kSplicePointBudget);
 } // namespace adi::automation

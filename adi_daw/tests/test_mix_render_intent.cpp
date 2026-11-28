@@ -2,6 +2,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <cstdio>
 #include <vector>
@@ -44,6 +45,10 @@ void run(Store& store,bool exporting,bool performanceState) {
 int main(){
     test::TempDirectory temp("mix_render_intent","session");StoreError error{};
     auto store=Store::createNewProject(temp.path()/"song.adi",error);if(!store)return 2;
+    store->db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                     "(1,'internal','test.render-intent','Render Intent Probe','effect');"
+                     "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+                     "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(1,1,1,'Render Intent Probe');");
     run(*store,false,true);run(*store,false,false);run(*store,true,false);
     std::printf("render intent: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

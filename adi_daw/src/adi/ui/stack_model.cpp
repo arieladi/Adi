@@ -1291,6 +1291,29 @@ Effects StackModel::setViewport(double listWidth, double listHeight, TimeMs now)
     return fx;
 }
 
+Effects StackModel::setChannelDensity(DensityId density, std::optional<int> customBase, TimeMs now) {
+    Effects fx;
+    const auto before = beginEvent();
+    now = advanceTo(now);
+    if (cap_.active) {
+        fx.refused = true;
+    } else {
+        jump_ = Jump{};
+        anchorFirstVisible();
+        c_ = mixChannelGeometry(density);
+        view_.baseHeight = std::clamp(customBase.value_or(c_.baseDefault), c_.baseMin, c_.baseMax);
+        snapEntries();
+        replan();
+        lastScrollAt_ = now;
+        solveScroll();
+        rehit(now);
+        updateNavScroll();
+        bump();
+    }
+    endEvent(fx, before);
+    return fx;
+}
+
 Effects StackModel::setSelection(TrackId id, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();

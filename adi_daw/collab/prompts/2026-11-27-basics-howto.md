@@ -85,10 +85,17 @@ Your queue file names your second queue. After both, take the wave 2 rows of you
 (round 2 added rows SC-120 onward, each with its queue), in their order. Stop only at your usage
 limit or a broken environment, and say which in your report.
 
+**What a user will see.** The look of each surface is agreed with the director from a picture before it is
+built (ADR-0243 d1). A fix builds what a control does, in today's look. Where a row makes you add something
+to the window that Live does not show, put it under "For the director" with its measured place before it
+lands.
+
 **One session per queue.** The director starts more sessions as he can, and a queue named as someone's
 second may by then have a session of its own.
 - When you start any queue, push its log branch (`basics/<queue>-log`) first, before the first item.
 - Before you start a second queue, fetch and look for that queue's log branch. If it exists, another
   session has the queue: leave it, and take the wave 2 rows of your own first queue instead.
+- A log branch whose report holds no row a day after it was pushed does not hold a queue. Say so in your own
+  report; win names the owner.
 - A queue with no file of its own (device, export) is every row of `docs/SANITY-CHECK.md` whose Queue
   cell names it: wave 1 first, then 2, then 3.

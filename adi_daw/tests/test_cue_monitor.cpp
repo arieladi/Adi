@@ -1,18 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/cue_settings.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
+#include "adi/engine/audio_recording.hpp"
+#include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/sample_preview.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
 #include <cstdio>
+#include <chrono>
+#include <thread>
 #include <atomic>
 #include <cstdlib>
 #include <new>
 #include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <span>
+#include <vector>
 namespace {std::atomic<long> allocations{0};std::atomic<bool> countAllocations{false};}
 #if defined(__GNUC__) && !defined(__clang__)
 #define ADI_TEST_NOINLINE __attribute__((noinline))
@@ -157,6 +170,350 @@ void compensatedAndClick() {
     Fixture click;click.main.value=click.reference.value=0;click.op("cue.setOutput",{{"first",2}});click.op("transport.setMetronome",{{"on",true}});
     check(click.load(),"Cue metronome fixture loads");click.session.transport().play();click.process(b);
     check(std::all_of(b.wide[0].begin(),b.wide[0].end(),[](double v){return v==0;}) && std::any_of(b.wide[2].begin(),b.wide[2].end(),[](double v){return std::abs(v)>0.01;}),"metronome follows Cue Out and leaves Main untouched");
+}
+void samplePreview() {
+    SamplePreview preview;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    f.session.setSamplePreview(&preview);
+    check(f.op("cue.setOutput", {{"first", 6}}) && f.op("cue.setVolume", {{"db", -6.020599913279624}}) && f.load(),
+          "sample preview uses the song's Cue Out and Cue Volume");
+    const auto source = f.temp.path() / "audition.wav";
+    std::array<float, 8192> pcm;
+    for (std::size_t i = 0; i < pcm.size(); i += 2) {
+        pcm[i] = .5f;
+        pcm[i + 1] = -.25f;
+    }
+    audio::WavWriter writer(source, 48000, 2, audio::WavFormat::Float32);
+    writer.write(pcm.data(), static_cast<std::uint32_t>(pcm.size() / 2));
+    writer.close();
+
+    Block block;
+    std::array<float, 512> input;
+    input.fill(.125f);
+    const float* inputs[]{input.data()};
+    block.io.in = inputs;
+    block.io.numIn = 1;
+    block.io.outputChannels.enabled = 0x3c; // physical 3/4 and 5/6
+    auto process = [&] {
+        f.process(block);
+        block.io.streamTimeSamples += block.io.frames;
+    };
+    process();
+    std::string why;
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    check(f.session.startRecording(take, why), "start a concurrent audio take");
+    f.session.transport().play();
+    preview.play(source);
+    process();
+    check(preview.status().position == 0. && block.wide[2].back() == 0. && block.wide[3].back() == 0.,
+          "SC-431: a song's preview stays silent while its physical Cue Out is missing");
+    block.io.outputChannels.enabled = 0xcc; // physical 3/4 and 7/8
+    using namespace std::chrono_literals;
+    const auto waitUntil = [](auto ready) {
+        const auto end = std::chrono::steady_clock::now() + 5s;
+        do {
+            if (ready())
+                return true;
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < end);
+        return false;
+    };
+    const auto heard = waitUntil([&] {
+        process();
+        return near(block.wide[2].back(), .25) && near(block.wide[3].back(), -.125);
+    });
+    check(heard && block.wide[0].back() == 0 && block.wide[1].back() == 0,
+          "SC-431: sample preview plays at half gain on physical Cue 7/8 and leaves Main silent");
+    f.session.recording().stop();
+    process();
+    std::optional<AudioRecordingResult> result;
+    check(waitUntil([&] {
+        result = f.session.recording().poll();
+        return result.has_value();
+    }) && result->hasAttachableAudio() && result->tracks.size() == 1,
+          "finish and inspect the concurrent take");
+    if (result && result->hasAttachableAudio() && result->tracks.size() == 1) {
+        audio::WavReader reader(result->tracks.front().file);
+        std::vector<float> recorded(static_cast<std::size_t>(reader.frames()));
+        check(reader.frames() > 0 && reader.read(recorded.data(), static_cast<std::uint32_t>(recorded.size())) == recorded.size() &&
+                  std::all_of(recorded.begin(), recorded.end(), [](float sample) { return sample == .125f; }),
+              "the take contains the input samples only while audition is audible");
+    }
+}
+void sparseCueOutput() {
+    const auto render = [](int first, std::uint64_t enabled) {
+        Fixture fixture;
+        fixture.main.value = fixture.reference.value = 0.;
+        check(fixture.op("cue.setOutput", {{"first", first}}) &&
+                  fixture.op("transport.setMetronome", {{"on", true}}) && fixture.load(),
+              "SC-431: load the metronome with a physical Cue Out");
+        Block block(512, std::popcount(enabled));
+        block.io.outputChannels.enabled = enabled;
+        fixture.session.transport().play();
+        fixture.process(block);
+        std::array<bool, 4> audible{};
+        for (std::size_t channel = 0; channel < audible.size(); ++channel)
+            audible[channel] = std::ranges::any_of(block.wide[channel], [](double value) { return std::abs(value) > 0.01; });
+        return audible;
+    };
+    constexpr std::uint64_t physical1and2and7and8 = 0xc3;
+    constexpr std::uint64_t physical1and2and3and7 = 0x47;
+    check(render(2, physical1and2and7and8) == std::array{false, false, false, false},
+          "SC-431: a missing Cue Out cannot leak the metronome into the next enabled pair");
+    check(render(2, physical1and2and3and7) == std::array{false, false, false, false},
+          "SC-431: one connected half of a missing stereo pair stays silent");
+    check(render(6, physical1and2and7and8) == std::array{false, false, true, true},
+          "SC-431: Cue Out 7/8 reaches its packed buffer positions past holes");
+    check(render(6, 0xc1) == std::array{false, true, true, false},
+          "SC-431: a single earlier output shifts the packed pair by one channel");
+}
+void metronomeOptions() {
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
+                       "INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    constexpr auto shortBar = 4 * textproj::kPPQ;
+    constexpr auto regularBar = shortBar + 3 * textproj::kWhole / 16;
+    f.store->db().exec("INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES (" +
+                       std::to_string(shortBar) + ",3,16),(" + std::to_string(regularBar) + ",4,4)");
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&
+              f.op("transport.setCountIn", {{"bars", 1}}) && f.load(),
+          "SC-256: load the metronome and capture fixture with a 3/16 bar");
+    Block b(128);
+    const auto hasClick = [&] {
+        return std::any_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames,
+                           [](double value) { return std::abs(value) > 0.01; });
+    };
+    const auto at = [&](std::int64_t sample) {
+        f.session.transport().locate(sample);
+        f.session.transport().play();
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+    };
+    at(12000);
+    check(!hasClick(), "Auto in 4/4 leaves the first eighth-note offbeat quiet");
+    check(f.op("transport.setMetronomeOptions", {{"eighthNotes", true}}), "save eighth-note clicks");
+    at(12000);
+    check(hasClick(), "the eighth-note option adds a click on the offbeat");
+    const auto attackAt = [&](std::int64_t sample) {
+        constexpr int lead = 8;
+        f.session.transport().play(false);
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+        at(sample - lead);
+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + lead + 1,
+                           [](double value) { return value == 0.0; }) &&
+               std::abs(b.wide[2][lead + 1]) > 0.01;
+    };
+    check(attackAt(96000 + 6000), "an eighth note does not divide a 3/16 bar, so Auto clicks on the second sixteenth");
+    check(attackAt(114000 + 12000) && readTransportSettings(*f.store).metronomeOptions.eighthNotes,
+          "the saved eighth-note rhythm resumes on the first offbeat of the next 4/4 bar");
+    at(0);
+    const auto classic = b.wide[2];
+    check(f.op("transport.setMetronomeOptions", {{"sound", 1}}), "select Wood");
+    at(0);
+    const auto wood = b.wide[2];
+    check(f.op("transport.setMetronomeOptions", {{"sound", 2}}), "select Bell");
+    at(0);
+    check(hasClick() && classic != wood && classic != b.wide[2] && wood != b.wide[2],
+          "the three synthesized sounds render distinct PCM");
+    check(f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}), "select recording-only playback");
+    const auto saved = readTransportSettings(*f.store).metronomeOptions;
+    check(saved.recordingOnly && saved.eighthNotes && saved.sound == MetronomeSound::Bell && !History(*f.store).canUndo(),
+          "each option persists independently and stays outside undo");
+    OpRequest invalid;
+    invalid.opType = "transport.setMetronomeOptions";
+    invalid.payload = {{"sound", 9}};
+    check(!OpJournal(*f.store).commit(invalid).ok && readTransportSettings(*f.store).metronomeOptions == saved,
+          "unsupported sounds are refused without changing options");
+    at(0);
+    check(!hasClick(), "recording-only mode is silent during ordinary playback");
+
+    std::string why;
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    const std::array<float, 128> input{};
+    const float* channels[]{input.data()};
+    b.io.in = channels;
+    b.io.numIn = 1;
+    check(f.op("transport.setLoop", {{"on", false}, {"start", textproj::kPPQ / 2}, {"end", textproj::kPPQ}}) &&
+              f.op("transport.setPunch", {{"in", true}, {"out", false}}),
+          "set Punch-In at the first eighth-note offbeat");
+    const auto punchSettings = readTransportSettings(*f.store);
+    check(punchSettings.punchIn && !punchSettings.loopEnabled && punchSettings.metronomeOptions == saved,
+          "loop, punch and metronome settings read back together");
+    check(f.session.startRecording(take, why), "start real audio capture");
+    at(0);
+    check(!hasClick(), "the rolling click stays quiet through the armed punch lead-in");
+    at(12000 - b.io.frames / 2);
+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + b.io.frames / 2,
+                      [](double value) { return value == 0.0; }) && hasClick(),
+          "a callback spanning Punch-In sounds the eighth-note click only on its captured half");
+    f.session.recording().stop(true);
+    at(12000);
+    check(!hasClick(), "the recording-only click stops when audio capture ends");
+    check(f.op("transport.setPunch", {{"in", false}, {"out", false}}), "clear punch before MIDI capture");
+
+    const std::array<std::int64_t, 1> midiTracks{3};
+    check(f.session.startMidiInputCapture(midiTracks, why), "start real MIDI capture");
+    at(0);
+    check(hasClick(), "the rolling click sounds during MIDI-only capture");
+    f.session.midiInputCapture().stop();
+    at(0);
+    check(!hasClick(), "the recording-only click stops when MIDI capture ends");
+    f.session.transport().play(false);
+    {
+        auto block = f.session.beginRender();
+        check(block.startPlayback(0, true), "start the meter-based Count-In");
+    }
+    f.process(b);
+    check(hasClick() && f.session.transport().countInRemaining() > 0,
+          "Count-In still sounds with the recording-only gate closed");
+    for (int elapsed = b.io.frames; elapsed <= 12000; elapsed += b.io.frames)
+        f.process(b);
+    check(!hasClick(), "eighth-note playback keeps the Count-In on signature beats");
+}
+void automationOnlyRecordingClick() {
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.op("transport.setMetronome", {{"on", true}}) &&
+              f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),
+          "load a recording-only click with no armed audio or MIDI tracks");
+    Block block(64);
+    const auto hasClick = [&](bool playing) {
+        f.session.transport().locate(0);
+        f.session.transport().play(playing);
+        auto render = f.session.beginRender();
+        check(render.process(block.io, false), "render without audio or MIDI capture");
+        block.io.streamTimeSamples += block.io.frames;
+        return std::any_of(block.wide[2].begin(), block.wide[2].begin() + block.io.frames,
+                           [](double sample) { return std::abs(sample) > .01; });
+    };
+    f.session.setAutomationWriteState(true, true);
+    f.session.setRecordingForDevices(true);
+    check(!hasClick(false), "a recording request waits for playback before sounding the click");
+    check(hasClick(true), "a rolling automation-only recording sounds the recording-only click");
+    f.session.setRecordingForDevices(false);
+    f.session.setAutomationWriteState(true, false);
+    check(!hasClick(true), "the recording-only click stops when automation recording ends");
+}
+void compensatedPunchClick() {
+    constexpr int latency = 100, punchFrames = 24, callbackFrames = 64;
+    constexpr auto punchInTick = textproj::kPPQ / 2;
+    constexpr auto punchOutTick = punchInTick + textproj::kPPQ / 1000; // rounds to 24 frames at 48 kHz
+    constexpr auto punchInSample = 12000;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.effects(latency);
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&
+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", punchOutTick}}) &&
+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),
+          "load a recording-only click for a punch shorter than graph latency");
+
+    AudioRecordingSpec take;
+    take.workFolder = f.temp.path();
+    take.sampleRate = 48000;
+    take.targets = {{1, {0}}};
+    std::string why;
+    check(f.session.startRecording(take, why), "arm a real capture for the compensated punch");
+    const std::array<float, callbackFrames> input{};
+    const float* channels[]{input.data()};
+    Block b(callbackFrames);
+    b.io.in = channels;
+    b.io.numIn = 1;
+    const auto step = [&] {
+        f.process(b);
+        b.io.streamTimeSamples += b.io.frames;
+    };
+    const auto silent = [&](int first, int end) {
+        return std::all_of(b.wide[2].begin() + first, b.wide[2].begin() + end,
+                           [](double sample) { return sample == 0.0; });
+    };
+    f.session.transport().locate(punchInSample - callbackFrames);
+    f.session.transport().play();
+    step();
+    check(silent(0, callbackFrames), "the compensated punch lead-in is silent");
+    step(); // Both capture edges pass in this callback, while the heard clock is still behind Punch-In.
+    check(silent(0, callbackFrames), "the armed take stays quiet until the punch is heard");
+    step();
+    constexpr int heardIn = latency - callbackFrames, heardOut = heardIn + punchFrames;
+    check(silent(0, heardIn + 1) && std::abs(b.wide[2][heardIn + 1]) > 0.01 &&
+          std::abs(b.wide[2][heardOut - 1]) > 0.01 && silent(heardOut, callbackFrames),
+          "the delayed click begins at heard Punch-In and closes at heard Punch-Out");
+    step();
+    check(silent(0, callbackFrames), "the click remains quiet after heard Punch-Out");
+}
+void locateOutsideMidiPunchSilencesClick() {
+    constexpr int frames = 64;
+    constexpr auto punchInTick = textproj::kPPQ / 2;
+    constexpr int punchInSample = 12000;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"eighthNotes", true}, {"recordingOnly", true}}) &&
+          f.op("transport.setLoop", {{"on", false}, {"start", punchInTick}, {"end", 2 * punchInTick}}) &&
+          f.op("transport.setPunch", {{"in", true}, {"out", true}}) && f.load(),
+          "load a recording-only click for a MIDI punch");
+    const std::array<std::int64_t, 1> tracks{3};
+    std::string why;
+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI capture");
+    Block b(frames);
+    f.session.transport().locate(punchInSample);
+    f.session.transport().play();
+    f.process(b);
+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording &&
+              b.wide[2][0] == 0.0 && std::abs(b.wide[2][1]) > 0.01,
+          "MIDI capture hears the click attack at Punch-In");
+    b.io.streamTimeSamples += frames;
+    f.session.transport().locate(0);
+    f.process(b);
+    check(std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,
+                      [](double sample) { return sample == 0.0; }),
+          "locating an active MIDI take before Punch-In excludes every frame of the new lead-in");
+}
+void formatChangeClearsPendingRecordingClick() {
+    constexpr int latency = 100, frames = 64;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.effects(latency);
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(3,'midi','MIDI capture',1);"
+                       "INSERT INTO mixer_strip(track_id) VALUES(3)");
+    check(f.op("cue.setOutput", {{"first", 2}}) &&
+          f.op("transport.setMetronome", {{"on", true}}) &&
+          f.op("transport.setMetronomeOptions", {{"recordingOnly", true}}) && f.load(),
+          "load a delayed recording-only click");
+    const std::array<std::int64_t, 1> tracks{3};
+    std::string why;
+    check(f.session.startMidiInputCapture(tracks, why), "arm MIDI recording ahead of the format change");
+    Block b(frames);
+    f.session.transport().play();
+    f.process(b);
+    const auto silent = [&] {
+        return std::all_of(b.wide[2].begin(), b.wide[2].begin() + frames,
+                           [](double sample) { return sample == 0.0; });
+    };
+    check(f.session.midiInputCapture().state() == MidiCaptureState::Recording && silent(),
+          "the first beat is queued behind the delay while MIDI is captured");
+    b.io.streamTimeSamples += frames;
+    f.session.prepare(44100, 256);
+    f.process(b);
+    check(f.session.transport().playing() && f.session.midiInputCapture().state() != MidiCaptureState::Recording &&
+              silent(),
+          "a live format change leaves playback running and discards the old recording click");
 }
 void offline() {
     Fixture f;f.effects();f.store->db().exec("UPDATE tracks SET muted=1 WHERE id=2");f.op("cue.setOutput",{{"first",2}});f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
@@ -336,6 +693,68 @@ void filterListenLifecycle() {
     prepare(96000.);
     check(run(true), "96 kHz monitor follows its prepared weighting");
 }
+void hardwareMainOut() {
+    Fixture f;
+    f.main.rightFactor = -0.5;
+    check(f.op("mixer.setMainOutput", {{"first", 6}}) && f.load(Precision::Float64),
+          "SC-261: the physical Main Out pair is saved");
+    Block block;
+    block.io.outputChannels.enabled = 0b11000011; // physical 1/2 and 7/8, packed into four pointers
+    f.process(block);
+    check(near(block.narrow[2][511], .075) && near(block.wide[3][511], .0375) &&
+          block.wide[0][511] == 0 && block.narrow[1][511] == 0,
+          "SC-261: stereo Main follows the selected pair on a device with sparse physical outputs");
+    check(f.op("cue.setOutput", {{"first", 6}}) &&
+          f.op("cue.setReference", {{"on", true}, {"id", 2}}),
+          "SC-261: Cue and reference may share the remapped Main pair");
+    f.process(block);
+    check(near(block.wide[2][511], 0.5) && near(block.narrow[3][511], 0.5) && block.wide[0][511] == 0,
+          "SC-261: shared Main and Cue play the exclusive reference once");
+    Fixture offline;
+    offline.main.rightFactor = -0.5;
+    check(offline.op("mixer.setMainOutput", {{"first", 6}}) &&
+          offline.op("cue.setReference", {{"on", true}, {"id", 2}}) &&
+          offline.load(Precision::Float64, false, true), "SC-261: the project renders without performance settings");
+    offline.process(block);
+    check(near(block.wide[0][511], .075) && near(block.wide[1][511], .0375) && block.wide[2][511] == 0,
+          "SC-261: physical Main Out and reference never change the exported channels");
+    Fixture missing;
+    check(missing.op("mixer.setMainOutput", {{"first", 6}}) && missing.op("cue.setOutput", {{"first", 4}}) &&
+          missing.load(Precision::Float64),
+          "SC-261: a song may name a Main Out pair that the device has not opened");
+    Block sparse;
+    sparse.io.outputChannels.enabled = 0b00111100; // physical 3/4 and 5/6: Main Out 7/8 is missing
+    const auto silent = [&](std::size_t channel) {
+        return std::ranges::all_of(sparse.wide[channel], [](double sample) { return sample == 0.; }) &&
+               std::ranges::all_of(sparse.narrow[channel], [](float sample) { return sample == 0.f; });
+    };
+    missing.process(sparse);
+    check(silent(0) && silent(1) && silent(2) && silent(3),
+          "SC-261: a missing Main Out pair is silent and never plays on the device's first outputs");
+    check(missing.op("cue.setReference", {{"on", true}, {"id", 2}}),
+          "SC-261: the reference engages while Main Out is missing");
+    missing.process(sparse);
+    check(silent(0) && silent(1) && near(sparse.wide[2][511], 0.5) && near(sparse.narrow[3][511], 0.5),
+          "SC-261: with Main Out missing the reference reaches Cue Out and no other output");
+    check(missing.op("cue.setOutput", {{"first", 2}}),
+          "SC-261: Cue Out can occupy the first two packed channels when Main Out is missing");
+    missing.process(sparse);
+    check(near(sparse.wide[0][511], 0.5) && near(sparse.narrow[1][511], 0.5) && silent(2) && silent(3),
+          "SC-261: reference reaches the first packed Cue pair exactly once");
+    Fixture single;
+    check(single.load(Precision::Float64), "SC-261: load Main Out 1/2 for devices that lack output 2");
+    Block mono(512, 1);
+    mono.io.outputChannels.enabled = 0b1;
+    single.process(mono);
+    check(near(mono.wide[0][511], .075) && near(mono.narrow[0][511], .075),
+          "SC-261: a one-channel device still plays Main's left on its own output 1");
+    Block half(512, 3);
+    half.io.outputChannels.enabled = 0b1101; // physical 1, 3 and 4: the right of Main Out 1/2 is missing
+    single.process(half);
+    check(near(half.wide[0][511], .075) && half.wide[1][511] == 0. && half.narrow[1][511] == 0.f &&
+          half.wide[2][511] == 0.,
+          "SC-261: Main's right never plays on another pair's output when only its left is open");
+}
 void inactiveBits() {
     CueMonitor monitor;CueSettings settings;monitor.publish(settings,48000,64,2,true);GraphHost graph;Block b(64);
     for(auto& channel:b.narrow)for(auto& sample:channel)sample=std::bit_cast<float>(std::uint32_t{0x80000000u});
@@ -353,11 +772,13 @@ void coldReference() {
 void allocation() {
     Fixture f;f.effects(100);f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
     f.op("cue.setOutput",{{"first",2}});f.op("cue.setReference",{{"on",true},{"id",2}});f.op("transport.setMetronome",{{"on",true}});
+    f.op("transport.setMetronomeOptions", {{"sound", 2}, {"eighthNotes", true}});
+    f.op("mixer.setMainOutput", {{"first", 2}});
     check(f.load(Precision::Float64),"allocation fixture loads off-thread");f.session.transport().play();Block b(128);
     allocations.store(0);countAllocations.store(true);for(int i=0;i<50;++i)f.process(b);countAllocations.store(false);
     check(allocations.load()==0,"Cue graph copy, reference ramp, volume and metronome allocate nothing");
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
