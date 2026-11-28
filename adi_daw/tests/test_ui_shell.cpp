@@ -19040,6 +19040,100 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.devices.removeSelection = {};
         root.devices.moveSelection = {};
     }
+    // SC-300: Paste from a track title uses the device clipboard and appends through the normal placement path.
+    if (peer && clipboard) {
+        constexpr std::int64_t sourceTrack = 2, destinationTrack = 3, destinationClip = 50;
+        auto &selection = root.arrangement.geometry.selection;
+        auto &headers = root.arrangement.headers;
+        auto savedBoard = std::exchange(commands.clipClipboard().held, std::monostate{});
+        const auto click = [&](juce::Component &component, juce::Point<int> local) {
+            const auto at = host.getLocalPoint(&component, local).toFloat();
+            for (const auto flags : {0, static_cast<int>(juce::ModifierKeys::leftButtonModifier), 0}) {
+                const juce::ModifierKeys mods(flags);
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+            }
+        };
+        const auto clickHeader = [&](std::int64_t track) {
+            click(headers, {42, laneTop(root, track) + 9});
+            refresh();
+            return headers.hasKeyboardFocus(false) && selection.track == track;
+        };
+        const auto copyDeviceTitle = [&] {
+            if (!clickHeader(sourceTrack) || root.devices.panels.empty())
+                return false;
+            auto &device = *root.devices.panels.front();
+            const auto id = device.id;
+            click(device.title, device.title.getLocalBounds().getCentre());
+            return root.devices.focusedDevice() == id && key('c');
+        };
+        const auto destination = [&] {
+            std::vector<std::int64_t> out;
+            SQLite::Statement rows(document->store().db(),
+                "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=? ORDER BY d.ord,d.id");
+            rows.bind(1, destinationTrack);
+            while (rows.executeStep())
+                out.push_back(rows.getColumn(0).getInt64());
+            return out;
+        };
+        const bool ready = document->pasteDevice(*clipboard, destinationTrack, {}) &&
+                           root.submitEdit("clip.create", {{"id", destinationClip}, {"track", destinationTrack},
+                                                           {"kind", "midi"}, {"pos", 0}, {"length", textproj::kWhole}},
+                                           "Create MIDI Clip");
+        check(ready, "SC-300: the destination starts with its own device and MIDI clip");
+        if (ready) {
+            refresh();
+            const auto sourceOrder = chain();
+            const auto destinationOrder = destination();
+            const auto trackCount = [&] { return document->view().current()->tracks.size(); };
+            const auto beforeCount = trackCount();
+            const auto targetClipUnchanged = [&] {
+                const auto *track = document->view().current()->findTrack(destinationTrack);
+                return track && track->clips.size() == 1 && track->clips.front()->id == destinationClip &&
+                       track->clips.front()->posTicks == 0 &&
+                       track->clips.front()->lengthTicks == textproj::kWhole;
+            };
+            const auto undoPaste = [&](decltype(head()) before) {
+                const bool undone = head() != before && root.command(AppCommands::Undo);
+                refresh();
+                return undone && head() == before && trackCount() == beforeCount && chain() == sourceOrder &&
+                       destination() == destinationOrder && targetClipUnchanged();
+            };
+            const auto pasteDevice = [&] {
+                const auto before = head();
+                const bool titleFocused = clickHeader(destinationTrack);
+                commands.activate(root);
+                juce::ApplicationCommandInfo info(AppCommands::Paste);
+                commands.getCommandInfo(AppCommands::Paste, info);
+                const bool handled = key('v');
+                refresh();
+                const auto after = destination();
+                check(titleFocused && (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && handled &&
+                          head() != before && label() == "Paste Device" && after.size() == destinationOrder.size() + 1 &&
+                          std::equal(destinationOrder.begin(), destinationOrder.end(), after.begin()) &&
+                          chain() == sourceOrder && trackCount() == beforeCount && targetClipUnchanged(),
+                      "SC-300: a track title enables Paste and Ctrl/Cmd+V appends the device to that track only");
+                return head() != before && undoPaste(before);
+            };
+            check(copyDeviceTitle() && pasteDevice(), "SC-300: one Undo restores both tracks after the title paste");
+
+            const bool trackCopied = clickHeader(sourceTrack) && key('c') &&
+                                     std::holds_alternative<AppCommands::TrackCopy>(commands.clipClipboard().held);
+            const auto beforeTrackPaste = head();
+            const bool trackPasted = trackCopied && clickHeader(destinationTrack) && key('v');
+            refresh();
+            const bool addedTrack = trackCount() == beforeCount + 1 && destination() == destinationOrder &&
+                                    label() == "Paste Track";
+            const bool trackUndone = undoPaste(beforeTrackPaste);
+            check(trackPasted && addedTrack && trackUndone,
+                  "SC-300: a more recent track copy keeps its ordinary title paste and one Undo");
+
+            const bool deviceCopied = copyDeviceTitle();
+            check(deviceCopied && pasteDevice(),
+                  "SC-300: a fresh device copy takes precedence over the earlier track copy at the title");
+        }
+        commands.clipClipboard().held = std::move(savedBoard);
+    }
     host.removeChildComponent(&root);
     document->release();
 }
