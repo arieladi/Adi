@@ -691,7 +691,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 path.lexically_normal() != hint->second.lexically_normal()) {
                 auto [found, inserted] = relocatedSources.try_emplace(source.id);
                 auto& resolved = found->second;
-                if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
+                if (inserted) resolved.path = media::resolvePlaybackMedia(project->folder, relative, hint->second,
                     source.origName, source.hashBlake3, resolved.error);
                 if (resolved.path.empty()) {
                     if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
