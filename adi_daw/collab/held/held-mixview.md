@@ -1,0 +1,159 @@
+# Held Mix View work, gathered into one chain
+
+**This chain lands only when the director says so.** Nothing here is a pull request. The chain is
+`held/mixview-chain`; this log lives on `held/held-mixview-log`.
+
+**The mission.** Since late November the Mix View seat kept building while landing was held ("lands after
+3 December"). Its finished work sits on `origin/mixview/*`, unmerged. This log gathers it into one chain on
+top of the newest landing stack, proves the chain builds and passes as one program, and says what it adds.
+The Mix View is the director's own area: the chain changes no look and no behaviour of it; it only joins.
+
+**How to go on (for the next session).** Read this file top to bottom. The survey is done (step 1). The
+state of steps 2-4 is in "Progress" below, newest last. BASE is `origin/land/basics-1128c` until it is an
+ancestor of `origin/main`, then `origin/main`. Merge the newest BASE into the chain before each push.
+Builds and tests run only through `bash /d/adibuild-tools/slot.sh` (slot 13).
+
+## Step 1: the survey (28 November 2026)
+
+Method. `git branch -r --no-merged origin/main`, kept `origin/mixview/*` (94 branches besides
+`mixview/log`). For each: its head; every other mixview branch that contains it (`git merge-base
+--is-ancestor`); `git cherry origin/main` (is any commit already on main by patch); and `git cherry` against
+the stack top (is anything outside the top). The seat's own log (`mixview/log`, `collab/mixview.md`) gives
+the order and calls each of these "PR requested, lands after 3 December".
+
+What it found.
+- **One long stack.** 90 of the branches are one linear stack whose top is
+  `mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` (`b87b53a82`, 99 own commits, none on main
+  by patch). Every other stack branch, including the before-date ones (`df-m34-*`, `df-m65-*`, `df-m69-*`)
+  and the seat's review joins (`review-scope-*`, `review-nov25-main-*`), is an ancestor of it. Taking the
+  top takes them all.
+- `mixview/review-cumulative-20261122`: its five own commits are in the top by patch; only its merges of
+  an older main differ. Contained.
+- `mixview/matched-filters-20261113` (closed PR #558): the matched filter section, its doc and its tests
+  are on main already. The branch is one stale merge commit that only conflicts. Already on main.
+- `mixview/param-replacement-receipt-regression-20261119`: its one test is on main already, reworded
+  (`tests/test_param_live_replay.cpp`, "Replacement probe"). Already on main.
+- `mixview/offline-suspension-regression-20261119`: two test-only commits on
+  `tests/test_mix_render_intent.cpp` (a normal-quality offline session still invokes a zero-tail device on
+  a silent block). Not on main. To take.
+- Out of the mission but seen: `origin/land/mixview-1122` and `origin/land/mixview-1123` are win's old
+  landing stacks; what they hold beyond main is other seats' work (engine, window, clones), none of it
+  the Mix View seat's. Not touched here.
+
+To take, in order: `offline-suspension-regression-20261119` (oldest), then the top
+`mx30-parked-realtime-burst-lands-after-2026-12-03`.
+
+A trial merge (`git merge-tree`) of the top into BASE conflicts in ten files: `src/adi/ui/shared_analysis.*`,
+`src/juce/ui_analysis.*`, `src/juce/ui_mix_analysers.cpp`, `src/juce/ui_mix_channels.cpp` and the tests
+`test_mix_focus.cpp`, `test_mix_pipeline_document.cpp`, `test_shared_analysis.cpp`,
+`test_ui_shared_analysis.cpp`. The cause on BASE's side is mainly the "Analysers 1-6" series (27 November:
+measurement core, spectrum, meter, goniometer, third-octave bands, colour waveform) and SC-112 (the Info
+box's own analyser), which reworked the same analyser files after the stack last merged main.
+
+| # | Branch | Head | Top of which stack | State |
+|---|---|---|---|---|
+| 1 | `mixview/matched-filters-20261113` | `3c767304a` | own top (one merge commit, PR #558 closed) | already on main (MatchedSection.* and its tests are on main; the stale merge only conflicts) |
+| 2 | `mixview/offline-suspension-regression-20261119` | `13ed31756` | own top (2 test-only commits) | to take |
+| 3 | `mixview/param-replacement-receipt-regression-20261119` | `eb41c1210` | own top (1 test-only commit) | already on main (the same test, reworded, is in tests/test_param_live_replay.cpp on main) |
+| 4 | `mixview/focus-scope-preview-lands-after-2026-12-03` | `ac054b105` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 5 | `mixview/focus-scope-phase-lands-after-2026-12-03` | `7531cc42b` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 6 | `mixview/mx12-strip-producer-lands-after-2026-12-03` | `430c73111` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 7 | `mixview/dev22-spectrum-lands-after-2026-12-03` | `57f628c7e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 8 | `mixview/focus-scope-delta-spectrum-lands-after-2026-12-03` | `3b057fe9d` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 9 | `mixview/mx30-strip-audio-lands-after-2026-12-03` | `74cd68d22` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 10 | `mixview/df-m55-spectrum-layouts-lands-after-2026-12-03` | `0619d04fc` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 11 | `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03` | `ffeebdcb0` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 12 | `mixview/df-m55-spectrum-cursor-lands-after-2026-12-03` | `e4db45806` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 13 | `mixview/mx30-strip-idle-lands-after-2026-12-03` | `8e03d995a` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 14 | `mixview/focus-align-noise-lands-after-2026-12-03` | `6c13c217f` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 15 | `mixview/mx13-device-tap-stamps-lands-after-2026-12-03` | `e0f7030ca` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 16 | `mixview/mx36-stack-demand-lands-after-2026-12-03` | `d9c18ca6b` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 17 | `mixview/phase-bands-lands-after-2026-12-03` | `084138bcc` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 18 | `mixview/mx36-folded-browser-search-lands-after-2026-12-03` | `37115afc2` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 19 | `mixview/mx21-pinned-spectrum-lands-after-2026-12-03` | `03d3bdaa3` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 20 | `mixview/df-m55-main-plr-lands-after-2026-12-03` | `ad7cd6b84` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 21 | `mixview/mx13-full-rate-align-lands-after-2026-12-03` | `910fbc138` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 22 | `mixview/mx21-heard-pinned-spectrum-lands-after-2026-12-03` | `d1c965d19` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 23 | `mixview/mx21-staggered-spectrum-lands-after-2026-12-03` | `e1dbedf95` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 24 | `mixview/mx21-overview-spectrum-profile-lands-after-2026-12-03` | `a6ef94c95` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 25 | `mixview/mx21-spectrum-statistics-lands-after-2026-12-03` | `ef540f239` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 26 | `mixview/mx21-wide-spectrum-cache-lands-after-2026-12-03` | `96b95c700` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 27 | `mixview/mx21-extended-log-grid-lands-after-2026-12-03` | `9b3efbdef` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 28 | `mixview/mx21-pinned-spectrum-realtime-average-lands-after-2026-12-03` | `7e4af7358` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 29 | `mixview/mx21-spectrum-cumulative-average-lands-after-2026-12-03` | `4f353e655` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 30 | `mixview/mx21-spectrum-two-second-balance-lands-after-2026-12-03` | `31643cb0b` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 31 | `mixview/mx21-spectrum-realtime-sigma-lands-after-2026-12-03` | `137caa1f9` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 32 | `mixview/mx21-spectrum-parked-balance-lands-after-2026-12-03` | `c444e88f1` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 33 | `mixview/mx21-spectrum-parked-rt-average-lands-after-2026-12-03` | `99e9f5ef6` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 34 | `mixview/mx21-spectrum-crest-lands-after-2026-12-03` | `f93fee581` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 35 | `mixview/mx30-ordinary-window-hop-phase-lands-after-2026-12-03` | `b97920435` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 36 | `mixview/mx21-spectrum-sample-statistics-lands-after-2026-12-03` | `9c29f0ddb` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 37 | `mixview/mx21-spectrum-statistics-reset-lands-after-2026-12-03` | `537eef816` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 38 | `mixview/mx30-parked-realtime-hop-lands-after-2026-12-03` | `b54719d3a` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 39 | `mixview/mx21-spectrum-true-peak-lands-after-2026-12-03` | `eeae6f132` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 40 | `mixview/mx30-parked-phase-bands-lands-after-2026-12-03` | `5d86afa90` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 41 | `mixview/review-scope-lands-after-2026-12-03` | `5d86afa90` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 42 | `mixview/mx21-phase-band-spatial-lands-after-2026-12-03` | `5a931f0bc` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 43 | `mixview/mx13-focus-scope-cursor-lands-after-2026-12-03` | `672b97bd9` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 44 | `mixview/mx13-full-bar-after-locate-lands-after-2026-12-03` | `e00acfe6d` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 45 | `mixview/mx21-spectrum-cursor-scales-lands-after-2026-12-03` | `cebc5e3c4` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 46 | `mixview/mx13-focus-scope-region-lands-after-2026-12-03` | `756ab68b8` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 47 | `mixview/mx30-parked-spectrogram-hop-lands-after-2026-12-03` | `7fa1d1cb8` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 48 | `mixview/mx13-focus-scope-freeze-lands-after-2026-12-03` | `8243e08d9` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 49 | `mixview/mx21-spectrogram-frequency-scales-lands-after-2026-12-03` | `a31c571e3` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 50 | `mixview/mx21-spectrogram-cursor-lands-after-2026-12-03` | `d6eff615e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 51 | `mixview/mx21-spectrogram-png-lands-after-2026-12-03` | `44236030e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 52 | `mixview/mx21-spectrogram-levels-lands-after-2026-12-03` | `85813f15d` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 53 | `mixview/mx21-spectrogram-ruler-lands-after-2026-12-03` | `578e321f2` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 54 | `mixview/mx13-difference-rms-lands-after-2026-12-03` | `a6b79cad5` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 55 | `mixview/mx13-captured-true-peak-lands-after-2026-12-03` | `b272da1cd` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 56 | `mixview/mx13-musical-window-lands-after-2026-12-03` | `5c88abf07` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 57 | `mixview/mx13-scope-vertical-zoom-lands-after-2026-12-03` | `087992d94` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 58 | `mixview/mx13-scope-cursor-grid-edge-lands-after-2026-12-03` | `523f1bdba` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 59 | `mixview/df-m34-skipped-audio-slices` | `0deaa3d0e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 60 | `mixview/mx13-scope-musical-grid-lands-after-2026-12-03` | `66f69b6fd` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 61 | `mixview/df-m34-limiter-clock` | `1db80412c` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 62 | `mixview/mx13-scope-vertical-pan-lands-after-2026-12-03` | `39a52b470` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 63 | `mixview/df-m34-eq-clock` | `d4a705aa9` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 64 | `mixview/df-m65-clip-input-step-pin` | `3ad269c4f` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 65 | `mixview/df-m69-focus-allocation` | `29e4e6b4f` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 66 | `mixview/mx13-scope-dense-grid-lands-after-2026-12-03` | `c984222a6` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 67 | `mixview/mx13-scope-seek-fence-lands-after-2026-12-03` | `792cf7e64` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 68 | `mixview/review-nov25-main-lands-after-2026-12-03` | `a21269b42` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 69 | `mixview/mx13-scope-sixteenth-note-lands-after-2026-12-03` | `c8168ec83` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 70 | `mixview/mx13-scope-long-windows-lands-after-2026-12-03` | `749f2dc85` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 71 | `mixview/mx13-scope-time-viewport-lands-after-2026-12-03` | `d4bedd0fa` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 72 | `mixview/mx13-scope-fixed-time-lands-after-2026-12-03` | `0964711f4` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 73 | `mixview/mx13-scope-stop-hold-lands-after-2026-12-03` | `1c6e4747e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 74 | `mixview/mx21-spectrogram-gamma-lands-after-2026-12-03` | `5a2384d69` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 75 | `mixview/mx13-scope-one-layer-lands-after-2026-12-03` | `339cf8259` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 76 | `mixview/mx13-scope-layer-channels-lands-after-2026-12-03` | `832dfcabb` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 77 | `mixview/mx21-spectrogram-heard-grid-lands-after-2026-12-03` | `b04acc606` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 78 | `mixview/mx21-spectrogram-matched-columns-lands-after-2026-12-03` | `1854d60dc` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 79 | `mixview/mx21-spectrogram-comparison-demand-lands-after-2026-12-03` | `767187cd1` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 80 | `mixview/mx21-spectrogram-delta-view-lands-after-2026-12-03` | `4c71e15a1` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 81 | `mixview/mx21-spectrogram-delta-cursor-lands-after-2026-12-03` | `62e733e14` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 82 | `mixview/mx21-spectrogram-delta-png-lands-after-2026-12-03` | `833d19674` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 83 | `mixview/mx21-spectrogram-delta-ruler-lands-after-2026-12-03` | `170c3f543` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 84 | `mixview/mx21-spectrogram-delta-scales-lands-after-2026-12-03` | `acd4234be` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 85 | `mixview/mx21-spectrogram-delta-sweep-lands-after-2026-12-03` | `baf5f4360` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 86 | `mixview/mx21-compare-retained-paths-lands-after-2026-12-03` | `8cb89d83e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 87 | `mixview/mx21-spectrum-block-size-lands-after-2026-12-03` | `a41a259b9` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 88 | `mixview/mx21-spectrum-overlap-lands-after-2026-12-03` | `9c08ae51e` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 89 | `mixview/mx21-spectrum-smoothing-lands-after-2026-12-03` | `4b642b9b2` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 90 | `mixview/mx30-park-cumulative-average-lands-after-2026-12-03` | `52bb11779` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 91 | `mixview/mx30-parked-burst-fence-lands-after-2026-12-03` | `7301a65a8` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 92 | `mixview/mx30-parked-scope-average-lands-after-2026-12-03` | `3167cecd4` | `mx30-parked-realtime-burst` stack | contained in the top |
+| 93 | `mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` | `b87b53a82` | **the top** of the one long stack | to take (carries every row below it) |
+| 94 | `mixview/review-cumulative-20261122` | `678bfbe14` | own top (review join of main 73e26e4aa) | contained in the top by content (its 5 commits are in the top stack; only its own main merges differ) |
+
+No branch is "abandoned by its seat" or "unclear": the seat's log requests every stack row.
+
+## Progress
+
+- 28 Nov, round 1: survey written and pushed. Next: create `held/mixview-chain` from BASE, merge the
+  offline regression, then the top, resolving the ten files.
+
+## For the director
+
+(nothing yet)
