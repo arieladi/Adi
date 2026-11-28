@@ -236,8 +236,8 @@ public:
     [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&, bool keepUndoHistory = false) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
-    /// Stable across ordinary copies and Save As. Empty on an unassigned
-    /// read-only legacy project or a schema without a readable identity.
+    /// Stable across Save As and copies using the preserve policy. Empty on
+    /// an unassigned read-only legacy project or a schema without an identity.
     [[nodiscard]] std::string projectUuid() const;
     [[nodiscard]] bool synchronizedLocation() const noexcept { return synchronizedLocation_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }

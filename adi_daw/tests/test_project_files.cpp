@@ -291,7 +291,8 @@ void copiesAndSwitches() {
     check(copy && copy->db().execAndGet("SELECT count(*) FROM audio_clips").getInt()==1 && resolves(*copy),
           "the copy includes committed WAL rows and resolves media from its new folder");
     if(!copy)return;
-    check(!projectUuid.empty() && copy->projectUuid() == projectUuid, "Save a Copy retains the project's id");
+    check(!projectUuid.empty() && !copy->projectUuid().empty() && copy->projectUuid() != projectUuid,
+          "Save a Copy with Undo has a fresh project id");
     check(copy->db().execAndGet("SELECT count(*) FROM ops").getInt()==3,"copy retains the undo transaction without a save op");
     History copiedHistory(*copy);
     check(copiedHistory.undo().ok && copy->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0,
@@ -335,6 +336,13 @@ void sessionCopies() {
     const auto original = store.projectUuid();
     const auto head = OpJournal(store).headSeq();
     StoreError error{};
+
+    const auto preservedPath = fixture.target("preserve-copy");
+    check(store.saveCopy(preservedPath, StoreFileCollision::Fail, StoreCopyPolicy::preserve).ok,
+          "the internal preserve copy can be saved from the live project");
+    auto preserved = Store::open(preservedPath, error, true);
+    check(preserved && !original.empty() && preserved->projectUuid() == original,
+          "the internal preserve copy retains its source project id");
 
     const auto copyPath = fixture.target("session-copy");
     const auto copied = store.saveSessionCopy(copyPath);
