@@ -161,6 +161,102 @@ void rePitch() {
     }
 }
 
+void nativeInterpolation() {
+    test::TempDirectory temporary{"warp", "interpolation"};
+    const auto file = temporary.path() / "four-taps.wav";
+    constexpr std::int64_t frames = 8201;
+    constexpr std::int64_t sourceStart = 17;
+    const auto sourceAt = [](std::int64_t frame) {
+        return frame < 0 || frame >= frames ? 0.0f :
+            static_cast<float>(static_cast<int>(frame % 7) - 3) * 0.125f;
+    };
+    std::vector<float> input(static_cast<std::size_t>(sourceStart + frames + 2) * 2, 0.9375f);
+    for (std::int64_t i = 0; i < frames; ++i) {
+        const auto offset = static_cast<std::size_t>(sourceStart + i) * 2;
+        input[offset] = sourceAt(i);
+        input[offset + 1] = input[offset] * -0.5f;
+    }
+    {
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Float32);
+        writer.write(input.data(), static_cast<std::uint32_t>(input.size() / 2));
+        writer.close();
+    }
+    audio::WarpRenderPlan plan;
+    plan.source = file;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceStart = sourceStart;
+    plan.sourceFrames = frames;
+    plan.anchors = {{0, 0}, {frames, 2 * frames}};
+    plan.transients = {0};
+    plan.transientLoop = audio::TransientLoop::Off;
+    plan.transposeSemis = -12;
+    const auto prepared = audio::prepareWarp(plan);
+    if (!prepared)
+        throw std::runtime_error(prepared.detail);
+    const auto output = read(*prepared.prepared);
+    bool exact = output.size() == static_cast<std::size_t>(frames) * 4;
+    bool differentFromLinear = false;
+    if (exact) {
+        for (std::int64_t i = 0; i < frames; ++i) {
+            // Independent half-phase Catmull-Rom weights.
+            const auto middle = (-sourceAt(i - 1) + 9 * sourceAt(i) + 9 * sourceAt(i + 1) -
+                                 sourceAt(i + 2)) / 16;
+            const auto offset = static_cast<std::size_t>(i) * 4;
+            exact = exact && output[offset] == sourceAt(i) &&
+                    output[offset + 1] == -0.5f * sourceAt(i) &&
+                    output[offset + 2] == middle && output[offset + 3] == -0.5f * middle;
+            differentFromLinear = differentFromLinear ||
+                                  middle != (sourceAt(i) + sourceAt(i + 1)) * 0.5f;
+        }
+    }
+    check(exact && differentFromLinear,
+          "native Warp PCM matches four-tap half-phase weights across pages and source window edges");
+}
+void beatsMidpointLoops() {
+    test::TempDirectory temporary{"warp", "beat-loop"};
+    const auto file = temporary.path() / "crossing.wav";
+    constexpr std::uint64_t length = 1000;
+    std::vector<float> input(length * 4);
+    for (std::size_t i = 0; i < length; ++i) {
+        // Two crossings within five percent. The second is closer to the
+        // middle and between samples. The second slice has no crossing.
+        const float first = i < 475 ? 0.25f :
+            std::clamp((static_cast<float>(i) - 520.5f) * 0.0625f, -0.5f, 0.5f);
+        const float second = 0.125f + static_cast<float>(i) / 4096.0f;
+        input[i * 2] = first;
+        input[i * 2 + 1] = -first;
+        input[(i + length) * 2] = second;
+        input[(i + length) * 2 + 1] = -second;
+    }
+    {
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Float32);
+        writer.write(input.data(), static_cast<std::uint32_t>(2 * length));
+        writer.close();
+    }
+    audio::WarpRenderPlan plan;
+    plan.source = file;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceFrames = 2 * length;
+    plan.anchors = {{0, 0}, {length, 2 * length}, {2 * length, 4 * length}};
+    plan.transients = {0, length};
+    const auto forward = audio::prepareWarp(plan);
+    if (!forward)
+        throw std::runtime_error(forward.detail);
+    const auto repeat = read(*forward.prepared);
+    check(repeat.size() == 8 * length && repeat[2000] == 0 && repeat[2001] == 0 &&
+              repeat[2002] == 0.0625f && repeat[2003] == -0.0625f,
+          "Forward chooses the nearest fractional crossing at a shared stereo loop point");
+    check(repeat[6000] == input[3000] && repeat[6001] == input[3001],
+          "a noncrossing slice starts its loop at the bounded midpoint");
+    plan.transientLoop = audio::TransientLoop::PingPong;
+    const auto alternating = audio::prepareWarp(plan);
+    if (!alternating)
+        throw std::runtime_error(alternating.detail);
+    const auto bounce = read(*alternating.prepared);
+    check(bounce[2 * 1477] == 0.03125f && bounce[2 * 1478] == 0.03125f &&
+              bounce[2 * 1476] == 0.09375f && bounce[2 * 1479] == 0.09375f,
+          "PingPong mirrors around the same fractional crossing on both read directions");
+}
 void nativeModesAndOnsets() {
     for(const std::uint32_t sourceRate:{44100u,48000u}) {
         test::TempDirectory temporary{"warp","native"};const auto file=temporary.path()/"impulses.wav";
@@ -289,4 +385,4 @@ void guardsAndLifetime() {
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{markerCodec();renderModes();rePitch();nativeInterpolation();beatsMidpointLoops();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

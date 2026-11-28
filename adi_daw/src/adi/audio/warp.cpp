@@ -11,6 +11,7 @@
 #include <samplerate.h>
 #include <exception>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -136,20 +137,45 @@ struct NativeSource {
     std::vector<float> page;
     std::uint64_t first=std::numeric_limits<std::uint64_t>::max();std::uint32_t count=0;
     NativeSource(WavReader& source,const WarpRenderPlan& spec):reader(source),plan(spec),
-        page(static_cast<std::size_t>(blockFrames+1)*source.channels()){}
+        page(static_cast<std::size_t>(blockFrames+3)*source.channels()){}
     float sample(double position,std::uint16_t channel) {
         if(!(position>=0) || position>=static_cast<double>(plan.sourceFrames))return 0;
-        const auto frame=static_cast<std::uint64_t>(position),start=frame/blockFrames*blockFrames;
-        if(first!=start) {
-            count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames+1,plan.sourceFrames-start));
-            reader.seek(plan.sourceStart+start);
-            if(reader.read(page.data(),count)!=count)throw Failure{WarpError::Io,"short native warp source read"};
-            first=start;
+        const auto frame = static_cast<std::uint64_t>(position);
+        const auto block = frame / blockFrames * blockFrames;
+        const auto leftHalo = block == 0 ? 0u : 1u;
+        const auto start = block - leftHalo;
+        if (first != block) {
+            count = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(blockFrames + leftHalo + 2, plan.sourceFrames - start));
+            reader.seek(plan.sourceStart + start);
+            if (reader.read(page.data(), count) != count)
+                throw Failure{WarpError::Io, "short native warp source read"};
+            first = block;
         }
-        const auto local=static_cast<std::size_t>(frame-first);const auto channels=reader.channels();
-        const double a=page[local*channels+channel],b=local+1<count?page[(local+1)*channels+channel]:0;
-        const double fraction=position-static_cast<double>(frame);
-        return static_cast<float>((std::isfinite(a)?a:0)*(1-fraction)+(std::isfinite(b)?b:0)*fraction);
+        const auto local = static_cast<std::size_t>(frame - start);
+        const auto channels = reader.channels();
+        const auto at = [&](std::size_t index) -> double {
+            if (index >= count)
+                return 0;
+            const auto value = page[index * channels + channel];
+            return std::isfinite(value) ? value : 0.0;
+        };
+        const auto y1 = at(local);
+        const auto x = position - static_cast<double>(frame);
+        if (x == 0)
+            return static_cast<float>(y1);
+
+        // Catmull-Rom slopes are the centered differences on either side.
+        // A one-frame left and two-frame right halo keep the polynomial
+        // identical across cache pages, with silence beyond the source window.
+        const auto y0 = local ? at(local - 1) : 0.0;
+        const auto y2 = at(local + 1), y3 = at(local + 2);
+        const auto m1 = (y2 - y0) * 0.5, m2 = (y3 - y1) * 0.5;
+        const auto delta = y2 - y1;
+        const auto value = y1 + x * (m1 + x * (3 * delta - 2 * m1 - m2 +
+                                               x * (m1 + m2 - 2 * delta)));
+        constexpr auto limit = static_cast<double>(std::numeric_limits<float>::max());
+        return static_cast<float>(std::clamp(value, -limit, limit));
     }
 };
 double mapped(const std::vector<WarpAnchor>& anchors,double position,bool sourceToOutput) {
@@ -161,6 +187,49 @@ double mapped(const std::vector<WarpAnchor>& anchors,double position,bool source
     return static_cast<double>(to(a))+(position-static_cast<double>(from(a)))*
         static_cast<double>(to(b)-to(a))/static_cast<double>(from(b)-from(a));
 }
+
+double beatsLoopBegin(NativeSource &source, std::uint64_t begin, std::uint64_t end,
+                      std::stop_token stop) {
+    const auto length = end - begin;
+    const auto middle = static_cast<double>(length) * 0.5;
+    const auto fallback = std::min(middle, static_cast<double>(length - 1));
+    const auto tolerance = static_cast<double>(length) * 0.05;
+    const auto first = static_cast<std::uint64_t>(std::floor(middle - tolerance));
+    const auto last = std::min(length - 1,
+                              static_cast<std::uint64_t>(std::ceil(middle + tolerance)));
+    if (first >= last)
+        return fallback;
+
+    // All channels share one loop clock. Choose the closest crossing seen on
+    // any channel without summing the channels, which can cancel in stereo.
+    const auto channels = source.reader.channels();
+    std::array<double, 64> previous{};
+    for (std::uint16_t channel = 0; channel < channels; ++channel)
+        previous[channel] = source.sample(static_cast<double>(begin + first), channel);
+    double best = fallback, closest = std::numeric_limits<double>::infinity();
+    for (auto i = first + 1; i <= last; ++i) {
+        if (i % blockFrames == 0)
+            cancelled(stop);
+        for (std::uint16_t channel = 0; channel < channels; ++channel) {
+            const auto prior = previous[channel];
+            const auto now = static_cast<double>(source.sample(static_cast<double>(begin + i),
+                                                               channel));
+            previous[channel] = now;
+            if (!((prior < 0 && now >= 0) || (prior > 0 && now <= 0)))
+                continue;
+            const auto crossing = static_cast<double>(i - 1) + std::abs(prior) /
+                                  (std::abs(prior) + std::abs(now));
+            const auto distance = std::abs(crossing - middle);
+            if (distance <= tolerance &&
+                (distance < closest || (distance == closest && crossing < best))) {
+                best = crossing;
+                closest = distance;
+            }
+        }
+    }
+    return best;
+}
+
 void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std::stop_token stop) {
     if(!std::isfinite(plan.transientEnvelope) || plan.transientEnvelope<0 || plan.transientEnvelope>1 ||
        (plan.transientLoop!=TransientLoop::Off && plan.transientLoop!=TransientLoop::Forward && plan.transientLoop!=TransientLoop::PingPong))
@@ -182,6 +251,8 @@ void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,
     NativeSource source(reader,plan);std::vector<float> output(static_cast<std::size_t>(blockFrames)*reader.channels());
     const double pitch=std::exp2(plan.transposeSemis/12);
     std::size_t slice=0;
+    std::size_t loopSlice = slices.size();
+    double loopBegin = 0;
     for(std::uint64_t first=0;first<plan.anchors.back().outputFrame;) {
         cancelled(stop);const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.anchors.back().outputFrame-first));
         for(std::uint32_t frame=0;frame<count;++frame) {
@@ -193,10 +264,24 @@ void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,
             if(readAt>=span) {
                 if(plan.transientLoop==TransientLoop::Off)readAt=-1;
                 else {
-                    const double begin=std::min(span-1,std::max(1.0,plan.outputRate*0.01)),body=span-begin;
-                    if(plan.transientLoop==TransientLoop::Forward)readAt=begin+std::fmod(readAt-begin,body);
-                    else if(body<=1)readAt=begin;
-                    else {const double phase=std::fmod(readAt-begin,2*(body-1));readAt=begin+(phase<body?phase:2*(body-1)-phase);}
+                    if (loopSlice != slice) {
+                        loopBegin = beatsLoopBegin(source, a.sourceFrame, b.sourceFrame, stop);
+                        loopSlice = slice;
+                    }
+                    const auto body = span - loopBegin;
+                    if (plan.transientLoop == TransientLoop::Forward) {
+                        readAt = loopBegin + std::fmod(readAt - loopBegin, body);
+                    } else {
+                        const auto extent = body - 1;
+                        if (extent <= 0) {
+                            readAt = loopBegin;
+                        } else {
+                            // Bounce from the final source sample to the loop
+                            // start, then forward again on the same clock.
+                            const auto phase = std::fmod(readAt - loopBegin, 2 * extent);
+                            readAt = loopBegin + (phase <= extent ? phase : 2 * extent - phase);
+                        }
+                    }
                 }
             }
             const double gain=std::exp(-12*(1-plan.transientEnvelope)*local/std::max(1.0,span));
