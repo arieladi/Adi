@@ -80,7 +80,7 @@ bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot&
 
 // Admit raw, non-looping audio tracks with long disk targets that need
 // exact cue-page leases. Saved Stops can accompany at least two Starts.
-// A No Stop still needs the three-track shape with two Starts.
+// One saved No Stop may accompany Starts when there are no saved Stops.
 bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcept {
     const auto view = before.view();
     if (!before.stored() || !supportsTimedRawSceneTrackCount(view.tracks.size()) ||
@@ -94,7 +94,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
             if (slot.hasStop) {
                 ++stops;
             } else {
-                if (view.tracks.size() != 3 || ++noStops > 1 ||
+                if (++noStops > 1 ||
                     std::ranges::none_of(view.slots,[&](const LaunchSlot& source) {
                         const auto* pcm = source.track == slot.track ? before.clip(source.clip) : nullptr;
                         return pcm && pcm->pageReader();

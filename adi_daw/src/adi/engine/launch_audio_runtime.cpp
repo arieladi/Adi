@@ -713,8 +713,12 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
         if (startCount < 2 || inherited != startCount) return false;
         const auto stopCount = static_cast<std::size_t>(
             std::ranges::count(actions,TimedSceneActionKind::Stop,&TimedSceneAction::kind));
-        const bool threeTrackNoStop = actions.size() == 3 && startCount == 2 && stopCount == 0;
-        if (!threeTrackNoStop && startCount + stopCount != actions.size()) return false;
+        if (startCount + stopCount != actions.size()) {
+            if (stopCount != 0 || startCount + 1 != actions.size()) return false;
+            if (actions.size() != 3 &&
+                std::ranges::find(actions,TimedSceneActionKind::Continue,&TimedSceneAction::kind) == actions.end())
+                return false;
+        }
     }
 
     // The complete plan has one action per catalog track in the same order.

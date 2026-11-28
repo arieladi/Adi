@@ -578,6 +578,149 @@ void exerciseManyTracks(std::size_t count, Outcome outcome, std::size_t savedSto
                 count,savedStopCount,idleTrack ? "(one idle) " : "",mode,playback.edgeCount,playback.sceneCount);
 }
 
+enum class WideContinueCase { Warm, Cold, UserStop, Idle, SavedStop };
+
+void exerciseWideContinue(WideContinueCase scenario) {
+    constexpr std::size_t count = 6;
+    constexpr std::size_t continued = 2;
+    constexpr auto end = cut + 3 * blockFrames;
+    constexpr auto gainAt = cut - 1000;
+    const bool warm = scenario == WideContinueCase::Warm;
+    const bool cold = scenario == WideContinueCase::Cold;
+    const bool userStop = scenario == WideContinueCase::UserStop;
+    const bool idle = scenario == WideContinueCase::Idle;
+    const bool savedStop = scenario == WideContinueCase::SavedStop;
+    constexpr std::array names{"warm","cold","user-stop","idle","with-saved-stop"};
+    const auto* mode = names[static_cast<std::size_t>(scenario)];
+    test::TempDirectory folder{"wide_raw_timed_continue",mode};
+    constexpr std::array<std::size_t,1> stopped{1};
+    auto store = prepareManyTrackProject(folder,count,
+        savedStop ? std::span<const std::size_t>(stopped) : std::span<const std::size_t>{});
+    {
+        auto& db = store->db();
+        SQLite::Transaction change(db);
+        SQLite::Statement cell(db,"UPDATE clip_slots SET clip_id=NULL,has_stop=0 WHERE clip_id=?");
+        cell.bind(1,manyClip(continued,true));
+        cell.exec();
+        SQLite::Statement discard(db,"DELETE FROM clips WHERE id=?");
+        discard.bind(1,manyClip(continued,true));
+        discard.exec();
+        SQLite::Statement paged(db,"UPDATE clip_launch SET ram_mode=0 WHERE clip_id=?");
+        paged.bind(1,manyClip(continued,false));
+        paged.exec();
+        change.commit();
+    }
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path() / "scene.adi",error);
+    require(static_cast<bool>(store),"reopen the wider Scene with a saved No Stop cell");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    require(session.problems().empty(),"load the paged continuing raw clip and every saved target");
+    session.transport().play();
+    std::vector<float> pcm(static_cast<std::size_t>(end));
+    Playback playback{session,pcm};
+    playback.pacePaged = !idle;
+    const auto allocations = test::sceneClockCallbackAllocations();
+    const auto fileIo = audio::callbackFileIo.load();
+    std::array<std::int64_t,count> startedAt{};
+    const auto start = [&](std::size_t index, std::int64_t sample) {
+        startedAt[index] = sample;
+        playback.through(sample);
+        LaunchRequest request;
+        request.kind = LaunchRequestKind::SlotPress;
+        request.incarnation = session.launchIncarnation();
+        request.track = static_cast<std::int64_t>(index + 1);
+        request.scene = 10;
+        request.clip = manyClip(index,false);
+        require(session.postLaunchGesture({&request,1}),"launch the saved outgoing slot");
+    };
+    if (!idle) start(continued,0);
+    if (cold) start(count - 1,blockFrames);
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index != continued && !(cold && index == count - 1))
+            start(index,cut - 8'000 + 1'000 * static_cast<std::int64_t>(index));
+    }
+    const auto read = [&] {
+        std::array<LaunchTrackStatus,count> rows{};
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(rows,header) && header.trackCount == count,"read the wider raw Scene tracks");
+        return rows;
+    };
+    if (!idle) {
+        playback.through(gainAt);
+        require(session.postLaunchClipGainEdit({3,manyClip(continued,false),session.launchIncarnation(),
+                read()[continued].run,0.5f,ClipUpdateRate::None}),"apply half gain to the continuing paged run");
+    }
+    playback.through(prepareAt);
+    const auto old = read();
+    const auto initialEdges = idle ? count - 1 : count;
+    require(playback.edgeCount == initialEdges && playback.sceneCount == 0,
+            "all requested outgoing slots are active before staging");
+    for (std::size_t index = 0; index < count; ++index) {
+        if (idle && index == continued)
+            require(old[index].clip == 0 && old[index].run == 0,"the wider idle No Stop control has no run");
+        else
+            require(old[index].clip == manyClip(index,false) && old[index].run != 0,"each commanded old run is active");
+    }
+    const bool staged = session.prepareSceneLaunch(*store,20,bar);
+    if (savedStop) require(!staged,"a wider Scene with both saved Stop and No Stop is refused");
+    else require(staged,"the owner stages a wider stored raw Scene for the performed-cut check");
+    if (userStop) {
+        playback.through(cut);
+        OpRequest command;
+        command.opType = "session.stopTrack";
+        command.payload = {{"track",continued + 1},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(command).ok,"queue StopTrack on the continued track at the old cut opening");
+    }
+    playback.through(end);
+
+    const auto after = read();
+    require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
+            playback.sceneCount == (warm ? 1u : 0u) &&
+            playback.edgeCount == initialEdges + (warm ? count - 1 : userStop ? 1u : 0u),
+            "the clock, receipt, and five Starts resolve in a single driver decision");
+    if (warm) {
+        require(playback.scene.sample == cut && playback.scene.tick == bar && playback.scene.tempoBpm == 140,
+                "the accepted wider Scene emits one receipt on the exact cut");
+    } else if (userStop) {
+        const auto& edge = playback.edges[initialEdges];
+        require(edge.track == 3 && edge.oldRun == old[continued].run && edge.newClip == 0 &&
+                edge.sample == cut && edge.tick == bar && after[continued].run == 0,
+                "the independent Stop closes the paged run once on the old Bar");
+    }
+    auto edgeIndex = initialEdges;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (warm && index != continued) {
+            const auto& edge = playback.edges[edgeIndex++];
+            require(edge.track == static_cast<std::int64_t>(index + 1) && edge.sample == cut && edge.tick == bar &&
+                    edge.oldRun == old[index].run && edge.newClip == manyClip(index,true) &&
+                    after[index].clip == edge.newClip && after[index].run != old[index].run,
+                    "every replacement has a new run at the same exact performed sample");
+        } else if (!(userStop && index == continued)) {
+            require(after[index].clip == old[index].clip && after[index].run == old[index].run,
+                    "each continued, idle, or refused track keeps its exact old run state");
+        }
+    }
+    for (auto sample = std::int64_t{0}; sample < end; ++sample) {
+        auto expected = 0.f;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (sample < startedAt[index] || (index == continued && (idle || (userStop && sample >= cut)))) continue;
+            const auto prototype = index % 3 + (warm && index != continued && sample >= cut ? 3 : 0);
+            const auto gain = index == continued && sample >= gainAt ? 0.5f : 1.0f;
+            expected += gain * signal(prototype,sample - startedAt[index] + starts[prototype]);
+        }
+        require(pcm[static_cast<std::size_t>(sample)] == expected,
+                "exact stereo PCM preserves the continuing paged phase and live gain through the cut");
+    }
+    require(test::sceneClockCallbackAllocations() == allocations && audio::callbackFileIo.load() == fileIo,
+            "wider timed continuation performs no callback allocation or file reads");
+    std::printf("Six-track raw Scene No Stop %s: exact stereo PCM, %zu clip edges, %zu Scene receipts\n",
+                mode,playback.edgeCount,playback.sceneCount);
+}
+
 } // namespace
 
 namespace adi::test {
@@ -597,5 +740,8 @@ void runThreeTrackTimedRawSceneTests() {
         exercise(outcome);
     for (const auto outcome : {Outcome::IdleNoStop,Outcome::ColdIdleNoStop,Outcome::BackIdleNoStop})
         exercise(outcome);
+    for (const auto scenario : {WideContinueCase::Warm,WideContinueCase::Cold,WideContinueCase::UserStop,
+                                WideContinueCase::Idle,WideContinueCase::SavedStop})
+        exerciseWideContinue(scenario);
 }
 } // namespace adi::test
