@@ -102,6 +102,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // Live 11's browser at 100 %: the round buttons' column, the sidebar, a row, the
     // search and preview rows, the dark edge.
     static constexpr int kStripWidth = 20, kSidebarWidth = 113, kRowHeight = 19, kBarHeight = 27;
+    // SC-146: the list's one line when a typed search finds nothing. Live's own words are not read
+    // yet: these are ADI's until they are.
+    static constexpr const char *kNoMatchesIn = "No matches in ";
+    static constexpr const char *kNoMatchesWhileIndexing = "No matches yet: the library is still being indexed";
     juce::TextEditor search;
     BrowserList list;
     class PreviewToggle final : public juce::Button {
@@ -230,6 +234,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void refill(int selectRow = -1, bool keepListPosition = false);
     void refillRows();
     void sortRows();
+    void noteEmptySearch();
     // The rows are borrowed only while constructing a menu. Actions own the identity.
     void appendContextFavorites(juce::PopupMenu &, const Row &);
     void refillFavorites(const LibraryQuery &);

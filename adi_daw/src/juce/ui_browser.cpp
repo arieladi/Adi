@@ -800,6 +800,7 @@ void BrowserPanel::refill(int selectRow, bool keepListPosition) {
     }
     refillRows();
     sortRows();
+    noteEmptySearch();
     if (previous) {
         juce::SparseSet<int> selected;
         int primary = -1;
@@ -999,6 +1000,17 @@ void BrowserPanel::refillRows() {
             rows_.push_back({nullptr, nullptr, {}, nullptr, 0, entry});
     if (hotSwap_ && rows_.empty())
         rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
+}
+void BrowserPanel::noteEmptySearch() {
+    // SC-146: a typed search that finds nothing says so in the list, as Hot-Swap's does. An empty
+    // label with no search keeps its Status Bar line, said when the label is chosen.
+    if (hotSwap_ || !rows_.empty() || selected_ < 0 || LibraryQuery{search.getText().toStdString()}.empty())
+        return;
+    const auto &chosen = sidebar_[static_cast<std::size_t>(selected_)];
+    const bool library = chosen.samples || chosen.glyph == All || chosen.glyph == User || chosen.glyph == Drums ||
+                         !chosen.place.empty();
+    rows_.push_back({nullptr, nullptr, !ready_ && library ? juce::String(kNoMatchesWhileIndexing)
+                                                          : kNoMatchesIn + chosen.name});
 }
 void BrowserPanel::sortRows() {
     if (!nameSortAscending_ || hotSwap_ || rows_.size() < 2)

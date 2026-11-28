@@ -8711,6 +8711,69 @@ void browserClearSearch(AppCommands &commands, const std::filesystem::path &dir)
     browser.setHotSwap(sampleSlot);
     check(browser.search.getText() == "kick" && clear->isVisible(), "Hot-Swap keeps its own query between visits");
 }
+void browserEmptySearch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string why;
+    auto doc = ProjectDocument::open(dir / "browser-empty-search.adi", true, {}, why);
+    check(doc != nullptr, "SC-146: a project for the Browser's empty search");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "empty-search");
+    root.setSize(1440, 900);
+    auto &browser = root.browser;
+    const auto files = [&] {
+        LibraryListing listing;
+        listing.files = {{"808 Kick.wav", dir / "808 Kick.wav", {}}, {"Snare.wav", dir / "Snare.wav", {}}};
+        return listing;
+    };
+    browser.setListing(files());
+    const auto label = [&](const char *name) {
+        const auto found = std::ranges::find(browser.sidebar(), juce::String(name), &BrowserPanel::Entry::name);
+        if (found == browser.sidebar().end())
+            return false;
+        browser.choose(static_cast<int>(found - browser.sidebar().begin()));
+        return true;
+    };
+    const auto type = [&](const juce::String &text) {
+        browser.search.setText(text, false);
+        browser.search.onTextChange();
+    };
+    const auto says = [&](const juce::String &text) {
+        const auto &rows = browser.rows();
+        return rows.size() == 1 && rows.front().heading == text && !rows.front().file && browser.shown().empty();
+    };
+    check(label("Samples"), "SC-146: the Samples label exists");
+    type("kick 808");
+    check(browser.rows().size() == 1 && browser.rows().front().file != nullptr,
+          "SC-146: a search that finds a file shows it and no notice");
+    type("zzz");
+    check(says(juce::String(BrowserPanel::kNoMatchesIn) + "Samples"),
+          "SC-146: a search that finds nothing says so in the list, naming the label");
+    check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search) &&
+              browser.list.getNumSelectedRows() == 0 && browser.load(0) == false,
+          "SC-146: the notice is not a row the keyboard can select or load");
+    check(label("All") && says(juce::String(BrowserPanel::kNoMatchesIn) + "All"),
+          "SC-146: the notice follows the label the search runs in");
+    type({});
+    check(label("Favorites") && browser.rows().empty(),
+          "SC-146: an empty label with no search keeps its list empty, as before");
+    type("zzz");
+    check(says(juce::String(BrowserPanel::kNoMatchesIn) + "Favorites"), "SC-146: Favorites says it too");
+    check(label("Samples"), "SC-146: back to Samples");
+    browser.setListing(files(), false);
+    check(says(BrowserPanel::kNoMatchesWhileIndexing),
+          "SC-146: while the first scan runs, a library label says the index is not done rather than no matches");
+    browser.setListing(files());
+    type({});
+    check(browser.rows().size() == 2 && browser.rows().front().file != nullptr,
+          "SC-146: clearing the search removes the notice");
+    const BrowserPanel::HotSwapFilter sampleSlot{{}, "OneShot", true};
+    browser.setHotSwap(sampleSlot);
+    type("zzz");
+    check(browser.rows().size() == 1 && browser.rows().front().heading == "No matching samples",
+          "SC-146: Hot-Swap keeps its own notice");
+    browser.setHotSwap(std::nullopt);
+}
 void browserCurrentProject(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "current-project.adi", true, {}, error);
@@ -33144,6 +33207,7 @@ int main(int argc, char **argv) {
     trace("browserSearchAll", [&] { browserSearchAll(commands, temp.path()); });
     trace("browserContextMenus", [&] { browserContextMenus(commands, temp.path()); });
     trace("browserClearSearch", [&] { browserClearSearch(commands, temp.path()); });
+    trace("browserEmptySearch", [&] { browserEmptySearch(commands, temp.path()); });
     trace("browserCurrentProject", [&] { browserCurrentProject(commands, temp.path()); });
     trace("browserPlaces", [&] { browserPlaces(commands, temp.path()); });
     trace("browserLibraryRescan", [&] { browserLibraryRescan(commands, temp.path()); });
