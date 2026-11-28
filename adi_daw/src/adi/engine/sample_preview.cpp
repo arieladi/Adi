@@ -22,6 +22,7 @@ constexpr std::size_t kChunkFrames = 1024;
 constexpr std::size_t kQueueChunks = 128; // Enough source frames for a 4096-frame callback at 768 -> 44.1 kHz.
 constexpr std::size_t kWaveformBins = 512;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
 
 struct Cancelled {};
 void checkCancelled(std::stop_token stop) {
@@ -181,8 +182,12 @@ struct SamplePreview::Impl {
     std::atomic<std::uint64_t> written{0}, consumed{0};
     std::atomic<std::uint64_t> requested{0}, decoderEnded{0}, failed{0};
     std::atomic<std::uint64_t> audible{0}, finished{0}, position{0};
+    std::atomic<bool> hasTail{false}; // The last callback contributed audio that Stop may need to fade.
     std::uint64_t rendering = 0; // audio-thread-only
     double offset = 0.;
+    double lastLeft = 0., lastRight = 0., releaseLeft = 0., releaseRight = 0.;
+    int fadeFrames = 1, releaseRemaining = 0, attackRemaining = 0;
+    bool starting = false;
 
     std::jthread playbackThread, selectionThread; // join before releasing the queue and owner state
     Impl() {
@@ -388,8 +393,9 @@ SamplePreview::Status SamplePreview::status() const {
 bool SamplePreview::active() const noexcept {
     const auto &state = *impl_;
     const auto revision = state.requested.load(std::memory_order_acquire);
-    return revision != 0 && state.finished.load(std::memory_order_relaxed) != revision &&
-           state.failed.load(std::memory_order_acquire) != revision;
+    return state.hasTail.load(std::memory_order_relaxed) ||
+           (revision != 0 && state.finished.load(std::memory_order_relaxed) != revision &&
+            state.failed.load(std::memory_order_acquire) != revision);
 }
 bool SamplePreview::canOutput(const AudioIo &io, int firstChannel) noexcept {
     const auto packed = io.packedOutputPair(firstChannel);
@@ -404,20 +410,47 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst,
     if (!narrow && !wide)
         return;
     auto &state = *impl_;
-    const auto wanted = state.requested.load(std::memory_order_acquire);
-    if (!wanted || state.finished.load(std::memory_order_relaxed) == wanted ||
+    auto wanted = state.requested.load(std::memory_order_acquire);
+    if (state.finished.load(std::memory_order_relaxed) == wanted ||
         state.failed.load(std::memory_order_acquire) == wanted)
-        return;
+        wanted = 0;
     if (state.rendering != wanted) {
         state.rendering = wanted;
         state.offset = 0.;
+        // The worker may not have the replacement ready yet. Release the last
+        // audible value now, then attack the replacement when its PCM arrives.
+        const bool releasing = state.lastLeft != 0. || state.lastRight != 0.;
+        state.fadeFrames = static_cast<int>(std::clamp(deviceRate * .005, 1., 4096.));
+        state.releaseLeft = state.lastLeft;
+        state.releaseRight = state.lastRight;
+        state.releaseRemaining = releasing ? state.fadeFrames : 0;
+        state.attackRemaining = releasing && wanted ? state.fadeFrames : 0;
+        state.starting = wanted != 0;
     }
+    const auto mixFrame = [&](double left, double right, std::int32_t frame) {
+        if (state.releaseRemaining > 0) {
+            const auto release = static_cast<double>(--state.releaseRemaining) / state.fadeFrames;
+            left += state.releaseLeft * release;
+            right += state.releaseRight * release;
+        }
+        if (narrow) {
+            io.out[firstChannel][frame] += static_cast<float>(left);
+            io.out[firstChannel + 1][frame] += static_cast<float>(right);
+        }
+        if (wide) {
+            io.out64[firstChannel][frame] += left;
+            io.out64[firstChannel + 1][frame] += right;
+        }
+        state.lastLeft = left;
+        state.lastRight = right;
+    };
     auto next = state.consumed.load(std::memory_order_relaxed);
     const bool ended = state.decoderEnded.load(std::memory_order_acquire) == wanted;
     const auto available = state.written.load(std::memory_order_acquire);
     while (next != available && state.queue[static_cast<std::size_t>(next % state.queue.size())].revision < wanted)
         ++next;
-    for (std::int32_t i = 0; i < io.frames; ++i) {
+    std::int32_t i = 0;
+    for (; wanted && i < io.frames; ++i) {
         while (next != available) {
             const auto &candidate = state.queue[static_cast<std::size_t>(next % state.queue.size())];
             if (candidate.revision != wanted || state.offset < static_cast<double>(candidate.frames))
@@ -426,8 +459,10 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst,
             ++next;
         }
         if (next == available) {
-            if (ended)
+            if (ended) {
                 state.finished.store(wanted, std::memory_order_release);
+                state.rendering = 0;
+            }
             break;
         }
         const auto &chunk = state.queue[static_cast<std::size_t>(next % state.queue.size())];
@@ -448,20 +483,23 @@ void SamplePreview::mix(const AudioIo &io, double deviceRate, int physicalFirst,
             else if (!ended)
                 break; // wait for interpolation's next source frame without changing position
         }
-        const double left = std::lerp(static_cast<double>(a.left), static_cast<double>(b.left), fraction) * gain;
-        const double right = std::lerp(static_cast<double>(a.right), static_cast<double>(b.right), fraction) * gain;
-        if (narrow) {
-            io.out[firstChannel][i] += static_cast<float>(left);
-            io.out[firstChannel + 1][i] += static_cast<float>(right);
-        }
-        if (wide) {
-            io.out64[firstChannel][i] += left;
-            io.out64[firstChannel + 1][i] += right;
-        }
+        if (std::exchange(state.starting, false) && chunk.first != 0)
+            state.attackRemaining = state.fadeFrames;
+        double level = gain;
+        if (state.attackRemaining > 0)
+            level *= 1. - static_cast<double>(--state.attackRemaining) / state.fadeFrames;
+        mixFrame(std::lerp(static_cast<double>(a.left), static_cast<double>(b.left), fraction) * level,
+                 std::lerp(static_cast<double>(a.right), static_cast<double>(b.right), fraction) * level, i);
         state.offset += static_cast<double>(chunk.rate) / deviceRate;
         state.position.store(chunk.first + static_cast<std::uint64_t>(state.offset), std::memory_order_relaxed);
         state.audible.store(wanted, std::memory_order_release);
     }
+    for (; state.releaseRemaining > 0 && i < io.frames; ++i)
+        mixFrame(0., 0., i);
+    if (i < io.frames)
+        state.lastLeft = state.lastRight = 0.;
+    state.hasTail.store(state.releaseRemaining > 0 || state.lastLeft != 0. || state.lastRight != 0.,
+                        std::memory_order_relaxed);
     state.consumed.store(next, std::memory_order_release);
 }
 } // namespace adi::engine
