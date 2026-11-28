@@ -217,8 +217,8 @@ std::optional<LaunchFollowRequest> LaunchFollowPlayer::followOnLaunch(
     const auto& track = tracks_[entry->trackIndex];
     const auto decision = resolveFollowPlaybackTarget(entry->settings, track.sceneIds, track.clipIds,
         entry->sceneIndex, {passSeed, transition.followOrdinal, transition.track});
-    const auto laps = entry->settings.linked && (slot->physicalLoopEndFrame ||
-        (slot->legato && slot->physicalFrames > 0)) ? (slot->physicalLoopEndFrame ? entry->settings.loopCount : 1) : 0;
+    const auto laps = entry->settings.linked && slot->physicalFrames > 0
+        ? (slot->physicalLoopEndFrame ? entry->settings.loopCount : 1) : 0;
     if (decision.result == FollowResult::Stop) {
         return LaunchFollowRequest{
             {LaunchRequestKind::StopTrack, transition.track, {}, {}, incarnation}, *due, laps};

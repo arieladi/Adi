@@ -1549,6 +1549,57 @@ void longPagedRepeatKeepsStart() {
             "the released long run completes with no callback allocation or file I/O");
 }
 
+void physicalOneShotLinkedFollow(std::string_view action, bool ram, bool retime) {
+    test::TempDirectory folder{"unwarped_follow", ram ? "one-shot-ram" : "one-shot-paged"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);");
+    addClip(*store,folder.path(),101,10,5,false,4200,1,12000);
+    pinUnwarpedOneShot(*store,50000000,800000000);
+    if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+    const bool stops = action == "stop";
+    const bool grid = action == "grid";
+    if (!stops) {
+        addClip(*store,folder.path(),102,20,2,false,1200);
+        db.exec(grid ? "UPDATE clip_launch SET launch_quant=12 WHERE clip_id=102"
+                     : "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
+    }
+    db.exec(stops ? "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=1 WHERE clip_id=101"
+                  : "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=4 WHERE clip_id=101");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    constexpr auto end = 38400;
+    constexpr auto lastSourcePulse = 37800;
+    const auto target = grid ? (retime ? 42857 : 42000) : end;
+    const auto attack = target + (retime ? 1029 : 1200);
+    std::vector<float> pcm(static_cast<std::size_t>(attack + blockFrames));
+    Playback playback{session,pcm};
+    playback.paged = !ram;
+    scene(*store,session,10);
+    playback.through(6000);
+    if (retime) require(session.setExternalTempoAt(*store,140,quarter/2), "apply 140 BPM before the linked deadline");
+    playback.through(static_cast<std::int64_t>(pcm.size()));
+    const auto count = grid ? std::size_t{3} : std::size_t{2};
+    const auto at = playback.count >= 2 ? playback.edges[1].sample : -1;
+    const auto last = playback.count >= 2 ? playback.edges[playback.count-1].sample : -1;
+    std::printf("Pinned %s %.*s %d BPM: first edge=%lld final=%lld expected End=%d target=%d late PCM=%0.6f\n",
+        ram ? "RAM" : "paged",static_cast<int>(action.size()),action.data(),retime ? 140 : 120,
+        static_cast<long long>(at),static_cast<long long>(last),end,target,static_cast<double>(pcm[lastSourcePulse]));
+    const auto expectedFinalClip = stops ? 0 : 102;
+    require(playback.count == count && playback.edges[0].sample == 0 && playback.edges[0].newClip == 101 &&
+            at == end && last == target && playback.edges[count-1].newClip == expectedFinalClip &&
+            (!grid || playback.edges[1].newClip == 0) && pcm[lastSourcePulse] == .55f &&
+            session.problems().empty(),"linked Follow waits for the complete physical one-shot, then respects the target grid");
+    if (!stops) {
+        const auto peak = std::max_element(pcm.begin()+attack-4,pcm.begin()+attack+5);
+        require(std::abs((peak-pcm.begin())-attack) <= 1 && std::abs(*peak-.55f) < .04f,
+                "an independent target PCM pulse confirms the exact launch phase");
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "linked physical Follow performs no callback allocation or file I/O");
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -1628,6 +1679,10 @@ int main() {
         physicalLoopRetainedByTempoScene();
         physicalLoopRegionRetainedByTempoScene();
         physicalLoopFollowUsesTargetGrid();
+        for (const auto* action : {"stop","next","grid"})
+            for (const bool ram : {true,false})
+                for (const bool retime : {false,true})
+                    physicalOneShotLinkedFollow(action,ram,retime);
         physicalFollowKeepsCoincidentGridSample();
         laterFollowKeepsEarlierLegatoForecast();
         for (const auto kind : {"end","start","loop"}) {
