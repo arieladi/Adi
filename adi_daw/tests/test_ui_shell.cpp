@@ -11283,14 +11283,18 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     click(panel.toolBox(Tool::Halve));
     check(note(2).startTicks == beat && note(3).startTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Stretch Notes", 1),
           "/2 halves them again");
-    // Legato: with the middle note gone, the first lasts until the last begins.
-    const auto beforeLegato = submitter.nextUndo()->txnId;
-    check(panel.runTool(Tool::Legato) && submitter.nextUndo()->txnId == beforeLegato, "Legato on notes that already touch writes nothing");
+    // Legato (SC-236): the notes already touch, so only the last changes: it reaches the clip's end.
+    check(panel.runTool(Tool::Legato) && note(1).durationTicks == beat && note(3).durationTicks == 2 * bar - 2 * beat &&
+              undoIs("Legato", 1),
+          "SC-236: Legato on notes that already touch carries the last to the end of the clip");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // With the middle note gone, the first lasts until the last begins.
     ed.select({2});
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "the middle note deleted");
     click(panel.toolBox(Tool::Legato));
-    check(note(1).durationTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Legato", 1),
-          "Legato makes the first note last until the next begins");
+    check(note(1).durationTicks == 2 * beat && note(3).durationTicks == 2 * bar - 2 * beat && undoIs("Legato", 2),
+          "Legato makes the first note last until the next begins, and the last reach the clip's end");
 
     // Transpose: dragged, it reads the semitones while held and moves the notes when let go; typed too.
     const auto semitones = panel.fieldBox(Field::Transpose);
@@ -11550,6 +11554,24 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     check(back && back->y >= ed.notesArea().getY() && back->y + back->height <= ed.notesArea().getBottom(),
           "and the notes are still in view");
     check(root.command(AppCommands::Undo), "undo the G3");
+    root.frame();
+    // SC-237: Fold stays on when another clip is shown, and folds to that clip's notes.
+    check(submitter.submit(std::vector<OpRequest>{
+              op("clip.create", {{"id", 12}, {"track", 1}, {"kind", "midi"}, {"name", "Other"}, {"pos", 2 * bar}, {"length", bar}}, "Create clip"),
+              op("note.insert", {{"clip", 12}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 72}, {"vel", 90}}, "Add Note")}).ok,
+          "SC-237: a second clip with one C4");
+    root.frame();
+    check(ed.keyPressed(juce::KeyPress('f')) && ed.folded(), "SC-237: F folds the first clip");
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(2 * bar)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.clip() == 12 && ed.folded() && ed.keys.isFolded() && ed.keys.rowOf(72) == 0,
+          "SC-237: the other clip opens folded, to its own notes");
+    check(ed.keyPressed(juce::KeyPress('f')) && !ed.folded() && ed.keys.rowCount() == 128, "SC-237: F unfolds it");
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(0)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.clip() == 11 && !ed.folded() && ed.keys.rowCount() == 128 && panel.chooseGrid(15),
+          "SC-237: and the first clip opens unfolded again");
+    check(root.command(AppCommands::Undo), "undo the second clip");
     root.frame();
 
     // Ctrl (Alt/Option on the Mac) and a drag copy: the original stays, the copy lands and is selected.

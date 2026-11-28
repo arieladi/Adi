@@ -2892,14 +2892,18 @@ void NoteEditor::resized() {
             }
             const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
             time.fit(from, from + length + length / 24, area.getWidth(), false);
-            // Live opens on the notes; an empty clip opens around middle C.
-            folded_ = false;
+            // Live opens on the notes; an empty clip opens around middle C. Fold stays as the user
+            // left it and folds to the shown clip's notes (SC-237).
             insert_.reset();
             head_.reset();
-            keys.unfold(area.getHeight());
             keys.keyHeight = KeyTracks::kDefaultHeight;
-            const auto range = keyRange(every);
-            keys.show(range ? range->low : 60, range ? range->high : 71, area.getHeight());
+            if (folded_ && !every.empty()) {
+                setFold(true);
+            } else {
+                keys.unfold(area.getHeight());
+                const auto range = keyRange(every);
+                keys.show(range ? range->low : 60, range ? range->high : 71, area.getHeight());
+            }
         }
     }
     keys.clampScroll(area.getHeight());
@@ -5285,8 +5289,13 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(stretchNotes(d, ids, 2, 1));
     case Tool::Halve:
         return notes.apply(stretchNotes(d, ids, 1, 2));
-    case Tool::Legato:
-        return notes.apply(legatoNotes(d, ids));
+    case Tool::Legato: {
+        // The last notes reach the end of the time selection, else the loop end (SC-236).
+        std::optional<std::int64_t> end;
+        if (const auto range = notes.timeSelection())
+            end = ClipWindow::of(d).toSource(range->second);
+        return notes.apply(legatoNotes(d, ids, end));
+    }
     case Tool::FixedLength: {
         // Set Length (manual 10.5.9.6): the Duration chooser's length for the selected notes, or all;
         // with Time Range chosen, Fit to Time Range (10.5.5).

@@ -15,6 +15,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -425,7 +426,34 @@ void utilities() {
     const auto legato = legatoNotes(c, {});
     check(legato.ops.size() == 1 && legato.ops[0].opType == "note.resize" && legato.ops[0].payload.at("note") == 4 &&
               legato.ops[0].payload.at("dur") == beat && legato.ops[0].label == "Legato",
-          "Legato: a note lasts until the next later start; the last keeps its length");
+          "Legato: a note lasts until the next later start; with no loop or end, the last keeps its length");
+    {
+        // SC-236: Live carries the last note to the loop end, or to the end of the time selection.
+        auto looped = clip();
+        looped.loopEnabled = true;
+        looped.loopStartTicks = 0;
+        looped.loopLengthTicks = 4 * beat;
+        const auto toLoop = legatoNotes(looped, {});
+        const auto last = std::find_if(toLoop.ops.begin(), toLoop.ops.end(), [](const auto &op) {
+            return op.payload.at("note") == 9;
+        });
+        check(toLoop.ops.size() == 2 && last != toLoop.ops.end() && last->opType == "note.resize" &&
+                  last->payload.at("dur") == 3 * beat,
+              "SC-236: Legato carries the last note to the end of the loop");
+        const auto toRange = legatoNotes(looped, {}, 6 * beat);
+        const auto ranged = std::find_if(toRange.ops.begin(), toRange.ops.end(), [](const auto &op) {
+            return op.payload.at("note") == 9;
+        });
+        check(ranged != toRange.ops.end() && ranged->payload.at("dur") == 5 * beat,
+              "SC-236: with a time selection, the last note reaches its end");
+        auto marked = clip();
+        marked.endMarkerTicks = 8 * beat;
+        const auto toMarker = legatoNotes(marked, {9});
+        check(toMarker.ops.size() == 1 && toMarker.ops[0].payload.at("dur") == 7 * beat,
+              "SC-236: an unlooped clip's last note reaches the End marker");
+        check(legatoNotes(looped, {}, 2 * beat).ops.size() == 1,
+              "SC-236: a last note already past the selection's end keeps its length");
+    }
     auto broken = clip();
     broken.notesProblem = "duplicate note ids";
     check(!transposeNotes(broken, {}, 1).refusal.empty() && !fitNotesToScale(broken, {}, 0, 2741).refusal.empty() &&

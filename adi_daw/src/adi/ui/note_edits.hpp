@@ -488,21 +488,37 @@ inline NoteEdit reverseNotes(const engine::ClipDetails &clip, const std::vector<
     return edit;
 }
 
-// Legato (manual 8.5.2): each note lasts until the next later start among them; the last keep
-// their length.
-inline NoteEdit legatoNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+// Where Legato carries the last notes: the clip's loop end, else its End marker (SC-236).
+inline std::optional<std::int64_t> legatoEnd(const engine::ClipDetails &clip) noexcept {
+    if (clip.loopEnabled && clip.loopLengthTicks && *clip.loopLengthTicks > 0)
+        return clip.loopStartTicks + *clip.loopLengthTicks;
+    if (clip.endMarkerTicks)
+        return *clip.endMarkerTicks;
+    if (clip.lengthTicks && *clip.lengthTicks > 0)
+        return clip.startMarkerTicks + *clip.lengthTicks;
+    return std::nullopt;
+}
+// Legato (manual 10.5.9.9): each note lasts until the next later start among them; the last reach
+// the end of the time selection (`end`, in the clip's own ticks), or the loop end when there is none.
+// A last note that already reaches past that end keeps its length.
+inline NoteEdit legatoNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids,
+                            std::optional<std::int64_t> end = std::nullopt) {
     using namespace note_edits_detail;
     NoteEdit edit;
     edit.refusal = closed(clip);
     if (!edit.refusal.empty())
         return edit;
     edit.select = ids;
+    if (!end)
+        end = legatoEnd(clip);
     const auto notes = targets(clip, ids);
     for (const auto *n : notes) {
         std::optional<std::int64_t> next;
         for (const auto *other : notes)
             if (other->startTicks > n->startTicks && (!next || other->startTicks < *next))
                 next = other->startTicks;
+        if (!next && end && *end > n->startTicks + n->durationTicks)
+            next = end;
         if (next)
             place(edit, clip.id, *n, n->startTicks, n->key, *next - n->startTicks, "Legato");
     }
