@@ -182,6 +182,43 @@ void currentProjectAudio() {
     check(other && project.update(*other)->listing().files.empty(),
           "SC-134: a different song sharing the same disk folder does not expose the first song's assets");
 }
+// Collect All and Save copies a linked file into the song's folder and points the catalog at the copy in
+// one write of its own, with no commit for the publisher to notice: the application tells it.
+void currentProjectAfterCollection() {
+    namespace fs = std::filesystem;
+    const test::TempDirectory temp("library_query", "collected");
+    const auto folder = fs::canonical(temp.path()) / "Song";
+    fs::create_directories(folder);
+    StoreError error{};
+    auto store = Store::createNewProject(folder / "Song.adi", error);
+    check(store != nullptr, "SC-134: create a song to collect a linked file into");
+    if (!store)
+        return;
+    const auto linked = folder.parent_path() / "Linked.wav";
+    {
+        std::array<float, 960> samples;
+        samples.fill(.4f);
+        audio::WavWriter writer(linked, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    OpRequest request;
+    const auto prepared = media::prepareImport(*store, linked, 101, 0, request);
+    check(prepared.ok && OpJournal(*store).commit(request).ok, "SC-134: commit a link to a file outside the song");
+
+    ProjectLibrary project;
+    const auto before = project.update(*store);
+    check(before->listing().files.empty(), "SC-134: a file linked from outside the song is not listed as its own");
+    const auto collected = store->collectAllAndSave();
+    check(collected.ok, collected.ok ? "SC-134: collect the linked file into the song" : collected.error.c_str());
+    if (!collected.ok)
+        return;
+    project.invalidate();
+    const auto after = project.update(*store);
+    check(after != before && after->listing().files.size() == 1 &&
+              after->listing().files.front().path == folder / "audio" / "Linked.wav",
+          "SC-134: after Collect All and Save the publisher lists the collected copy");
+    check(project.update(*store) == after, "SC-134: the collected listing is reused until the song changes again");
+}
 } // namespace
 
 int main() {
@@ -189,5 +226,6 @@ int main() {
     unicodeWords();
     currentProjectOrdering();
     currentProjectAudio();
+    currentProjectAfterCollection();
     return failures ? 1 : 0;
 }
