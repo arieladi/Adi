@@ -12,6 +12,7 @@ A fix for a branch is one commit on `wincheck/<branch>`, made from that branch's
 
 | When (UTC) | Branch and head | Built | Headless suites | Errors (file:line) and the smallest fix |
 |---|---|---|---|---|
+| 2026-11-28 12:05 | `seats/session-chain` `3c4f0e32adc4a7b0e0c4465c347c8a477183a317` | **No**: both builds stop in `adi_core` | Not run: the headless build failed | `src/adi/engine/launch_audio_runtime.cpp:546` C4456: the PCM range's `end` inside the gain and replacement loop hides the track-id `end` at line 521. Fix: rename the inner one `rangeEnd` (four uses). **`wincheck/seats/session-chain` `c44a2a61b8fb3396f473b533e2790e1d5a03f094`** fast-forwards to this head (the earlier fix was already merged) and adds that one commit, so it is again a fast-forward for the author; both builds are clean and 304 of 304 headless suites pass. |
 | 2026-11-28 10:55 | `seats/server-chain` `dd1f3bac607f39f347b06f805e75b8e8489a9a89` | Yes, both builds | 293 of 293 | None: the author merged `wincheck/seats/server-chain` (`321ea3fb2`); nothing new |
 | 2026-11-28 10:15 | `basics/midi-chain` `2d12f83a3a0305fb7dd22afa15d1a88b4bfb5b6f` | Yes, both builds | 280 of 280 | None |
 | 2026-11-28 09:40 | `basics/plugins-chain` `1e5f0c78cd1cb6325f68bfa43725eaa88cfdd42e` | Yes, both builds | 279 of 279 | None |
