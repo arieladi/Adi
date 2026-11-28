@@ -44,6 +44,8 @@ with the smallest test that would prove it). The how-to is `collab/prompts/2026-
 | SC-482 (5) pan | `basics/oneshot-chain` 9fd485a5 | Pan (50 L .. 50 R) and Pan < Rnd (own generator); ids 64, 65. | `panControls`: hard left; centred with 0; random pan moves notes at constant power. | check pending |
 | SC-482 (6) spread | `basics/oneshot-chain` cd0482a0 | Spread (canvas id 66, `p 65`, enum `Spread`, 0..100 %, default 0): two voices a note at half level, the upper detuned up and panned left, the lower down and right, both by the amount; at 100 % 50 cents apart and hard left/right (`kSpreadCents`, ADI's span). Each voice has its own read position (`Voice::position2`, `increment2`), loops and fades out on its own; the note ends when both have. At 0 the old path runs untouched. | `spreadVoices`: on a ramp each channel's slope is its voice's increment (2^(+-0.25/12)); the upper voice stops first, the note when both have, `sounding()` false; Spread 50 on DC gives 0.5 (sqrt 1.5 + sqrt 0.5) per side; no allocation. `legacyState` still renders a 41-control state bit-identically. | check pending |
 | SC-482 (7) reverse, crop | `basics/oneshot-chain` 1e0d2111 | `prepareSampleReverse`, `prepareSampleCrop` in `src/adi/sample_slots.{hpp,cpp}`: a changed copy of the slot's sample written to `Samples/Processed/Reverse` or `.../Crop` in the project folder (original name + command, numbered when taken), assigned through the existing `media.import` + `device.loadState` path, one Undo step; Crop adds two `device.setParam` (Start 0 %, End 100 %). The original file and media row stay. No new op, no schema change. **Not wired to the tile:** its menu is the devices seat's (`ui_devices.cpp`), see "For the director" 3. | `reverseAndCrop` in `adi_sample_slots_tests`: a stereo ramp mirrored frame by frame per channel; a new file and a second media row; Crop at 25..75 % keeps frames 100..300 of 400 and resets the markers; Undo restores sample and region. | check pending |
+| SC-482 (8) sensitivity; Mono, Poly | `basics/oneshot-chain` 2fb9bfd8 | Sensitivity for Slice by Transient (canvas id 67, `p 66`, enum `SliceSensitivity`, 0..100 %, default 50 %): `prepareSample` runs 21 detectors in one pass (5 % steps), each the old law with its thresholds x 2^((10 - k) / 5); step 10 multiplies by exactly 1, so saved projects slice as before. `PreparedSample::transients` is now an array of 21 lists. | `sliceSensitivity`: clicks of 0.03 / 0.08 / 0.3 / 0.9 give 3, 2 and 4 slices at 50, 0 and 100 %; `sliceKeys` adds Mono one-at-a-time vs Poly overlap, and Poly's Retrigger on/off on one slice. | check pending |
+| SC-482 (9) slices by hand | `basics/oneshot-chain` 3a19f22f | `prepareSampleSlices` (`src/adi/sample_slots.cpp`): Slice by Manual's markers as an optional `slices` field of the slot's sample state (sorted, unique, 0 implied, <= 63, before the end), one `device.loadState`, one Undo step; adding, moving and deleting are each this call with the changed list. `restoreBuiltinSample` (`src/juce/builtin_samples.cpp`) passes the field to `prepareOneShotSample`. `OneShot::transientSlices` gives the window a Sensitivity's list (to turn a transient into a marker). `docs/ENGINE-SAMPLE-SLOTS.md` names the field. Not wired to the tile (devices seat). | `adi_sample_slots_tests` `reverseAndCrop` tail: markers placed, moved, deleted, refused past the end, undone, each read by playing the restored slot through OneShot; `adi_oneshot_tests` reads each Sensitivity's list. | check pending |
 
 ## For the director
 
@@ -67,22 +69,27 @@ with the smallest test that would prove it). The how-to is `collab/prompts/2026-
    devices seat's file (`src/juce/ui_devices.cpp`). **Recommendation:** the devices seat adds
    "Reverse" and "Crop" to the tile's menu as Live names them, beside its Folder and Hot-Swap
    actions, submitted like the sample drop.
+5. **The sample state's new optional `slices` field** (item 9). It is a field of the built-in sample
+   state, which SPEC.md versions apart from the project schema and whose unknown fields older builds
+   keep; no schema minor was taken. **Recommendation:** name it in SPEC.md's "Built-in sample roles"
+   beside mediaHash and source_f32le when the format owner next edits it.
+6. **Markers on the tile** (add by double-click, drag, delete by double-click, as Live does) are the
+   devices seat's to draw; the commands under them exist (item 9). **Recommendation:** as 3.
+7. **Sensitivity's default and law** are readings (ADI: 50 %, 5 % steps, 2^(1/5) a step).
 4. **Spread's law** is a reading: ADI plays two voices at half level, detuned +-25 cents and panned
    hard apart at 100 % (`kSpreadCents` = 50), both scaling with the amount. **Recommendation:** add
    it to the readings list.
 
 ## Next
 
-The chain stands at 1e0d2111 (items 1..7). Next free: object **150**, canvas id **67**, `p` **66**,
-enum after `Spread`.
+The chain stands at 3a19f22f (items 1..9). Next free: object **152**, canvas id **68**, `p` **67**,
+enum after `SliceSensitivity`.
 
 1. Checks: slot 8 had a check of 00778800 (items 4, 5 + origin/main) waiting for a build place from
    17:33; then run `slot.sh run 8 origin/basics/oneshot-chain core 'oneshot|sampl|builtin|device_presets'`
    for the head and mark items 4..7.
-2. Slice: Transient sensitivity (a new control; today the thresholds are fixed in `prepareSample`:
-   level > max(0.05, 3 x envelope), 10 ms apart), then by beat, equal regions and by hand; moving and
-   deleting slices (the manual list lives in the prepared sample, so this is again the sample slot's
-   model); Mono, Poly and Thru tests the parity list asks for.
+2. Slice rows left: Trigger/Gate against the slice or the whole Thru region (fades measured on the
+   slice vs the Thru region: one test); by beat and equal regions already have tests.
 3. Then: Morph (needs a choice: extending Filter type's menu changes the normalized value of every
    saved Filter type, so a separate control is the safe way); envelope loop modes; Warp last, only
    through the engine's stretcher if its interface is on the base, otherwise blocked on that seat.
