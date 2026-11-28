@@ -1040,8 +1040,8 @@ void BrowserPanel::sortRows() {
                 self(self, index + 1, ends[index]);
         }
     };
-    // Scan progress is a status line and the progress callback updates row zero.
-    const bool scanNotice = pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
+    // Favorites has no scan progress row, even when it includes plug-ins.
+    const bool scanNotice = !favoritesShown() && pluginsShown() && pluginScan_.phase == PluginScan::Phase::Scanning;
     if (scanNotice)
         append(0);
     appendSorted(appendSorted, scanNotice ? 1u : 0u, count);

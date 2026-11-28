@@ -8012,6 +8012,22 @@ void browserFavorites(const std::filesystem::path &dir) {
           "SC-133: a plug-in can be marked independently of a matching UID in another format");
     check(choose(browser, "Favorites") && browser.rows().size() == 3 && !History(document->store()).head(),
           "SC-133: only marked sample, built-in and plug-in are listed, without project history edits");
+    {
+        // Favorites has no scan status line, so a scan in progress leaves no row out of the Name order.
+        scan.phase = PluginScan::Phase::Scanning;
+        browser.setPluginScan(scan);
+        const auto clickName = [&] {
+            browser.mouseDown(pressAt(browser, browser.nameHeaderArea().getCentre().toFloat(),
+                                      juce::ModifierKeys::leftButtonModifier));
+        };
+        clickName();
+        clickName();
+        const auto &sorted = browser.rows();
+        check(sorted.size() == 3 && sorted[0].device && sorted[1].plugin && sorted[2].file,
+              "SC-133: Name sorts every favorite while a plug-in scan runs");
+        scan.phase = PluginScan::Phase::Done;
+        browser.setPluginScan(scan);
+    }
     browser.search.setText("test vendor", false);
     browser.search.onTextChange();
     check(browser.rows().size() == 1 && browser.rows()[0].plugin && browser.rows()[0].plugin->format == "clap",
