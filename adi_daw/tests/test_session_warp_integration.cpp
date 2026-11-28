@@ -2424,7 +2424,7 @@ void scheduledPhysicalPagedLegato(bool ramp, bool queueStop) {
 
 enum class StalledLegato { User, Linked, TiedUser };
 
-void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato::User) {
+void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato::User, bool noGrid = false) {
     const auto linked = mode != StalledLegato::User;
     const auto coldUser = mode == StalledLegato::TiedUser;
     test::TempDirectory directory{"long_paged_legato", queueStop ? "cold-stop" : "missing-page"};
@@ -2453,6 +2453,7 @@ void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato:
             "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
     db.exec(linked ? "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,521979167,5021979167)"
                    : "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,71979167,4571979167)");
+    if (noGrid) db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102");
     if (coldUser) {
         db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
         addClip(*store,directory.path(),103,30,1,true,127200,1,240100);
@@ -2567,7 +2568,7 @@ void coldPhysicalPagedLegato(bool queueStop, StalledLegato mode = StalledLegato:
 
 enum class LinkedPagedLegato { Follow, EarlierUser, CoincidentUser, Stop };
 
-void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action) {
+void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action, bool noGrid = false) {
     test::TempDirectory folder{"long_paged_linked_legato",ramp ? "ramp" : "steady"};
     auto store = sceneProject(folder.path());
     auto& db = store->db();
@@ -2579,7 +2580,7 @@ void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action) {
         change.exec();
     }
     const auto firstLap = ramp ? 110000 : 120000;
-    const auto followAt = ramp ? 124242 : 120000;
+    const auto followAt = noGrid ? firstLap : ramp ? 124242 : 120000;
     const auto stopAt = ramp ? 165385 : 192000;
     const auto due = action == LinkedPagedLegato::EarlierUser ? 113956 : followAt;
     const auto user = action == LinkedPagedLegato::EarlierUser || action == LinkedPagedLegato::CoincidentUser;
@@ -2612,7 +2613,7 @@ void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action) {
         SQLite::Statement setting(db,"UPDATE clip_launch SET launch_quant=?,ram_mode=0 WHERE clip_id=?");
         setting.bind(1,quantization); setting.bind(2,id); setting.exec();
     };
-    target(102,20,followedCue,8);
+    target(102,20,followedCue,noGrid ? 1 : 8);
     if (user) {
         db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
         target(103,30,cue,action == LinkedPagedLegato::EarlierUser ? 12 : 8);
@@ -2672,8 +2673,9 @@ struct LongLoopTiming {
     static constexpr int oldStart = 2400, start = 60000, head = 9600, tail = 37;
     bool ramp;
     LongLoopLaunch launch;
+    bool noGrid = false;
     bool linked() const { return launch != LongLoopLaunch::Scheduled && launch != LongLoopLaunch::Immediate; }
-    int due() const { return ramp ? 124242 : 120000; }
+    int due() const { return noGrid && linked() ? oldLap() : ramp ? 124242 : 120000; }
     int oldLap() const { return ramp ? 110000 : 120000; }
     int oldHead() const { return ramp ? 100800 : 112800; }
     int oldFrame(int frame) const {
@@ -2714,8 +2716,9 @@ std::unique_ptr<Store> longPagedLoopLegatoProject(const std::filesystem::path& f
                               " VALUES(102,1250000000,5250000000,200000000,?)");
     pins.bind(1,nsAt(timing.cue()+timing.tail));
     pins.exec();
-    db.exec(timing.launch == LongLoopLaunch::Immediate ? "UPDATE clip_launch SET launch_quant=1,ram_mode=0 WHERE clip_id=102;"
-                                                       : "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
+    db.exec(timing.noGrid || timing.launch == LongLoopLaunch::Immediate
+        ? "UPDATE clip_launch SET launch_quant=1,ram_mode=0 WHERE clip_id=102;"
+        : "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
     if (timing.launch == LongLoopLaunch::LinkedUser) {
         db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
         addClip(*store,folder,103,30,2,false);
@@ -2724,8 +2727,8 @@ std::unique_ptr<Store> longPagedLoopLegatoProject(const std::filesystem::path& f
     return store;
 }
 
-void longPagedLoopLegato(bool ramp, LongLoopLaunch launch = LongLoopLaunch::Scheduled) {
-    const LongLoopTiming timing{ramp,launch};
+void longPagedLoopLegato(bool ramp, LongLoopLaunch launch = LongLoopLaunch::Scheduled, bool noGrid = false) {
+    const LongLoopTiming timing{ramp,launch,noGrid};
     const auto immediate = launch == LongLoopLaunch::Immediate;
     const auto stop = launch == LongLoopLaunch::LinkedStop;
     const auto user = launch == LongLoopLaunch::LinkedUser;
@@ -2800,9 +2803,9 @@ void longPagedLoopLegato(bool ramp, LongLoopLaunch launch = LongLoopLaunch::Sche
             "scheduled physical loop Legato preserves the real-time callback budget");
 }
 
-void longPagedLoopCuePages(bool holdCue, bool linked = false) {
+void longPagedLoopCuePages(bool holdCue, bool linked = false, bool noGrid = false) {
     test::TempDirectory folder{"long_paged_loop_legato",holdCue ? "hold-head" : "missing-head"};
-    const LongLoopTiming timing{false,linked ? LongLoopLaunch::Linked : LongLoopLaunch::Scheduled};
+    const LongLoopTiming timing{false,linked ? LongLoopLaunch::Linked : LongLoopLaunch::Scheduled,noGrid};
     auto store = longPagedLoopLegatoProject(folder.path(),timing);
     const auto due = timing.due();
     const auto cue = timing.cue();
@@ -3030,6 +3033,13 @@ int main() {
         longPagedLoopLegato(true,LongLoopLaunch::LinkedUser);
         longPagedLoopLegato(true,LongLoopLaunch::LinkedStop);
         longPagedLoopCuePages(false,true);
+        linkedLongPagedLegato(true,LinkedPagedLegato::Follow,true);
+        linkedLongPagedLegato(false,LinkedPagedLegato::CoincidentUser,true);
+        coldPhysicalPagedLegato(false,StalledLegato::Linked,true);
+        coldPhysicalPagedLegato(false,StalledLegato::TiedUser,true);
+        longPagedLoopLegato(true,LongLoopLaunch::Linked,true);
+        longPagedLoopLegato(true,LongLoopLaunch::LinkedStop,true);
+        longPagedLoopCuePages(false,true,true);
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

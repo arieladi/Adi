@@ -599,7 +599,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }, [](void* state, const LaunchSlot& previous, const LaunchSlot& next, std::uint64_t run) noexcept {
         static_cast<Context*>(state)->driver.retargetPinnedRun(previous,next,run);
     }, [](void* state, const LaunchSlot& target, const LaunchSourceCue& cue,
-           std::int32_t offset, bool quantizedHandoff) noexcept {
+           std::int32_t offset, bool scheduledHandoff) noexcept {
         auto& call = *static_cast<Context*>(state);
         if (!call.media->stored() || target.physicalFrames <= 0) return true;
         if (!needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))) return true;
@@ -607,7 +607,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         if (!pcm) return false;
         auto* pages = pcm->pageReader();
         if (!pages) return true;
-        if (!quantizedHandoff || cue.physicalFrame < 0) return false;
+        if (!scheduledHandoff || cue.physicalFrame < 0) return false;
         auto* rendered = call.runtime.trackRanges(target.track);
         if (!rendered || rendered->cuePages) return false;
         // An earlier range on this source could trim the new reservation

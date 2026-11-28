@@ -598,7 +598,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
 
 bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
-                          std::int64_t tick, bool quantizedHandoff) noexcept {
+                          std::int64_t tick, bool scheduledHandoff) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
     if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
@@ -624,7 +624,7 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,offset,quantizedHandoff)) return false;
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,scheduledHandoff)) return false;
     }
     track.follow.reset();
     track.repeat.reset();
@@ -806,19 +806,17 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 }
                 edgeTick = target;
             }
-            if (next == &track.follow && pending.linkedPhysical && pending.grid != LaunchQuantization::None &&
-                refusedUserStartAtCursor) {
-                // A due manual Start owns its grid even when its cue is cold.
+            if (next == &track.follow && pending.linkedPhysical && refusedUserStartAtCursor) {
+                // A due manual Start owns its sample even when its cue is cold.
                 // A Follow deferred to a later grid already continued above.
                 tick = nextTick;
                 continue;
             }
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            const auto quantizedHandoff = pending.grid != LaunchQuantization::None &&
-                ((next == &track.user && !pending.sceneGesture && !pending.repeat) ||
-                 (next == &track.follow && pending.linkedPhysical));
-            if (transition(track,block,view,sink,pending,cursor,edgeTick,quantizedHandoff)) {
+            const auto scheduledHandoff = (next == &track.user && pending.grid != LaunchQuantization::None &&
+                !pending.sceneGesture && !pending.repeat) || (next == &track.follow && pending.linkedPhysical);
+            if (transition(track,block,view,sink,pending,cursor,edgeTick,scheduledHandoff)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();
                 if (pending.prepared) {
@@ -1258,8 +1256,7 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
 
 void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, const LaunchBlock& block,
                                     LaunchSink sink, std::int64_t endSample) const noexcept {
-    if (!track.follow || !track.follow->linkedPhysical || track.follow->grid == LaunchQuantization::None ||
-        !track.run.clip) return;
+    if (!track.follow || !track.follow->linkedPhysical || !track.run.clip) return;
     const auto& pending = *track.follow;
     const auto* target = findSlot(view,track.id,pending.scene);
     if (!occupied(target) || target->clip != pending.clip || target->physicalFrames <= 0) return;
