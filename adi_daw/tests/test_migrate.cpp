@@ -29,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -167,7 +168,9 @@ void testUpgradeEachMinor() {
             if (!s) continue;
             check(s->upgradedFromMinor() == minor, v + ": reports what it upgraded from");
             backupPath = s->upgradeBackupPath();
-            check(!backupPath.empty() && backupPath.parent_path() == p.parent_path() && fs::is_regular_file(backupPath),
+            std::error_code pathError;
+            check(!backupPath.empty() && fs::equivalent(backupPath.parent_path(), p.parent_path(), pathError) &&
+                      fs::is_regular_file(backupPath),
                   v + ": reports a safety copy beside the source");
             if (!backupPath.empty() && fs::is_regular_file(backupPath)) {
                 SQLite::Database original(media::pathUtf8(backupPath), SQLite::OPEN_READONLY);
