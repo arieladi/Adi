@@ -17,6 +17,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/parameter_feed.hpp"
+#include "adi/ui/send_edits.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -185,12 +186,8 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
         if (r && r->kind == "return")
             returns.push_back(r.get());
     for (std::size_t i = 0; i < returns.size(); ++i)
-        for (const auto &s : snapshot.sends)
-            if (s && s->sourceKind == "track" && s->sourceId == track && s->destinationKind == "track" &&
-                s->destinationId == returns[i]->id) {
-                out.push_back(sendTarget(s->id, std::string("Send ") + static_cast<char>('A' + i % 26)));
-                break;
-            }
+        if (const auto *send = findSend(snapshot.sends, track, returns[i]->id))
+            out.push_back(sendTarget(send->id, std::string("Send ") + static_cast<char>('A' + i % 26)));
     if (devices != nullptr) {
         for (const auto &d : *devices) {
             if (d.track != track) continue;

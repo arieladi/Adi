@@ -22057,7 +22057,10 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
                     return &it.getItem();
             return nullptr;
         };
-        check(three->volumeMenuItems().getNumItems() == 0, "with no Volume lane, the fader has no menu");
+        const auto plainFader = three->volumeMenuItems();
+        juce::PopupMenu::MenuItemIterator plainItem(plainFader);
+        check(plainFader.getNumItems() == 1 && plainItem.next() && plainItem.getItem().text == "Show Automation",
+              "with no Volume lane, the fader offers Show Automation");
         automation::LaneSpec spec;
         spec.id = 90;
         spec.ownerId = 4;
@@ -22265,6 +22268,116 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
 // An automated mixer control shows its automation (Live 12 manual 25.4; walk-A A13): the envelope's value
 // at the playhead in the track controls and the Mixer View, shown without an op; once a manual change
 // overrides the lane, the manual value; Re-Enable Automation follows the lane again.
+void mixerAutomationMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = openProjectWithReturns(dir / "mixer-automation-menus.adi", error);
+    check(document != nullptr, "SC-460: a project for mixer control menus");
+    if (!document)
+        return;
+    const auto initial = document->view().current();
+    const auto *firstSend = findSend(initial->sends, 4, 6);
+    check(firstSend != nullptr, "SC-460: the old project holds the first send's route");
+    if (!firstSend)
+        return;
+    OpRequest disconnect;
+    disconnect.opType = "routing.disconnect";
+    disconnect.payload = {{"id", firstSend->id}};
+    check(document->ops().submit(disconnect).ok && document->synchronise(),
+          "SC-460: a visible send can start fully down with no stored route");
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-menus");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.setAutomationMode(false);
+    root.frame();
+    auto rowFor = [](MixerPanel &panel) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->track() == 4 && strip->isVisible())
+                return strip.get();
+        return nullptr;
+    };
+    auto *row = rowFor(root.mixer);
+    check(row && !row->sendKnobs().empty(), "SC-460: the Arrangement has usable Volume, Pan and Send controls");
+    if (!row || row->sendKnobs().empty())
+        return;
+    int requests = 0;
+    juce::PopupMenu captured;
+    const auto present = [&](juce::PopupMenu menu) { captured = std::move(menu); ++requests; };
+    root.mixer.contextMenuPresenter = present;
+    root.mixerView.contextMenuPresenter = present;
+    const auto openMenu = [&](MixerStrip &strip, juce::Component &control) {
+        const int before = requests;
+        captured.clear();
+        strip.mouseDown(pressAt(control, control.getLocalBounds().getCentre().toFloat(),
+                                juce::ModifierKeys::rightButtonModifier));
+        return requests == before + 1;
+    };
+    const auto item = [&](const char *text) -> std::optional<juce::PopupMenu::Item> {
+        for (juce::PopupMenu::MenuItemIterator current(captured); current.next();)
+            if (current.getItem().text == text)
+                return current.getItem();
+        return {};
+    };
+    const auto invoke = [&](const char *text) {
+        const auto selected = item(text);
+        if (!selected || !selected->isEnabled || !selected->action)
+            return false;
+        selected->action();
+        return true;
+    };
+    const auto authored = [&](const AutomationTarget &target) {
+        const auto envelope = envelopeOf(*root.current(), target);
+        return envelope.data && !envelope.data->points.empty();
+    };
+    const auto volume = volumeTarget(4);
+    const auto pan = panTarget(4);
+    const auto beforeVolume = History(document->store()).head();
+    check(openMenu(*row, row->volume) && !item("Delete Automation") && invoke("Show Automation") &&
+              root.automationMode() && root.automationTarget(4) == volume &&
+              History(document->store()).head() == beforeVolume && !authored(volume),
+          "SC-460: right-click the unautomated Volume to show its envelope without creating a history step");
+    check(root.addAutomationPoint(4, 0, -18) && authored(volume), "SC-460: a point belongs to Volume");
+    check(openMenu(*row, row->pan) && item("Stereo Pan") && item("Split Stereo Pan") &&
+              invoke("Show Automation") && root.automationTarget(4) == pan && root.addAutomationPoint(4, 0, .25),
+          "SC-460: Pan keeps its mode choices and shows its own envelope");
+    const auto beforeSend = History(document->store()).head();
+    const auto destination = row->sendsTo(0);
+    auto &sendKnob = *row->sendKnobs().front();
+    check(openMenu(*row, sendKnob) && item("Enable Send") && item("Post Mixer") && !item("Delete Automation") &&
+              History(document->store()).head() == beforeSend && !findSend(root.current()->sends, 4, destination),
+          "SC-460: opening the Send menu writes nothing and preserves its routing commands");
+    const bool showed = invoke("Show Automation");
+    const auto *route = findSend(root.current()->sends, 4, destination);
+    check(showed && route && route->enabled && route->gainDb == kSendSilenceDb &&
+              root.undoTitle(false) == "Undo Prepare Send Automation" &&
+              root.automationTarget(4) == sendTarget(route->id, {}),
+          "SC-460: Show creates one silent routing target for an untouched Send and shows it");
+    if (!route)
+        return;
+    const auto send = sendTarget(route->id, {});
+    check(root.addAutomationPoint(4, 0, -15) && authored(send) && authored(volume) && authored(pan),
+          "SC-460: Pan, Volume and Send have independent authored envelopes");
+
+    check(root.command(AppCommands::ToggleMixerView), "SC-460: open the docked Mixer View");
+    root.frame();
+    auto *column = rowFor(root.mixerView);
+    check(column && !column->sendKnobs().empty() && column->sendsTo(0) == destination,
+          "SC-460: the same controls are present in the Mixer View");
+    if (!column || column->sendKnobs().empty())
+        return;
+    const auto remove = [&](juce::Component &control) {
+        return openMenu(*column, control) && item("Re-Enable Automation") && invoke("Delete Automation");
+    };
+    check(remove(column->volume) && !authored(volume) && authored(pan) && authored(send) &&
+              root.undoTitle(false) == "Undo Delete Automation" && root.command(AppCommands::Undo) && authored(volume),
+          "SC-460: delete only Volume even while Send is shown, and Undo restores it");
+    check(remove(column->pan) && authored(volume) && !authored(pan) && authored(send),
+          "SC-460: deleting Pan leaves Volume and Send alone");
+    check(remove(*column->sendKnobs().front()) && authored(volume) && !authored(send) &&
+              findSend(root.current()->sends, 4, destination),
+          "SC-460: deleting Send automation leaves its routing row intact");
+}
 void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = openProjectWithReturns(dir / "mixer-automation.adi", error);
@@ -32566,6 +32679,7 @@ int main(int argc, char **argv) {
     trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
+    trace("mixerAutomationMenus", [&] { mixerAutomationMenus(commands, temp.path()); });
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });

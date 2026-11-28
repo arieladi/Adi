@@ -255,7 +255,32 @@ inline bool readsOn(const engine::Snapshot &snapshot, std::int64_t source, const
     const auto *src = snapshot.findTrack(source);
     return src != nullptr ? sendOn(*src, s) : s != nullptr && s->enabled;
 }
+inline TrackEdit silentSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination,
+                            bool enabled, const char *label) {
+    TrackEdit edit;
+    const auto id = newIds(snapshot, 1);
+    if (id == 0) {
+        edit.refusal = kSendNoIdLeft;
+        return edit;
+    }
+    edit.ops.push_back(connect(id, source, destination, label));
+    follow(edit, snapshot.findTrack(destination), id, label);
+    edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
+    if (!enabled)
+        edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", id}, {"enabled", false}}, label));
+    return edit;
+}
 } // namespace send_edits_detail
+
+// The send starts at its current silent value and enabled state. Its routing row
+// then gives the automation chooser a stable target without affecting the mix.
+inline TrackEdit prepareSendAutomation(const engine::Snapshot &snapshot, std::int64_t source,
+                                       std::int64_t destination) {
+    if (findSend(snapshot.sends, source, destination))
+        return {};
+    using namespace send_edits_detail;
+    return silentSend(snapshot, source, destination, readsOn(snapshot, source, nullptr), "Prepare Send Automation");
+}
 // Live's Enable Send, and its undoing: a row switched on or off. Without a row, the send reads as
 // `sendOn` reads it, on for a track and off for a return, so the menu's tick and its action agree: a
 // return's Enable Send makes the row, fully down; a track's Disable Send makes the row, fully down, as
@@ -274,17 +299,7 @@ inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t sourc
         edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", s->id}, {"enabled", on}}, label));
         return edit;
     }
-    const auto id = newIds(snapshot, 1);
-    if (id == 0) {
-        edit.refusal = kSendNoIdLeft;
-        return edit;
-    }
-    edit.ops.push_back(connect(id, source, destination, label));
-    follow(edit, snapshot.findTrack(destination), id, label);
-    edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
-    if (!on)
-        edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", id}, {"enabled", false}}, label));
-    return edit;
+    return silentSend(snapshot, source, destination, on, label);
 }
 // Live's Enable All Sends (§18.4: "right-click on a Return track's Send knob and select Enable Send or
 // Enable All Sends"): every send of the return `source` switched on, to each return, itself included,
