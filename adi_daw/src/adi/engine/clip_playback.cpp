@@ -1079,11 +1079,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto beginNs = row.posNs.value_or(0);
             // Project stored nanoseconds as the edit clock and Snapshot do: an
             // integer nanosecond rounded below its originating tick maps back to it.
-            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
+            const auto origin=row.timeBase==0?row.posTicks.value_or(0):warpClock.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
+            const auto originSeconds = warpClock.ticksToSeconds(origin);
             auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
+                return warpClock.ticksToSeconds(origin+ticks)-originSeconds;
             };
             auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
             if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
@@ -1094,8 +1095,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                clip->start=samples(tempo.ticksToSeconds(origin),rate);
-                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
+                clip->start=samples(originSeconds,rate);
+                clip->end=samples(warpClock.ticksToSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
                 if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
@@ -1103,7 +1104,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto endNs = beginNs + nanos;
                 clip->start=samplesAtNs(beginNs,clip->rate);
                 clip->end=samplesAtNs(endNs,clip->rate);
-                endTicks=tempo.storedNanosecondsToTicks(endNs);
+                endTicks=warpClock.storedNanosecondsToTicks(endNs);
             }
             auto r3EndTick = static_cast<double>(endTicks);
             if (r3Mode && !row.loopEnabled) {
@@ -1255,7 +1256,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto tickSpan = endTicks - origin;
             const auto frameSpan = clip->end - clip->start;
             clip->fadeOut = row.fadeOutTicks > 0 && row.fadeOutTicks >= tickSpan ? frameSpan : std::min(frameSpan,
-                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
+                samples(warpClock.ticksToSeconds(endTicks) - warpClock.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))

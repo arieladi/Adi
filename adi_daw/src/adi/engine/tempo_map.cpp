@@ -117,6 +117,15 @@ std::int64_t segmentTick(const TempoEvent& left, const TempoEvent& right,
     return low;
 }
 
+std::int64_t recoverStoredTick(std::int64_t nanos, const auto& clock) noexcept {
+    if (nanos < 0) return 0;
+    const auto floor = clock.secondsToTicks(static_cast<double>(nanos) * 1e-9);
+    if (floor == highestTick) return floor;
+    const auto following = static_cast<long double>(clock.ticksToSeconds(floor + 1)) * 1e9L;
+    const auto requested = static_cast<long double>(nanos);
+    return following >= requested - 0.5L && following < requested + 0.5L ? floor + 1 : floor;
+}
+
 long double interpolateTickSeconds(long double ticks, const auto& secondsAtTick) noexcept {
     if (!std::isfinite(ticks) || ticks >= static_cast<long double>(highestTick))
         return secondsAtTick(highestTick);
@@ -194,12 +203,7 @@ std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
 }
 
 std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexcept {
-    if (nanos < 0 || events.empty()) return 0;
-    const auto floor = secondsToTicks(static_cast<double>(nanos) * 1e-9);
-    if (floor == highestTick) return floor;
-    const auto following = static_cast<long double>(ticksToSeconds(floor + 1)) * 1e9L;
-    const auto requested = static_cast<long double>(nanos);
-    return following >= requested - 0.5L && following < requested + 0.5L ? floor + 1 : floor;
+    return events.empty() ? 0 : recoverStoredTick(nanos,*this);
 }
 
 long double TempoMap::secondsAtPosition(long double ticks) const noexcept {
@@ -290,6 +294,10 @@ std::int64_t WarpArrangementClock::secondsToTicks(double seconds) const noexcept
     const auto& segment = *(boundary - 1);
     if (boundary == end) return stepTick(segment.left,segment.startSeconds,seconds);
     return segmentTick(segment.left,segment.right,segment.startSeconds,seconds);
+}
+
+std::int64_t WarpArrangementClock::storedNanosecondsToTicks(std::int64_t nanos) const noexcept {
+    return recoverStoredTick(nanos,*this);
 }
 
 double WarpArrangementClock::bpmAt(std::int64_t tick) const noexcept {

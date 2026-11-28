@@ -8,7 +8,7 @@
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/blob.hpp"
 #include "adi/engine/midi_controllers.hpp"
-#include "adi/engine/snapshot.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -774,7 +774,7 @@ double expressionValueAt(const std::vector<ExpressionPoint>& points,double tick)
 }
 template <typename SecondsAt>
 void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vector<ExpressionSample>& samples,
-                       const TempoMap& tempo,double rate,double originSeconds,const SecondsAt& secondsAt,
+                       const WarpArrangementClock& tempo,double rate,double originSeconds,const SecondsAt& secondsAt,
                        std::int64_t sourceStart,std::int64_t visibleStart) {
     constexpr auto tickLimit=std::int64_t{1}<<50;
     const auto step=static_cast<std::int64_t>(std::floor(rate/500.0));
@@ -1006,7 +1006,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         }
         source->controllerGeneration=source->controllerVersion->generation;
     }
-    const auto tempo = TempoMap::fromRows(model.tempo);
+    const WarpArrangementClock tempo(model.tempo,rate);
     std::uint64_t identity=1;
     std::map<std::int64_t, std::vector<const rows::Note*>> notesByClip;
     for (const auto& clip : timelineClips(model)) {
