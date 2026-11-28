@@ -34,6 +34,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <stop_token>
@@ -73,6 +74,39 @@ enum class SourceFormat { Riff, Aiff, Flac, Mp3, Ogg, Unknown, Mp4, Adts };
 /// reach its shared CRC table (each Ogg Vorbis open and its stream-length probe).
 /// Declared here so a test can hold it and see an Ogg open wait for it.
 [[nodiscard]] std::mutex& stbVorbisTableLock();
+enum class WaveInfoTag { Title, Artist, Album, Genre, Comment, Keywords };
+enum class WaveLoopType { Forward, Alternating, Backward };
+
+struct WaveSampleLoop {
+    WaveLoopType type = WaveLoopType::Forward;
+    std::uint64_t firstFrame = 0;
+    std::uint64_t endFrame = 0;  ///< Exclusive source frame.
+    std::uint32_t sampleFraction = 0;
+    std::uint32_t playCount = 0;  ///< Zero means indefinite.
+};
+
+struct WaveAcidTags {
+    std::optional<double> bpm;
+    std::optional<std::uint8_t> rootNote;
+    bool oneShot = false;
+    std::uint32_t beats = 0;
+    std::uint16_t meterNumerator = 0;
+    std::uint16_t meterDenominator = 0;
+};
+
+struct WaveSampleMetadata {
+    std::uint32_t sampleRate = 0, channels = 0;
+    std::uint64_t frames = 0;
+    std::optional<WaveAcidTags> acid;
+    std::optional<std::uint8_t> instrumentRoot, samplerRoot;
+    std::vector<WaveSampleLoop> loops;
+    std::map<WaveInfoTag, std::string> text;
+};
+
+/// Read only embedded WAVE hints. Valid files may carry none. The function
+/// owns its result, leaves source and caches untouched and throws DecodeError
+/// for invalid media, cancellation or the metadata budget.
+[[nodiscard]] WaveSampleMetadata readWaveSampleMetadata(const std::filesystem::path&, std::stop_token = {});
 
 inline constexpr std::uint32_t kMaxDecodeRate = 768000;   // ADR-0157
 inline constexpr std::uint32_t kMaxDecodeChannels = 64;

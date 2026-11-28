@@ -18,17 +18,21 @@
 #define STB_VORBIS_NO_PUSHDATA_API
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
+#include <utf8proc.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <limits>
 #include <mutex>
 #include <random>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #if defined(_WIN32)
@@ -122,6 +126,62 @@ bool tellBytes(void* user, std::int64_t* at) {
     if (pos < 0) return false;
     *at = static_cast<std::int64_t>(pos);
     return true;
+}
+
+struct WaveMetadataInput {
+    static constexpr std::size_t budget = 1u << 20;
+    Stream stream;
+    std::stop_token stop;
+    std::size_t remainingRead = budget, remainingAllocate = budget, seeks = 65536;
+    bool exhausted = false;
+
+    bool take(std::size_t amount, std::size_t& remaining) noexcept {
+        if (stop.stop_requested()) return false;
+        if (amount > remaining) {
+            exhausted = true;
+            return false;
+        }
+        remaining -= amount;
+        return true;
+    }
+};
+
+struct WaveMetadataOwner {
+    drwav wave{};
+    bool open = false;
+    ~WaveMetadataOwner() {
+        if (open) drwav_uninit(&wave);
+    }
+};
+
+std::optional<WaveInfoTag> infoTag(drwav_metadata_type type) {
+    switch (type) {
+        case drwav_metadata_type_list_info_title: return WaveInfoTag::Title;
+        case drwav_metadata_type_list_info_artist: return WaveInfoTag::Artist;
+        case drwav_metadata_type_list_info_album: return WaveInfoTag::Album;
+        case drwav_metadata_type_list_info_genre: return WaveInfoTag::Genre;
+        case drwav_metadata_type_list_info_comment: return WaveInfoTag::Comment;
+        case drwav_metadata_type_list_info_keywords: return WaveInfoTag::Keywords;
+        default: return std::nullopt;
+    }
+}
+
+std::optional<std::string> waveInfoText(const drwav_list_info_text& text) {
+    if (!text.pString || text.stringLength == 0 || text.stringLength > 4096) return std::nullopt;
+    if (text.pString[text.stringLength] != '\0') return std::nullopt;
+    std::string_view value(text.pString, text.stringLength);
+    while (!value.empty() && (value.back() == '\0' || value.back() == ' ')) value.remove_suffix(1);
+    if (value.empty() || value.find('\0') != std::string_view::npos) return std::nullopt;
+    auto bytes = reinterpret_cast<const utf8proc_uint8_t*>(value.data());
+    auto remaining = static_cast<utf8proc_ssize_t>(value.size());
+    while (remaining > 0) {
+        utf8proc_int32_t codepoint = 0;
+        const auto consumed = utf8proc_iterate(bytes, remaining, &codepoint);
+        if (consumed < 0) return std::nullopt;
+        bytes += consumed;
+        remaining -= consumed;
+    }
+    return std::string(value);
 }
 
 // --- one decoder interface over four libraries ------------------------------------------
@@ -452,6 +512,103 @@ SourceFormat sniff(const fs::path& p) {
     if (is(0, "ID3")) return SourceFormat::Mp3;
     if (n >= 2 && b[0] == 0xFF && (b[1] & 0xE0) == 0xE0 && (b[1] & 0x06) != 0) return SourceFormat::Mp3;
     return SourceFormat::Unknown;
+}
+
+WaveSampleMetadata readWaveSampleMetadata(const fs::path& path, std::stop_token stop) {
+    if (onAudioThread) throw DecodeError(DecodeProblem::AudioThread, "WAVE metadata requires a file reader");
+    cancelled(stop);
+    WaveMetadataInput input{Stream(path), stop};
+    if (!input.stream.in) throw DecodeError(DecodeProblem::Unreadable, display(path) + ": cannot be opened");
+    const drwav_allocation_callbacks alloc{
+        &input,
+        [](std::size_t size, void* user) -> void* {
+            auto& state = *static_cast<WaveMetadataInput*>(user);
+            if (!state.take(size, state.remainingAllocate)) return nullptr;
+            return std::malloc(size);
+        },
+        [](void* ptr, std::size_t size, void* user) -> void* {
+            auto& state = *static_cast<WaveMetadataInput*>(user);
+            if (!state.take(size, state.remainingAllocate)) return nullptr;
+            return std::realloc(ptr, size);
+        },
+        [](void* ptr, void*) { std::free(ptr); }
+    };
+    WaveMetadataOwner reader;
+    auto& wave = reader.wave;
+    reader.open = drwav_init_with_metadata(&wave,
+        [](void* user, void* data, std::size_t size) -> std::size_t {
+            auto& state = *static_cast<WaveMetadataInput*>(user);
+            if (!state.take(size, state.remainingRead)) return 0;
+            return readBytes(&state.stream, data, size);
+        },
+        [](void* user, int offset, drwav_seek_origin origin) -> drwav_bool32 {
+            auto& state = *static_cast<WaveMetadataInput*>(user);
+            if (!state.take(1, state.seeks)) return DRWAV_FALSE;
+            return seekBytes(&state.stream, offset, static_cast<int>(origin)) ? DRWAV_TRUE : DRWAV_FALSE;
+        },
+        [](void* user, drwav_int64* cursor) -> drwav_bool32 {
+            auto& state = *static_cast<WaveMetadataInput*>(user);
+            std::int64_t position = 0;
+            if (!tellBytes(&state.stream, &position)) return DRWAV_FALSE;
+            *cursor = position;
+            return DRWAV_TRUE;
+        }, &input, 0, &alloc) == DRWAV_TRUE;
+    cancelled(stop);
+    if (input.exhausted) throw DecodeError(DecodeProblem::Unsupported, display(path) + ": WAVE metadata exceeds its read budget");
+    if (!reader.open) throw DecodeError(DecodeProblem::Corrupt, display(path) + ": invalid WAVE container");
+    if (wave.container == drwav_container_aiff)
+        throw DecodeError(DecodeProblem::UnknownFormat, display(path) + ": WAVE metadata needs a WAVE container");
+
+    WaveSampleMetadata result;
+    result.sampleRate = wave.sampleRate;
+    result.channels = wave.channels;
+    result.frames = wave.totalPCMFrameCount;
+    for (std::uint32_t i = 0; i < wave.metadataCount; ++i) {
+        cancelled(stop);
+        const auto& metadata = wave.pMetadata[i];
+        switch (metadata.type) {
+            case drwav_metadata_type_acid: {
+                if (result.acid) break;
+                const auto& tags = metadata.data.acid;
+                WaveAcidTags acid;
+                acid.oneShot = (tags.flags & drwav_acid_flag_one_shot) != 0;
+                if (std::isfinite(tags.tempo) && tags.tempo > 0 && tags.tempo <= 1000) acid.bpm = tags.tempo;
+                if ((tags.flags & drwav_acid_flag_root_note_set) != 0 && tags.midiUnityNote <= 127)
+                    acid.rootNote = static_cast<std::uint8_t>(tags.midiUnityNote);
+                acid.beats = tags.numBeats;
+                acid.meterNumerator = tags.meterNumerator;
+                acid.meterDenominator = tags.meterDenominator;
+                result.acid = acid;
+                break;
+            }
+            case drwav_metadata_type_inst: {
+                const auto root = metadata.data.inst.midiUnityNote;
+                if (!result.instrumentRoot && root >= 0) result.instrumentRoot = static_cast<std::uint8_t>(root);
+                break;
+            }
+            case drwav_metadata_type_smpl: {
+                const auto& sampler = metadata.data.smpl;
+                if (!result.samplerRoot && sampler.midiUnityNote <= 127)
+                    result.samplerRoot = static_cast<std::uint8_t>(sampler.midiUnityNote);
+                for (std::uint32_t n = 0; n < sampler.sampleLoopCount && sampler.pLoops; ++n) {
+                    cancelled(stop);
+                    const auto& loop = sampler.pLoops[n];
+                    if (loop.type > drwav_smpl_loop_type_backward || loop.lastSampleOffset >= result.frames ||
+                        loop.firstSampleOffset > loop.lastSampleOffset) continue;
+                    result.loops.push_back({static_cast<WaveLoopType>(loop.type),
+                        loop.firstSampleOffset, static_cast<std::uint64_t>(loop.lastSampleOffset) + 1,
+                        loop.sampleFraction, loop.playCount});
+                }
+                break;
+            }
+            default:
+                if (const auto field = infoTag(metadata.type)) {
+                    if (auto text = waveInfoText(metadata.data.infoText)) result.text.try_emplace(*field, std::move(*text));
+                }
+                break;
+        }
+    }
+    return result;
 }
 
 DecodeCacheLimits limitsFromSettings(const nlohmann::json& values) {
