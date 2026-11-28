@@ -7051,6 +7051,40 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo Insert Silence");
     root.frame();
     check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar, "as before");
+
+    AdiRootComponent::InsertSilenceReply answer;
+    root.promptInsertSilence = [&](AdiRootComponent::InsertSilenceReply reply) { answer = std::move(reply); };
+    select(bar, bar);
+    juce::ApplicationCommandInfo insertInfo(AppCommands::InsertSilence);
+    commands.getCommandInfo(AppCommands::InsertSilence, insertInfo);
+    check((insertInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && root.keyPressed(insertKey) && answer,
+          "SC-187: Ctrl/Cmd+I at the insert marker asks for a duration");
+    if (answer) {
+        answer(std::nullopt);
+        answer = {};
+    }
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar && sel.start == sel.end,
+          "SC-187: Cancel leaves the Arrangement and marker in place");
+    check(root.keyPressed(insertKey) && answer, "SC-187: the point can ask again after cancellation");
+    if (answer) {
+        answer("0.0.0");
+        answer = {};
+    }
+    check(!root.error().empty() && clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar,
+          "SC-187: a zero duration is refused without an edit");
+    check(root.keyPressed(insertKey) && answer, "SC-187: ask for a positive duration");
+    if (answer)
+        answer("1.0.0");
+    answer = {};
+    root.promptInsertSilence = {};
+    root.frame();
+    check(clipsOf(2) == Clips{{3 * bar, bar}} && clipsOf(3) == Clips{{5 * bar, bar}} && locator() == 5 * bar &&
+              loopStart() == 5 * bar && sel.start == bar && sel.end == 2 * bar,
+          "SC-187: confirming one bar inserts it across tracks and selects the new time");
+    check(root.command(AppCommands::Undo), "SC-187: undo the insertion in one step");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar, "SC-187: Undo restores the material");
+
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
     const auto picture = [&](const char *name) {
         const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});

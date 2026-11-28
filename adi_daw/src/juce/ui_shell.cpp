@@ -3546,7 +3546,26 @@ bool AdiRootComponent::canTimeCommand(int id) const {
         return (std::holds_alternative<clip_edit::TimeCopy>(held) || (range && range->clearsRange)) &&
                (sel.marked || sel.start != sel.end);
     }
+    if (id == AppCommands::InsertSilence && sel.marked && promptInsertSilence)
+        return true;
     return sel.start != sel.end;
+}
+bool AdiRootComponent::insertSilence(std::int64_t at, std::int64_t length) {
+    if (at < 0 || length <= 0 || at > std::numeric_limits<std::int64_t>::max() - length)
+        return fail("Enter a positive time in bars, beats and sixteenths.");
+    if (!commitEdit(clip_edit::prepareInsertSilence(submitter_.store(), at, length, editRate())))
+        return false;
+    auto &sel = arrangement.geometry.selection;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.insert = sel.start = at;
+    sel.end = at + length;
+    sel.marked = true;
+    error_.clear();
+    dirty_.mark(DirtySet::Status);
+    commands_.manager.commandStatusChanged();
+    arrangement.changed();
+    return true;
 }
 bool AdiRootComponent::timeCommand(int id) {
     const auto current = view_.current();
@@ -3558,6 +3577,22 @@ bool AdiRootComponent::timeCommand(int id) {
     const auto rate = editRate();
     const auto from = std::max<std::int64_t>(0, std::min(sel.start, sel.end)), to = std::max(sel.start, sel.end);
     const auto length = to - from;
+    if (id == AppCommands::InsertSilence && length == 0 && sel.marked && promptInsertSilence) {
+        promptInsertSilence([self = SafePointer<AdiRootComponent>(this), at = sel.insert](auto answer) {
+            if (self == nullptr || !answer)
+                return;
+            const auto current = self->current();
+            if (!current)
+                return;
+            const auto duration = parseLength(*answer);
+            if (!duration) {
+                self->fail("Enter a positive time in bars, beats and sixteenths, such as 1.0.0.");
+                return;
+            }
+            self->insertSilence(at, lengthTicks(at, *duration, current->meters));
+        });
+        return true;
+    }
     if (id != AppCommands::PasteTime && length <= 0)
         return fail("Select the time to act on first: drag across the lanes.");
     // The selection after an edit: a span of time on the tracks it was on, or the marker.
@@ -3632,13 +3667,9 @@ bool AdiRootComponent::timeCommand(int id) {
         select(from, from);
         return done();
     }
-    case AppCommands::InsertSilence: {
+    case AppCommands::InsertSilence:
         // The selection's length at its start (manual 6.11); the silence stays selected.
-        if (!commitEdit(clip_edit::prepareInsertSilence(store, from, length, rate)))
-            return false;
-        select(from, to);
-        return done();
-    }
+        return insertSilence(from, length);
     default:
         return false;
     }

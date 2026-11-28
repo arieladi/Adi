@@ -589,6 +589,9 @@ class AdiRootComponent final : public juce::Component,
     // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
     // render range the selection, else the loop, else the whole song. Unset outside the application.
     std::function<void(const ExportChoices &)> exportAudio;
+    // Ask for bars, beats and sixteenths when Insert Silence starts at a point.
+    using InsertSilenceReply = std::function<void(std::optional<std::string>)>;
+    std::function<void(InsertSilenceReply)> promptInsertSilence;
     // Opens a Help target (WIN-09): the manual's address, or the keyboard reference's file. Empty, the
     // system's browser opens it; a test puts its own here.
     std::function<bool(const juce::URL &)> openHelp;
@@ -893,6 +896,7 @@ class AdiRootComponent final : public juce::Component,
     // says whether there is something to act on.
     bool timeCommand(int commandId);
     bool canTimeCommand(int commandId) const;
+    bool insertSilence(std::int64_t at, std::int64_t length);
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
