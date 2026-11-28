@@ -11,12 +11,27 @@
 
 ## Where it stands
 
-Round 1 (28 November): step 1 (the survey) done, below. Step 2 (the chain) in progress.
+Round 1 (28 November): step 1 (the survey) done. Step 2: 22 of the 28 stack tops are merged into
+`held/engine-chain` (head `51910ac1`); one (TM-IC-02) turned out to be on the base already; five are
+**not merged yet**, each a port onto code the base rewrote since 22 November, not a plain merge (the
+list and why, under step 2). Step 3: the first core check runs on slot 15.
+
+**The next session starts here:** read "Not merged yet" under step 2, then step 3. Merge the base into
+the chain first (`git fetch`, then the BASE rule of the mission).
 
 ## For the director
 
-(Filled at step 4. The engine seat's own open questions stay in its log, `collab/engine.md` on
+(Completed at step 4. The engine seat's own open questions stay in its log, `collab/engine.md` on
 `engine/log`; the ones you already answered are in `collab/win.md`, d7 of the 25 November rulings.)
+
+Gathered so far, for when the chain is proved:
+- **When does this chain land?** Every branch in it was marked by its seat "lands after 3 December";
+  your mission says it lands only on your word. Recommendation: land it after the 3 December hold ends,
+  on one clean core and window check of its head, as one pull request through win.
+- **DEV-28 replaces Main's loudness meter** with the shared one. The silent-block shortcut that cut
+  factory New's callback cost (empty-project-cost, landed) lived in the replaced code. Recommendation:
+  accept the shared meter (one meter for Main and the analysers) and have the engine seat re-measure
+  factory New's callback after landing; if it regressed, put the shortcut into the shared meter.
 
 ## Step 1 — the survey (28 November)
 
@@ -93,7 +108,7 @@ collision notes are used below as the reference for the same collisions.
 | engine/srf08-hui-wire | 34db3323 | srf08-mcu-vpot-wire | contained in srf08-mcu-vpot-wire (was in #723) |
 | engine/srf08-mcu-lcd-feedback | 961a0cb4 | srf08-mcu-vpot-wire | contained in srf08-mcu-vpot-wire (was in #723) |
 | **engine/srf08-mcu-vpot-wire** | **5f41d14d** | itself (SRF-08) | **to take** (was in #723) |
-| **engine/tm-ic02-smf-codec** | **ec515123** | itself (TM-IC-02) | **to take** (was in #723). The base has its own `tests/test_smf.cpp` (an add/add collision): see step 2 |
+| engine/tm-ic02-smf-codec | ec515123 | itself (TM-IC-02) | **already on the base by another route** (found at step 2): the base's `617c138f` "Import and export MIDI clips as standard MIDI files" (26 November) carries `src/adi/interchange/smf.*` byte for byte, and its `tests/test_smf.cpp` holds every test of this branch plus 92 lines more |
 | **engine/mi05-seeded-note-timing** | **4bc52ffc** | itself (MI-05) | **to take** (was in #723) |
 | **engine/tm-ic04-compound-file** | **3ff8ba64** | itself (TM-IC-04 CFB writer) | **to take** (was in #723) |
 | **engine/mx32-vst3-context-fixture** | **db99def9** | itself (MX-32's test fixture) | **to take** (was in #723) |
@@ -156,8 +171,47 @@ macros stack (DEV-06, the row of reserved minor 1.24) is first; no branch here i
 27. `engine/tm-ic04-compound-file` 3ff8ba64
 28. `engine/mx32-vst3-context-fixture` db99def9
 
+The order taken: the stacks that merge clean or with one or two hunks first, so a first check could
+start, then the ones that need hand work. Merge order does not change what the chain holds.
+
 | # | Merged | Chain head after | Collisions and how they were resolved |
 |---|---|---|---|
+| 1 | engine/dev24-callback-load-meter 72679a12 (DEV-24) | 96c3e313 | clean |
+| 2 | engine/mx33-sync-spikes 53fad1c3 (MX-33, four branches) | e16989d4 | clean |
+| 3 | engine/mx32-vst3-context-fixture db99def9 (MX-32) | 83bfb9e9 | clean |
+| 4 | engine/pd04-analysis-publication da074f14 (PD-04) | 755cb37e | clean |
+| 5 | engine/srf04-controller-nudge 45e69a22 (SRF-03, SRF-04) | 9a3ba74c | clean |
+| 6 | engine/au08-clear-clip-envelope 75ae50ef (AU-08 Clear) | 198f268b | clean |
+| 7 | engine/tm-wt03-beats-zero-crossing c52e6ccd (TM-WT-03) | 7694de8b | clean |
+| 8 | engine/dev13-node-segment-quantum 59453a16 (DEV-13) | e2e3d3c4 | `device_model.hpp`: main's three bypass overrides and the branch's `segmentQuantum` override, both kept |
+| 9 | engine/dev28-main-loudness-meter f8308a55 (DEV-28) | 219a2032 | `main_loudness.cpp`: the branch replaces Main's private meter with the shared `dsp::LoudnessMeter`, as the seat wrote ("agree the landing order with empty-project-cost, whose old meter implementation is replaced here"). Taken whole; main's silent-block shortcut (empty-project-cost, in the replaced code) goes with it. Main's tests stay. **Check:** the factory-New callback cost may rise back toward its pre-#708 figure (DF item for the director below) |
+| 10 | engine/tm-md04-wave-metadata d59778d7 (TM-MD-04) | d40e25e3 | `decode.hpp`: main's DF-E65 lock declaration and the branch's WAVE metadata reader, both kept |
+| 11 | engine/tm-ic04-otio-linear-writer 2f414469 (TM-IC-01, TM-IC-04 OTIO) | 74b81625 | `CMakeLists.txt`: both sides' sources |
+| 12 | engine/tm-ls03-midi-transport-edges eb545c1e (TM-LS-03) | 80c11a34 | `CMakeLists.txt`: both sides' sources and tests |
+| 13 | engine/tm-ic04-compound-file 3ff8ba64 (TM-IC-04 CFB) | 21d3d66f | `CMakeLists.txt`: both |
+| 14 | engine/mi04-step-scale-degrees c3b86647 (MI-06, MI-04) | 8cf04b83 | `test_note_diff.cpp`: the case table is the union, 14 + 3 = 17 (as #723 did) |
+| 15 | engine/mi05-seeded-note-timing 4bc52ffc (MI-05) | a1d09946 | `CMakeLists.txt` both sources; `test_note_diff.cpp` both includes, both test functions, the table 18 |
+| 16 | engine/tm-wt02-interior-warp-markers 6fa013a5 (TM-WT-02) | 161e46a7 | `warp_map.cpp` includes; `test_warp.cpp` and `test_warp_playback.cpp`: main's `main()` (ADI_HOME of its own, the speed-only mode) with the branch's `markerEditing()` and `editedInteriorMarkerPlayback()` calls added |
+| 17 | engine/dev04-drum-pad-routing b1b50df2 (DEV-02, DEV-04) | 6d6b49ba | `test_device_ops.cpp`: main's VCA insert test and the chain-zone and drum-pad tests, all kept |
+| 18 | engine/srf08-mcu-vpot-wire 5f41d14d (SRF-08) | cae5f0b5 | `CMakeLists.txt`: both |
+| 19 | engine/dev25-plugin-readiness d8995f97 (DEV-25) | 8de854f6 | `scanner_session_reopen.hpp`: main's loop spelling; `test_vst3_key.cpp`: main already loads the fixture's `adiFixtureCompletedProcessCalls`, so the branch's readiness checks call it under main's name |
+| 20 | engine/ex02-via-main-routing 99c36e2e (EX-02) | c5574cd4 | `realize.cpp`: EX-02's `connectOutput` (an optional silencing gate for a track outside the isolated mix) now ends in main's `connectTrackRoute`, so every Main route keeps its source track with or without the gate; `session.*`: main's MIDI hardware output node and the branch's `hearingFlags`, both kept; `test_session.cpp`: both sides' calls |
+| 21 | engine/dev24-track-processing-time a16019c0 (DEV-19 x2, DEV-24) | 9d87e58d | As win resolved the same in #723: `Graph::addNode(node, track, fixedLatency)`, the track first so a whole number cannot bind to the latency; realize's `add()` passes both; `tests/test_retap.cpp`'s `addNode(fixed, 0)` became `addNode(fixed, std::nullopt, 0)` (it meant a latency, and would have compiled as a track). `midi_clips.cpp` plays through the branch's `projectMidiClipPlacement`, with main's exact `storedNanosecondsToTicks` for linear clips (DF-E63) and main's `secondsAt` and monitor ranges on top; the local `tickLimit` that would hide the file-scope one removed. `graph.cpp`: main's arrival for every compensated node, the scale timing added to the device-clock condition, main's quantum loop kept. `session.cpp`: the two scale problems join main's `collectProblems` as reports, not export blockers |
+| 22 | engine/dev18-event-transforms 4e749553 (DEV-17, DEV-18) | 51910ac1 | Main's newer code moved onto DEV-17's shared event-source prefix: MIDI clip controllers and tracks take `allocateEventSourcePrefix` (the old controller allocator and track counter go), main's live-input voices and Memory preview notes take `eventIdentity(prefix_, serial)` in place of the removed `kLiveNoteIdPrefix`. `graph.cpp`: a transforming node keeps the bypass it sampled for its transform, every other node main's per-block bypass. Tests: DEV-13's quantum test and DEV-18's three transform tests, all kept |
+
+### Not merged yet (the next session's work)
+
+Each of these collides with code the base rewrote after 22 November. Each needs a port of the branch's
+behaviour onto the new code, with both sides' tests, not a choice between hunks. Tried and aborted in
+round 1; nothing of them is on the chain.
+
+| Stack top | Conflicts on the base | What the port is |
+|---|---|---|
+| engine/dev06-rack-macros 0a2e3eb9 (DEV-01, DEV-03, DEV-06) | 13 files, 51 hunks; `session.cpp` 11, `device_copy.cpp` 11, `graph.cpp` 8 | The racks' `DeviceLayout`, `trackEventPath` and `bindPlaybackDevices` onto main's `TimingView` (`graphTrackChain`, the MIDI hardware output node, live MIDI routes with monitoring), the progressive project load (`PendingLoad`, `readPlayback`) and `bindResolvedDeviceAutomation`. `ops_catalog.cpp`'s `device.insert` with contents: keep the branch's placement check and main's VCA refusal (DF-E55 a) after the restore |
+| engine/au08-simplify-envelope be846d1b (AU-02, AU-03 x3, AU-08 Simplify) | 3 files, `automation_splice_store.cpp` 9 hunks | Main's splice store gained row guards, a selection and a label argument (SC-351 adapted this branch's Simplify fitter on 27 November, so AU-08 Simplify itself is on the base by another route; its tests here should still be kept beside main's). Port AU-02/AU-03's `EnvelopeSpliceRequest` (data id, label, actor detail, sub-sample flag) onto main's `prepareEnvelopeSplice(…, label, selection)`; merge AU-03 by its top `engine/au03-guarded-arrangement-passes` if Simplify's own hunks are dropped as carried |
+| engine/au08-envelope-clipboard 9ad32e5e (AU-08 Copy/Paste) | 5 files | Stacked on AU-02: after the port above |
+| engine/tm-fc01-bounce-mixer 8bc053ca (TM-FC-01) | 6 files, `bounce_commands.cpp` 14 hunks | Main's bounce commands were reworked by the basics sessions; port range mute, insert removal and the editable sibling's mixer onto them |
+| engine/pd14-project-templates ca5cd357 (PD-14) | 4 files | Main's Save a Copy gained `StoreCopyPolicy` (share, with a fresh Undo baseline and identity), session copies and managed backups. A template is close to a shared copy: port `saveTemplate`/`createFromTemplate` onto `saveCopyImpl(path, collision, policy, stop, kind)` with a template kind, and `initializeStoredOrigin` onto main's `seedShareBaseline` |
 
 ## Step 3 — the proof
 
