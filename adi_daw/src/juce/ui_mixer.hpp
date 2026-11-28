@@ -135,11 +135,17 @@ class MixerStrip final : public juce::Component,
     Automation automation(const juce::Component &control) const noexcept;
     void paintOverChildren(juce::Graphics &) override;
     PrimaryButtonSlider volume, pan;
+    // Live's Split Stereo Pan (manual 18.1; MX-02): the left and the right source each panned, in the pan's
+    // place while the track's pan mode is split.
+    PrimaryButtonSlider panLeft, panRight;
+    bool splitPan() const noexcept { return split_; }
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     PrimaryButtonSlider delay;
+    void layoutSplitPan();
+    bool split_ = false;
     void setDelayTooltip(const juce::String &tip);
     // Cue Volume on Main in both views. One transport op at release or when typed, outside undo.
     PrimaryButtonSlider cueVolume;
@@ -272,13 +278,14 @@ class MixerStrip final : public juce::Component,
     void paintDelayUnit(juce::Graphics &) const;
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
-    void panMenu();
+    void panMenu(const juce::Component *source = nullptr);
     void volumeMenu();
 
   public:
     // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
     juce::PopupMenu volumeMenuItems();
-    juce::PopupMenu panMenuItems();
+    // The pan's menu as a right-click on `source` shows it: the pan, or a split half (MX-02).
+    juce::PopupMenu panMenuItems(const juce::Component *source = nullptr);
     juce::PopupMenu sendMenuItems(std::size_t index);
     juce::PopupMenu activatorMenuItems();
 

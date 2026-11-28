@@ -345,6 +345,43 @@ MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(pane
     pan.updateText();
     // Double-clicking the Pan control resets it to its default (manual 18.1).
     pan.setDoubleClickReturnValue(true, 0);
+    // The split pans (MX-02): made as the pan is, each from its own end (Live's 50L and 50R).
+    for (auto *half : {&panLeft, &panRight}) {
+        const bool left = half == &panLeft;
+        half->setSliderStyle(pan.getSliderStyle());
+        half->setTextBoxStyle(pan.getTextBoxPosition(), false, 0, 0);
+        half->setSliderSnapsToMousePosition(false);
+        half->setColour(juce::Slider::textBoxTextColourId, look::text);
+        half->getProperties().set("live.bipolar", true);
+        half->setRange(-1, 1, .02);
+        half->textFromValueFunction = pan.textFromValueFunction;
+        half->setValue(left ? -1 : 1, juce::dontSendNotification);
+        half->updateText();
+        half->setDoubleClickReturnValue(true, left ? -1 : 1);
+        half->setTitle(left ? "Left Pan" : "Right Pan");
+        half->setTooltip(left ? "Places the track's left channel in the stereo field. Right-click for the pan mode."
+                              : "Places the track's right channel in the stereo field. Right-click for the pan mode.");
+        half->setScrollWheelEnabled(false);
+        const auto kind = left ? gesture::ScalarKind::TrackPanLeft : gesture::ScalarKind::TrackPanRight;
+        const char *op = left ? "mixer.setPanLeft" : "mixer.setPanRight";
+        half->onDragStart = [this, kind] {
+            dragging_ = true;
+            beginLive(kind, track_, {-1, 1, std::nullopt}, "Change Track Panning");
+        };
+        half->onDragEnd = [this, half, op] {
+            dragging_ = false;
+            if (!endLive())
+                panel_.submit(op, {{"id", track_}, {"pan", half->getValue()}}, "Change Track Panning");
+        };
+        half->onValueChange = [this, half, op] {
+            if (live_)
+                panel_.root.mixerDrag(half->getValue());
+            else if (!dragging_)
+                panel_.submit(op, {{"id", track_}, {"pan", half->getValue()}}, "Change Track Panning");
+        };
+        half->addMouseListener(this, false);
+        addChildComponent(*half);
+    }
     pan.setTitle("Track Panning");
     pan.setTooltip("Places the track in the stereo field. Right-click for the pan mode.");
     pan.valueFromTextFunction = [this](const juce::String &text) { return panValue(text).value_or(pan.getValue()); };
@@ -629,6 +666,12 @@ void MixerStrip::frame(bool changed) noexcept {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
         pan.setValue(t->pan, juce::dontSendNotification);
+        panLeft.setValue(t->panLeft, juce::dontSendNotification);
+        panRight.setValue(t->panRight, juce::dontSendNotification);
+        if (const bool split = t->panMode == "split"; split != split_) {
+            split_ = split;
+            resized();
+        }
         // The delay as the sample grid keeps it, in ms at the project's rate (manual 18.7).
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
@@ -855,6 +898,7 @@ void MixerStrip::resized() {
         const auto meter = meterArea();
         volume.setBounds(meter.getX() - 2, meter.getY() - kFaderReach, tall ? 40 : 26,
                          meter.getHeight() + kFaderReach + (tall ? 15 : kFaderReach));
+        layoutSplitPan();
         return;
     }
     // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row
@@ -908,6 +952,20 @@ void MixerStrip::resized() {
     // track controls' Track Options shows it (the D selector).
     const int after = sendsStart + (sends ? sendRows() : 0);
     place(delay, after, {x + 4, 3 + 17 * after, 45, 13}, panel_.root.state().trackOptions);
+    layoutSplitPan();
+}
+void MixerStrip::layoutSplitPan() {
+    // Split, the two pans share the pan's place, left then right; stereo, the pan alone (MX-02).
+    const bool shown = split_ && pan.isVisible();
+    const auto r = pan.getBounds();
+    panLeft.setVisible(shown);
+    panRight.setVisible(shown);
+    if (shown) {
+        pan.setVisible(false);
+        const int half = r.getWidth() / 2;
+        panLeft.setBounds(r.withWidth(half - 1));
+        panRight.setBounds(r.withTrimmedLeft(half + 1));
+    }
 }
 juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
@@ -1832,7 +1890,9 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (onControl(pan))
-        panMenu();
+        panMenu(&pan);
+    else if (onControl(panLeft) || onControl(panRight))
+        panMenu(onControl(panRight) ? &panRight : &panLeft);
     else if (onControl(volume))
         volumeMenu();
     else
@@ -1991,8 +2051,20 @@ void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::S
     std::vector<std::int64_t> selected;
     const auto picked = panel_.root.arrangement.geometry.selectedTracks(panel_.root.reader());
     const bool together = std::find(picked.begin(), picked.end(), track_) != picked.end() && picked.size() > 1;
-    if (together && kind != gesture::ScalarKind::RoutingGain)
-        selected = picked;
+    if (together && kind != gesture::ScalarKind::RoutingGain) {
+        // A pan drag moves the selected tracks whose pan is the one dragged: a split half the split
+        // tracks', the pan the stereo tracks' (MX-02); a track in the other mode keeps its stored value.
+        const bool splitKind = kind == gesture::ScalarKind::TrackPanLeft || kind == gesture::ScalarKind::TrackPanRight;
+        const bool panKind = splitKind || kind == gesture::ScalarKind::TrackPan;
+        const auto current = panel_.root.current();
+        for (const auto id : picked) {
+            const auto *t = current ? current->findTrack(id) : nullptr;
+            if (!panKind || (t != nullptr && (t->panMode == "split") == splitKind))
+                selected.push_back(id);
+        }
+        if (selected.size() < 2)
+            selected.clear();
+    }
     // Begun where the rows stand: heard from the first move, and a click that does not move writes nothing.
     live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, std::nullopt, label);
     if (live_)
@@ -2171,20 +2243,34 @@ juce::PopupMenu MixerStrip::activatorMenuItems() {
     panel_.root.addAutomationDeleteItem(m, target);
     return m;
 }
-juce::PopupMenu MixerStrip::panMenuItems() {
+juce::PopupMenu MixerStrip::panMenuItems(const juce::Component *source) {
     juce::PopupMenu m;
-    m.addItem(1, "Stereo Pan", true, true);
-    // Live's Split Stereo Pan Mode (ADR-0203 d9) needs a pan mode and two pans per
-    // strip in the format and the mixer: the engine's (collab/window.md, N12).
-    m.addItem(2, "Split Stereo Pan", false, false);
-    // Live's Re-Enable Automation for the pan (AU-04).
+    // Live's pan modes (manual 18.1; ADR-0203 d9; MX-02): the one in use ticked, a choice one undo step.
+    const auto mode = [safe = SafePointer<MixerStrip>(this)](const char *name) {
+        if (safe)
+            safe->panel_.submit("mixer.setPanMode", {{"id", safe->track_}, {"mode", name}}, "Change Pan Mode");
+    };
+    m.addItem("Stereo Pan", true, !split_, [mode, split = split_] {
+        if (split)
+            mode("stereo");
+    });
+    m.addItem("Split Stereo Pan", true, split_, [mode, split = split_] {
+        if (!split)
+            mode("split");
+    });
+    // Live's Re-Enable Automation for the pan clicked (AU-04): the pan, or the split half right-clicked.
+    const char *param = !split_ ? "pan" : source == &panRight ? "panRight" : "panLeft";
     if (const auto current = panel_.root.current())
-        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
-    panel_.root.addAutomationDeleteItem(m, panTarget(track_));
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, param));
+    // Delete Automation acts on the stereo Pan's lane (panTarget); a split half has no target of its own yet.
+    if (!split_)
+        panel_.root.addAutomationDeleteItem(m, panTarget(track_));
     return m;
 }
-void MixerStrip::panMenu() {
-    panMenuItems().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
+void MixerStrip::panMenu(const juce::Component *source) {
+    const juce::Component *target = !split_ ? &pan : source == &panRight ? &panRight : &panLeft;
+    panMenuItems(source).showMenuAsync(
+        juce::PopupMenu::Options{}.withTargetComponent(const_cast<juce::Component *>(target)));
 }
 // The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
 // track with no Volume lane has nothing to offer, and the fader shows no menu.
