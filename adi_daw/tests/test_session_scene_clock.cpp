@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 
 namespace { std::atomic<unsigned> allocations{0}; }
@@ -273,6 +274,140 @@ void verifyHandover(Store& store) {
     std::printf("PASS -- paired banks preserve the 192-frame fade at 96000, including graph rebuild, then play Warp at 140 BPM\n");
 }
 
+void verifyResidentTempoHistory(Store& store) {
+    constexpr auto firstStep = 4 * quarter;
+    constexpr auto secondStep = 8 * quarter;
+    constexpr auto nextStep = 12 * quarter;
+    constexpr std::int64_t firstCut = 96'000, secondCut = 178'286;
+    store.db().exec(
+        "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(40,3,160,1),(50,4,120,1),(60,5,120,0);"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(3,'unavailable','missing.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(104,1,'audio',0,5765760);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(104,3,24000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,104);"
+        "INSERT INTO clip_launch(clip_id,ram_mode) VALUES(104,1);"
+        "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=102;");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    const auto stamp = session.launchIncarnation();
+    const auto audit = [&](const char* operation, std::int64_t scene) {
+        OpRequest message;
+        message.opType = operation;
+        message.payload = {{"scene",scene},{"incarnation",stamp}};
+        require(OpJournal(store).commit(message).ok, "commit the scene audit");
+    };
+    const auto tempoAt = [&](std::int64_t tick) { return session.beginRender().bpmAtTick(tick); };
+    session.transport().play();
+    Render render{session};
+    render.runThrough(0);
+    audit("session.launchScene",20);
+    render.runThrough(firstCut);
+    require(render.count == 1 && render.scenes[0].sample == firstCut && render.scenes[0].tick == firstStep,
+        "the first resident bank changes on the audited 140 BPM boundary");
+
+    audit("session.launchScene",40);
+    render.runThrough(secondCut);
+    require(render.count == 2 && render.scenes[1].sample == secondCut && render.scenes[1].tick == secondStep &&
+        tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160,
+        "two audited tempo changes retain their exact whole-tick performed history");
+    audit("session.launchScene",50);
+    require(tempoAt(nextStep) == 120, "a later scene can prepare a previous resident tempo");
+    audit("session.cancelSceneLaunch",50);
+    require(tempoAt(nextStep) == 160, "withdrawing the later scene restores the complete clock and bank history");
+
+    const auto hear = [&](std::int64_t start) {
+        constexpr std::array<std::int64_t,2> offsets{9500,11'000};
+        std::array<float,offsets.size()> result{};
+        session.transport().locate(start);
+        const std::array requests{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,stamp}};
+        require(session.postLaunchGesture(requests), "launch the same Warp clip after seeking to a retained tempo");
+        while (session.transport().position() <= start + offsets.back()) {
+            const auto first = session.transport().position();
+            render.runThrough(first);
+            for (std::size_t index = 0; index < offsets.size(); ++index) {
+                const auto sample = start + offsets[index];
+                if (sample >= first && sample < first + blockSize)
+                    result[index] = render.left[static_cast<std::size_t>(sample - first)];
+            }
+        }
+        return result;
+    };
+    const auto matches = [](auto actual, float first, float second) {
+        return std::abs(actual[0] - first) < 0.0005f && std::abs(actual[1] - second) < 0.0005f;
+    };
+    require(matches(hear(1000),-0.25f,-0.25f) && matches(hear(firstCut+1000),-0.25f,0.375f) &&
+        matches(hear(secondCut+1000),0.375f,0.375f), "seek selects the physical Warp projection for each of three resident tempos");
+    OpRequest arrangementEdit;
+    arrangementEdit.opType = "clip.create";
+    arrangementEdit.payload = {{"id",120},{"track",1},{"kind","midi"},{"pos",16*quarter},{"length",quarter}};
+    const auto arrangement = OpJournal(store).commit(arrangementEdit);
+    require(arrangement.ok && session.refresh(store),
+        "an unrelated Arrangement clip can rebuild history with a preexisting unavailable slot");
+    require(store.db().execAndGet("SELECT clip_id FROM clip_slots WHERE track_id=1 AND scene_id=60").getInt64() == 104 &&
+        tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160 &&
+        matches(hear(1000),-0.25f,-0.25f) && matches(hear(secondCut+1000),0.375f,0.375f),
+        "the unrelated edit keeps all admitted clocks and the audible source projections");
+
+    const auto source = store.path().parent_path()/"before.wav";
+    const auto offline = source.parent_path()/"temporarily-offline.wav";
+    std::filesystem::rename(source,offline);
+    const auto refused = !session.refresh(store);
+    std::filesystem::rename(offline,source);
+    require(refused && tempoAt(secondStep) == 160,
+        "a previously admitted source going offline refuses the new history publication");
+    require(session.refresh(store), "restore the proven resident audio and rebuild");
+
+    store.db().exec("UPDATE clips SET gain_db=6.020599913279624 WHERE id=102");
+    require(!session.prepareSceneLaunch(store,50,nextStep) && tempoAt(nextStep) == 160,
+        "a stale launch source refuses the new clock and keeps the prior publication");
+    require(session.refresh(store), "publish one newly authored source image for all three tempos");
+    require(matches(hear(1000),-0.50f,-0.50f) && matches(hear(firstCut+1000),-0.50f,0.75f) &&
+        matches(hear(secondCut+1000),0.75f,0.75f), "each retained tempo adopts the same new source image");
+
+    const auto writeSource = [&](float first, float second) {
+        std::vector<float> pcm(12000,first);
+        std::fill(pcm.begin()+6000,pcm.end(),second);
+        audio::WavWriter wave(store.path().parent_path()/"warped.wav",48000,1,audio::WavFormat::Float32);
+        wave.write(pcm.data(),static_cast<std::uint32_t>(pcm.size()));
+        wave.close();
+    };
+    writeSource(0.125f,-0.0625f); // The Store rows and media hash still describe the original path.
+    require(!session.prepareSceneLaunch(store,50,nextStep) && tempoAt(nextStep) == 160,
+        "a changed file revision refuses reuse even when all Store rows are identical");
+    require(session.refresh(store), "reprepare all audio projections from the new file revision");
+    require(matches(hear(1000),0.25f,0.25f) && matches(hear(firstCut+1000),0.25f,-0.125f) &&
+        matches(hear(secondCut+1000),-0.125f,-0.125f), "all three tempos adopt the same externally edited audio file");
+    require(!session.setExternalTempoAt(store,135,nextStep,[] { return false; }) && tempoAt(nextStep) == 160 &&
+        matches(hear(1000),0.25f,0.25f), "a failed external tempo publication preserves retained audio and clock history");
+
+    const auto setRam = [&](bool ram) {
+        OpRequest edit;
+        edit.opType = "session.setLaunchSettings";
+        edit.payload = {{"clip",102},{"ram",ram}};
+        require(OpJournal(store).commit(edit).ok,"commit the RAM mode edit");
+        if (!session.refresh(store)) throw std::runtime_error(session.error());
+        require((store.db().execAndGet("SELECT ram_mode FROM clip_launch WHERE clip_id=102").getInt() != 0) == ram,
+            "successful bank publication preserves the authored RAM mode");
+    };
+    setRam(false);
+    require(tempoAt(0) == 120 && tempoAt(firstStep) == 140 && tempoAt(secondStep) == 160 &&
+        matches(hear(1000),0.25f,-0.125f) && matches(hear(firstCut+1000),0.25f,-0.125f) &&
+        matches(hear(secondCut+1000),-0.125f,-0.125f),
+        "RAM Off keeps the two newest banks audible across seeks and preserves the performed tempo map");
+    setRam(true);
+    require(matches(hear(1000),0.25f,-0.125f),"RAM On rebuilds only the retained pair after the paged history was published");
+
+    require(session.setExternalTempoAt(store,135,nextStep) && tempoAt(nextStep) == 135,
+        "ordinary external tempo changes can replace a retained scene clock after rollback");
+    require(render.count == 2 && allocations == 0 && audio::callbackFileIo == 0,
+        "retained bank seeks neither perform new scenes nor add driver allocation or file access");
+    writeSource(-0.25f,0.375f);
+    store.db().exec("UPDATE clips SET gain_db=0 WHERE id=102;"
+        "DELETE FROM clips WHERE id=120; DELETE FROM scenes WHERE id=60; DELETE FROM media_files WHERE id=3;");
+    std::printf("PASS -- audited 120/140/160 BPM banks survive rollback, seeks and a source refresh at exact frames\n");
+}
+
 void audioHandover() {
     test::TempDirectory folder{"scene_audio_clock", "project"};
     StoreError error{};
@@ -306,13 +441,158 @@ void audioHandover() {
     warp.exec();
 
     verifyHandover(*store);
+    verifyResidentTempoHistory(*store);
     stopPreparedScenes(*store);
+}
+
+enum class RawClockCase { Seek, Retain, Stop };
+
+void rawAudioClockBank(RawClockCase variant) {
+    constexpr std::int64_t cut = 96'000;
+    constexpr std::int64_t offsetFrames = 240;
+    constexpr auto sampleValue = [](std::int64_t frame) { return static_cast<float>(frame) / 16384.0f; };
+    test::TempDirectory folder{"scene_clock_raw", "project"};
+    StoreError error{};
+    auto store = Store::createEmpty(folder.path() / "raw.adi", error);
+    require(static_cast<bool>(store), "create fixed-source tempo scene project");
+    test::applySessionSchema(store->db());
+    const auto pcm = [&] {
+        std::vector<float> result(48000);
+        for (std::size_t index = 0; index < result.size(); ++index)
+            result[index] = sampleValue(static_cast<std::int64_t>(index));
+        return result;
+    }();
+    {
+        audio::WavWriter wave(folder.path() / "ramp.wav", 48000, 1, audio::WavFormat::Float32);
+        wave.write(pcm.data(), static_cast<std::uint32_t>(pcm.size()));
+        wave.close();
+    }
+    store->db().exec(
+        "INSERT INTO project(id,name,sample_rate) VALUES(1,'Raw tempo scenes',48000);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Source',0),(9,'master','Main',1);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO scenes(id,ord,tempo_bpm,tempo_enabled) VALUES(10,0,120,0),(20,1,140,1);"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'ramp','ramp.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(101,1,'audio',0,11531520);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(101,1,48000,0);"
+        "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(101,5000000,1000000000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,10,101,1);"
+        "INSERT INTO clip_launch(clip_id,launch_quant,clip_fade,ram_mode) VALUES(101,1,0,1);");
+    const bool retain = variant != RawClockCase::Seek;
+    if (retain) store->db().exec("INSERT INTO clip_slots(track_id,scene_id,clip_id,has_stop) VALUES(1,20,NULL,0)");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,48000,blockSize})) throw std::runtime_error(session.error());
+    session.transport().play();
+    Render render{session};
+    if (retain) session.transport().locate(cut - 4096);
+    render.runThrough(session.transport().position());
+    const auto stamp = session.launchIncarnation();
+    const std::array launch{LaunchRequest{LaunchRequestKind::SlotPress, 1, 10, 101, stamp}};
+    OpRequest change;
+    change.opType = "session.launchScene";
+    change.payload = {{"scene", 20}, {"incarnation", stamp}};
+    if (retain) {
+        auto first = session.transport().position();
+        require(session.postLaunchGesture(launch), "launch the native resident source before the tempo change");
+        render.runThrough(first);
+        std::array<LaunchTrackStatus,1> status;
+        LaunchStatusHeader header;
+        require(session.readLaunchStatus(status,header) && status[0].clip == 101, "read the retained run identity");
+        if (variant == RawClockCase::Retain) {
+            const LaunchClipRegionEdit edit{1,101,stamp,status[0].run,{quarter/4,quarter},ClipUpdateRate::Bar};
+            require(session.postLaunchClipRegionEdit(edit), "queue an edit to the retained source region");
+            require(!session.prepareSceneLaunch(*store,20,4*quarter) &&
+                session.error().find("unedited playback bounds") != std::string::npos,
+                "a tempo scene waits for unconsumed region edits");
+            render.runThrough(session.transport().position());
+            require(!session.prepareSceneLaunch(*store,20,4*quarter) &&
+                session.error().find("unedited playback bounds") != std::string::npos,
+                "a tempo scene refuses a pending region edit on its retained run");
+            first = session.transport().position();
+            require(session.postLaunchGesture(launch), "restart the clip with its original source window");
+            render.runThrough(first);
+            require(session.readLaunchStatus(status,header) && status[0].clip == 101, "read the replacement run identity");
+        }
+        const auto run = status[0].run;
+        const auto beforeEdges = render.clipCount;
+        require(OpJournal(*store).commit(change).ok, "admit the tempo scene with an explicit No Stop cell");
+        const LaunchClipRegionEdit edit{1,101,stamp,run,{quarter/4,quarter},ClipUpdateRate::None};
+        require(!session.postLaunchClipRegionEdit(edit), "protect the retained source window until the tempo handover");
+        render.runThrough(cut - blockSize);
+        const auto blockStart = session.transport().position();
+        require(blockStart < cut && blockStart + blockSize > cut, "inspect one callback that spans the tempo boundary");
+        if (variant == RawClockCase::Stop) {
+            OpRequest stop;
+            stop.opType = "session.stopTrack";
+            stop.payload = {{"track",1},{"incarnation",stamp}};
+            require(OpJournal(*store).commit(stop).ok, "audit a Stop Track while the retained tempo scene waits");
+        }
+        render.runThrough(cut);
+        require(render.count == 1 && render.scenes[0].sample == cut && render.scenes[0].tick == 4 * quarter &&
+            render.scenes[0].tempoBpm == 140, "the prepared scene applies tempo at the performed cut");
+        for (std::int32_t frame = 0; frame < blockSize; ++frame) {
+            const auto sample = blockStart + frame;
+            const auto expected = variant == RawClockCase::Stop && sample >= cut
+                ? 0.0f : sampleValue(offsetFrames + sample - first);
+            const auto index = static_cast<std::size_t>(frame);
+            require(render.left[index] == expected && render.right[index] == expected,
+                "each output frame uses continuous native PCM through the cut or is silent after an explicit Stop");
+        }
+        require(session.readLaunchStatus(status,header), "read active Session state after the tempo change");
+        if (variant == RawClockCase::Stop) {
+            require(status[0].source == LaunchTrackSource::Silence && render.clipCount == beforeEdges + 1 &&
+                render.clips[beforeEdges].oldRun == run && render.clips[beforeEdges].newClip == 0 &&
+                render.clips[beforeEdges].sample == cut, "explicit Stop owns the same-sample track edge");
+        } else {
+            require(status[0].run == run && render.clipCount == beforeEdges, "No Stop retains the same run without a launch edge");
+            require(session.postLaunchClipRegionEdit(edit), "retained clips accept region edits after the clock performs");
+        }
+        require(allocations == 0 && audio::callbackFileIo == 0, "native tempo scene crossing has no driver allocation or file reads");
+        std::puts(variant == RawClockCase::Stop
+            ? "PASS -- audited Stop Track takes precedence at the native tempo boundary"
+            : "PASS -- No Stop retains bit-exact native PCM and run identity at the tempo boundary");
+        return;
+    }
+    require(OpJournal(*store).commit(change).ok, "audit the prepared tempo scene on the live owner");
+    render.runThrough(cut);
+    require(render.count == 1 && render.scenes[0].sample == cut && render.scenes[0].tempoBpm == 140,
+        "clock scene already performed before the transport seeks");
+
+    session.transport().locate(1000);
+    require(session.postLaunchGesture(launch), "launch the persisted Warp-off source in the old bank");
+    render.runThrough(1000);
+    const auto verify = [&](std::int64_t frame, const char* message) {
+        require(std::abs(render.left.front() - sampleValue(frame)) < 1e-6f &&
+            std::abs(render.left.back() - sampleValue(frame + blockSize - 1)) < 1e-6f, message);
+    };
+    verify(offsetFrames, "native audio begins at its authored nonzero physical start");
+    std::array<LaunchTrackStatus, 1> status;
+    LaunchStatusHeader header;
+    require(session.readLaunchStatus(status, header) && status[0].clip == 101, "raw source is the current Session run");
+    const auto activeRun = status[0].run;
+    const auto launchEdges = render.clipCount;
+    session.transport().locate(cut + 1000);
+    render.runThrough(cut + 1000);
+    verify(offsetFrames + blockSize, "forward seek into the new bank preserves the next native source frame");
+    session.transport().locate(2000);
+    render.runThrough(2000);
+    verify(offsetFrames + 2 * blockSize, "backward seek into the old bank preserves the next native source frame");
+    require(session.readLaunchStatus(status, header) && status[0].run == activeRun && render.clipCount == launchEdges,
+        "raw phase is continuous across the two clock banks within one stable launch run");
+    require(allocations == 0 && audio::callbackFileIo == 0, "raw clock-bank seeks allocate or read no files in the driver");
+    std::printf("PASS -- Warp-off source preserves its physical phase in both directions across prepared tempo banks\n");
 }
 } // namespace
 
 int main() {
-    try { exercise(); audioHandover(); }
-    catch (const std::exception& error) {
+    try {
+        exercise();
+        audioHandover();
+        rawAudioClockBank(RawClockCase::Seek);
+        rawAudioClockBank(RawClockCase::Stop);
+        rawAudioClockBank(RawClockCase::Retain);
+    } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
     }

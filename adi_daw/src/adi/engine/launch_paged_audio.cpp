@@ -67,15 +67,19 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         first.play();
         loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
         loop.play();
+        const auto earliest = entry.primesAllPhases ? 0 : physicalWindowStart(source);
         const auto ready = source.warmPhysicalWindow
             ? pages_.primeTrackWindow(source.sourceTrack,first,static_cast<std::int32_t>(source.endFrame - firstFrame),timeout)
-            : pages_.primeTrackAt(source.sourceTrack,first,loop,timeout);
+            : pages_.primeTrackAt(source.sourceTrack,first,loop,timeout,
+                source.legato ? std::optional{earliest} : std::nullopt);
         if (ready) return false;
         problems_.push_back("Session clips#" + std::to_string(source.clip) + (source.warmPhysicalWindow
             ? ": page preparation did not fill the physical source window"
             : ": page preparation did not fill the start and loop windows"));
         return true;
     });
+    for (auto& entry : sources_)
+        if (entry.source.legato || entry.source.warmPhysicalWindow) entry.retained = pages_.retainedTrackRange(entry.source.sourceTrack);
     return !sources_.empty();
 }
 
@@ -104,6 +108,12 @@ bool LaunchPagedAudio::allWorkerPhasesPrimed(std::int64_t clip) const noexcept {
 bool LaunchPagedAudio::allPhysicalPhasesPrimed(std::int64_t clip) const noexcept {
     const auto* source = find(clip);
     return source && source->source.warmPhysicalWindow;
+}
+
+bool LaunchPagedAudio::retainsRange(std::int64_t clip, std::int64_t first, std::int64_t end) const noexcept {
+    const auto* entry = find(clip);
+    return entry && entry->retained && first >= entry->retained->first &&
+        end >= first && end <= entry->retained->second;
 }
 
 void LaunchPagedAudio::prefetch(std::int64_t id, std::int64_t firstFrame) noexcept {

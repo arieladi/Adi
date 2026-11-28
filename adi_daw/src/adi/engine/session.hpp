@@ -87,6 +87,7 @@ namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
+class LaunchAudioClip;
 class LaunchAudioProject;
 class LaunchAudioRuntime;
 class LaunchAudioDriver;
@@ -94,10 +95,12 @@ struct AudioRecordingSpec;
 struct LaunchBlock;
 struct LaunchClipGainEdit;
 struct LaunchClipRegionEdit;
+struct LaunchClipSourceEdit;
 struct LaunchRequest;
 struct LaunchSceneTransition;
 struct LaunchStatusHeader;
 struct LaunchTrackStatus;
+struct LaunchTempoBank;
 struct LaunchTransition;
 class LaunchCaptureBuffer;
 struct PreparedSceneLaunch;
@@ -571,6 +574,10 @@ public:
     [[nodiscard]] bool postLaunchClipGainEdit(const LaunchClipGainEdit&) noexcept;
     /// Schedule a run's start/end and loop against already prepared material.
     [[nodiscard]] bool postLaunchClipRegionEdit(const LaunchClipRegionEdit&) noexcept;
+    /// Owner only. Replace this run's PCM on the Clip Update Rate grid.
+    [[nodiscard]] bool postLaunchClipSourceEdit(const LaunchClipSourceEdit&,
+                                               std::unique_ptr<LaunchAudioClip>&) noexcept;
+    [[nodiscard]] bool launchSourceEditReserved() const noexcept;
     /// An owner may stamp a launch op with this published project identity.
     [[nodiscard]] std::uint64_t launchIncarnation() const noexcept;
     [[nodiscard]] bool readLaunchStatus(std::span<LaunchTrackStatus>, LaunchStatusHeader&) const noexcept;
@@ -638,6 +645,8 @@ private:
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
+    [[nodiscard]] bool sceneTempoBanksFit(const TempoMap&) const noexcept;
+    std::vector<LaunchTempoBank> prepareSceneTempoBanks(const TimingView&, const rows::Model&);
     void prepareLaunchAudio(TimingView&, const rows::Model&, ClipPlayback&);
     [[nodiscard]] bool sceneClockPending() const noexcept;
     bool applyPerformedTempoAt(const Store&, std::optional<double>, std::int64_t,
@@ -775,10 +784,13 @@ private:
     std::shared_ptr<const PreparedSceneLaunch> preparedScene_;
     std::uint64_t preparedSceneToken_ = 0;
     struct SceneTempoBanks {
+        // Phase-continuous scenes retain a prepared outgoing bank. For
+        // ordinary resident audio, retain the authored sequence of clocks.
         std::shared_ptr<const LaunchAudioProject> before;
         std::int64_t tick;
         double bpm;
         std::vector<std::int64_t> warmWarpClips;
+        std::vector<TempoEvent> periods;
     };
     std::optional<SceneTempoBanks> sceneTempoBanks_;
     struct SceneClockRollback {

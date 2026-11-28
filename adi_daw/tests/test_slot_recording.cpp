@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <new>
 #include <stdexcept>
 #include <thread>
@@ -174,6 +175,27 @@ void mixedTake() {
     require(recorder.state() == SlotRecordingState::Idle, "cancelled slot recorder can be armed again");
 }
 
+void arrangementCrashRecoveryRefused() {
+    adi::test::TempDirectory directory{"slot_recording", "recovery"};
+    AudioRecordingSpec format;
+    format.workFolder = directory.path();
+    format.sourceProject = (directory.path() / "Song.adi").string();
+    format.recoveryProjectUuid = "slot-recording-project";
+    const std::array targets{SlotRecordingTarget{{11, 7}, {0}}, SlotRecordingTarget{{22, 7}, {}}};
+    SlotInputRecorder recorder;
+    std::string error;
+    require(!recorder.start(format, targets, error) && recorder.state() == SlotRecordingState::Idle &&
+            error.find("scene ownership") != std::string::npos && std::filesystem::is_empty(directory.path()),
+            "reject an Arrangement crash journal before either mixed slot writer arms");
+    format.recoveryProjectUuid.clear();
+    require(recorder.start(format, targets, error), "ordinary private WAV capture can arm after recovery refusal");
+    recorder.cancel();
+    input(recorder, {});
+    const auto cancelled = finish(recorder);
+    require(cancelled.state == SlotRecordingState::Cancelled && cancelled.frames == 0 &&
+            std::filesystem::is_empty(directory.path()), "ordinary cancelled take clears its private writer");
+}
+
 void interruptionAndReuse() {
     const std::array targets{SlotRecordingTarget{{11, 7}, {}}};
     const std::array invalid{targets[0], SlotRecordingTarget{{11, 8}, {}}};
@@ -244,6 +266,7 @@ void retryOwnerDrain() {
 int main() {
     try {
         mixedTake();
+        arrangementCrashRecoveryRefused();
         interruptionAndReuse();
         retryOwnerDrain();
         require(callbackAllocations == 0, "slot recording performs zero callback allocations");

@@ -189,7 +189,8 @@ bool validRegion(const LaunchClipRegion& region) noexcept {
 }
 
 bool regionFits(const LaunchSlot* prepared, const LaunchClipRegion& region) noexcept {
-    return occupied(prepared) && region.start >= prepared->startTick && region.end <= prepared->endTick;
+    return occupied(prepared) && prepared->liveRegionSupported &&
+        region.start >= prepared->startTick && region.end <= prepared->endTick;
 }
 
 bool physicalRegionFits(const LaunchSlot* slot, const LaunchPhysicalRegion& region) noexcept {
@@ -245,6 +246,14 @@ float launchVelocity(const LaunchSlot& slot, float velocity) noexcept {
 }
 } // namespace
 
+bool Launcher::Run::moveSource(std::int64_t source, std::int64_t tick) noexcept {
+    if (source == sourceTick) return false;
+    sourceTick = anchorSourceTick = pcmAnchorTick = source;
+    anchorTick = tick;
+    pcmAnchorFrame = frames;
+    return true;
+}
+
 Launcher::Launcher(std::size_t maximumTracks)
     : tracks_(maximumTracks), scratch_(maximumTracks),
       activeTracks_(tracks_.data()), spareTracks_(scratch_.data()) {
@@ -261,6 +270,20 @@ bool Launcher::postRegionEdit(const LaunchClipRegionEdit& edit, const LaunchSlot
     if (write - regionRead_.load(std::memory_order_acquire) == regionMailbox_.size()) return false;
     regionMailbox_[static_cast<std::size_t>(write % regionMailbox_.size())] = {edit,physical};
     regionWritten_.store(write + 1,std::memory_order_release);
+    return true;
+}
+
+bool Launcher::regionEditsSettled(const LaunchStatusHeader& status,
+                                  std::span<const std::int64_t> tracks) const noexcept {
+    const auto written = regionWritten_.load(std::memory_order_relaxed);
+    const auto unread = written - status.regionEditsRead;
+    if (unread > regionMailbox_.size()) return false;
+    // Only the owner writes the mailbox. The driver reads it and publishes
+    // its completed position alongside the status used by this check.
+    for (auto index = status.regionEditsRead; index != written; ++index) {
+        const auto& request = regionMailbox_[static_cast<std::size_t>(index % regionMailbox_.size())];
+        if (std::ranges::find(tracks,request.edit.track) != tracks.end()) return false;
+    }
     return true;
 }
 
@@ -288,6 +311,11 @@ Launcher::Track* Launcher::findTrack(std::int64_t id) noexcept {
     const auto it = std::lower_bound(active.begin(), active.end(), id,
         [](const Track& track, auto target) { return track.id < target; });
     return it != active.end() && it->id == id ? &*it : nullptr;
+}
+
+bool Launcher::matchesRunningClip(std::int64_t track, std::int64_t clip, std::uint64_t run) noexcept {
+    const auto* current = findTrack(track);
+    return current && run != 0 && current->run.serial == run && current->run.clip == clip;
 }
 
 void Launcher::adopt(const LaunchBlock& block, const LaunchView& view, LaunchSink sink) noexcept {
@@ -662,6 +690,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                       LaunchSink sink, std::int64_t tick, std::int32_t cursor,
                       std::int32_t end) noexcept {
     auto phaseChangedAtCursor = false;
+    std::uint64_t projectedRawRun = 0;
     while (cursor < end) {
         const LaunchSlot* preparedSlot = nullptr;
         if (track.run.clip != 0) {
@@ -673,13 +702,36 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
                 track.run.fade = preparedSlot->fade;
             }
         }
+        if (track.run.region && !(track.run.physicalRegion
+              ? physicalRegionFits(preparedSlot,*track.run.physicalRegion)
+              : regionFits(preparedSlot,*track.run.region))) {
+            track.run.region.reset();
+            track.run.physicalRegion.reset();
+            track.run.physicalCueFrame = -1;
+            if (occupied(preparedSlot)) {
+                const auto start = preparedSlot->startTick;
+                const auto position = wrapSource(*preparedSlot,std::max(track.run.sourceTick,start));
+                phaseChangedAtCursor |= track.run.moveSource(position < sourceEnd(*preparedSlot) ? position : start,tick);
+            }
+        }
         LaunchSlot regionGeometry;
         const auto* slot = effectiveSlot(preparedSlot,track.run.region,track.run.physicalRegion,regionGeometry);
         const auto elapsed = track.run.frames - track.run.pcmAnchorFrame;
         const auto lap = cuedPhysicalLap(slot,track.run.completedLoops,track.run.physicalCueFrame);
+        const bool reanchor = lap.startFrame < 0 && slot && cursor == 0 && block.reanchorAudioSources;
         if (lap.startFrame >= 0) {
             track.run.pcmAnchorTick = lap.tickAt(0);
             track.run.sourceTick = lap.tickAt(elapsed);
+        } else if (reanchor && slot->nativePcmClock && track.run.frames != 0 && projectedRawRun != track.run.serial &&
+                   sink.rawSourceTickAfterBankChange) {
+            if (const auto rawTick = sink.rawSourceTickAfterBankChange(sink.context,track.run.clip,
+                    track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame)) {
+                // Raw audio changes its tick projection, not its physical phase.
+                // Retain the old PCM anchor for any outgoing edge at this sample.
+                projectedRawRun = track.run.serial;
+                track.run.anchorTick = tick;
+                track.run.anchorSourceTick = track.run.sourceTick = *rawTick;
+            }
         }
         auto sourceOffset = block.frames;
         auto sourceTick = lastTick;
@@ -759,6 +811,10 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             (boundary < block.frames || (sourceTick != lastTick &&
              block.sampleAtTick(block.clock,sourceTick) == block.sample + boundary));
         if (boundary > cursor) {
+            if (reanchor && (!slot->nativePcmClock || projectedRawRun == track.run.serial)) {
+                track.run.pcmAnchorTick = track.run.sourceTick;
+                track.run.pcmAnchorFrame = track.run.frames;
+            }
             auto endSource = track.run.sourceTick;
             if (slot) {
                 if (lap.startFrame >= 0)
@@ -770,7 +826,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             if (sink.section) sink.section(sink.context, {track.id,track.run.clip,track.run.sourceTick,
                 endSource,cursor,boundary-cursor,track.run.velocity,track.run.arrangement,
                 slot && slot->fade,track.run.serial,track.run.frames,tick,
-                track.run.pcmAnchorTick,elapsed,track.run.region.has_value(),
+                track.run.pcmAnchorTick,track.run.frames-track.run.pcmAnchorFrame,track.run.region.has_value(),
                 track.run.anchorTick,track.run.anchorSourceTick,lap.originFrame()});
             track.run.sourceTick = endSource;
             track.run.frames = add(track.run.frames,boundary-cursor);
@@ -843,13 +899,7 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             } else if (revisedPosition >= region.end) {
                 revisedPosition = region.start;
             }
-            if (revisedPosition != track.run.sourceTick) {
-                track.run.sourceTick = track.run.anchorSourceTick = revisedPosition;
-                track.run.anchorTick = edgeTick;
-                track.run.pcmAnchorTick = revisedPosition;
-                track.run.pcmAnchorFrame = track.run.frames;
-                phaseChangedAtCursor = true;
-            }
+            phaseChangedAtCursor |= track.run.moveSource(revisedPosition,edgeTick);
         } else if (occupied(slot) && loops(*slot)) {
             track.run.sourceTick = track.run.anchorSourceTick = slot->loopStartTick;
             track.run.anchorTick = nextTick;
@@ -1176,6 +1226,7 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
     status.sourceTick = run.sourceTick;
     status.run = run.serial;
     status.completedLoops = run.completedLoops;
+    status.hasLiveRegion = run.region.has_value() || track.regionEdit.has_value();
     const LaunchSlot* slot = nullptr;
     LaunchSlot regionGeometry;
     if (run.clip) {
@@ -1257,7 +1308,8 @@ void Launcher::publishStatus(const LaunchBlock& block, const LaunchView& view, L
         if (sink.trackStatus) sink.trackStatus(sink.context,status);
     }
     if (frame) {
-        frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back};
+        frame->header = {block.incarnation,0,endSample,endTick,trackCount_,playing,back,
+            regionRead_.load(std::memory_order_relaxed)};
         finishStatusBuffer(index);
     }
 }

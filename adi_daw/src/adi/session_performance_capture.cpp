@@ -79,7 +79,7 @@ ControllerOwners readControllerOwners(SQLite::Database& db) {
     SQLite::Statement rows(db,
         "SELECT t.id,c.id,e.id FROM main.event_streams e JOIN main.clips c ON c.id=e.clip_id "
         "JOIN main.tracks t ON t.id=c.track_id "
-        "WHERE e.stream_kind='cc' AND t.kind='midi' AND t.monitor_mode=0 AND t.record_armed=0 "
+        "WHERE e.stream_kind IN ('cc','pitchbend') AND t.kind='midi' AND t.monitor_mode=0 AND t.record_armed=0 "
         "ORDER BY t.id,c.id,e.id");
     while (rows.executeStep())
         owners[rows.getColumn(0).getInt64()].emplace_back(rows.getColumn(1).getInt64(), rows.getColumn(2).getInt64());
@@ -93,10 +93,14 @@ struct ControllerProof {
 };
 
 bool matchesControllerStream(SQLite::Database& db, std::int64_t stream, const ControllerProof& expected) {
-    SQLite::Statement row(db, "SELECT data FROM main.event_streams WHERE id=? AND channel=? AND controller=?");
+    const bool pitch = expected.controller == controllers::kPitchBend;
+    SQLite::Statement row(db,
+        "SELECT data FROM main.event_streams WHERE id=? AND channel=? AND stream_kind=? AND controller IS ?");
     row.bind(1, stream);
     row.bind(2, expected.channel);
-    row.bind(3, expected.controller);
+    row.bind(3, pitch ? "pitchbend" : "cc");
+    if (pitch) row.bind(4);
+    else row.bind(4, expected.controller);
     if (!row.executeStep()) return false;
     const auto bytes = row.getColumn(0);
     return !bytes.isNull() && static_cast<std::size_t>(bytes.getBytes()) == expected.data.size() &&
@@ -274,7 +278,8 @@ const Payload* firstChild(const Payload& image, const char* table) {
 }
 
 bool isController(const Payload& row) {
-    return row.at("stream_kind") == "cc";
+    const auto& kind = row.at("stream_kind");
+    return kind == "cc" || kind == "pitchbend";
 }
 
 const Payload* firstController(const Payload& image) {
@@ -286,7 +291,10 @@ const Payload* firstController(const Payload& image) {
 const Payload& controllerAt(const Payload& image, std::int64_t channel, std::int64_t controller) {
     const auto& streams = image.at("children").at("event_streams");
     const auto found = std::find_if(streams.begin(), streams.end(), [&](const auto& row) {
-        return isController(row) && row.at("channel") == channel && row.at("controller") == controller;
+        if (!isController(row) || row.at("channel") != channel) return false;
+        if (controller == controllers::kPitchBend)
+            return row.at("stream_kind") == "pitchbend" && row.at("controller").is_null();
+        return row.at("stream_kind") == "cc" && row.at("controller") == controller;
     });
     if (found == streams.end())
         throw std::runtime_error("Session controller address changed during the performance");
@@ -330,9 +338,11 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
     std::vector<ControllerProof> proofs;
     proofs.reserve(read.lanes.size());
     for (auto& lane : read.lanes) {
-        if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty() ||
-            *lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69)
-            throw std::runtime_error("Session capture needs ordinary non-pedal MIDI controller lanes");
+        if (!lane.error.empty() || !lane.channel || !lane.controller || lane.points.empty())
+            throw std::runtime_error("Session capture needs valid MIDI controller lanes");
+        const bool pitch = *lane.controller == controllers::kPitchBend;
+        if (!pitch && (*lane.controller >= 120 || *lane.controller == 64 || *lane.controller == 66 || *lane.controller == 69))
+            throw std::runtime_error("Session capture needs ordinary non-pedal MIDI controller lanes or isolated pitch bend");
         const auto& stream = controllerAt(image, *lane.channel, *lane.controller);
         const auto& bytes = stream.at("data").get_binary();
         const auto frozen = std::as_bytes(std::span(bytes.data(), bytes.size()));
@@ -343,6 +353,8 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
             std::any_of(lane.points.begin(), lane.points.end(), [](const auto& point) {
                 return point.curve != static_cast<std::uint8_t>(Curve::Hold);
             })) throw std::runtime_error("held Session controller knots must lie inside the performed source interval");
+        if (pitch && (multiple || lane.points.back().value != 0.5))
+            throw std::runtime_error("Session pitch-wheel capture needs one lane back at center before the run ends");
 
         const auto& copy = controllerAt(placed, *lane.channel, *lane.controller);
         proofs.push_back({{span.clip, lane.id}, {target.id, detail::signedInteger(copy.at("id"))},
@@ -362,7 +374,7 @@ std::vector<ControllerProof> checkHeldControllers(Store& store, const Payload& i
     std::set<std::int64_t> changedSamples;
     for (std::size_t index = 0; index < proofs.size(); ++index) {
         const auto& proof = proofs[index];
-        if (program->address(index) != proof.channel * 128 + proof.controller ||
+        if (program->address(index) != engine::controllerAddress(static_cast<int>(proof.channel), static_cast<int>(proof.controller)) ||
             !program->changesOwnerAt(index, span.begin.sample) || !program->changesOwnerAt(index, span.end.sample))
             throw std::runtime_error("held Session controller interval differs on the Arrangement clock");
         const auto holds = [&](std::int64_t frame, double expected) {
@@ -621,16 +633,32 @@ std::int64_t nanosSample(std::int64_t nanos, std::int64_t rate) {
         ((nanos % nanosPerSecond) * rate + nanosPerSecond / 2) / nanosPerSecond;
 }
 
-double capturedGainDb(double authored, float multiplier) {
+double capturedGainDb(double authored, float multiplier, engine::Precision precision) {
     if (multiplier == 1.0f) return authored;
     if (authored != 0)
         throw std::runtime_error("performed Session gain requires a unity authored clip gain");
     if (!std::isfinite(multiplier) || multiplier <= 0.0f)
         throw std::runtime_error("performed Session gain must be finite and positive");
     const auto db = std::clamp(20.0 * std::log10(static_cast<double>(multiplier)), -120.0, 120.0);
-    if (static_cast<float>(std::pow(10.0, db / 20)) != multiplier)
+    const auto linear = std::pow(10.0, db / 20);
+    const bool exact = precision == engine::Precision::Float64 ? linear == static_cast<double>(multiplier)
+                                                               : static_cast<float>(linear) == multiplier;
+    if (!exact)
         throw std::runtime_error("performed Session gain has no exact supported Arrangement dB value");
     return db;
+}
+
+void checkFloat64Fold(const Payload& audioRow, const audio::WavReader& wav, std::uint32_t rate) {
+    if (wav.channels() == 1) return;
+    // The mean of two signed PCM16/24 samples is a power-of-two
+    // fraction with at most 24 significant bits, so the resident float bank
+    // and the Float64 Arrangement reader produce the same folded value.
+    const bool nativeStereoPcm = wav.channels() == 2 && wav.sampleRate() == rate &&
+        (wav.format() == audio::WavFormat::Pcm16 || wav.format() == audio::WavFormat::Pcm24) &&
+        audioRow.at("warp_enabled") == 0 && audioRow.at("transpose_semis") == 0 &&
+        audioRow.at("formant_shift") == 0;
+    if (!nativeStereoPcm)
+        throw std::runtime_error("exact Float64 Session PCM channel folding needs native stereo PCM16/24");
 }
 
 void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
@@ -642,9 +670,12 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
     const auto* audioRow = firstChild(image, "audio_clips");
     if (!audioRow || audioRow->at("warp_enabled") != 0 || audioRow->at("reverse") != 0 ||
         audioRow->at("transpose_semis") != 0 || audioRow->at("formant_shift") != 0 ||
-        !audioCapture || audioCapture->precision != engine::Precision::Float32)
-        throw std::runtime_error("exact Session PCM capture requires raw forward Float32 audio");
+        !audioCapture || (audioCapture->precision != engine::Precision::Float32 &&
+                          audioCapture->precision != engine::Precision::Float64))
+        throw std::runtime_error("exact Session PCM capture requires raw forward audio and its graph precision");
     const audio::WavReader wav(path);
+    if (audioCapture->precision == engine::Precision::Float64 && audioRow->at("channel_mode") == 3)
+        checkFloat64Fold(*audioRow, wav, rate);
     const auto fileStart = detail::signedInteger(audioRow->at("src_start_frames"));
     const auto fileLength = detail::signedInteger(audioRow->at("src_len_frames"));
     if (wav.sampleRate() != rate || fileStart < 0 || fileLength <= 0 ||
@@ -699,7 +730,7 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
         row["pos_ns"] = start;
         row["length_ns"] = finish - start;
         row["content_offset_ticks"] = fixed.storedNanosecondsToTicks(sourceBegin);
-        row["gain_db"] = capturedGainDb(authoredGain, range.playbackGain);
+        row["gain_db"] = capturedGainDb(authoredGain, range.playbackGain, audioCapture->precision);
         row["loop_enabled"] = 0;
         row["loop_start_ticks"] = 0;
         row["loop_len_ticks"] = nullptr;
@@ -838,6 +869,8 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
         if (audio::onAudioThread || store.readOnly() || !source.data_ ||
             !source.data_->source.sameConnection(appliedSource(store)))
             throw std::runtime_error("Session performance belongs to another open project or driver");
+        if (capture.error == engine::LaunchCaptureError::FadeTail)
+            throw std::runtime_error("Session performance contains an outgoing Fade tail that needs exact overlay replay");
         if (capture.error == engine::LaunchCaptureError::SourceEdited)
             throw std::runtime_error("live Session gain or region changed during the performance and needs an exact edit trace");
         if (capture.error == engine::LaunchCaptureError::PcmRangeOverflow)
@@ -916,6 +949,9 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                     if (media::readFileRevision(verified->path, status) != verified->revision)
                         throw std::runtime_error("Session source media changed during the capture");
                 }
+                if (!needsPcm && audio && audio->precision == engine::Precision::Float64 &&
+                    audioRow->at("channel_mode") == 3)
+                    checkFloat64Fold(*audioRow, audio::WavReader(verified->path), rate);
             }
             if (needsPcm) {
                 if (!verified || row.at("kind") != "audio" || !frozen.residentClips.contains(span.clip))

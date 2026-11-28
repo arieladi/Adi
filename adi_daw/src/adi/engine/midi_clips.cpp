@@ -160,8 +160,8 @@ public:
     bool canRetainPendingEvent(const Event& event)const noexcept override {
         if(!transport.playing() || state->revision!=transport.revision() || state->expected!=transport.sampleAt(0))return false;
         if(event.type==EventType::Controller) {
-            if((event.noteId>>32)!=state->controlPrefix || event.channel>15 ||
-               !controllers::validController(event.paramId))return false;
+            if ((event.noteId >> 32) != state->controlPrefix || event.channel > 15 ||
+                !controllers::validController(event.paramId)) return false;
             if (state->arrangement ? state->controllerGeneration != controllerGeneration
                 : !launched || !launched->canRetainControllers(launchClip(launched->activeClip()),launchRevision()))
                 return false;
@@ -343,7 +343,10 @@ public:
             [](void* context, EventList& out, std::int32_t frame) noexcept {
                 auto& source = *static_cast<Source*>(context);
                 if (!source.releaseControls(out,frame)) return false;
-                for (auto& control : source.state->controls) control.requestedValid = false;
+                // The Arrangement may take over in this same callback. Share
+                // its pending neutral so it does not enqueue a second reset.
+                for (auto& control : source.state->controls)
+                    if (!control.releaseDesired || !control.pending) control.requestedValid = false;
                 return true;
             }};
     }
@@ -440,7 +443,7 @@ public:
             for (const auto controller : releaseControllers) {
                 const auto address = controllerAddress(channel, controller);
                 const auto& c = state->controls[address];
-                if (c.releaseDesired && c.retry && !control(out,frame,address,neutralValue(address))) return false;
+                if (c.releaseDesired && c.retry && !control(out, frame, address, neutralValue(address))) return false;
             }
         return true;
     }
@@ -571,7 +574,7 @@ public:
                 if (active.pending && active.retainedOff != generation)
                     active.pending = false;
         }
-        if (!retryControllerReleases(out,frame)) return false;
+        if (!retryControllerReleases(out, frame)) return false;
         if (state->arrangement && !releaseControls(out, frame, newGeneration))
             return false;
         if (!flush(out, frame))
@@ -586,6 +589,8 @@ public:
 
     void scheduleEvents(EventList& out, std::int32_t frames) noexcept {
         if (frames <= 0)
+            return;
+        if (!retryControllerReleases(out, 0))
             return;
         if (launched)
             launched->adoptProgram(generation);
@@ -641,7 +646,6 @@ public:
     }
 
     bool scheduleArrangement(EventList& out, std::int32_t begin, std::int32_t frames) noexcept {
-        if (!retryControllerReleases(out,begin)) return false;
         const auto first=transport.sampleAt(begin);
         const bool newGeneration = state->generation != generation;
         const bool moved=!state->arrangement || state->revision!=transport.revision() || state->expected!=first;

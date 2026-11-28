@@ -189,6 +189,10 @@ CommitResult commitCaptureAndInsertScene(Store& store, const CaptureInsertedScen
 CaptureSceneCommitResult commitCaptureAndInsertScene(Store& store, Session& session,
                                                      const CaptureInsertedScene& prepared, Actor actor) {
     CaptureSceneCommitResult result;
+    if (prepared.edit.ok && session.launchSourceEditReserved()) {
+        result.durable.error = "Session scene capture needs the authored clip source";
+        return result;
+    }
     if (prepared.edit.ok && (session.launchIncarnation() != prepared.incarnation ||
                             session.realisedAppliedSequence() != prepared.sourceSequence)) {
         result.durable.stale = true;

@@ -2,6 +2,7 @@
 #include "adi/recording_commands.hpp"
 
 #include "adi/clip_image.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/slot_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -170,6 +171,8 @@ RecordingEdit prepareSlotCommit(Store& store, const engine::launch::SlotRecordin
             if (target.audioChannels.empty()) {
                 if ((kind != "instrument" && kind != "midi") || id.media != 0)
                     throw std::runtime_error("MIDI slot recording needs a MIDI target without a media identity");
+                if (target.midiInput.channel < 0 || target.midiInput.channel > 16)
+                    throw std::runtime_error("slot recording has an invalid frozen MIDI input channel");
                 midi = true;
             } else {
                 if (!capture.audio || audioIds.size() >= capture.audio->tracks.size())

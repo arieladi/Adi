@@ -27,6 +27,8 @@ struct ClipMediaSource {
 };
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&, bool readSession = false);
+[[nodiscard]] bool sameLaunchSource(const ClipProject&, const ClipProject&) noexcept;
+[[nodiscard]] bool launchFilesCurrent(const ClipProject&);
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 bool sameStoredLaunchSources(const ClipProject&, const ClipProject&);
 bool sameStoredWarpSource(const ClipProject&, const ClipProject&, std::int64_t clip);
@@ -99,6 +101,8 @@ public:
     // a promise about plugin-owned samples. Muted/unopened clips are absent.
     // Immutable for this generation's lifetime; callback use returns empty.
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
+    /// Owner-only check of the original native-rate WAV reader.
+    [[nodiscard]] bool readsNativePcm(std::int64_t clipId) const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
@@ -124,11 +128,15 @@ public:
                  bool waitForPendingWarp = true);
     /// Owner, before publishing a private paged source bank. Admit just this
     /// private track's initial/loop window without replacing other requests.
+    /// An unrolled Legato source can retain its whole reachable range if it
+    /// fits the existing page slots, starting at retainFromFrame.
     bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
-                      std::chrono::milliseconds timeout);
+                      std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame = {});
     // Prime the entire bounded physical window of a private one-shot source.
     bool primeTrackWindow(std::int64_t track, const Transport& first, std::int32_t frames,
                           std::chrono::milliseconds timeout);
+    /// Owner query after successfully priming a private unrolled clip.
+    [[nodiscard]] std::optional<SampleRange> retainedTrackRange(std::int64_t track) const noexcept;
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }

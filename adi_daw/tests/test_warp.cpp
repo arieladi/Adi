@@ -7,14 +7,17 @@
 #include <limits>
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/publish_file.hpp"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <numbers>
 #include <stop_token>
+#include <thread>
 #include <type_traits>
 static_assert(!std::is_default_constructible_v<adi::audio::PreparedWarp> && !std::is_copy_constructible_v<adi::audio::PreparedWarp>);
 namespace {std::atomic<unsigned> callbackAllocations{0};}
@@ -288,5 +291,62 @@ void guardsAndLifetime() {
     check(result.error==audio::WarpError::Realtime && callbackAllocations.load()==allocations+cost &&
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
+
+void restoredMtimeKeepsDistinctWarpResults() {
+    namespace fs = std::filesystem;
+    using namespace std::chrono_literals;
+    test::TempDirectory temporary{"warp", "source_revision"};
+    const auto source = temporary.path() / "source.wav";
+    constexpr std::uint32_t frames = 4096;
+    const auto write = [&](float sample) {
+        const std::vector<float> pcm(frames,sample);
+        audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);
+        writer.write(pcm.data(),frames);
+        writer.close();
+    };
+    write(0.25f);
+    const auto modified = fs::last_write_time(source);
+    std::error_code error;
+    const auto before = media::readFileRevision(source,error);
+    audio::WarpRenderPlan plan;
+    plan.source = source;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceFrames = frames;
+    plan.anchors = {{0,0},{frames,frames}};
+    plan.mode = audio::WarpMode::RePitch;
+    const auto wait = [](const std::shared_ptr<const audio::WarpTask>& task) {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (task && std::chrono::steady_clock::now() < deadline) {
+            if (const auto ready = task->result()) return ready;
+            std::this_thread::sleep_for(1ms);
+        }
+        return std::shared_ptr<const audio::WarpResult>{};
+    };
+    const auto originalTask = audio::requestWarp(plan);
+    const auto original = wait(originalTask);
+    check(original && *original,"prepare and retain the original Warp task");
+    if (!original || !*original) return;
+    check(audio::requestWarp(plan) == originalTask,"unchanged source requests share the retained task");
+    const auto originalPcm = read(*original->prepared);
+
+    std::this_thread::sleep_for(2ms);
+    write(-0.375f);
+    fs::last_write_time(source,modified);
+    const auto after = media::readFileRevision(source,error);
+    check(before && after && before->identity == after->identity && before->size == after->size &&
+        before->modified == after->modified && before->changed != after->changed,
+        "in-place WAV rewrite preserves file identity, length and mtime while advancing its revision");
+    const auto replacementTask = audio::requestWarp(plan);
+    check(replacementTask && replacementTask != originalTask,"changed native revision starts a distinct Warp task");
+    const auto replacement = wait(replacementTask);
+    check(replacement && *replacement,"prepare the rewritten Warp source");
+    if (!replacement || !*replacement) return;
+    check(std::abs(originalPcm.at(frames/2) - 0.25f) < 1e-6f &&
+        std::abs(read(*replacement->prepared).at(frames/2) + 0.375f) < 1e-6f,
+        "the old and new tasks return the audio from their respective source revisions");
+    const auto retained = originalTask->result();
+    check(retained == original && read(*retained->prepared) == originalPcm,
+        "the original task still exposes its pinned PCM to the earlier consumer");
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();restoredMtimeKeepsDistinctWarpResults();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

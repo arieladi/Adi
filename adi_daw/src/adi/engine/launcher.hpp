@@ -24,6 +24,8 @@ struct LaunchSlot {
     // Absolute pins keep their native extent and laps when the project clock changes.
     std::int64_t physicalStartFrame = -1, physicalFrames = 0;
     std::int64_t physicalLoopBeginFrame = 0, physicalLoopEndFrame = 0;
+    bool liveRegionSupported = true; // the prepared bank can render an entire authored source window
+    bool nativePcmClock = false; // Warp-off audio advances in physical source frames
 };
 
 struct LaunchView {
@@ -57,6 +59,9 @@ struct LaunchBlock {
     std::uint64_t followPass = 0;
     // Set only for a natural Arrangement wrap, never for an explicit locate.
     bool arrangementWrap = false;
+    // Continuing runs rebase their PCM frame on the new tempo bank at the
+    // first rendered sample. Same-sample outgoing edges keep the old anchor.
+    bool reanchorAudioSources = false;
     std::optional<PreparedSceneLaunch> preparedScene{};
     double sampleRate = 48000.0;
     double (*preciseTickAtSample)(const void*, std::int64_t) noexcept = nullptr;
@@ -141,6 +146,7 @@ struct LaunchTrackStatus {
     LaunchTrackSource source = LaunchTrackSource::Arrangement;
     LaunchQueuedStatus queued;
     std::int64_t loopStartTick = 0, loopLengthTicks = 0, remainingSamples = 0;
+    bool hasLiveRegion = false; // a pending or applied edit to the current run
     bool operator==(const LaunchTrackStatus&) const = default;
 };
 
@@ -149,6 +155,7 @@ struct LaunchStatusHeader {
     std::int64_t endSample = 0, endTick = 0;
     std::size_t trackCount = 0;
     bool transportPlaying = false, backToArrangement = false;
+    std::uint64_t regionEditsRead = 0;
 };
 
 struct LaunchSink {
@@ -162,6 +169,8 @@ struct LaunchSink {
     void (*scenePerformed)(void*, const LaunchSceneTransition&) noexcept = nullptr;
     std::optional<LaunchFollowRequest> (*followOnSceneLaunch)(void*, const LaunchSceneTransition&) noexcept = nullptr;
     void (*retargeted)(void*,const LaunchSlot& previous,const LaunchSlot& next,std::uint64_t run) noexcept = nullptr;
+    std::optional<std::int64_t> (*rawSourceTickAfterBankChange)(void*, std::int64_t clip,
+        std::int64_t oldAnchorTick, std::int64_t framesSinceAnchor) noexcept = nullptr;
 };
 
 /// One owner posts gestures and one driver renders. Capacity and all scratch
@@ -179,9 +188,16 @@ public:
     }
     /// Owner only. Queue playback bounds for a single active prepared run.
     [[nodiscard]] bool postRegionEdit(const LaunchClipRegionEdit&, const LaunchSlot* prepared = nullptr) noexcept;
+    /// Owner only. Check for newer region edits on the specified tracks
+    /// that the supplied completed status has yet to account for.
+    [[nodiscard]] bool regionEditsSettled(const LaunchStatusHeader&,
+                                         std::span<const std::int64_t> tracks) const noexcept;
     /// Returns false on an invalid block or a view larger than prepared.
     bool process(const LaunchBlock&, const LaunchView&, LaunchSink = {},
                  std::span<const LaunchFollowRequest> = {}) noexcept;
+    /// Driver only, before draining the next block's launch requests.
+    [[nodiscard]] bool matchesRunningClip(std::int64_t track, std::int64_t clip,
+                                          std::uint64_t run) noexcept;
     /// Driver only. Drain a stopped block's valid gestures. A surviving fresh
     /// launch asks the caller to roll the clock; process() then runs it. Fresh
     /// stops and Back to Arrangement can settle even while the clock is held.
@@ -224,6 +240,8 @@ private:
         std::optional<LaunchClipRegion> region{};
         std::optional<LaunchPhysicalRegion> physicalRegion{};
         std::int64_t physicalCueFrame = -1;
+
+        bool moveSource(std::int64_t source, std::int64_t tick) noexcept;
     };
     struct RegionRequest {
         LaunchClipRegionEdit edit;

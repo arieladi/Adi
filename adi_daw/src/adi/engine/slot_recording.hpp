@@ -34,7 +34,7 @@ struct SlotMidiInput {
     std::int64_t scheduledSample;
     std::int64_t inputSample;
     Event event; // frame relative to this callback, in scheduled order
-    std::uint64_t port = 0; // zero for input without a named endpoint
+    std::uint64_t port = 0; // stable physical endpoint, or zero for a virtual input
 };
 
 enum class SlotRecordingState : std::uint8_t {

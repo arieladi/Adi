@@ -47,7 +47,7 @@ public:
                                    std::stop_token = {});
     /// Own interleaved output from the ordinary clip reader's source clock.
     static LaunchAudioClip fromSamples(std::int64_t clip, std::uint32_t driverRate,
-                                       std::uint16_t channels, std::vector<float>);
+                                       std::uint16_t channels, std::vector<float>, bool directPcm = false);
     static LaunchAudioClip fromPages(std::int64_t clip, std::uint32_t driverRate,
                                     std::uint16_t channels, std::uint64_t frames,
                                     std::shared_ptr<LaunchPagedAudio>);
@@ -65,6 +65,7 @@ public:
     }
     [[nodiscard]] std::uint64_t bytes() const noexcept { return samples_.size() * sizeof(float); }
     [[nodiscard]] std::int64_t frameForTick(std::int64_t tick, double bpm) const noexcept;
+    [[nodiscard]] std::int64_t tickForFrame(std::int64_t frame, double bpm) const noexcept;
     [[nodiscard]] float sample(std::int64_t frame, std::int32_t channel) const noexcept;
     [[nodiscard]] LaunchPagedAudio* pageReader() const noexcept { return pages_.get(); }
     [[nodiscard]] std::optional<LaunchAudioClip> shareRawPages() const {
@@ -81,6 +82,11 @@ public:
     bool renderWarp(const AudioIo&, std::int32_t offset, std::int32_t frames,
                     LaunchWarpPosition, double gain, std::int64_t fadeElapsed,
                     bool tail = false) const noexcept;
+    [[nodiscard]] bool hasDirectPcm() const noexcept { return directPcm_; }
+    [[nodiscard]] bool sameResidentSourceShape(const LaunchAudioClip& other) const noexcept {
+        return !usesPages() && !other.usesPages() && !followsTempo() && !other.followsTempo() && clip_ == other.clip_ && firstTick_ == other.firstTick_ &&
+            rate_ == other.rate_ && channels_ == other.channels_ && frames() == other.frames();
+    }
 
 private:
     struct Warp;
@@ -91,6 +97,7 @@ private:
     std::int64_t firstTick_;
     std::uint32_t rate_;
     std::uint16_t channels_;
+    bool directPcm_ = false;
     std::vector<float> samples_;
     std::shared_ptr<LaunchPagedAudio> pages_;
     std::shared_ptr<const Warp> warp_;
@@ -102,9 +109,11 @@ private:
 /// or silence. The host calls this only for non-Arrangement launch sections.
 /// Buffer and PCM ownership stays with the host. Rendering is callback-safe.
 /// Supply the elapsed run frames to apply the clip's launch-in Fade.
+/// A driver-sliced live region reads native source frames without the authored page loop.
 void renderLaunchAudio(const AudioIo&, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip*, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames = -1, LaunchWarpPosition = {}) noexcept;
+                       std::int64_t fadeElapsedFrames = -1, LaunchWarpPosition = {},
+                       bool useAuthoredLoop = true) noexcept;
 
 /// Duration of the provisionally measured Session launch-edge fade.
 [[nodiscard]] std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept;

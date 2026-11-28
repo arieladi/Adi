@@ -32,7 +32,7 @@ struct LaunchPcmTrackCursor {
 
 /// The owner supplies storage before attaching the capture to the driver. Once
 /// detached, the owner can read the trace and prepare the entire Arrangement
-/// edit. An overflow or a transient source edit invalidates the whole trace.
+/// edit. An overflow, unreplayable source edit, or Fade tail invalidates the trace.
 class LaunchCaptureBuffer {
 public:
     explicit LaunchCaptureBuffer(std::span<LaunchTransition> storage) noexcept;
@@ -46,8 +46,11 @@ public:
     void notePcmTimeline(std::int64_t firstSample, std::int64_t endSample) noexcept;
     void markPcmDiscontinuity() noexcept { pcmInvalid_ = capturesPcm_; }
     void markSourceEdit() noexcept { sourceEdited_ = true; }
+    /// Driver only. A tail may sound after its original run left Session.
+    void markFadeTail() noexcept { fadeTail_ = true; }
     [[nodiscard]] bool overflowed() const noexcept { return overflowed_ || pcmOverflowed_; }
     [[nodiscard]] bool sourceEdited() const noexcept { return sourceEdited_; }
+    [[nodiscard]] bool hasFadeTail() const noexcept { return fadeTail_; }
     [[nodiscard]] bool capturesPcm() const noexcept { return capturesPcm_; }
     [[nodiscard]] bool pcmOverflowed() const noexcept { return pcmOverflowed_; }
     [[nodiscard]] bool pcmInvalid() const noexcept { return pcmInvalid_; }
@@ -58,7 +61,7 @@ private:
     std::span<LaunchTransition> storage_;
     std::size_t size_ = 0;
     bool overflowed_ = false;
-    bool sourceEdited_ = false;
+    bool sourceEdited_ = false, fadeTail_ = false;
     std::span<LaunchCapturedPcmRange> pcmStorage_{};
     std::span<LaunchPcmTrackCursor> pcmTracks_{};
     std::size_t pcmSize_ = 0;
@@ -93,7 +96,7 @@ struct LaunchCapturedSpan {
 };
 
 enum class LaunchCaptureError {
-    None, Overflow, InvalidRange, InconsistentTrack, SourceEdited, PcmRangeOverflow, InvalidPcmRange
+    None, Overflow, InvalidRange, InconsistentTrack, SourceEdited, PcmRangeOverflow, InvalidPcmRange, FadeTail
 };
 
 struct LaunchCapturePlan {

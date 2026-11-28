@@ -7,7 +7,9 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
+#include "adi/engine/graph.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
+#include "adi/engine/transport.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -411,6 +413,122 @@ void rejectsDuplicateSlotClip(const Fixture& fixture) {
     }
     throw std::runtime_error("one occupied clip ID cannot be admitted in two slots");
 }
+constexpr auto ppq = textproj::kPPQ;
+constexpr std::int64_t clockBankCut = 48'000;
+constexpr std::int32_t bankBlockFrames = 256;
+constexpr float oldBankValue(std::int64_t frame) { return 0.10f + static_cast<float>(frame) / 10000.0f; }
+constexpr float newBankValue(std::int64_t frame) { return 0.40f + static_cast<float>(frame) / 10000.0f; }
+
+struct ClockBankFixture {
+    std::shared_ptr<const LaunchAudioProject> oldBank, newBank;
+    LaunchAudioRuntime runtime;
+    LaunchAudioDriver driver{1};
+    Transport transport;
+    std::array<float, bankBlockFrames> output{};
+    std::array<LaunchTrackStatus, 1> status{};
+    LaunchStatusHeader header;
+    std::array<LaunchTransition, 4> edges{};
+    std::size_t edgeCount = 0;
+
+    static std::shared_ptr<const LaunchAudioProject> makeBank(bool newer, bool fade) {
+        std::vector<float> pcm(1040);
+        for (std::size_t index = 0; index < pcm.size(); ++index)
+            pcm[index] = newer ? newBankValue(static_cast<std::int64_t>(index)) : oldBankValue(static_cast<std::int64_t>(index));
+        std::vector<LaunchAudioClip> clips;
+        clips.push_back(LaunchAudioClip::fromSamples(100, 48000, 1, std::move(pcm)));
+        std::vector<LaunchSlot> slots{{1, 10, 100, 0, ppq, 0, 0, LaunchMode::Trigger, {}, 0.0f, false, fade}};
+        return std::make_shared<LaunchAudioProject>(7, newer ? 120.0 : 60.0, std::vector<std::int64_t>{1},
+            std::move(slots), std::vector<std::int64_t>{10}, std::move(clips), LaunchQuantization::None);
+    }
+
+    explicit ClockBankFixture(bool fade = false)
+        : oldBank(makeBank(false, fade)), newBank(makeBank(true, fade)), runtime(newBank, {1}, bankBlockFrames, oldBank, clockBankCut) {
+        transport.play();
+    }
+
+    void start() {
+        const std::array requests{LaunchRequest{LaunchRequestKind::SlotPress, 1, 10, 100, 7}};
+        require(driver.post(requests), "queue exact slot for the old bank");
+    }
+
+    void render(std::int32_t frames) {
+        LaunchBlock block;
+        block.frames = frames;
+        block.global = LaunchQuantization::None;
+        block.tickAtSample = [](const void*, std::int64_t at) noexcept {
+            return at < clockBankCut ? at * ppq / clockBankCut : ppq + (at - clockBankCut) * ppq / (clockBankCut / 2);
+        };
+        block.sampleAtTick = [](const void*, std::int64_t at) noexcept {
+            return at < ppq ? (at * clockBankCut + ppq / 2) / ppq : clockBankCut + ((at - ppq) * (clockBankCut / 2) + ppq / 2) / ppq;
+        };
+        output.fill(0.0f);
+        float* channels[]{output.data()};
+        NodeIo io{};
+        io.out = channels;
+        io.frames = frames;
+        io.channels = 1;
+        {
+            audio::CallbackScope callback;
+            runtime.begin(driver, block, transport, 0, this,
+                [](void* context, const LaunchTransition& edge, std::int64_t) noexcept {
+                    auto& self = *static_cast<ClockBankFixture*>(context);
+                    if (self.edgeCount < self.edges.size()) self.edges[self.edgeCount++] = edge;
+                });
+            runtime.overlay(1, io);
+            runtime.finish();
+            transport.advance(frames);
+        }
+        require(driver.readStatus(status, header), "driver completed one block");
+    }
+};
+
+bool frameMatches(float actual, float expected) { return std::abs(actual - expected) <= 1e-7f; }
+
+void crossBankSeek() {
+    ClockBankFixture fixture;
+    fixture.start();
+    fixture.render(128);
+    const auto initial = fixture.status[0];
+    require(frameMatches(fixture.output[127], oldBankValue(127)), "old bank reads source frames before seek");
+    fixture.transport.locate(clockBankCut + 180);
+    fixture.render(64);
+    require(frameMatches(fixture.output[0], newBankValue(64)) && frameMatches(fixture.output[63], newBankValue(127)),
+        "forward seek reprojects the live phase to the faster bank on its first sample");
+    require(fixture.edgeCount == 1 && fixture.status[0].run == initial.run && fixture.status[0].clip == initial.clip,
+        "cross-bank seek retains the active launch run and produces no spurious launch receipt");
+    fixture.transport.locate(clockBankCut - 1024);
+    fixture.render(64);
+    require(frameMatches(fixture.output[0], oldBankValue(256)) && frameMatches(fixture.output[63], oldBankValue(319)),
+        "backward seek restores the slower bank at the same musical phase");
+    fixture.render(32);
+    require(frameMatches(fixture.output[0], oldBankValue(320)), "PCM rebase persists in the continuing run across callbacks");
+    fixture.transport.locate(clockBankCut - 400);
+    fixture.render(17);
+    require(frameMatches(fixture.output[0], oldBankValue(352)) && fixture.status[0].run == initial.run,
+        "seek within a fixed prepared bank continues at the exact source frame and retains its run");
+}
+
+void renderAcrossPriorStep() {
+    ClockBankFixture fixture;
+    fixture.transport.locate(clockBankCut - 64);
+    fixture.start();
+    fixture.render(128);
+    require(frameMatches(fixture.output[63], oldBankValue(63)) && frameMatches(fixture.output[64], newBankValue(32)) &&
+        frameMatches(fixture.output[127], newBankValue(95)), "prior clock step rebases a surviving run exactly within one callback");
+}
+
+void fadeOldBankOnSameSampleStop() {
+    ClockBankFixture fixture(true);
+    fixture.start();
+    fixture.render(256);
+    fixture.transport.locate(clockBankCut + 180);
+    const std::array stops{LaunchRequest{LaunchRequestKind::StopTrack, 1, {}, {}, 7}};
+    require(fixture.driver.post(stops), "queue a coincident stop while locating");
+    fixture.render(32);
+    require(fixture.edgeCount == 2 && fixture.edges[1].sample == clockBankCut + 180 && fixture.status[0].run == 0,
+        "coincident stop wins without retaining or relaunching the run");
+    require(frameMatches(fixture.output[0], oldBankValue(256)), "fade at the stop starts from the last playing bank and its original source frame");
+}
 } // namespace
 
 int main() {
@@ -423,6 +541,9 @@ int main() {
         unquantized();
         individualTrackHandover();
         fadeThroughHandover();
+        crossBankSeek();
+        renderAcrossPriorStep();
+        fadeOldBankOnSameSampleStop();
         auditedStops();
         rejectsDuplicateSlotClip(fixture);
         require(allocations == 0 && releases == 0 && audio::callbackFileIo == io,

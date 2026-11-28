@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -15,6 +16,7 @@ struct LaunchPagedSource {
     std::int64_t firstFrame = 0, loopBeginFrame = 0, loopEndFrame = 0;
     std::int64_t endFrame = 0;
     bool warmPhysicalWindow = false, keepPhysicalStartWarm = false;
+    bool legato = false;
 };
 
 /// One paged player for a published collection of unrolled slot sources. A
@@ -40,6 +42,9 @@ public:
     [[nodiscard]] bool allWorkerPhasesPrimed(std::int64_t clip) const noexcept;
     /// A published raw slot that admitted its entire physical window.
     [[nodiscard]] bool allPhysicalPhasesPrimed(std::int64_t clip) const noexcept;
+    /// Immutable after publication. Ordinary streaming pages cannot prove
+    /// coverage because subsequent worker requests can recycle them.
+    [[nodiscard]] bool retainsRange(std::int64_t clip, std::int64_t first, std::int64_t end) const noexcept;
     /// Driver only. Queue an idle clip's upcoming source phase while keeping
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
@@ -57,7 +62,13 @@ public:
     }
 
 private:
-    struct Entry { LaunchPagedSource source; Node* playback; std::int32_t latency; bool primesAllPhases; };
+    struct Entry {
+        LaunchPagedSource source;
+        Node* playback;
+        std::int32_t latency;
+        bool primesAllPhases;
+        std::optional<ClipPlayback::SampleRange> retained{};
+    };
     [[nodiscard]] const Entry* find(std::int64_t clip) const noexcept;
     Transport clock_;
     ClipPlayback pages_;

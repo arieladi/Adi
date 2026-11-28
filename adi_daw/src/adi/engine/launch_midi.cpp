@@ -190,7 +190,7 @@ std::optional<LaunchMidiClip> LaunchMidiClip::prepare(
             continue;
         }
         if (row->points.empty()) continue;
-        const auto address = controllerAddress(static_cast<int>(*row->channel),static_cast<int>(*row->controller));
+        const auto address = controllerAddress(static_cast<int>(*row->channel), static_cast<int>(*row->controller));
         std::set<std::uint64_t> pointIds;
         if (row->points.size() > maximumPoints - clip.controlKnots_.size() || addresses.contains(address) ||
             std::any_of(row->points.begin(),row->points.end(),[&](const auto& point) {

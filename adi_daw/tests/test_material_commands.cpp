@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "session_schema_fixture.hpp"
 #include "temp_directory.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -193,6 +194,55 @@ void batchReplacement() {
               db.execAndGet("SELECT length_ticks FROM clips WHERE id=6").getInt64() == 1000000,
           "SC-35/158: one Undo restores the whole original after a consecutive replacement");
 }
+
+void dropsIgnoreSessionSlots() {
+    for (const bool consecutive : {false, true}) {
+        Project project;
+        auto& store = *project.store;
+        auto& db = store.db();
+        test::applySessionSchema(db);
+        db.exec("INSERT INTO scenes(id,ord) VALUES(1,0);"
+                "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(101,21,'midi',0,5765760);"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(21,1,101);"
+                "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain) "
+                "VALUES(91,'track',21,'volume','real');");
+        test::seedSessionMarker(db);
+        AutomationPoint point{};
+        point.time = 50000;
+        point.value = -6;
+        point.point_id = 1;
+        const auto automation = writeStream<AutomationPoint>(FourCC::Automation, {&point, 1});
+        check(store.putAutomationData(91, {}, automation), "drop fixture writes Volume automation inside the import");
+
+        const edit_plan::EditPolicy replace{.deleteOverlaps = true, .automationFollowsClips = true};
+        auto first = project.options();
+        auto prepared = [&] {
+            if (!consecutive) {
+                first.arrangementPlacement = replace;
+                return clip_edit::prepareImportAudio(store, first, 48000);
+            }
+            auto second = first;
+            second.clipId = 9;
+            second.mediaId = 10;
+            clip_edit::ImportBatch batch;
+            batch.imports = {first, second};
+            batch.expectedHead = OpJournal(store).headSeq();
+            batch.consecutive = true;
+            batch.placementPolicy = replace;
+            return clip_edit::prepareImportAudioBatch(store, batch, 48000);
+        }();
+        const auto landed = clip_edit::commitMaterial(store, prepared);
+        if (!landed.ok)
+            std::printf("drop with Session slot: %s\n", landed.error.c_str());
+        check(landed.ok && db.execAndGet("SELECT count(*) FROM clips WHERE id IN (7,9)").getInt() ==
+                  (consecutive ? 2 : 1) &&
+              db.execAndGet("SELECT clip_id FROM clip_slots WHERE track_id=21 AND scene_id=1").getInt64() == 101 &&
+              store.getAutomationData(91, {}) == automation,
+              consecutive ? "batch drop ignores the Session slot and keeps Arrangement Volume automation"
+                          : "single drop ignores the Session slot and keeps Arrangement Volume automation");
+    }
+}
+
 void bounce() {
     Project p;auto& db=p.store->db();auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
     check(clip_edit::commitMaterial(*p.store,imported).ok,"bounce fixture imports source");
@@ -262,4 +312,4 @@ void bounceInPlaceAndStale() {
 }
 
 }
-int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();batchReplacement();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{imports();refusalAndRollback();externalCopyOwnership();batchImports();batchReplacement();dropsIgnoreSessionSlots();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

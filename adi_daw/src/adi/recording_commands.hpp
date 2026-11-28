@@ -188,7 +188,8 @@ private:
 /// after success, or reads edit.error. No SQLite access on the worker.
 [[nodiscard]] bool publishStagedTake(RecordingEdit&,std::stop_token = {});
 /// Owner, before commit: when the Undo head moved during publication, rebuild
-/// against current rows if the already-published media binding is unchanged.
+/// Arrangement placement if the published media binding is unchanged. A
+/// stale Session take needs fresh preparation against its frozen slots.
 [[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,
     std::int64_t placementOffsetSamples=0);
 [[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,

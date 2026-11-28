@@ -44,6 +44,13 @@ bool SlotInputRecorder::start(AudioRecordingSpec format, std::span<const SlotRec
             format.targets.push_back({target.slot.trackId, target.audioChannels});
     }
 
+    // Arrangement recovery stores track IDs and timeline offsets. A slot
+    // also needs its scene identity and the tempo performed during capture.
+    if (!format.targets.empty() && !format.recoveryProjectUuid.empty()) {
+        error = "Session slot audio requires recovery metadata with scene ownership and performed tempo";
+        return false;
+    }
+
     std::vector<SlotRecordingTarget> frozen(targets.begin(), targets.end());
     const auto captureMidi = !midiTracks.empty();
     if (captureMidi && !midi_.start(std::move(midiTracks), format.sampleRate)) {

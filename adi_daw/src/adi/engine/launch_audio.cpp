@@ -159,6 +159,15 @@ std::int64_t LaunchAudioClip::frameForTick(std::int64_t tick, double bpm) const 
     return std::llround(frame);
 }
 
+std::int64_t LaunchAudioClip::tickForFrame(std::int64_t frame, double bpm) const noexcept {
+    if (frame < 0 || !std::isfinite(bpm) || bpm <= 0) return -1;
+    const auto tick = static_cast<long double>(firstTick_) +
+        static_cast<long double>(frame) * bpm * textproj::kPPQ / (rate_ * 60.0L);
+    if (tick < 0 || tick >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()) - 0.5L)
+        return -1;
+    return std::llround(tick);
+}
+
 float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const noexcept {
     if (usesPages() || warp_ || frame < 0 || static_cast<std::uint64_t>(frame) >= frames() || channel < 0)
         return 0;
@@ -251,14 +260,14 @@ std::int64_t launchFadeFrames(std::uint32_t sampleRate) noexcept {
 
 void renderLaunchAudio(const AudioIo& io, std::int32_t offset, std::int32_t frames,
                        const LaunchAudioClip* clip, std::int64_t firstFrame, float velocity,
-                       std::int64_t fadeElapsedFrames, LaunchWarpPosition warp) noexcept {
+                       std::int64_t fadeElapsedFrames, LaunchWarpPosition warp, bool useAuthoredLoop) noexcept {
     if (offset < 0 || offset >= io.frames || frames <= 0)
         return;
     const auto count = std::min(frames, io.frames - offset);
     if (clip && clip->renderWarp(io,offset,count,warp,velocity,fadeElapsedFrames)) return;
     const auto fadeLength = clip && fadeElapsedFrames >= 0 ? launchFadeFrames(clip->rate()) : 0;
     auto* pages = clip ? clip->pageReader() : nullptr;
-    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count);
+    const auto pageReady = pages && pages->read(clip->clip(), firstFrame, count, useAuthoredLoop);
     for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
         auto* narrow = io.out ? io.out[channel] : nullptr;
         auto* wide = io.out64 ? io.out64[channel] : nullptr;

@@ -5,6 +5,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
@@ -277,7 +278,7 @@ PreparedEdit prepareBatchReplacement(Store& store, std::span<const edit_plan::Cl
     std::set<edit_plan::PlacementLane> tracks;
     SQLite::Statement clips(store.db(),
         "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
-        "FROM clips WHERE track_id=? AND lane_id IS NULL");
+        "FROM clips WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
     for (const auto& range : ranges) {
         if (range.span.begin >= range.span.end)
             continue;

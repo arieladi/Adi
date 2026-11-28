@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 
@@ -185,6 +186,124 @@ void tempoSceneFromArrangementLoop(bool startsAtEnd) {
     }
 }
 
+void tempoScenesWithArrangementLoop() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr auto loopEnd = 2 * quarter;
+    struct Scenario {
+        std::int64_t startTick, expectedBar; // zero when the driver must refuse
+        bool loopBeforeStart;
+        std::optional<bool> pendingLoopEdit;
+    };
+    const std::array cases{
+        Scenario{quarter, 0, true, {}},
+        Scenario{loopEnd, 1, true, {}},
+        Scenario{3 * quarter, 1, true, {}},
+        Scenario{4 * quarter - quarter / 128, 2, true, {}},
+        Scenario{quarter, 0, false, true},
+        Scenario{quarter, 0, true, false},
+    };
+    for (const auto& item : cases) {
+        Fixture fixture;
+        fixture.store->db().exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        const auto saveLoop = [&](bool on) {
+            OpRequest loop;
+            loop.opType = "transport.setLoop";
+            loop.payload = {{"on", on}, {"start", 0}, {"end", loopEnd}};
+            require(OpJournal(*fixture.store).commit(loop).ok, "save the Arrangement Loop brace");
+        };
+        saveLoop(item.loopBeforeStart);
+
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*fixture.store, {}, {2, 48'000, blockSize})) throw std::runtime_error(session.error());
+        bool started = false;
+        {
+            auto block = session.beginRender();
+            started = block.startPlayback(item.startTick, false);
+        }
+        require(started, "use the Arrangement playback entry point");
+        const auto driverHasLoop = item.loopBeforeStart && item.startTick < loopEnd;
+        require(session.transport().looping() == driverHasLoop, "observe the effective loop at the playback start");
+        if (item.pendingLoopEdit) {
+            saveLoop(*item.pendingLoopEdit);
+            require(session.refresh(*fixture.store), "publish an Arrangement loop edit to the owner");
+            require(session.transport().looping() == driverHasLoop, "driver still reports the previous loop state");
+        }
+        require(OpJournal(*fixture.store).commit(scene(20, session.launchIncarnation())).ok, "audit a saved tempo scene");
+
+        Render render{session};
+        const auto due = item.expectedBar * barFrames;
+        const auto frames = due ? due - session.transport().position() + 1024 : 2 * barFrames + 1024;
+        while (render.stream < frames) render.block();
+        const auto boundary = std::max(item.expectedBar, std::int64_t{1}) * 4 * quarter;
+        double bpmAtBoundary, bpmBeforeBoundary;
+        {
+            const auto clock = session.beginRender();
+            bpmAtBoundary = clock.bpmAtTick(boundary);
+            bpmBeforeBoundary = clock.bpmAtTick(boundary - 1);
+        }
+        if (item.expectedBar != 0) {
+            require(render.size == 1 && render.edges[0].sample == due && render.edges[0].newClip == 102 &&
+                std::abs(render.left.back() + 0.25f) < 0.0005f,
+                "a bypassed Loop brace permits an audible tempo scene at the reachable bar");
+            require(bpmAtBoundary == 140 && bpmBeforeBoundary == 120,
+                "tempo starts at the exact admitted bar, including when the previous bar is too close");
+        } else {
+            require(render.size == 0 && session.transport().looping() == item.pendingLoopEdit.value_or(driverHasLoop) &&
+                bpmAtBoundary == 120,
+                "an active or unacknowledged Loop brace keeps scene audio and tempo unchanged");
+        }
+    }
+    require(allocations == 0 && audio::callbackFileIo == 0, "loop-aware scene callbacks allocate and read no files");
+    std::printf("PASS -- audited tempo scenes keep active loops and play at the reachable bar at or beyond Loop End\n");
+}
+
+struct PagedRender {
+    static constexpr std::uint32_t rate = 48'000;
+    LaunchAudioRuntime runtime;
+    LaunchAudioDriver driver{1};
+    Transport transport;
+    const TempoMap& clock;
+    std::array<float, blockSize> left{}, right{};
+    std::array<LaunchTransition, 4> edges{};
+    std::size_t count = 0;
+
+    PagedRender(const std::shared_ptr<const LaunchAudioProject>& program, const TempoMap& tempo)
+        : runtime(program, {1}, blockSize), clock(tempo) { transport.play(); }
+
+    void block(LaunchAudioRuntime* replacement = nullptr) {
+        auto& activeRuntime = replacement ? *replacement : runtime;
+        LaunchBlock block;
+        block.frames = blockSize;
+        block.clock = &clock;
+        block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {
+            return static_cast<const TempoMap*>(state)->secondsToTicks(static_cast<double>(sample) / rate);
+        };
+        block.sampleAtTick = [](const void* state, std::int64_t tick) noexcept -> std::int64_t {
+            return std::llround(static_cast<const TempoMap*>(state)->ticksToSeconds(tick) * rate);
+        };
+        float* channels[]{left.data(), right.data()};
+        NodeIo io;
+        io.out = channels;
+        io.channels = 2;
+        io.frames = blockSize;
+        io.sampleRate = rate;
+        left.fill(0.0f);
+        right.fill(0.0f);
+        {
+            audio::CallbackScope scope;
+            activeRuntime.begin(driver, block, transport, transport.position(), this,
+                [](void* data, const LaunchTransition& edge, std::int64_t) noexcept {
+                    auto& rendered = *static_cast<PagedRender*>(data);
+                    if (rendered.count < rendered.edges.size()) rendered.edges[rendered.count++] = edge;
+                });
+            activeRuntime.overlay(1, io);
+            activeRuntime.finish();
+        }
+        transport.advance(blockSize);
+    }
+};
+
 void pagedLegato(Fixture& fixture) {
     constexpr std::uint32_t rate = 48'000;
     constexpr std::int64_t targetId = 105;
@@ -230,73 +349,171 @@ void pagedLegato(Fixture& fixture) {
     require(target && target->pageReader() && problems.empty(), "prepare Legato source with RAM Off");
     auto& pages = *target->pageReader();
     pages.setRequestSnapshotProbeForTest(&probe);
-    // Use the stored bank with exactly one driver, as Session does. Session
-    // intentionally rejects an injected bank that owns playback page state.
-    LaunchAudioRuntime runtime(program, {1}, blockSize);
-    LaunchAudioDriver driver(1);
-    Transport transport;
-    transport.play();
-    struct Output {
-        std::array<float, blockSize> left{}, right{};
-        std::array<LaunchTransition, 2> edges{};
-        std::size_t count = 0;
-    } output;
-    const auto render = [&] {
-        LaunchBlock block;
-        block.frames = blockSize;
-        block.clock = &clock;
-        block.tickAtSample = [](const void* state, std::int64_t sample) noexcept {
-            return static_cast<const TempoMap*>(state)->secondsToTicks(static_cast<double>(sample) / rate);
-        };
-        block.sampleAtTick = [](const void* state, std::int64_t tick) noexcept -> std::int64_t {
-            return std::llround(static_cast<const TempoMap*>(state)->ticksToSeconds(tick) * rate);
-        };
-        float* channels[]{output.left.data(), output.right.data()};
-        NodeIo io;
-        io.out = channels;
-        io.channels = 2;
-        io.frames = blockSize;
-        io.sampleRate = rate;
-        output.left.fill(0.0f);
-        output.right.fill(0.0f);
-        {
-            audio::CallbackScope scope;
-            runtime.begin(driver, block, transport, transport.position(), &output,
-                [](void* data, const LaunchTransition& edge, std::int64_t) noexcept {
-                    auto& rendered = *static_cast<Output*>(data);
-                    if (rendered.count < rendered.edges.size()) rendered.edges[rendered.count++] = edge;
-                });
-            runtime.overlay(1, io);
-            runtime.finish();
-        }
-        transport.advance(blockSize);
-    };
+    // The stored bank owns one driver, as it does when loaded by Session.
+    PagedRender render(program, clock);
     const auto post = [&](std::int64_t id) {
         const std::array requests{LaunchRequest{LaunchRequestKind::ScenePress, {}, id, {}, incarnation}};
-        require(driver.post(requests), "queue one literal Legato test scene");
+        require(render.driver.post(requests), "queue one literal Legato test scene");
     };
     post(10);
-    render();
+    render.block();
     post(sceneId);
-    render();
-    require(output.count == 1 && output.left.back() > 0.49f,
+    render.block();
+    require(render.count == 1 && render.left.back() > 0.49f,
         "the old run still plays before the Legato boundary");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!worker.served.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     require(worker.served.load(std::memory_order_acquire), "queue the future Legato source page before take-over");
-    while (transport.position() <= barFrames) render();
-    const auto offset = static_cast<std::size_t>(barFrames - (transport.position() - blockSize));
-    require(output.count == 2 && output.edges[1].newClip == targetId && output.edges[1].sample == barFrames &&
-        output.edges[1].sourceTick == 4 * textproj::kPPQ,
+    while (render.transport.position() <= barFrames) render.block();
+    const auto offset = static_cast<std::size_t>(barFrames - (render.transport.position() - blockSize));
+    require(render.count == 2 && render.edges[1].newClip == targetId && render.edges[1].sample == barFrames &&
+        render.edges[1].sourceTick == 4 * textproj::kPPQ,
         "Legato adopts the due source phase at exactly frame 96000");
-    for (std::size_t i = offset; i < output.left.size(); ++i)
-        require(output.left[i] == valueAt(barFrames + static_cast<std::int64_t>(i - offset)),
+    for (std::size_t i = offset; i < render.left.size(); ++i)
+        require(render.left[i] == valueAt(barFrames + static_cast<std::int64_t>(i - offset)),
             "the first far paged Legato samples match the prepared native source");
     require(pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
         "Legato queues bounded pages without underrun or callback work");
+    LaunchStatusHeader header;
+    std::array<LaunchTrackStatus, 1> status{};
+    require(render.driver.readStatus(status, header) && status[0].run != 0,
+        "read the long paged clip's active run");
+    const LaunchClipRegionEdit cold{1, targetId, incarnation, status[0].run,
+        {4 * textproj::kPPQ, 6 * textproj::kPPQ}, ClipUpdateRate::Sixteenth};
+    require(!render.runtime.postRegionEdit(render.driver, cold, render.transport.position()),
+        "refuse a live paged edit without guaranteed retained coverage");
     std::printf("PASS -- far paged Legato takes over at frame %lld with zero underruns\n",
         static_cast<long long>(barFrames));
+}
+
+void pagedLegatoWithoutLead(Fixture& fixture) {
+    constexpr std::uint32_t rate = 48'000;
+    constexpr std::int64_t targetId = 106, sceneId = 60;
+    constexpr std::uint64_t incarnation = 89;
+    constexpr std::size_t sourceFrames = 64'000;
+    const auto valueAt = [](std::int64_t frame) { return 0.25f + static_cast<float>(frame % 4096) / 8192.0f; };
+    {
+        std::vector<float> waveform(sourceFrames);
+        for (std::size_t frame = 0; frame < waveform.size(); ++frame)
+            waveform[frame] = valueAt(static_cast<std::int64_t>(frame));
+        audio::WavWriter wave(fixture.directory.path() / "short-legato.wav", rate, 1, audio::WavFormat::Float32);
+        wave.write(waveform.data(), static_cast<std::uint32_t>(waveform.size()));
+        wave.close();
+    }
+    fixture.store->db().exec(
+        "INSERT INTO scenes(id,ord,name) VALUES(60,9,'Immediate paged Legato');"
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(6,'short-legato','short-legato.wav','wav');"
+        "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_start_ticks,loop_len_ticks) "
+        "VALUES(106,1,'audio',0,15375360,1,7687680,7447440);"
+        "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(106,6,64000);"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,106);"
+        "INSERT INTO clip_launch(clip_id,legato,launch_quant,ram_mode) VALUES(106,1,1,0);");
+
+    // Detain the sole paged source's worker before posting the launch. An
+    // audible result must come from pages retained by graph preparation.
+    struct WorkerGate { std::atomic<bool> entered{false}, release{false}; } gate;
+    const ClipPlayback::RequestSnapshotProbeForTest probe{&gate, [](void* context, std::int64_t) noexcept {
+        auto& worker = *static_cast<WorkerGate*>(context);
+        worker.entered.store(true, std::memory_order_release);
+        while (!worker.release.load(std::memory_order_acquire)) std::this_thread::yield();
+    }};
+    const auto model = rows::readModel(*fixture.store);
+    const auto source = readClipProject(*fixture.store, model, true);
+    TempoMap clock;
+    clock.events.push_back({0, 120, 0});
+    std::vector<std::string> problems;
+    const auto program = prepareStoredLaunchProject(*source, clock, rate, 2, blockSize, incarnation, problems);
+    const auto* target = program ? program->clip(targetId) : nullptr;
+    require(target && target->pageReader() && problems.empty(), "keep short Legato target on bounded disk pages");
+    auto& pages = *target->pageReader();
+    PagedRender render(program, clock);
+
+    const auto unblock = [](WorkerGate* worker) noexcept { worker->release.store(true, std::memory_order_release); };
+    const std::unique_ptr<WorkerGate, decltype(unblock)> unblockOnExit(&gate, unblock);
+    pages.setRequestSnapshotProbeForTest(&probe);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!gate.entered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    require(gate.entered.load(std::memory_order_acquire), "hold the paged worker before a no-lead request");
+
+    const std::array start{LaunchRequest{LaunchRequestKind::ScenePress, {}, 10, {}, incarnation}};
+    require(render.driver.post(start), "start the resident outgoing clip");
+    do { render.block(); } while (render.transport.position() < 45'000);
+    const auto due = render.transport.position();
+    const std::array takeOver{LaunchRequest{LaunchRequestKind::SlotPress, 1, sceneId, targetId, incarnation}};
+    require(render.driver.post(takeOver), "post the immediate Legato target just before rendering");
+    render.block();
+    require(render.count == 2 && render.edges[1].newClip == targetId && render.edges[1].sample == due &&
+            target->frameForTick(render.edges[1].sourceTick, clock.bpmAt(0)) == due,
+            "immediate paged Legato keeps the exact outgoing phase and due sample");
+    for (std::size_t frame = 0; frame < render.left.size(); ++frame)
+        require(render.left[frame] == valueAt(due + static_cast<std::int64_t>(frame)) &&
+                render.right[frame] == render.left[frame],
+            "every first-callback sample reaches the retained far phase with the worker held");
+    require(pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+        "no-lead Legato needs no underrun, allocation or file I/O on the callback");
+    std::printf("PASS -- immediate paged Legato with its worker held starts at %lld\n", static_cast<long long>(due));
+
+    const auto ticks = [](std::int64_t frame) { return (frame * textproj::kPPQ + 12'000) / 24'000; };
+    constexpr std::int64_t editSample = 48'000, loopStart = 63'500, loopLength = 12;
+    LaunchStatusHeader header;
+    std::array<LaunchTrackStatus, 1> status{};
+    require(render.driver.readStatus(status, header) && status[0].run != 0,
+        "read the short paged clip's active run");
+    const auto run = status[0].run;
+    const LaunchClipRegionEdit edit{1, targetId, incarnation, run,
+        {ticks(loopStart), ticks(sourceFrames), LaunchClipLoopRegion{ticks(loopStart), ticks(loopStart + loopLength)}},
+        ClipUpdateRate::Sixteenth};
+    auto outside = edit;
+    outside.region.end = ticks(sourceFrames + 1);
+    require(!render.runtime.postRegionEdit(render.driver, outside, render.transport.position()),
+        "refuse a live region ending outside retained audio");
+    require(render.runtime.postRegionEdit(render.driver, edit, render.transport.position()),
+        "queue a quantized loop beyond the authored loop in the retained bank");
+    while (render.transport.position() < editSample + 2 * blockSize) {
+        const auto sample = render.transport.position();
+        render.block();
+        for (std::size_t frame = 0; frame < render.left.size(); ++frame) {
+            const auto at = sample + static_cast<std::int64_t>(frame);
+            const auto phase = at < editSample ? at : loopStart + (at - editSample) % loopLength;
+            require(render.left[frame] == valueAt(phase) && render.right[frame] == render.left[frame],
+                "live paged audio follows the edited source phase from its exact quantized sample");
+        }
+    }
+    require(render.count == 2 && render.driver.readStatus(status, header) && status[0].run == run &&
+        status[0].loopStartTick == ticks(loopStart) && status[0].loopLengthTicks == ticks(loopStart + loopLength) - ticks(loopStart),
+        "the paged loop update publishes on the original run");
+    require(pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+        "editing the retained region needs no underrun, callback allocation or file I/O");
+    std::printf("PASS -- paged live loop change with its worker held occurs at %lld\n", static_cast<long long>(editSample));
+
+    auto pending = edit;
+    pending.region.start = ticks(loopStart - 1);
+    require(render.runtime.postRegionEdit(render.driver, pending, render.transport.position()),
+        "queue another edit against the currently retained bank");
+    fixture.store->db().exec("UPDATE clip_launch SET legato=0 WHERE clip_id=106");
+    const auto changedModel = rows::readModel(*fixture.store);
+    const auto changedSource = readClipProject(*fixture.store, changedModel, true);
+    const auto coldProgram = prepareStoredLaunchProject(*changedSource, clock, rate, 2, blockSize, incarnation, problems);
+    const auto* cold = coldProgram ? coldProgram->clip(targetId) : nullptr;
+    require(cold && cold->pageReader() && problems.empty(), "publish the same running clip with ordinary paged media");
+    LaunchAudioRuntime replacement(coldProgram, {1}, blockSize);
+    const auto replacementSample = render.transport.position();
+    constexpr std::int64_t authoredLoopStart = 32'000, authoredLoopEnd = 63'000;
+    const auto restoredPhase = authoredLoopStart + loopStart +
+        (replacementSample - editSample) % loopLength - authoredLoopEnd;
+    while (render.transport.position() < 54'000 + blockSize) {
+        const auto sample = render.transport.position();
+        render.block(&replacement);
+        for (std::size_t frame = 0; frame < render.left.size(); ++frame)
+            require(render.left[frame] == valueAt(restoredPhase + sample - replacementSample + static_cast<std::int64_t>(frame)),
+                "a bank without retained pages restores the authored source and refuses the pending region");
+    }
+    require(render.count == 2 && render.driver.readStatus(status, header) && status[0].run == run &&
+        status[0].loopStartTick == ticks(authoredLoopStart) &&
+        cold->pageReader()->underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
+        "published cache replacement preserves the run without playing a cold edited range");
 }
 
 void ramModes(Fixture& fixture) {
@@ -362,8 +579,11 @@ int main() {
         ramModes(fixture);
         tempoSceneFromArrangementLoop(false);
         tempoSceneFromArrangementLoop(true);
+        tempoScenesWithArrangementLoop();
         Fixture legato;
         pagedLegato(legato);
+        Fixture immediateLegato;
+        pagedLegatoWithoutLead(immediateLegato);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
