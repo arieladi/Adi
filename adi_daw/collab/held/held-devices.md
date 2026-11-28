@@ -11,7 +11,8 @@
 
 ## Where it stands
 
-Round 1 (28 November): step 1 (the survey) done, below. Step 2 (the chain) in progress.
+Round 1 (28 November): step 1 (the survey) done. Step 2 (the chain) done: all seven stack tops merged,
+the cut point is 578c95198. Step 3: the core check of the cut point is running in slot 14.
 
 ## For the director
 
@@ -93,6 +94,15 @@ The order, oldest stack first (the effects stack's root, compressor-core, is of 
 
 | # | Merged | Chain head after | Collisions and how they were resolved |
 |---|---|---|---|
+| 1 | devices/spectral-resonator 920177d9 | a374b5afa | `tests/test_builtin_devices.cpp`, `main()` only: the base's calls (hotSwapPlacement, moveDeviceRange, duplicatePrepareKeepsBuiltinState, builtinInstrumentPlacement) and the branch's `gateLatency()` and `limiterDevice()` (under `ADI_WITH_PD`) all kept. The catalogue merged by itself: 21 entries on the base, 25 added, 46; the test's count follows. |
+| 2 | devices/beat-repeat-contract e243ab13 | 5cf027692 | none (`pd/devices/Beat Repeat.md`) |
+| 3 | devices/hybrid-reverb-nupc fb1c7e9a | 991e038aa | none |
+| 4 | devices/ext-audio-effect-contract 4054d859 | baca8c0dc | none (`pd/devices/External Audio Effect.md`) |
+| 5 | devices/df-e67b-canvas-args aab2e60c | **578c95198 = the cut point** | `src/juce/pd_loader_fix.cmake`: main's teardown free (window-fn, 21937f3b) kept; the branch's other half, no copy stored for no arguments, added after it; the branch's own teardown hunk dropped as a duplicate of main's. Its test `testAbstractionArgumentsLeaveNothingBehind` kept. |
+| 7 | devices/pd-midi-out 52782524 | 0d2b0840d | `src/juce/pd_engine.cpp`, `LibPdEngine::prepare`'s native path: the base's typed-MIDI scratch kept whole; the branch's atomic store of `adapterLatency_` in place of the plain assignment (the branch makes the member atomic). |
+| 8 | devices/amxd-audit 9fc81e1d | 086864eee | `src/juce/pd_amxd.cpp`: the base's DF-E89 fix (push_back for the number box's one-element lists, GCC 12 -O3 -Warray-bounds) met the branch's rewrite of the number box as `numberBox()`. The branch's function taken, with DF-E89's pattern applied to its one-element inlets and outlets. |
+
+The validators pass on a374b5afa (schema, ops, Pd, CI, parity).
 
 ## Step 3 — the proof
 
