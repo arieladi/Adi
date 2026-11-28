@@ -77,6 +77,8 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
 class ActivatorButton final : public juce::ToggleButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    std::function<bool(const juce::MouseEvent &)> deferMouseClick;
 };
 // Live's wrench in a plug-in device's title bar (manual 23.3): opens and closes the plug-in's own
 // window; lit while it is open.
@@ -222,7 +224,7 @@ class DevicePanelView final : public juce::Component,
     // Rename (Ctrl/Cmd+R, the menu): edit the name in the title bar, as Live does.
     bool beginRename();
     RenameEditor rename;
-    static constexpr int kTitleHeight = 17, kFoldedWidth = 22;
+    static constexpr int kTitleHeight = 17, kFoldedWidth = 32;
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
     juce::TextButton parameterList{"Parameter List"};
@@ -298,6 +300,8 @@ class DevicePanelView final : public juce::Component,
     void paintLimiterReduction(juce::Graphics &, juce::Rectangle<int>) const;
     void layoutCompactControls(int top);
     void layoutTitle(bool folded);
+    bool deferFoldedActivator(const juce::MouseEvent &);
+    std::uint64_t activatorClick_ = 0;
     void updateTitleTooltip();
     bool refreshPlaybackProblem();
     bool playbackProblemPresented_ = false;
@@ -315,6 +319,7 @@ class DevicePanelView final : public juce::Component,
     std::vector<DevicePanelData> draggedDevices_;
     bool selectOnRelease_ = false;
     bool startedDeviceDrag_ = false;
+    bool foldSwitchClick_ = false;
     std::uint64_t dragEpoch_ = 0;
     std::string editingParameter_;
     double editingValue_ = 0;

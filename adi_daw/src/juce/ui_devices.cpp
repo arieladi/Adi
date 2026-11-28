@@ -251,6 +251,11 @@ void ActivatorButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(over ? look::text : look::outline);
     g.drawEllipse(r.reduced(0.5f), 1.f);
 }
+void ActivatorButton::mouseUp(const juce::MouseEvent &e) {
+    if (isDown() && isOver() && deferMouseClick && deferMouseClick(e))
+        setState(buttonNormal);
+    juce::ToggleButton::mouseUp(e);
+}
 void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
     // A wrench: a handle across the box, an open jaw at its head.
     const auto r = getLocalBounds().toFloat().reduced(2.f);
@@ -1063,6 +1068,8 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         // Take focus after handling the title press. A Shift click needs the old anchor.
         setMouseClickGrabsKeyboardFocus(false);
         title.setMouseClickGrabsKeyboardFocus(false);
+        enabled.addMouseListener(this, false);
+        enabled.deferMouseClick = [this](const juce::MouseEvent &e) { return deferFoldedActivator(e); };
     }
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
@@ -1826,9 +1833,10 @@ void DevicePanelView::paint(juce::Graphics &g) {
     if (nativeFunction() && !range)
         edge = look::accent;
     const bool loadFailed = data && !data->loadIssue.empty();
+    const bool isFolded = strip.folded(id);
     g.fillAll(look::panel);
     g.setColour(edge);
-    if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
+    if (!mixCard_) g.fillRect(0, 0, getWidth(), isFolded ? getHeight() : kTitleHeight);
     if (loadFailed) g.setColour(look::error);
     g.drawRect(getLocalBounds().toFloat(), mixCard_ ? look::hairline : look::heavyLine);
     if (mixCard_ && eqPreview_) {
@@ -1868,18 +1876,19 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.drawEllipse(fold.reduced(0.5f), 1.f);
         look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
-                       strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
+                       isFolded ? 0.f : juce::MathConstants<float>::halfPi, look::text);
     }
-    if (strip.folded(id) && data) {
+    if (isFolded && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
         g.setColour(loadFailed ? look::error : look::text);
         g.setFont(look::font(11.5f));
         juce::Graphics::ScopedSaveState saved(g);
-        g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
-                                                       static_cast<float>(getHeight())));
-        g.drawText(title.getButtonText(), kTitleHeight + 2, getHeight() + 4,
-                   std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
-                   juce::Justification::centredLeft);
+        g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi)
+                           .translated(0.f, static_cast<float>(getHeight())));
+        const int foot = hasPlaybackProblem() ? static_cast<int>(kPlaybackProblemMarkSize) + 6 : 4;
+        g.drawFittedText(title.getButtonText(), foot, 4,
+                         std::max(0, getHeight() - kTitleHeight - foot - 2), std::max(0, getWidth() - 8),
+                         juce::Justification::centredLeft, 1, .1f);
     } else if (loadFailed) {
         const int statusTop = kTitleHeight + (configuring ? 28 : 4);
         g.setColour(look::error);
@@ -1967,6 +1976,15 @@ void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu() && e.mods.isLeftButtonDown()) {
+        // JUCE measures double clicks from the presses. Cancel the pending single
+        // on the second press, even if its release comes after the timeout.
+        if (e.getNumberOfClicks() == 1)
+            foldSwitchClick_ = false;
+        else
+            ++activatorClick_;
+    }
+    if (e.eventComponent == &enabled) return;
     dragTarget_.reset();
     draggedDevices_.clear();
     selectOnRelease_ = false;
@@ -1986,8 +2004,11 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
         if (!selectOnRelease_) strip.selectTitle(*this, e.mods.isShiftDown());
         focusIfShowing(*this);
     } else if (e.eventComponent == this && foldSwitch().contains(e.getPosition())) {
-        focusIfShowing(*this);
-        strip.fold(id);
+        if (e.mods.isLeftButtonDown() && e.getNumberOfClicks() == 1) {
+            foldSwitchClick_ = true;
+            focusIfShowing(*this);
+            strip.fold(id);
+        }
     } else if (e.eventComponent == this && e.mods.isLeftButtonDown()) {
         focusIfShowing(*this);
         pressEqGraph(e.position);
@@ -2011,11 +2032,13 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
     }
 }
 void DevicePanelView::mouseUp(const juce::MouseEvent &event) {
+    if (event.eventComponent == &enabled) return;
     if (std::exchange(selectOnRelease_, false) && !startedDeviceDrag_ && event.getDistanceFromDragStart() < 4)
         strip.selectTitle(*this, false);
     releaseEqHandle();
 }
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
+    if (e.eventComponent == &enabled) return;
     if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
     const auto pressed = e.getMouseDownPosition();
     const bool panelTitle = e.eventComponent == this && !foldSwitch().contains(pressed) &&
@@ -2034,8 +2057,11 @@ void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
                                  juce::ScaledImage{}, function, nullptr, &e.source);
 }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
-    if (!validTarget()) return;
-    if (e.eventComponent == &title || e.y < kTitleHeight)
+    // The fold switch already handled the first press of a double click.
+    if (e.mods.isPopupMenu() || !e.mods.isLeftButtonDown() || foldSwitchClick_ || !validTarget()) return;
+    const bool isFolded = strip.folded(id);
+    if (e.eventComponent == &title || (isFolded && e.eventComponent == &enabled) ||
+        (e.eventComponent == this && (isFolded || e.y < kTitleHeight)))
         strip.fold(id);
 }
 namespace {
@@ -2327,6 +2353,18 @@ bool DevicePanelView::panelTargetCurrent(const DevicePanelData &expected) {
         return false;
     const auto safe = SafePointer<DevicePanelView>(this);
     return validTarget() && safe && safe->strip.validExpected(expected) && safe;
+}
+bool DevicePanelView::deferFoldedActivator(const juce::MouseEvent &e) {
+    if (!strip.folded(id)) return false;
+    if (!data || e.mods.isPopupMenu() || !e.mods.isLeftButtonDown() || e.getNumberOfClicks() != 1 ||
+        !enabled.getLocalBounds().contains(e.getPosition())) return true;
+    const auto click = ++activatorClick_;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    juce::Timer::callAfterDelay(juce::MouseEvent::getDoubleClickTimeout(), [safe, click, expected = *data] {
+        if (safe && safe->activatorClick_ == click && safe->enabled.isEnabled() && safe->panelTargetCurrent(expected))
+            safe->enabled.setToggleState(!safe->enabled.getToggleState(), juce::sendNotificationSync);
+    });
+    return true;
 }
 void DevicePanelView::queueConfigureTouch(const DevicePanelData &next) {
     if (!configureSession_) return;

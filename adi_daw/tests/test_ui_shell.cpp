@@ -4050,6 +4050,103 @@ void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path
           "SC-90: reactivating restores the appearance of the whole device");
     view.setLookAndFeel(nullptr);
 }
+void foldedDeviceGestures(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "folded-device.adi", true, {}, error);
+    check(document != nullptr, "SC-485: a project for the folded Device View");
+    if (!document) return;
+
+    auto publication = std::make_shared<ParameterPublication>();
+    DevicePanelData data;
+    data.id = 50;
+    data.track = 2;
+    data.instance = 1;
+    data.available = true;
+    data.name = "Multiband Dynamics";
+    publication->push_back(data);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "folded-device");
+    UiPeerRoot surface;
+    surface.setSize(1200, 720);
+    surface.addAndMakeVisible(root);
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.setBounds(surface.getLocalBounds());
+    root.frame();
+    root.devices.publication = [&] { return publication; };
+    root.arrangement.geometry.selection.track = data.track;
+    root.frame();
+    auto *peer = surface.getPeer();
+    check(peer && root.devices.panels.size() == 1, "SC-485: a software peer presents one device");
+    if (!peer || root.devices.panels.size() != 1) return;
+
+    int activations = 0;
+    root.devices.submit = [&](const std::string &op, Payload) {
+        if (op == "device.setEnabled") ++activations;
+        return true;
+    };
+    auto &panel = *root.devices.panels.front();
+    const auto folded = [&] { return root.devices.folded(data.id); };
+    struct DoubleClickTimeout {
+        int previous = juce::MouseEvent::getDoubleClickTimeout();
+        ~DoubleClickTimeout() { juce::MouseEvent::setDoubleClickTimeout(previous); }
+    } timeout;
+    juce::MouseEvent::setDoubleClickTimeout(40);
+    auto time = juce::Time::currentTimeMillis();
+    const auto mouse = [&](juce::Point<int> spot, juce::ModifierKeys mods, int millis) {
+        juce::ModifierKeys::currentModifiers = mods;
+        peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse,
+                               surface.getLocalPoint(&panel, spot).toFloat(), mods, 1.f, 0.f, time += millis);
+    };
+    const auto click = [&](juce::Point<int> spot, int gap = 1000) {
+        mouse(spot, {}, gap);
+        mouse(spot, juce::ModifierKeys::leftButtonModifier, 1);
+        mouse(spot, {}, 1);
+    };
+    const auto doubleClick = [&](juce::Point<int> spot) {
+        click(spot);
+        click(spot, 1);
+    };
+    const auto flushClicks = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        juce::Timer::callPendingTimersSynchronously();
+    };
+
+    doubleClick(panel.title.getBounds().getCentre());
+    check(folded() && document->views().load("folded-device").foldedDevices.contains(data.id),
+          "SC-485: double-clicking the device title folds and remembers it");
+    check(panel.enabled.isVisible() && panel.getLocalBounds().contains(panel.enabled.getBounds()) &&
+              panel.getLocalBounds().contains(panel.foldSwitch()) &&
+              !panel.foldSwitch().intersects(panel.enabled.getBounds()),
+          "SC-485: the full activator and fold switch fit independently on the folded strip");
+    doubleClick({panel.getWidth() / 2, panel.getHeight() - 8});
+    check(!folded(), "SC-485: a double-click low on the folded title opens the device");
+
+    root.devices.fold(data.id);
+    doubleClick(panel.foldSwitch().getCentre());
+    check(!folded(), "SC-485: double-clicking the fold switch opens the device only once");
+
+    root.devices.fold(data.id);
+    doubleClick(panel.enabled.getBounds().getCentre());
+    flushClicks();
+    check(!folded() && activations == 0 && panel.enabled.getToggleState(),
+          "SC-485: double-clicking the folded activator unfolds without changing audio");
+
+    root.devices.fold(data.id);
+    click(panel.enabled.getBounds().getCentre());
+    flushClicks();
+    check(folded() && activations == 1 && !panel.enabled.getToggleState(),
+          "SC-485: a single click still switches the folded device off");
+
+    click(panel.enabled.getBounds().getCentre());
+    ++data.instance;
+    publication = std::make_shared<ParameterPublication>(ParameterPublication{data});
+    root.frame();
+    flushClicks();
+    check(folded() && activations == 1 && root.devices.panels.size() == 1 &&
+              root.devices.panels.front()->enabled.getToggleState(),
+          "SC-485: a delayed click does not activate a replacement using the same device ID");
+}
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
@@ -32410,6 +32507,7 @@ int main(int argc, char **argv) {
     trace("browserPreview", [&] { browserPreview(temp.path()); });
     trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
+    trace("foldedDeviceGestures", [&] { foldedDeviceGestures(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
     trace("browserSidebarScroll", [&] { browserSidebarScroll(commands, temp.path()); });
     trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
