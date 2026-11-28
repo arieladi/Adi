@@ -610,10 +610,10 @@ public:
                     return;
                 }
                 const LaunchMidiVoiceIds ids{state.get(), [](void* context) noexcept -> std::uint64_t {
-                    auto& owner = *static_cast<TrackState*>(context);
-                    if (owner.serial == std::numeric_limits<std::uint32_t>::max())
+                    auto& trackState = *static_cast<TrackState*>(context);
+                    if (trackState.serial == std::numeric_limits<std::uint32_t>::max())
                         return 0;
-                    return owner.prefix | ++owner.serial;
+                    return trackState.prefix | ++trackState.serial;
                 }};
                 const auto before = out.size();
                 const auto dropped = launched->droppedNotes();

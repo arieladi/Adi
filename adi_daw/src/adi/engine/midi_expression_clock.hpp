@@ -18,7 +18,7 @@ struct MidiNotePosition {
     }
 };
 
-[[nodiscard]] inline MidiNotePosition midiNotePosition(const TempoMap& tempo, double seconds) noexcept {
+[[nodiscard]] inline MidiNotePosition midiNotePosition(const auto& tempo, double seconds) noexcept {
     constexpr double ppq = static_cast<double>(textproj::kPPQ);
     const auto tick = tempo.secondsToTicks(seconds);
     return {tick, (seconds - tempo.ticksToSeconds(tick)) * tempo.bpmAt(tick) * ppq / 60.0};
