@@ -21,6 +21,7 @@
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/slot_recording.hpp"
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -55,6 +56,7 @@ struct ModelInput {
         std::string name;
         std::optional<std::int64_t> color;
         bool armed = false;
+        bool midi = false; // a MIDI or instrument track: it takes MIDI clips, an audio track audio
     };
     struct SlotRow {
         std::int64_t track = 0, scene = 0;
@@ -68,8 +70,10 @@ struct ModelInput {
         bool deactivated = false;
         engine::LaunchMode mode = engine::LaunchMode::Trigger;
         bool follow = false;
+        bool midi = false;
+        engine::FollowSettings followSettings{}; // its `enabled` is `follow`
     };
-    std::vector<Track> tracks;                    // display order: a group, then what it holds
+    std::vector<Track> tracks;                   // display order: a group, then what it holds
     std::vector<engine::launch::Scene> scenes;    // display order (the scenes' `order`)
     std::vector<SlotRow> slots;                   // sparse: no row is an empty slot with Stop
     std::vector<Clip> clips;                      // the facts of the slot clips
@@ -86,6 +90,7 @@ struct Column {
     std::string name;
     std::optional<std::int64_t> color;
     bool armed = false;
+    bool midi = false;
 };
 
 /// What a slot holds; changes only with the project.
@@ -98,6 +103,8 @@ struct SlotFacts {
     bool follow = false; // Follow Actions on: Live stripes the launch button (manual 16)
     engine::LaunchMode mode = engine::LaunchMode::Trigger;
     bool groupOccupied = false; // a group slot whose held tracks hold a clip in this scene
+    bool midiClip = false;
+    engine::FollowSettings followSettings{}; // the clip's whole Follow Action, kept by a toggle
 };
 
 /// What a slot is doing; changes every frame.
@@ -120,6 +127,7 @@ struct SceneFacts {
     bool signatureEnabled = false;
     bool follow = false;
     std::int32_t occupied = 0; // clip tracks holding a clip in this scene
+    engine::FollowSettings followSettings{.linked = false};
 };
 
 struct SceneLive {
@@ -141,13 +149,23 @@ struct TrackLive {
 
 enum class Focus : std::uint8_t { None, Slot, Scene, Track };
 
+/// One item picked with Ctrl+click: a slot (track and scene), a scene (track 0) or a track title
+/// (scene 0).
+struct Pick {
+    std::int64_t track = 0, scene = 0;
+    auto operator<=>(const Pick&) const = default;
+};
+
 /// What is selected, by identity. A slot selection is the rectangle from the anchor to the focus in
 /// display order; a scene selection the run of scenes between them; a track selection the run of
-/// track titles. Anchor equal to focus: one item.
+/// track titles. Anchor equal to focus: one item. With `picks` (Ctrl+click, manual 7.1 and 7.2:
+/// "nonadjacent clips ... by Ctrl-clicking") the selection is exactly the picked items, of the
+/// focus's kind, and the focus is the keyboard's place among them.
 struct Selection {
     Focus focus = Focus::None;
     std::int64_t track = 0, scene = 0;
     std::int64_t anchorTrack = 0, anchorScene = 0;
+    std::vector<Pick> picks; // sorted, distinct; empty: the rectangle
     bool operator==(const Selection&) const = default;
 };
 
@@ -190,9 +208,10 @@ class Model {
     [[nodiscard]] std::span<const std::size_t> heldColumns(std::size_t c) const noexcept;
 
     [[nodiscard]] const Selection& selection() const noexcept { return selection_; }
-    /// Sets the selection; one the model cannot show (an unknown track or scene) selects nothing.
-    void select(const Selection&) noexcept;
-    /// Whether a slot, a scene or a track title is inside the selection.
+    /// Sets the selection; one the model cannot show (an unknown track or scene, or a pick of one)
+    /// selects nothing. On the message thread: it may allocate.
+    void select(const Selection&);
+    /// Whether a slot, a scene or a track title is inside the selection. Allocation-free.
     [[nodiscard]] bool slotSelected(std::size_t c, std::size_t r) const noexcept;
     [[nodiscard]] bool sceneSelected(std::size_t r) const noexcept;
     [[nodiscard]] bool trackSelected(std::size_t c) const noexcept;
@@ -200,7 +219,11 @@ class Model {
     struct Range {
         std::size_t c0 = 0, c1 = 0, r0 = 0, r1 = 0;
     };
-    [[nodiscard]] std::optional<Range> selectedRange() const noexcept;
+    [[nodiscard]] std::optional<Range> selectedRange() const noexcept; // with picks: their box
+    /// The selected items in display order (columns, then rows); the commands' reading.
+    [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> selectedSlots() const;
+    [[nodiscard]] std::vector<std::size_t> selectedScenes() const;
+    [[nodiscard]] std::vector<std::size_t> selectedTracks() const;
 
     /// Counters a window compares to know what to present again.
     [[nodiscard]] std::uint64_t projectRevision() const noexcept { return projectRevision_; }
@@ -210,7 +233,8 @@ class Model {
   private:
     [[nodiscard]] std::size_t at(std::size_t c, std::size_t r) const noexcept { return c * scenes_.size() + r; }
     bool publish() noexcept;
-    void resolveSelection() noexcept;
+    void resolveSelection();
+    [[nodiscard]] bool stands(Focus, std::int64_t track, std::int64_t scene) const noexcept;
 
     std::vector<Column> columns_;
     std::vector<SceneFacts> scenes_;
@@ -231,6 +255,7 @@ class Model {
     std::optional<std::int64_t> pendingScene_;
     std::uint64_t statusIncarnation_ = 0;
     Selection selection_;
+    std::vector<std::uint8_t> pickedSlots_, pickedScenes_, pickedTracks_; // the picks, by place
     std::uint64_t projectRevision_ = 0, liveRevision_ = 0, selectionRevision_ = 0;
 };
 

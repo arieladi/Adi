@@ -11,13 +11,17 @@
 //   to Arrangement and Cancel Scene Launch are performance, outside Undo, as in Live;
 // - `capture` asks for Capture and Insert Scene, which the engine prepares and commits itself
 //   (`engine::prepareCaptureAndInsertScene`, then `commitCaptureAndInsertScene`: one Undo step);
-// - `view`, `selection` and `rename` are the window's own state, never an op.
+// - `copies` are clip copies the store side places among `edits` (session_view_edits.hpp), the
+//   same batch;
+// - `view`, `selection`, `rename` and `clipboard` are the window's own state, never an op. A
+//   selection naming a scene or clip an edit makes is applied after the rebuild that edit brings.
 //
 // Where Live's behaviour is not in its manual the answer is a named constant below, with its
 // reading owed in the session window log.
 #pragma once
 
 #include "adi/ops.hpp"
+#include "adi/textproj.hpp"
 #include "adi/ui/session_view_model.hpp"
 
 #include <cstdint>
@@ -43,6 +47,20 @@ inline constexpr bool groupLaunchStopsEmptyHeldTracks = true;
 inline constexpr bool enterLaunchesFocusOnly = true;
 /// TM-SV-05 names F3 beside Live's Tab for the view switch, as F4 opens the Mix View (ADR-0209 d9).
 inline constexpr bool f3TogglesSessionView = true;
+/// READING OWED: Duplicate on clips puts the copies the selection's height below them; where a slot
+/// there is taken or missing, ADI inserts that many scenes below the selection for them, so no
+/// clip is overwritten.
+inline constexpr bool duplicateInsertsScenes = true;
+/// READING OWED: a paste that reaches past the last scene adds the scenes it needs at the end.
+inline constexpr bool pasteAddsScenes = true;
+/// READING OWED: Create Follow Action Chain (16.7.2: "all selected clips play in a loop", the
+/// selection need not be contiguous). ADI sets each selected clip of a track to Jump to the next
+/// selected clip's scene at 100 %, the last back to the first, and keeps each clip's Follow time.
+inline constexpr bool chainKeepsFollowTime = true;
+/// READING OWED: the length of the clip Insert MIDI Clip makes in a slot. ADI: one bar.
+inline constexpr std::int64_t newSlotClipBars = 1;
+/// READING OWED: a duplicated or pasted scene keeps its name as it was.
+inline constexpr bool sceneCopyKeepsName = true;
 
 enum class MainView : std::uint8_t { Arrangement, Session };
 [[nodiscard]] constexpr MainView toggled(MainView v) noexcept {
@@ -71,6 +89,11 @@ enum class Command : std::uint8_t {
     Delete,              // Delete, Backspace
     Deactivate,          // 0
     MoveScenesUp, MoveScenesDown, // Ctrl+Up/Down: Move Nonadjacent Scenes Without Collapsing
+    InsertMidiClip,      // Ctrl+Shift+M
+    ToggleFollowActions, // Shift+Enter: Toggle Follow Actions for Selected Clips
+    CreateFollowActionChain, // Ctrl+Shift+Enter
+    Duplicate,           // Ctrl+D
+    Copy, Cut, Paste,    // Ctrl+C, Ctrl+X, Ctrl+V (41.5)
 };
 
 enum class Key : std::uint8_t {
@@ -90,12 +113,40 @@ struct KeyOptions {
 /// Letting a key go: Enter's release edge in the Session View.
 [[nodiscard]] std::optional<Command> commandForKeyRelease(const KeyChord&, MainView) noexcept;
 
+/// What Copy and Cut put on the Session View's clipboard: clips by their place from the
+/// selection's top-left corner, or whole scenes. A clip is named by its identity; a Cut's clips
+/// are gone once the Cut commits, so the window takes their images first (`snapshotClipboard` in
+/// session_view_edits.hpp) and a paste copies from those.
+struct Clipboard {
+    enum class Kind : std::uint8_t { None, Clips, Scenes };
+    struct Clip {
+        std::size_t column = 0, row = 0; // from the top-left corner, in display places
+        std::int64_t clip = 0;
+        bool midi = false;
+    };
+    struct Slot {
+        std::int64_t track = 0, clip = 0; // clip 0: an empty slot
+        bool midi = false, hasStop = true;
+    };
+    struct Scene {
+        SceneFacts facts;
+        std::vector<Slot> slots; // the clip tracks' slots that differ from an empty one with Stop
+    };
+    Kind kind = Kind::None;
+    std::vector<Clip> clips;
+    std::vector<Scene> scenes;
+    Payload images = Payload::object(); // clip identity as text -> {image, launch}; see above
+};
+
 struct Context {
     MainView view = MainView::Session;
     std::uint64_t incarnation = 0; // `engine::Session::launchIncarnation()`; 0: nothing to launch into
     float velocity = 1.0f;
     bool selectNextSceneOnLaunch = defaultSelectNextSceneOnLaunch;
     bool selectOnLaunch = defaultSelectOnLaunch;
+    std::int64_t nextClipId = 0; // the first free clip identity (Insert MIDI Clip); 0: unknown
+    std::int64_t barTicks = 4 * textproj::kPPQ; // one bar of the project's meter where the clip goes
+    const Clipboard* clipboard = nullptr; // what Paste pastes
 };
 
 /// Capture and Insert Scene below `belowScene`, or at the end when none is selected.
@@ -111,9 +162,23 @@ struct RenameTarget {
     bool operator==(const RenameTarget&) const = default;
 };
 
+/// A clip copied into a slot. Copying needs the clip's rows, so the store side
+/// (`prepareEdit` in session_view_edits.hpp) turns it into the copy (`clip.duplicate`), its slot
+/// (`session.setSlotClip`) and its launch settings, in place before `edits[before]`.
+struct SlotCopy {
+    std::int64_t clip = 0;              // the source
+    std::int64_t track = 0, scene = 0;  // the slot it goes to, on a track that takes its kind
+    std::optional<bool> stop;           // a copied scene keeps its slot's Stop button
+    std::size_t before = 0;
+    bool operator==(const SlotCopy&) const = default;
+};
+
 struct Outcome {
     std::vector<OpRequest> edits;    // one batch: one step of Undo
+    std::vector<SlotCopy> copies;    // with `edits`, the same batch (prepareEdit)
+    std::string label;               // the step's name in Undo where it holds copies
     std::vector<OpRequest> launches; // one gesture: never in Undo
+    std::optional<Clipboard> clipboard; // Copy and Cut: the window's clipboard takes it
     std::optional<MainView> view;
     std::optional<Selection> selection;
     std::optional<CaptureRequest> capture;
@@ -131,6 +196,29 @@ struct Outcome {
 [[nodiscard]] Outcome releaseSlot(const Model&, std::size_t column, std::size_t row, const Context&);
 [[nodiscard]] Outcome launchScene(const Model&, std::size_t row, const Context&);
 [[nodiscard]] Outcome stopColumn(const Model&, std::size_t column, const Context&);
+
+/// A click that selects (manual 7.1, 7.2, 41.5): plainly one item; with Shift the run or rectangle
+/// from the anchor; with Ctrl (Cmd) the item picked into or out of the selection.
+enum class Target : std::uint8_t { Slot, Scene, Track };
+struct Click {
+    Target what = Target::Slot;
+    std::size_t column = 0, row = 0; // a scene uses `row`, a track title `column`
+    bool command = false, shift = false;
+};
+[[nodiscard]] Outcome click(const Model&, const Click&);
+/// The rubber band from an empty slot (7.4): the rectangle from where it began to where it is.
+[[nodiscard]] Outcome rubberBand(const Model&, std::size_t fromColumn, std::size_t fromRow, std::size_t toColumn,
+                                 std::size_t toRow);
+/// Dropping the selected clips, grabbed at one slot, on another (7.4): a move, or with Ctrl (Win) or
+/// Alt (Mac) held a copy (41.15, Copy Clips). Every clip must land on a track of its kind.
+[[nodiscard]] Outcome dropSlots(const Model&, std::size_t grabColumn, std::size_t grabRow, std::size_t column,
+                                std::size_t row, bool copy);
+/// Dropping the selected scenes before the scene at `beforeRow` (the scene count: at the end).
+/// Nonadjacent scenes collapse together when dropped (7.2).
+[[nodiscard]] Outcome dropScenes(const Model&, std::size_t beforeRow);
+/// The context menu's colour palette (7.1, 7.2): the selected clips or tracks take the colour.
+/// A scene's colour waits for its op (see the session window log).
+[[nodiscard]] Outcome recolour(const Model&, std::int64_t colour);
 
 /// The rename itself, once the name is typed; nothing when it is unchanged.
 [[nodiscard]] Outcome renameTo(const Model&, const RenameTarget&, std::string_view name);

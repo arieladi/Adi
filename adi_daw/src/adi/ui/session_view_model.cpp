@@ -78,7 +78,8 @@ ModelInput modelInput(const rows::Model& model, const engine::launch::LaunchData
         if (!seen.insert(t->id).second)
             continue;
         if (const auto kind = kindOf(t->kind))
-            in.tracks.push_back({t->id, *kind, t->parentId.value_or(0), t->name, t->color, t->recordArmed});
+            in.tracks.push_back({t->id, *kind, t->parentId.value_or(0), t->name, t->color, t->recordArmed,
+                                 t->kind == "midi" || t->kind == "instrument"});
         if (const auto held = children.find(t->id); held != children.end())
             stack.insert(stack.end(), held->second.rbegin(), held->second.rend());
     }
@@ -89,7 +90,8 @@ ModelInput modelInput(const rows::Model& model, const engine::launch::LaunchData
         const auto settings = data.settings(c.id);
         in.clips.push_back({c.id, c.name, c.color, c.muted,
                             settings ? settings->mode : engine::LaunchMode::Trigger,
-                            settings && settings->follow.enabled});
+                            settings && settings->follow.enabled, c.kind == "midi",
+                            settings ? settings->follow : engine::FollowSettings{}});
     }
     return in;
 }
@@ -103,12 +105,13 @@ void Model::rebuild(ModelInput in) {
 
     columns_.clear();
     for (auto& t : in.tracks)
-        columns_.push_back({t.id, t.kind, t.parent, std::move(t.name), t.color, t.armed});
+        columns_.push_back({t.id, t.kind, t.parent, std::move(t.name), t.color, t.armed, t.midi});
     scenes_.clear();
     std::int64_t number = 1;
     for (auto& s : in.scenes)
         scenes_.push_back({s.id, s.order, number++, std::move(s.name), s.color, s.tempoBpm, s.tempoEnabled,
-                           s.signatureNumerator, s.signatureDenominator, s.signatureEnabled, s.follow.enabled, 0});
+                           s.signatureNumerator, s.signatureDenominator, s.signatureEnabled, s.follow.enabled, 0,
+                           s.follow});
     columnIndex_.clear();
     for (std::size_t c = 0; c < columns_.size(); ++c)
         columnIndex_.emplace_back(columns_[c].track, c);
@@ -139,6 +142,9 @@ void Model::rebuild(ModelInput in) {
             f.deactivated = found->second->deactivated;
             f.follow = found->second->follow;
             f.mode = found->second->mode;
+            f.midiClip = found->second->midi;
+            f.followSettings = found->second->followSettings;
+            f.followSettings.enabled = f.follow;
         }
         ++scenes_[*r].occupied;
     }
@@ -194,6 +200,9 @@ void Model::rebuild(ModelInput in) {
             columnHasStatus_[*c] = 1;
         }
     recording_.reserve(std::max<std::size_t>(columns * rows, recording_.size()));
+    pickedSlots_.assign(columns * rows, 0);
+    pickedScenes_.assign(rows, 0);
+    pickedTracks_.assign(columns, 0);
     ++projectRevision_;
     resolveSelection();
     (void)publish();
@@ -328,56 +337,111 @@ bool Model::applyRecording(SlotRecordingState state, std::span<const engine::lau
     return publish();
 }
 
-void Model::select(const Selection& wanted) noexcept {
+bool Model::stands(Focus focus, std::int64_t track, std::int64_t scene) const noexcept {
+    const auto holdsSlots = [this](std::int64_t t) {
+        const auto c = columnOf(t);
+        return c && columns_[*c].kind != ColumnKind::Return;
+    };
+    switch (focus) {
+    case Focus::Slot: return holdsSlots(track) && rowOf(scene).has_value();
+    case Focus::Scene: return rowOf(scene).has_value();
+    case Focus::Track: return columnOf(track).has_value();
+    case Focus::None: break;
+    }
+    return false;
+}
+
+void Model::select(const Selection& wanted) {
     auto next = wanted;
     if (next.anchorTrack == 0)
         next.anchorTrack = next.track;
     if (next.anchorScene == 0)
         next.anchorScene = next.scene;
-    const auto holdsSlots = [this](std::int64_t track) {
-        const auto c = columnOf(track);
-        return c && columns_[*c].kind != ColumnKind::Return;
-    };
-    bool valid = false;
-    switch (next.focus) {
-    case Focus::Slot:
-        valid = holdsSlots(next.track) && holdsSlots(next.anchorTrack) && rowOf(next.scene) && rowOf(next.anchorScene);
-        break;
-    case Focus::Scene:
+    if (next.focus == Focus::Scene)
         next.track = next.anchorTrack = 0;
-        valid = rowOf(next.scene) && rowOf(next.anchorScene);
-        break;
-    case Focus::Track:
+    if (next.focus == Focus::Track)
         next.scene = next.anchorScene = 0;
-        valid = columnOf(next.track) && columnOf(next.anchorTrack);
-        break;
-    case Focus::None:
-        break;
+    for (auto& p : next.picks) {
+        if (next.focus == Focus::Scene)
+            p.track = 0;
+        if (next.focus == Focus::Track)
+            p.scene = 0;
+    }
+    std::sort(next.picks.begin(), next.picks.end());
+    next.picks.erase(std::unique(next.picks.begin(), next.picks.end()), next.picks.end());
+    bool valid = stands(next.focus, next.track, next.scene) && stands(next.focus, next.anchorTrack, next.anchorScene);
+    for (const auto& p : next.picks)
+        valid = valid && stands(next.focus, p.track, p.scene);
+    if (!next.picks.empty()) {
+        next.anchorTrack = next.track;
+        next.anchorScene = next.scene;
     }
     if (!valid)
         next = Selection{};
     if (next != selection_) {
-        selection_ = next;
+        selection_ = std::move(next);
         ++selectionRevision_;
+    }
+    // The picks as masks, so a frame asks "is this selected?" without a search.
+    std::fill(pickedSlots_.begin(), pickedSlots_.end(), std::uint8_t{0});
+    std::fill(pickedScenes_.begin(), pickedScenes_.end(), std::uint8_t{0});
+    std::fill(pickedTracks_.begin(), pickedTracks_.end(), std::uint8_t{0});
+    for (const auto& p : selection_.picks) {
+        const auto c = columnOf(p.track);
+        const auto r = rowOf(p.scene);
+        if (selection_.focus == Focus::Slot && c && r)
+            pickedSlots_[at(*c, *r)] = 1;
+        else if (selection_.focus == Focus::Scene && r)
+            pickedScenes_[*r] = 1;
+        else if (selection_.focus == Focus::Track && c)
+            pickedTracks_[*c] = 1;
     }
 }
 
-void Model::resolveSelection() noexcept {
-    // A rebuild keeps what still stands; a range whose far end went collapses to its focus.
+void Model::resolveSelection() {
+    // A rebuild keeps what still stands; a range whose far end went collapses to its focus, and a
+    // pick that went leaves the others.
     auto s = selection_;
-    const bool focusStands = s.focus == Focus::Slot    ? columnOf(s.track) && rowOf(s.scene)
-                             : s.focus == Focus::Scene ? rowOf(s.scene).has_value()
-                             : s.focus == Focus::Track ? columnOf(s.track).has_value()
-                                                       : false;
-    if (!focusStands) {
+    if (!stands(s.focus, s.track, s.scene)) {
         select(Selection{});
         return;
     }
-    if ((s.focus != Focus::Scene && !columnOf(s.anchorTrack)) || (s.focus != Focus::Track && !rowOf(s.anchorScene))) {
+    if (!stands(s.focus, s.anchorTrack, s.anchorScene)) {
         s.anchorTrack = s.track;
         s.anchorScene = s.scene;
     }
+    std::erase_if(s.picks, [&](const Pick& p) { return !stands(s.focus, p.track, p.scene); });
     select(s);
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> Model::selectedSlots() const {
+    std::vector<std::pair<std::size_t, std::size_t>> out;
+    if (selection_.focus != Focus::Slot)
+        return out;
+    const auto range = selectedRange();
+    for (std::size_t c = range->c0; c <= range->c1; ++c)
+        for (std::size_t r = range->r0; r <= range->r1; ++r)
+            if (columns_[c].kind != ColumnKind::Return && slotSelected(c, r))
+                out.emplace_back(c, r);
+    return out;
+}
+
+std::vector<std::size_t> Model::selectedScenes() const {
+    std::vector<std::size_t> out;
+    if (selection_.focus == Focus::Scene)
+        for (std::size_t r = 0; r < scenes_.size(); ++r)
+            if (sceneSelected(r))
+                out.push_back(r);
+    return out;
+}
+
+std::vector<std::size_t> Model::selectedTracks() const {
+    std::vector<std::size_t> out;
+    if (selection_.focus == Focus::Track)
+        for (std::size_t c = 0; c < columns_.size(); ++c)
+            if (trackSelected(c))
+                out.push_back(c);
+    return out;
 }
 
 std::optional<Model::Range> Model::selectedRange() const noexcept {
@@ -386,6 +450,19 @@ std::optional<Model::Range> Model::selectedRange() const noexcept {
     const auto ordered = [](std::optional<std::size_t> a, std::optional<std::size_t> b) {
         return std::pair{std::min(a.value_or(0), b.value_or(0)), std::max(a.value_or(0), b.value_or(0))};
     };
+    if (!s.picks.empty() && s.focus != Focus::None) {
+        // Picks: the box that holds them all.
+        Range box{columns_.size(), 0, scenes_.size(), 0};
+        for (const auto& p : s.picks) {
+            const auto c = s.focus == Focus::Scene ? std::size_t{0} : columnOf(p.track).value_or(0);
+            const auto r = s.focus == Focus::Track ? std::size_t{0} : rowOf(p.scene).value_or(0);
+            box.c0 = std::min(box.c0, c);
+            box.c1 = std::max(box.c1, c);
+            box.r0 = std::min(box.r0, r);
+            box.r1 = std::max(box.r1, r);
+        }
+        return box;
+    }
     switch (s.focus) {
     case Focus::Slot: {
         const auto [c0, c1] = ordered(columnOf(s.track), columnOf(s.anchorTrack));
@@ -407,17 +484,29 @@ std::optional<Model::Range> Model::selectedRange() const noexcept {
 }
 
 bool Model::slotSelected(std::size_t c, std::size_t r) const noexcept {
-    const auto range = selection_.focus == Focus::Slot ? selectedRange() : std::nullopt;
+    if (selection_.focus != Focus::Slot || c >= columns_.size() || r >= scenes_.size())
+        return false;
+    if (!selection_.picks.empty())
+        return pickedSlots_[at(c, r)] != 0;
+    const auto range = selectedRange();
     return range && c >= range->c0 && c <= range->c1 && r >= range->r0 && r <= range->r1;
 }
 
 bool Model::sceneSelected(std::size_t r) const noexcept {
-    const auto range = selection_.focus == Focus::Scene ? selectedRange() : std::nullopt;
+    if (selection_.focus != Focus::Scene || r >= scenes_.size())
+        return false;
+    if (!selection_.picks.empty())
+        return pickedScenes_[r] != 0;
+    const auto range = selectedRange();
     return range && r >= range->r0 && r <= range->r1;
 }
 
 bool Model::trackSelected(std::size_t c) const noexcept {
-    const auto range = selection_.focus == Focus::Track ? selectedRange() : std::nullopt;
+    if (selection_.focus != Focus::Track || c >= columns_.size())
+        return false;
+    if (!selection_.picks.empty())
+        return pickedTracks_[c] != 0;
+    const auto range = selectedRange();
     return range && c >= range->c0 && c <= range->c1;
 }
 
