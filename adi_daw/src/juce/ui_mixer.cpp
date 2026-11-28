@@ -2059,6 +2059,16 @@ void MixerStrip::enableSend(std::size_t index, bool on) {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
+void MixerStrip::setSendPan(std::size_t index, double pan) {
+    const auto current = panel_.root.current();
+    if (!current || index >= returns_.size())
+        return;
+    auto edit = adi::ui::setSendPan(*current, track_, returns_[index], pan);
+    if (!edit.refusal.empty())
+        panel_.root.say(edit.refusal);
+    else
+        panel_.root.submitEdits(std::move(edit.ops));
+}
 void MixerStrip::enableAllSends() {
     const auto current = panel_.root.current();
     if (!current)
@@ -2080,6 +2090,17 @@ juce::PopupMenu MixerStrip::sendMenuItems(std::size_t index) {
     // A return's sends start off; Live's menu also switches them all on at once (§18.4).
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
+    // ADI's pan on a send (MX-06; ADR-0203 d3), one undo step: the five places Live's pan reads most often.
+    {
+        const auto current = panel_.root.current();
+        const auto *send = current ? findSend(current->sends, track_, returns_[index]) : nullptr;
+        const double now = send != nullptr ? send->pan : 0.0;
+        juce::PopupMenu panned;
+        for (const auto &[name, value] : std::initializer_list<std::pair<const char *, double>>{
+                 {"Left", -1.0}, {"50L", -.5}, {"Center", 0.0}, {"50R", .5}, {"Right", 1.0}})
+            panned.addItem(name, true, std::abs(now - value) < 1e-6, [this, index, value] { setSendPan(index, value); });
+        m.addSubMenu("Send Pan", panned);
+    }
     // Where this send taps its track (ADR-0245 d10; DF-W33): Live's three, the one it uses ticked.
     if (const auto current = panel_.root.current()) {
         m.addSeparator();
