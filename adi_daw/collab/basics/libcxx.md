@@ -6,6 +6,16 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 14:50 IST — seats/library-chain `5354d28b5cd9e9978400a24e10d31bd343b4c37d`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 295 registered non-performance CTest suites passed with `ctest -LE performance`.
+
+In the separate Warp benchmark CMake project, the exact `adi_daw/tools/warp_bench/probe.cpp` failed a strict Apple Silicon syntax check with macOS 26.1 SDK headers and a macOS 14 deployment target. At `79:30`, floating `std::from_chars` is unavailable for that deployment target. The call at `100:47` instantiates the floating overload. The same check passed when targeting macOS 26.1.
+
+Keep integral `from_chars` for the meter and parse decimal BPM with a classic-locale stream that consumes the full argument. The one-commit fix is queued for the complete Linux gate.
+
+JUCE Debug also built and linked libc++ and libc++abi. The three offscreen window suites passed.
+
 ### 28 November 2026, 14:32 IST — seats/pitch-chain `bbb4fc4aa28a10f0ab81804322a4cd299723ec04`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 301 registered non-performance CTest suites passed with `ctest -LE performance`.
