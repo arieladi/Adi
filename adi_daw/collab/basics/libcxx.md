@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 16:01 IST — basics/browser-chain `f80910a6eb7f9c3a95658219c9be0889980ae44e`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. All 290 registered non-performance CTest suites passed with `ctest -LE performance`. `library_query.cpp`, `browser_catalogue.cpp`, `session_discovery.cpp` and `app_control.cpp` passed strict Apple Silicon syntax checks using the macOS 26.1 SDK.
+
+JUCE Debug built and linked libc++ and libc++abi. The UI document and window-state suites passed. `adi_ui_shell_tests` failed the Devices, Mixer and Mixer View snapshot comparisons both peerless and under Xvfb. Each comparison differed at the same 90 pixels, in the 14 × 9 box beginning at `(133, 86)`.
+
+The pixels show the Browser's new no-match notice from `adi_daw/src/juce/ui_browser.cpp:1009–1018`. The shared fixture clears the search widget at `adi_daw/tests/test_ui_shell.cpp:31906`, leaving the Browser results stale. The smallest fixture correction is to call the existing Escape handler, which clears the query and refreshes the results synchronously. The newer Browser tip `62141fcb` is queued.
+
 ### 28 November 2026, 15:39 IST — seats/stretcher-chain `7f4b86a67d01f1b5d42a84df3f12201e450c85f5`
 
 Headless Debug compiled with Clang 20, libc++, Pd and the strict flags. The first full `ctest -LE performance` run passed 285 of 286 suites. `adi_link_playback_tests` failed the Complex Link tempo-change checks at `adi_daw/tests/test_link_playback.cpp:493–494`, `503` and `531`. The isolated rerun passed. A complete rerun with `ctest -LE performance --parallel 2` passed all 286 suites, including Link Playback and the streaming Warp suites.
