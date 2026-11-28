@@ -301,6 +301,51 @@ void throughTheStore() {
           "compiled from the store: placed, and a disabled lane keeps enabled = false");
 }
 
+void clipClockBeforeLateTempo() {
+    const test::TempDirectory scratch("automation", "late-tempo");
+    StoreError error = StoreError::Ok;
+    const auto path = scratch.path() / "tempo.adi";
+    auto store = Store::createEmpty(path, error);
+    check(store != nullptr, "a store for a late first tempo row");
+    if (!store) return;
+    auto& db = store->db();
+    db.exec("INSERT INTO tracks(id, kind, name) VALUES (1, 'audio', 'Automation')");
+    db.exec("DELETE FROM tempo_map");
+    db.exec("INSERT INTO tempo_map(pos_ticks, bpm) VALUES (11531520, 60), (23063040, 120)");
+    db.exec("INSERT INTO automation_lanes(id, owner_kind, owner_id, param_ref, time_base, value_domain, default_value) "
+            "VALUES (1, 'track', 1, 'volume', 0, 'real', -6), (2, 'track', 1, 'pan', 1, 'real', -6)");
+    db.exec("INSERT INTO clips(id, track_id, kind, time_base, pos_ticks, length_ticks) "
+            "VALUES (11, 1, 'midi', 0, 2882880, 5765760), (12, 1, 'midi', 0, 11531520, 11531520)");
+    db.exec("INSERT INTO clips(id, track_id, kind, time_base, pos_ns, length_ns) "
+            "VALUES (13, 1, 'midi', 1, 0, 35000000)");
+    check(store->putAutomationData(1, 11, stream({pt(0, -12.0, 0), pt(kQuarter / 2, -3.0, 0)}, false)) &&
+              store->putAutomationData(1, 12, stream({pt(0, -12.0, 0), pt(kQuarter, -3.0, 0)}, false)) &&
+              store->putAutomationData(2, 13, stream({pt(0, -12.0, 0), pt(20000000, -3.0, 0)}, true)),
+          "the musical and absolute clip envelopes are stored");
+
+    constexpr double rate = 44100.0;
+    for (const bool ramp : {false, true}) {
+        if (ramp) db.exec("UPDATE tempo_map SET curve = 1 WHERE pos_ticks = 11531520");
+        const auto program = compileAutomation(rows::readModel(*store), rate);
+        const auto* musical = program->lane(1);
+        const auto* absolute = program->lane(2);
+        const std::string label = ramp ? "linear ramp" : "stepped tempo";
+        check(musical && absolute && program->problems().empty(), label + " compiles both saved envelope time bases");
+        if (!musical || !absolute) continue;
+        check(valueAt(*musical, 22049) == -6.0 && valueAt(*musical, 22050) == -12.0 &&
+                  valueAt(*musical, 44099) == -12.0 && heldValueAt(*musical, 44100, -6.0) == -3.0 &&
+                  valueAt(*musical, 66149) == -3.0 && valueAt(*musical, 66150) == -6.0,
+              label + " uses the first saved 60 BPM before its authored tick");
+        const auto midpoint = std::llround(rate * (ramp ? 2.0 + 2.0 * std::log(1.5) : 3.0));
+        check(valueAt(*musical, 88199) == -6.0 && valueAt(*musical, 88200) == -12.0 &&
+                  valueAt(*musical, midpoint - 1) == -12.0 && valueAt(*musical, midpoint) == -3.0,
+              label + " keeps the authored timing beyond the first tempo row");
+        check(valueAt(*absolute, 881) == -12.0 && valueAt(*absolute, 882) == -3.0 &&
+                  valueAt(*absolute, 1543) == -3.0 && valueAt(*absolute, 1544) == -6.0,
+              label + " preserves absolute point placement and half-sample end rounding");
+    }
+}
+
 // --- concurrency: an immutable program read from many threads ---------------------------
 
 void concurrent() {
@@ -336,6 +381,7 @@ int main() {
         refusals();
         notPlayedYet();
         throughTheStore();
+        clipClockBeforeLateTempo();
         concurrent();
     } catch (const std::exception& ex) {
         check(false, std::string("unexpected exception: ") + ex.what());
