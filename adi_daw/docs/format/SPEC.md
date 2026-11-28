@@ -101,7 +101,8 @@ undo/redo, history branching and reverting to a snapshot taken before any edit.
 
 ### 3.2 Required pragmas while a project is open
 
-Local projects use `journal_mode = WAL` and `synchronous = NORMAL`. The
+Local projects use `journal_mode = WAL` and `synchronous = NORMAL` (`FULL` for a writer on a
+Windows `DRIVE_REMOVABLE` volume). The
 write-ahead log lets render and export read a consistent snapshot while the
 user keeps editing. The connection uses `busy_timeout = 5000`.
 
@@ -117,6 +118,20 @@ folder. Folder matches use whole components of the canonical project path.
 The Status Bar tells the user when the project is in such a location. A file
 copied between transactions carries all committed changes. Use Save a Copy or
 Collect and Export to take a consistent copy of an open project.
+
+Windows resolves the project path to its actual volume mount point and uses
+`FULL` for a writable project when the OS reports `DRIVE_REMOVABLE`. Fixed or
+unclassified storage retains the local `NORMAL` default. PD-12's `FULL`
+requirement for network projects remains pending a journal-mode decision.
+SQLite WAL relies on shared
+memory between connections and does not support separate hosts opening a
+database over a network filesystem. [Windows volume lookup](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew) · [Windows drive types](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew) · [SQLite WAL](https://sqlite.org/wal.html#overview)
+
+Store connections enable `SQLITE_DBCONFIG_DEFENSIVE` when opened, including
+read-only connections and the read-only reopen of a newer major. SQLite can
+then refuse direct writes to its schema tables even if SQL requests
+`writable_schema`. Ordinary project edits and migrations continue through
+their existing transactions.
 
 ### 3.3 Close policy — the WAL sidecar rule
 

@@ -11,6 +11,7 @@
 #include "adi/engine/session.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <array>
 #include <algorithm>
 #include <chrono>
@@ -635,6 +636,9 @@ void unknownMajorAndReaders() {
     check(copied.ok && !copied.warning.empty(),"internal backup can copy an unknown major verbatim");
     auto reopened=Store::open(target,error);
     check(reopened && reopened->schemaMajor()==2 && reopened->readOnly(),"the future copy keeps its version and read-only policy");
+    int defensive=0;
+    check(newer && sqlite3_db_config(newer->db().getHandle(),SQLITE_DBCONFIG_DEFENSIVE,-1,&defensive)==SQLITE_OK && defensive==1,
+          "the automatic read-only reopen for a future major is defensive");
     const auto refused=f.target("future-save-as");
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
@@ -733,7 +737,32 @@ void stagedFileSaves() {
           "the completed copy can be adopted once the competing writer releases without editing");
     const auto closed = std::async(std::launch::async, [&] { return busyTask.closeReplacedProject(); }).get();
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
+void defensiveConnections() {
+    Fixture f;
+    const auto isDefensive=[](Store& store) {
+        int enabled=0;
+        return sqlite3_db_config(store.db().getHandle(),SQLITE_DBCONFIG_DEFENSIVE,-1,&enabled)==SQLITE_OK && enabled==1;
+    };
+    check(isDefensive(*f.store),"new project connection is defensive");
+    StoreError error{};
+    auto reader=Store::open(f.source,error,true);
+    check(reader && isDefensive(*reader),"explicit read-only project connection is defensive");
+    reader.reset();
+    check(f.store->close(),"close before writable reopen");
+    auto writer=Store::open(f.source,error);
+    check(writer && isDefensive(*writer),"reopened writable project connection is defensive");
+    if(!writer)return;
+    auto& db=writer->db();
+    db.exec("PRAGMA writable_schema=ON");
+    const int schemaWrite=sqlite3_exec(db.getHandle(),"UPDATE sqlite_schema SET sql=sql WHERE name='tracks'",nullptr,nullptr,nullptr);
+    db.exec("PRAGMA writable_schema=OFF");
+    check(schemaWrite==SQLITE_ERROR,"direct schema write is refused even after writable_schema ON");
+    OpRequest rename;
+    rename.opType="track.rename";
+    rename.payload={{"id",1},{"name","Normal edit"}};
+    check(OpJournal(*writer).commit(rename).ok && db.execAndGet("SELECT name FROM tracks WHERE id=1").getString()=="Normal edit",
+          "ordinary journal edits remain writable");
 }
 }
-int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();defensiveConnections();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
