@@ -163,6 +163,12 @@ struct LaunchStatusHeader {
 
 enum class LaunchCueAdmission : std::uint8_t { None, Scheduled, Linked, MusicalLinked, ReadyOnly, HeldRepeat };
 
+struct LaunchLegatoForecast {
+    LaunchSourceCue cue;
+    std::int64_t sample, tick;
+    LaunchCueAdmission admission;
+};
+
 struct LaunchSink {
     void* context = nullptr;
     void (*section)(void*, const LaunchSection&) noexcept = nullptr;
@@ -178,7 +184,7 @@ struct LaunchSink {
     bool (*admitLegatoCue)(void*, const LaunchSlot&, const LaunchSourceCue&, std::int64_t launchTick,
                            std::int32_t offset, LaunchCueAdmission) noexcept = nullptr;
     // Driver-only forecast. Linked follows stay out of the user-queued status.
-    void (*prefetchLinkedLegato)(void*, const LaunchSlot&, std::int64_t sample, const LaunchSourceCue&) noexcept = nullptr;
+    void (*prefetchLinkedLegato)(void*, const LaunchSlot&, const LaunchLegatoForecast&) noexcept = nullptr;
     std::int64_t (*residentRawAnchor)(void*, std::int64_t clip, std::int64_t tick) noexcept = nullptr;
 };
 
@@ -296,9 +302,8 @@ private:
     bool transition(Track&, const LaunchBlock&, const LaunchView&, LaunchSink, const Pending&,
                     std::int32_t, std::int64_t, LaunchCueAdmission = LaunchCueAdmission::None,
                     std::int64_t projectedEnd = -1) noexcept;
-    [[nodiscard]] std::optional<LaunchSourceCue> queuedLegatoSourceCue(const Track&, const Pending&,
-        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample,
-        std::int64_t* due = nullptr) const noexcept;
+    [[nodiscard]] std::optional<LaunchLegatoForecast> queuedLegatoSourceCue(const Track&, const Pending&,
+        const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock&, std::int64_t endSample) const noexcept;
     void prefetchLinkedLegato(const Track&, const LaunchView&, const LaunchBlock&, LaunchSink,
                               std::int64_t endSample) const noexcept;
     [[nodiscard]] LaunchTrackStatus trackStatus(const Track&, const LaunchBlock&,

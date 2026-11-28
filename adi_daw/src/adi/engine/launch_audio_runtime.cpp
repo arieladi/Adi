@@ -39,6 +39,10 @@ bool nativeCueClockStable(const LaunchBlock& block, const LaunchFollowPlayer* fo
         (!block.followActionsEnabled || !follow || !follow->hasClipOrSceneActions(clip));
 }
 
+bool nativeLinkedOneShot(const LaunchSlot& slot) noexcept {
+    return slot.mode != LaunchMode::Repeat && slot.loopEndTick <= slot.loopStartTick;
+}
+
 struct NativeCueWraps {
     std::array<LaunchWarpPosition,kMaximumLaunchWarpCueWraps> positions;
     std::size_t count = 0;
@@ -769,7 +773,9 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
         const auto nativeRepeat = cueAdmission == LaunchCueAdmission::HeldRepeat ||
             (target.mode == LaunchMode::Repeat && scheduled && cue.repeat);
-        auto* nativePages = (scheduled || nativeImmediate || nativeRepeat) && pcm ? pcm->warpPageReader() : nullptr;
+        const auto nativeLinked = linked && !call.runtime.beforeClock_ && !call.arrangementLoop && nativeLinkedOneShot(target);
+        auto* nativePages = (scheduled || nativeImmediate || nativeRepeat || nativeLinked) && pcm
+            ? pcm->warpPageReader() : nullptr;
         if (nativePages && (nativeRepeat ? target.mode == LaunchMode::Repeat
             : target.mode != LaunchMode::Repeat && (nativeImmediate || !nativePages->wholeSourceFitsPageCache()))) {
             // Arrangement wraps, prepared scenes and Follow Actions can
@@ -845,11 +851,20 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
         return true;
-    }, [](void* state, const LaunchSlot& target, std::int64_t due, const LaunchSourceCue& cue) noexcept {
+    }, [](void* state, const LaunchSlot& target, const LaunchLegatoForecast& forecast) noexcept {
         const auto& call = *static_cast<const Context*>(state);
-        if (call.runtime.mediaAt(due).get() != call.media) return;
+        if (call.runtime.mediaAt(forecast.sample).get() != call.media) return;
         const auto* clip = call.media->clip(target.clip);
-        if (!clip || !clip->pageReader()) return;
+        if (!clip) return;
+        if (const auto* native = clip->warpPageReader()) {
+            if (forecast.admission == LaunchCueAdmission::Linked && !call.runtime.beforeClock_ &&
+                !call.arrangementLoop && nativeLinkedOneShot(target) && !native->wholeSourceFitsPageCache() &&
+                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip))
+                clip->prefetchWarp({forecast.sample,forecast.tick,forecast.cue.tick});
+            return;
+        }
+        if (!clip->pageReader()) return;
+        const auto& cue = forecast.cue;
         const auto physical = target.physicalFrames > 0;
         if (physical ? !needsCueLease(target,clip->rate())
                      : !needsWorkerCueLease(*clip)) return;

@@ -700,10 +700,10 @@ void musicalLinkedUsesTheRenderedSample() {
             return LaunchFollowRequest{request(LaunchRequestKind::SlotPress,1,2,12),
                                        result.followTick,0,true,result.minimumLap};
         };
-        sink.prefetchLinkedLegato = [](void* raw,const LaunchSlot&,std::int64_t sample,const LaunchSourceCue& cue) noexcept {
+        sink.prefetchLinkedLegato = [](void* raw,const LaunchSlot&,const LaunchLegatoForecast& forecast) noexcept {
             auto& result = *static_cast<Trace*>(raw);
             ++result.forecasts;
-            result.correct &= sample == cut && cue.tick == expectedPhase;
+            result.correct &= forecast.sample == cut && forecast.cue.tick == expectedPhase;
         };
         sink.transition = [](void* raw,const LaunchTransition& edge) noexcept {
             if (edge.newClip != 12) return;

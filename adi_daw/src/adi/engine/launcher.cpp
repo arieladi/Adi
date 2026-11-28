@@ -1203,28 +1203,30 @@ bool Launcher::process(const LaunchBlock& block, const LaunchView& view, LaunchS
     return true;
 }
 
-std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& track, const Pending& pending,
-    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample,
-    std::int64_t* due) const noexcept {
+std::optional<LaunchLegatoForecast> Launcher::queuedLegatoSourceCue(const Track& track, const Pending& pending,
+    const LaunchSlot& target, const LaunchSlot* current, const LaunchBlock& block, std::int64_t endSample) const noexcept {
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto lap = cuedPhysicalLap(current,run.completedLoops,run.physicalCueFrame);
-    const auto physicalSample = [&](const Pending& event) {
+    struct Deadline { std::int64_t sample = lastTick, gridTick = lastTick; };
+    const auto deadlineFor = [&](const Pending& event) -> Deadline {
         if (event.physicalLaps > 0 && lap.startFrame >= 0) {
             const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
             const auto period = physicalLap(current,true).length();
             const auto completed = std::min(run.completedLoops,static_cast<std::uint64_t>(event.physicalLaps));
             const auto laps = std::max<std::int64_t>(0,event.physicalLaps - static_cast<std::int64_t>(completed) - 1);
-            if (laps > (lastTick - first) / period) return lastTick;
+            if (laps > (lastTick - first) / period) return {};
             const auto lapEnd = std::max(event.earliestSample,add(endSample,first + laps * period));
-            if (event.grid == LaunchQuantization::None) return lapEnd;
+            if (event.grid == LaunchQuantization::None) return {lapEnd};
             const auto tick = gridAtOrAfterSample(block,event.grid,lapEnd);
-            return tick == lastTick ? lastTick : block.sampleAtTick(block.clock,tick);
+            return tick == lastTick ? Deadline{} : Deadline{block.sampleAtTick(block.clock,tick),tick};
         }
-        return event.tick == lastTick ? lastTick
-            : std::max(event.earliestSample,block.sampleAtTick(block.clock,event.tick));
+        if (event.tick == lastTick) return {};
+        const auto gridSample = block.sampleAtTick(block.clock,event.tick);
+        return event.earliestSample > gridSample ? Deadline{event.earliestSample} : Deadline{gridSample,event.tick};
     };
-    const auto dueSample = physicalSample(pending);
+    const auto deadline = deadlineFor(pending);
+    const auto dueSample = deadline.sample;
     if (dueSample == lastTick) return {};
     // Match render's tie order so a linked launch never hides an earlier or
     // coincident user Start/Stop. Leave scene settlement conservative.
@@ -1234,30 +1236,32 @@ std::optional<LaunchSourceCue> Launcher::queuedLegatoSourceCue(const Track& trac
                         prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
         if (!*event) continue;
         if (&**event == &pending) { winsTie = false; continue; }
-        const auto sample = physicalSample(**event);
+        const auto sample = deadlineFor(**event).sample;
         if (sample < dueSample || (sample == dueSample && winsTie)) return {};
     }
-    if (track.sceneFollow && physicalSample(*track.sceneFollow) <= dueSample) return {};
+    if (track.sceneFollow && deadlineFor(*track.sceneFollow).sample <= dueSample) return {};
     if (track.regionEdit && (track.regionEdit->edit.rate == ClipUpdateRate::None
         ? track.regionEdit->boundary.sample : block.sampleAtTick(block.clock,track.regionEdit->boundary.tick)) <= dueSample)
         return {};
 
-    if (due) *due = dueSample;
+    const auto anchorTick = deadline.gridTick == lastTick ? atSample(block,dueSample) : deadline.gridTick;
+    const auto forecast = [&](LaunchSourceCue cue) {
+        return LaunchLegatoForecast{cue,dueSample,anchorTick,pending.linkedAdmission};
+    };
     if (current->physicalFrames > 0) {
         const auto elapsed = add(run.frames - run.pcmAnchorFrame,std::max<std::int64_t>(0,dueSample - endSample));
         if (elapsed < lap.length() || (!current->physicalLoopEndFrame && elapsed == lap.length()))
-            return launchSourceCue(target,current,lap.tickAt(elapsed),lap.originFrame()+elapsed);
+            return forecast(launchSourceCue(target,current,lap.tickAt(elapsed),lap.originFrame()+elapsed));
         if (!current->physicalLoopEndFrame) return {};
         const auto wrapped = physicalLap(current,true);
         const auto phase = (elapsed - lap.length()) % wrapped.length();
-        return launchSourceCue(target,current,wrapped.tickAt(phase),wrapped.startFrame+phase);
+        return forecast(launchSourceCue(target,current,wrapped.tickAt(phase),wrapped.startFrame+phase));
     }
     // Musical Linked inherits from the rendered sample. A grid tick can
     // round to that sample without being its tick-at-sample value.
-    const auto dueTick = pending.linkedAdmission != LaunchCueAdmission::MusicalLinked &&
-        block.sampleAtTick(block.clock,pending.tick) == dueSample ? pending.tick : atSample(block,dueSample);
+    const auto dueTick = pending.linkedAdmission == LaunchCueAdmission::MusicalLinked ? atSample(block,dueSample) : anchorTick;
     const auto source = musicalSourceAtCut(*current,block,run.anchorTick,run.anchorSourceTick,dueSample,dueTick);
-    return source ? std::optional{launchSourceCue(target,current,*source)} : std::nullopt;
+    return source ? std::optional{forecast(launchSourceCue(target,current,*source))} : std::nullopt;
 }
 
 LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& block,
@@ -1309,9 +1313,9 @@ LaunchTrackStatus Launcher::trackStatus(const Track& track, const LaunchBlock& b
         if (pending->action == Action::Arrangement) action = LaunchQueuedAction::BackToArrangement;
         if (action != LaunchQueuedAction::None) status.queued = {action,pending->clip,pending->scene,pending->tick};
         if (action == LaunchQueuedAction::Start) {
-            if (const auto cue = queuedLegatoSourceCue(track,*pending,*target,slot,block,endSample)) {
-                status.queued.legatoSourceTick = cue->tick;
-                if (cue->physicalFrame >= 0) status.queued.legatoSourceFrame = cue->physicalFrame;
+            if (const auto forecast = queuedLegatoSourceCue(track,*pending,*target,slot,block,endSample)) {
+                status.queued.legatoSourceTick = forecast->cue.tick;
+                if (forecast->cue.physicalFrame >= 0) status.queued.legatoSourceFrame = forecast->cue.physicalFrame;
             }
         }
     }
@@ -1331,9 +1335,8 @@ void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, 
     current = effectiveSlot(current,track.run.region,track.run.physicalRegion,region);
     if (pending.linkedAdmission == LaunchCueAdmission::MusicalLinked &&
         !hasMusicalLap(current,pending.minimumMusicalLapTicks)) return;
-    std::int64_t due = 0;
-    const auto cue = queuedLegatoSourceCue(track,pending,*target,current,block,endSample,&due);
-    if (cue) sink.prefetchLinkedLegato(sink.context,*target,due,*cue);
+    const auto forecast = queuedLegatoSourceCue(track,pending,*target,current,block,endSample);
+    if (forecast) sink.prefetchLinkedLegato(sink.context,*target,*forecast);
 }
 
 std::uint32_t Launcher::claimStatusBuffer() noexcept {
