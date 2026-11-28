@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
@@ -57,8 +58,11 @@ public:
     void process(const NodeIo &io) noexcept override {
         const auto clear = [&](auto channels) {
             for (std::int32_t c = 0; channels && c < io.channels; ++c) {
-                if (channels[c])
-                    std::fill_n(channels[c] + io.blockOffset, io.frames, 0);
+                if (channels[c]) {
+                    // A zero of the buffer's own sample type (MSVC C4244 on int to float).
+                    using Sample = std::remove_cvref_t<decltype(channels[c][0])>;
+                    std::fill_n(channels[c] + io.blockOffset, io.frames, Sample{});
+                }
             }
         };
         if (io.wide())

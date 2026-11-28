@@ -1297,6 +1297,8 @@ void transposeDegrees() {
     History history(*f.store);
     check(history.undo().ok && f.blob(2) == raised && history.redo().ok && f.blob(2) == original,
           "degree transpose retains byte-exact history replay");
+}
+
 void seededNoteTiming() {
     Fixture f("seeded_note_timing");
     const auto first = rawRecord(native(1, -20), 48);

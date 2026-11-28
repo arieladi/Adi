@@ -645,6 +645,8 @@ void testInsertRejectsVca() {
           "refused inserts leave neither rows nor audit entries");
     check(run(*s, "device.insert", {{"id",14},{"chain",5},{"ord",0}}),
           "the same fresh op still inserts on an audio track");
+}
+
 void testChainZones() {
     section("DEV-02 -- exact chain zone bytes and admission");
     using namespace adi::rack;

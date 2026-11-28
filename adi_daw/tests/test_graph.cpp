@@ -2639,6 +2639,8 @@ void testNodeSegmentQuantum() {
     graph.process(io);
     check(whole.calls == 2 && whole.segments[1] == 64,
           "a quantum device receives a transport update at the next legal tick");
+}
+
 class GridTransform final : public Node {
 public:
     std::uint32_t noteSourcePrefix() const noexcept override { return prefix_; }
