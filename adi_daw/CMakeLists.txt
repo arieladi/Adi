@@ -298,6 +298,9 @@ add_library(adi_core STATIC
     src/adi/interchange/midi_clip_file.cpp
     src/adi/interchange/otio_time.cpp
     src/adi/interchange/otio_timeline.cpp
+    src/adi/sync/midi_sync_wire.cpp
+    src/adi/sync/midi_clock_follower.cpp
+    src/adi/sync/midi_clock_transport.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
@@ -2071,6 +2074,9 @@ add_test(NAME adi_time_base_tests COMMAND adi_time_base_tests)
 add_executable(adi_otio_time_tests tests/test_otio_time.cpp)
 target_link_libraries(adi_otio_time_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_otio_time_tests COMMAND adi_otio_time_tests)
+add_executable(adi_midi_sync_wire_tests tests/test_midi_sync_wire.cpp)
+target_link_libraries(adi_midi_sync_wire_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_sync_wire_tests COMMAND adi_midi_sync_wire_tests)
 
 add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
 target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
