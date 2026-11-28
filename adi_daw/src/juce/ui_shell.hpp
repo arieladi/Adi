@@ -1054,16 +1054,18 @@ class AdiRootComponent final : public juce::Component,
     bool setLoopStartAt(const std::string &text);
     bool setLoopLengthAt(const std::string &text);
     // Live's locators (manual 6.4; N25, #385), from the CURRENT cell (ADR-0201), each edit one undo
-    // step. Set Locator: on a selected locator, Delete Locator; else a locator at the playhead while
-    // playing, at the time selection's start or the insert marker while stopped. Previous and Next
+    // step. While playing, Set adds at the playhead and retains the selection. While stopped, it
+    // adds at the selection start or insert marker, or deletes the selected locator at the current
+    // position. Previous and Next
     // jump to the locator before or after the play position, past the first or the last to the
     // arrangement's start or end. A jump while playing moves playback there; while stopped, the
     // insert marker. Add, delete, move, rename and Edit Info Text (the marker's note) act on one
     // locator; Loop to Next Locator loops from a locator to the next, or to the arrangement's end.
     bool setLocator();
+    bool setLocatorDeletes() const noexcept;
     bool jumpLocator(bool forward);
     bool jumpTo(std::int64_t tick);
-    bool addLocatorAt(std::int64_t pos);
+    bool addLocatorAt(std::int64_t pos, bool select = true);
     bool deleteLocator(std::int64_t id);
     bool moveLocator(std::int64_t id, std::int64_t to);
     bool renameLocator(std::int64_t id, const std::string &name);
@@ -1112,6 +1114,7 @@ class AdiRootComponent final : public juce::Component,
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    std::int64_t stoppedSetLocatorTick() const noexcept;
     bool restoreHistory(const std::function<History::Result()> &, const std::function<bool()> &reload);
     clip_edit::MidiConsolidation prepareMidiConsolidation() const;
     std::int64_t referenceTrack(const SnapshotReader &) const noexcept;

@@ -1430,7 +1430,7 @@ juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcep
 void ArrangementView::mouseDown(const juce::MouseEvent &e) {
     // The window's rule for a control that cannot act yet: a click says what it waits for.
     using B = TopButton;
-    // Live's Set Locator, which reads Del on a selected locator, and Previous and Next (manual 6.4).
+    // Live's locator controls (manual 6.4).
     if (topButton(B::Set).expanded(1.f).contains(e.position)) {
         root.setLocator();
         return;
@@ -1447,7 +1447,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     // Under the bar over the headers: Live's locator buttons ("Set", previous, next).
     // The shared button (language.png part B); none of these tracks the pointer, so each is at rest.
     const auto set = topButton(TopButton::Set);
-    controls::button(g, set, controls::ButtonState::Rest, selectedLocator != 0 ? "Del" : "Set", look::fontLabel);
+    controls::button(g, set, controls::ButtonState::Rest, root.setLocatorDeletes() ? "Del" : "Set", look::fontLabel);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
         // Live's round locator buttons, in the shared button's colours at rest.
