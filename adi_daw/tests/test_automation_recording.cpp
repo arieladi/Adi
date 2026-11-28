@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
+#include "adi/automation_edits.hpp"
+#include "adi/digest.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/engine/automation_recording.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <chrono>
@@ -120,5 +125,245 @@ void run() {
     check(producerOk && ordered && transferred.size()==1000 && concurrent.stats().dropped==0,"SPSC preserves every timestamped gesture across actual threads");
     check(allocations==0,"all guarded producer operations remain allocation-free");
 }
+void passBoundaries() {
+    const AutomationTarget target{3, 2, std::nullopt};
+    AutomationRecorder latch(target, 16, 64, AutomationCaptureMode::Latch);
+    std::vector<RecordedAutomation> passes;
+    watch = true;
+    const bool released = latch.setRecording(true, 50) &&
+                          latch.push(AutomationGesture::Begin, 100, 0.25) &&
+                          latch.push(AutomationGesture::Value, 125, 0.5) &&
+                          latch.push(AutomationGesture::End, 130, 0.5);
+    watch = false;
+    check(released && latch.drain(passes) == 0,
+          "latch keeps the released value open for the rest of the pass");
+    watch = true;
+    const bool wrapped = latch.splitAtTransportBoundary(200, 50);
+    watch = false;
+    check(wrapped && latch.drain(passes) == 1, "loop wrap yields exactly one completed pass");
+    if (passes.size() != 1)
+        return;
+    const auto &first = passes[0].points;
+    check(first.size() == 4 && first.front().time == 100 && first[2].time == 130 &&
+              first[2].curve == static_cast<std::uint8_t>(Curve::Hold) &&
+              first.back().time == 200 && first.back().value == 0.5,
+          "the old pass records the held value up to the old loop end");
+    watch = true;
+    const bool wrappedAgain = latch.splitAtTransportBoundary(200, 50);
+    watch = false;
+    check(wrappedAgain && latch.drain(passes) == 1 && passes.size() == 2,
+          "an untouched later cycle still records its held value");
+    if (passes.size() != 2)
+        return;
+    const auto &next = passes[1].points;
+    check(next.size() == 2 && next.front().time == 50 && next.back().time == 200 &&
+              next.front().value == 0.5 && next.back().value == 0.5 &&
+              next.front().curve == static_cast<std::uint8_t>(Curve::Hold),
+          "the next loop begins on its literal native clock with a held knot");
+    watch = true;
+    const bool retouched = latch.push(AutomationGesture::Begin, 75, 0.75) &&
+                           latch.push(AutomationGesture::End, 80, 0.75) &&
+                           latch.splitAtTransportBoundary(110, 300) &&
+                           latch.setRecording(false, 350);
+    watch = false;
+    check(retouched && latch.drain(passes) == 2 && passes.size() == 4,
+          "retouch stays in its pass while locate and Stop close separate passes");
+    if (passes.size() != 4)
+        return;
+    const auto &beforeLocate = passes[2].points;
+    const auto &afterLocate = passes[3].points;
+    check(beforeLocate.size() == 4 && beforeLocate.front().time == 50 &&
+              beforeLocate[1].time == 75 && beforeLocate[1].value == 0.75 &&
+              beforeLocate.back().time == 110 && afterLocate.front().time == 300 &&
+              afterLocate.back().time == 350 && afterLocate.front().value == 0.75,
+          "separate exact locate clocks preserve new touch and continued value");
+
+    AutomationRecorder touch(target, 8);
+    std::vector<RecordedAutomation> touched;
+    check(touch.setRecording(true, 0) && touch.push(AutomationGesture::Begin, 10, 0.125) &&
+              touch.splitAtTransportBoundary(30, 100) &&
+              touch.push(AutomationGesture::End, 110, 0.25) && touch.drain(touched) == 2 &&
+              touched[0].points.back().time == 30 && touched[1].points.front().time == 100 &&
+              touched[1].points.back().time == 110 && touch.splitAtTransportBoundary(120, 200) &&
+              touch.drain(touched) == 0,
+          "touch splits while held, closes on release and stays closed at a later boundary");
+
+    AutomationRecorder small(target, 2, 64, AutomationCaptureMode::Latch);
+    std::vector<RecordedAutomation> bounded;
+    check(small.setRecording(true, 0) && small.push(AutomationGesture::Begin, 10, 0.5) &&
+              !small.splitAtTransportBoundary(20, 0) && small.drain(bounded) == 1 &&
+              small.setRecording(false, 1) && small.drain(bounded) == 0 &&
+              bounded.front().points.back().time == 20,
+          "overflow at the split keeps the completed pass and discards the missing start");
+    check(small.setRecording(true, 10) && small.push(AutomationGesture::Begin, 11, 0.25) &&
+              !small.splitAtTransportBoundary(9, 0) && small.setRecording(false, 15) &&
+              small.drain(bounded) == 0,
+          "a contradictory clock boundary discards the open pass without partial history");
+    check(allocations == 0, "latch, retouch and transport splitting allocate nothing on the producer");
+
+    const test::TempDirectory temp("automation", "write-pass");
+    auto store = project(temp.path() / "pass.adi");
+    std::string error;
+    const auto prepared = prepareRecordedAutomation(*store, passes[2], error);
+    check(prepared && automation::commitShapeInsertion(*store, *prepared).ok,
+          "a closed pass commits through the existing owner-side writer");
+    const auto persisted = bytes(*store);
+    const StreamReader<AutomationPoint> replay(persisted, FourCC::Automation);
+    check(replay.ok() && replay.count() == 4 && replay.at(0)->time == 50 &&
+              replay.at(0)->curve == static_cast<std::uint8_t>(Curve::Hold) &&
+              replay.at(1)->time == 75 && replay.at(1)->value == 0.75,
+          "the native stream stores the held interval and the exact retouch");
+    History history(*store);
+    check(history.undo().ok && bytes(*store).empty() &&
+              history.redo().ok && bytes(*store) == persisted,
+          "the completed pass has one exact undo and redo");
+}
+void boundedThinning() {
+    const test::TempDirectory temp("automation", "thinning");
+    constexpr double rate = 48000.0, tolerance = 0.00025;
+    for (int clock : {0, 1}) {
+        auto exact = project(temp.path() / ("exact-" + std::to_string(clock) + ".adi"));
+        auto thinned = project(temp.path() / ("thinned-" + std::to_string(clock) + ".adi"));
+        if (clock == 0) {
+            for (auto *store : {exact.get(), thinned.get()}) {
+                store->db().exec("UPDATE automation_lanes SET time_base=0;"
+                                 "INSERT INTO tempo_map(id,pos_ticks,bpm) "
+                                 "VALUES(1,0,120),(2,5500000,73),(3,10550000,155);");
+            }
+        }
+        const std::int64_t unit = clock == 0 ? 50000 : 1000000;
+        RecordedAutomation pass{{3, 2, std::nullopt}, 1, {}};
+        for (std::int64_t i = 0; i <= 400; ++i) {
+            AutomationPoint p{};
+            p.time = i * unit;
+            p.value = 0.2 + static_cast<double>(i) * 0.001 + (i % 2 == 0 ? 0.0 : 0.00005);
+            p.curve = static_cast<std::uint8_t>(i == 64 ? Curve::Hold : Curve::Linear);
+            if (i == 144)
+                p.time = 143 * unit;
+            if (i == 250)
+                p.value += 0.03;
+            pass.points.push_back(p);
+        }
+        std::string error;
+        const auto raw = prepareRecordedAutomation(*exact, pass, error);
+        const auto reduced = prepareRecordedAutomation(
+            *thinned, pass, error, automation::AutomationThinning{tolerance, rate});
+        if (!raw || !reduced ||
+            !automation::commitShapeInsertion(*exact, *raw).ok ||
+            !automation::commitShapeInsertion(*thinned, *reduced).ok)
+            throw std::runtime_error("cannot commit exact and thinned recording fixtures: " + error);
+
+        const auto exactProgram = compileAutomation(rows::readModel(*exact), rate);
+        const auto reducedProgram = compileAutomation(rows::readModel(*thinned), rate);
+        const auto *a = exactProgram->lane(2), *b = reducedProgram->lane(2);
+        if (!a || !b || a->points.empty() || b->points.empty())
+            throw std::runtime_error("cannot compile the exact and thinned recording fixtures");
+        double maxError = 0.0;
+        for (std::int64_t sample = 0; sample <= a->points.back().sample; ++sample)
+            maxError = std::max(maxError, std::abs(valueAt(*a, sample) - valueAt(*b, sample)));
+        check(maxError <= tolerance && b->points.size() < a->points.size() / 4,
+              "projected automation is substantially smaller and bounded at every playback sample");
+        const edit::TimeMap time(exact->db());
+        const auto sampleAt = [&](std::int64_t position) {
+            const double seconds = clock == 0 ? time.seconds(position)
+                                                : static_cast<double>(position) * 1e-9;
+            return std::llround(seconds * rate);
+        };
+        const auto hold = sampleAt(64 * unit);
+        const auto step = sampleAt(143 * unit);
+        check(b->points.front().sample == a->points.front().sample &&
+                  b->points.back().sample == a->points.back().sample &&
+                  valueAt(*a, hold) == valueAt(*b, hold) && valueAt(*a, hold + 1) == valueAt(*b, hold + 1) &&
+                  std::count_if(b->points.begin(), b->points.end(),
+                                [step](const auto &p) { return p.sample == step; }) == 2 &&
+                  valueAt(*a, step) == valueAt(*b, step),
+              "first and last samples, the Hold segment, and a coincident step keep their anchors");
+        const auto logs = OpJournal(*thinned).recent();
+        check(!logs.empty() && logs.front().actorDetail.find("Automation thinning removed ") == 0 &&
+                  OpJournal(*exact).recent().front().actorDetail.empty(),
+              "the journal distinguishes a thinned pass from an original sparse capture");
+        const auto stored = bytes(*thinned);
+        History history(*thinned);
+        check(history.undo().ok && bytes(*thinned).empty() && history.redo().ok &&
+                  bytes(*thinned) == stored,
+              "Undo and Redo restore the exact recorded reduction");
+        check(!prepareRecordedAutomation(*thinned, pass, error, automation::AutomationThinning{-1, rate}) &&
+                  bytes(*thinned) == stored,
+              "invalid thinning policy leaves the active stream untouched");
+    }
+}
+void guardsRecordedPass() {
+    const test::TempDirectory temp("automation", "pass-guards");
+    constexpr double rate = 48000.0;
+    for (int clock : {0, 1}) {
+        auto store = project(temp.path() / ("guard-" + std::to_string(clock) + ".adi"));
+        auto &db = store->db();
+        db.exec("UPDATE project SET sample_rate=48000;"
+                "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120),(2,1000000,93);");
+        if (clock == 0)
+            db.exec("UPDATE automation_lanes SET time_base=0;");
+        const std::int64_t unit = clock == 0 ? 10000 : 1000000;
+        const auto makePoint = [](std::int64_t time, double value, Curve curve) {
+            AutomationPoint p{};
+            p.time = time;
+            p.value = value;
+            p.curve = static_cast<std::uint8_t>(curve);
+            return p;
+        };
+        const auto initial = automation::writePoints(3, 2, nullptr, Payload::array({
+            {{"id", 1}, {"time", 0}, {"value", 0.25}, {"curve", 5}, {"tension", 0.65}},
+            {{"id", 2}, {"time", 300 * unit}, {"value", 0.75}, {"curve", 1}, {"tension", 0}}}));
+        if (!OpJournal(*store).commit(initial).ok)
+            throw std::runtime_error("cannot create the authored exterior curve");
+        const auto before = compileAutomation(rows::readModel(*store), rate);
+        const auto beforeDigest = digestProject(*store).text;
+        const RecordedAutomation pass{{3, 2, std::nullopt}, 2,
+                                      {makePoint(75 * unit, 0.125, Curve::Hold),
+                                       makePoint(150 * unit, 0.625, Curve::Linear),
+                                       makePoint(225 * unit, 0.5, Curve::Linear)}};
+        std::string error;
+        const auto prepared = prepareRecordedAutomation(*store, pass, error);
+        check(prepared && prepared->requests.size() == 1 &&
+                  prepared->requests.front().capturedTransaction &&
+                  prepared->requests.front().label == "Record Automation" &&
+                  digestProject(*store).text == beforeDigest,
+              "a pass captures both guards and one Undo label before it writes");
+        if (!prepared || !automation::commitShapeInsertion(*store, *prepared).ok)
+            throw std::runtime_error("cannot commit the guarded write pass: " + error);
+        const auto after = compileAutomation(rows::readModel(*store), rate);
+        const auto *outside = before->lane(2), *recorded = after->lane(2);
+        if (!outside || !recorded)
+            throw std::runtime_error("cannot compile the guarded write pass");
+        const edit::TimeMap time(db);
+        const auto sampleAt = [&](std::int64_t pos) {
+            const double seconds = clock == 0 ? time.seconds(pos) : static_cast<double>(pos) * 1e-9;
+            return std::llround(seconds * rate);
+        };
+        const auto begin = sampleAt(75 * unit), end = sampleAt(225 * unit);
+        double maxError = 0.0;
+        for (std::int64_t sample = 0; sample <= outside->points.back().sample; ++sample) {
+            if (sample < begin || sample >= end)
+                maxError = std::max(maxError,
+                                    std::abs(valueAt(*outside, sample) - valueAt(*recorded, sample)));
+        }
+        check(maxError < 1e-9 && valueAt(*recorded, end) == valueAt(*outside, end) &&
+                  valueAt(*recorded, begin + 1) == 0.125 &&
+                  valueAt(*recorded, sampleAt(150 * unit)) == 0.625,
+              "the held recording plays inside while every exterior sample remains intact");
+        History history(*store);
+        const auto afterDigest = digestProject(*store).text;
+        check(history.undo().ok && digestProject(*store).text == beforeDigest &&
+                  history.redo().ok && digestProject(*store).text == afterDigest,
+              "the guarded pass, curves and data replay as one exact undo");
+        const auto stale = prepareRecordedAutomation(*store, pass, error);
+        if (!stale)
+            throw std::runtime_error(error);
+        db.exec("UPDATE tempo_map SET bpm=100 WHERE id=2");
+        const auto changed = digestProject(*store).text;
+        check(!automation::commitShapeInsertion(*store, *stale).ok &&
+                  digestProject(*store).text == changed,
+              "changed captured tempo refuses without publishing any part of the pass");
+    }
+}
 } // namespace
-int main(){try{run();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{run();passBoundaries();boundedThinning();guardsRecordedPass();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

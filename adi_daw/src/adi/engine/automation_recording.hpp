@@ -5,6 +5,7 @@
 
 namespace adi::engine {
 enum class AutomationGesture { Begin, Value, End };
+enum class AutomationCaptureMode { Touch, Latch };
 struct AutomationTarget {
     std::int64_t data = 0, lane = 0;
     std::optional<std::int64_t> clip;
@@ -23,7 +24,8 @@ struct RecordedAutomation {
 class AutomationRecorder {
 public:
     explicit AutomationRecorder(AutomationTarget, std::int32_t capacity = 1024,
-                                std::size_t maxGesturePoints = 1u<<20);
+                                std::size_t maxGesturePoints = 1u<<20,
+                                AutomationCaptureMode = AutomationCaptureMode::Touch);
     // Live's default: Automation Arm on, transport recording off. These gates
     // affect automation capture only, never ordinary manual parameter edits.
     bool setArmed(bool, std::int64_t time) noexcept;
@@ -31,6 +33,10 @@ public:
     [[nodiscard]] bool armed() const noexcept { return armed_.load(std::memory_order_relaxed); }
     [[nodiscard]] bool recording() const noexcept { return recording_.load(std::memory_order_relaxed); }
     bool push(AutomationGesture, std::int64_t time, double value) noexcept;
+    // A loop wrap or locate closes the open pass at the old-clock boundary
+    // and opens the next at the new-clock position with the held value.
+    // The producer supplies both positions in the target lane's own clock.
+    [[nodiscard]] bool splitAtTransportBoundary(std::int64_t oldTime, std::int64_t newTime) noexcept;
     // Completed healthy gestures only. Overflow, invalid points and point-limit
     // exhaustion discard the entire affected gesture, never a partial write.
     std::size_t drain(std::vector<RecordedAutomation>&);
@@ -45,19 +51,22 @@ private:
         std::int64_t time = 0;
         double value = 0;
         bool tainted = false;
+        bool hold = false;
     };
-    bool offer(AutomationGesture, std::int64_t, double) noexcept;
+    bool offer(AutomationGesture, std::int64_t, double, bool hold = false) noexcept;
+    bool start(std::int64_t, double, bool hold = false) noexcept;
     bool finish(std::int64_t, double) noexcept;
     void invalidate() noexcept;
     void discard() noexcept;
     const AutomationTarget target_;
     const std::size_t maxPoints_;
+    const AutomationCaptureMode mode_;
     std::vector<Event> ring_;
     std::atomic<std::size_t> read_{0}, write_{0};
     std::atomic<bool> armed_{true}, recording_{false};
     // Single-producer state and counters. Atomic counters allow inspection;
     // increments use load/store rather than contended read/modify/write loops.
-    bool open_ = false, tainted_ = false;
+    bool open_ = false, tainted_ = false, held_ = false;
     std::uint64_t serial_ = 0;
     std::int64_t lastTime_ = 0;
     double lastValue_ = 0;
@@ -69,5 +78,6 @@ private:
 };
 
 std::optional<automation::PreparedShape> prepareRecordedAutomation(
-    Store&, const RecordedAutomation&, std::string& error);
+    Store&, const RecordedAutomation&, std::string& error,
+    std::optional<automation::AutomationThinning> = {});
 } // namespace adi::engine

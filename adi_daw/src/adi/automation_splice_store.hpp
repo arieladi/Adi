@@ -28,6 +28,18 @@ struct PreparedEnvelopeSplice {
     bool ok = false;
     std::string error;
     std::vector<OpRequest> requests;
+    /// AU-03: the native bounds project to one sample; the caller may write
+    /// the points directly instead (a recording pass shorter than a sample).
+    bool subSample = false;
+};
+/// AU-02/AU-03: what a recording pass or a shape insertion asks of a splice:
+/// the automation_data row it addresses (a new stream takes this ID), the
+/// Undo label and the actor detail (a thinning report).
+struct EnvelopeSpliceRequest {
+    std::optional<std::int64_t> dataId;
+    std::string_view label = "Replace Automation";
+    std::string_view actorDetail{};
+    std::optional<Payload> selection{};
 };
 /// Owner-thread storage adapter for AU05. Explicit incoming values include
 /// begin and end; no move/copy/delete material policy is selected here. Captures
@@ -44,6 +56,12 @@ prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
                       std::size_t pointBudget = kSplicePointBudget,
                       std::string_view label = "Replace Automation", std::optional<Payload> selection = {});
+/// The same with a request's data address, label and actor detail. Its
+/// boundaries must be ordered; one sample between them sets `subSample`.
+[[nodiscard]] PreparedEnvelopeSplice
+prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
+                      std::span<const NativeSpliceKnot> replacement, double sampleRate,
+                      std::size_t pointBudget, EnvelopeSpliceRequest request);
 /// The Arrangement command's default tolerance as a fraction of the
 /// displayed parameter range. Live's reduction tolerance is unmeasured.
 inline constexpr double kSimplifyRelativeTolerance = .005;

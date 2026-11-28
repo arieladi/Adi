@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/automation_shapes.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/automation_edits.hpp"
+#include "adi/automation_splice_store.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/engine/curves.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <numbers>
 #include <set>
 #include <stdexcept>
@@ -40,6 +45,92 @@ double value(Shape shape,double x,const ShapeSpec& s) {
         }
     }
     throw std::runtime_error("automation: unknown shape");
+}
+
+void thinLinearSegments(std::vector<AutomationPoint> &points, std::span<const std::int64_t> samples,
+                        double tolerance) {
+    constexpr auto linear = static_cast<std::uint8_t>(Curve::Linear);
+    const auto infinity = std::numeric_limits<double>::infinity();
+    std::size_t output = 1;
+    for (std::size_t first = 0; first + 1 < points.size();) {
+        std::size_t last = first + 1;
+        const auto firstValue = points[first].value;
+        const auto elapsed = [&](std::size_t i) {
+            return static_cast<double>(samples[i] - samples[first]);
+        };
+        if (points[first].curve == linear && samples[last] > samples[first]) {
+            double lo = -infinity, hi = infinity;
+            // Each intermediate observation bounds the slope from the first
+            // point. Keep the last endpoint compatible with all these bounds.
+            for (std::size_t next = last + 1; next < points.size(); ++next) {
+                const auto previous = next - 1;
+                if (points[previous].curve != linear || samples[next] <= samples[previous])
+                    break;
+                const auto rise = points[previous].value - firstValue;
+                lo = std::max(lo, (rise - tolerance) / elapsed(previous));
+                hi = std::min(hi, (rise + tolerance) / elapsed(previous));
+                const auto slope = (points[next].value - firstValue) / elapsed(next);
+                if (!std::isfinite(slope) || slope < lo || slope > hi)
+                    break;
+                last = next;
+            }
+        }
+        // The difference between two linear envelopes peaks at a knot. Leave
+        // room for rounding when each envelope evaluates between those knots.
+        double scale = std::max(std::abs(firstValue), std::abs(points[last].value));
+        for (auto i = first + 1; i < last; ++i)
+            scale = std::max(scale, std::abs(points[i].value));
+        const double slack = 16 * (std::numeric_limits<double>::epsilon() * scale +
+                                    std::numeric_limits<double>::denorm_min());
+        bool fits = tolerance >= slack;
+        for (auto i = first + 1; i < last && fits; ++i) {
+            const auto played = engine::curveValue(firstValue, points[last].value,
+                                                    elapsed(i) / elapsed(last), linear, 0.0);
+            fits = std::isfinite(played) && std::abs(played - points[i].value) <= tolerance - slack;
+        }
+        if (!fits) {
+            for (auto i = first + 1; i < last; ++i)
+                points[output++] = points[i];
+        }
+        points[output++] = points[last];
+        first = last;
+    }
+    points.resize(output);
+}
+
+void thinArrangement(SQLite::Database &db, std::vector<AutomationPoint> &points,
+                     int base, const AutomationThinning &options) {
+    if (points.size() < 3 || options.maxValueError == 0.0 || (base != 0 && base != 1))
+        return;
+    std::optional<edit::TimeMap> time;
+    if (base == 0) {
+        // Preserve material in older maps whose first authored tempo is after
+        // zero. The editing and playback clocks can differ before that anchor.
+        if (db.execAndGet("SELECT COALESCE(MIN(pos_ticks),0) FROM tempo_map").getInt64() != 0)
+            return;
+        time.emplace(db);
+    }
+    std::vector<std::int64_t> samples;
+    samples.reserve(points.size());
+    for (const auto &point : points) {
+        const double seconds = time ? time->seconds(point.time) : static_cast<double>(point.time) * 1e-9;
+        const double sample = seconds * options.sampleRate;
+        if (!std::isfinite(sample) || sample < 0.0 || sample > 0x1p50)
+            return;
+        const auto projected = static_cast<std::int64_t>(std::llround(sample));
+        if (!samples.empty() && projected < samples.back())
+            return;
+        samples.push_back(projected);
+    }
+    thinLinearSegments(points, samples, options.maxValueError);
+}
+
+std::vector<NativeSpliceKnot> nativeReplacement(std::span<const AutomationPoint> points) {
+    std::vector<NativeSpliceKnot> replacement;
+    replacement.reserve(points.size());
+    for (const auto &point : points)
+        replacement.push_back({point, {}});
+    return replacement;
 }
 } // namespace
 std::vector<AutomationPoint> generateShape(const ShapeSpec& s) {
@@ -88,10 +179,17 @@ std::vector<AutomationPoint> generateShape(const ShapeSpec& s) {
     return points;
 }
 std::optional<PreparedShape> prepareAutomationWrite(Store& store,std::int64_t data,std::int64_t lane,
-    std::optional<std::int64_t> clip,std::span<const AutomationPoint> source,std::string& error) {
+    std::optional<std::int64_t> clip,std::span<const AutomationPoint> source,std::string& error,
+    std::optional<AutomationThinning> thinning) {
     try {
+        if (audio::onAudioThread)
+            throw std::runtime_error("automation write preparation belongs off the audio callback");
         if(data<=0 || lane<=0 || (clip && *clip<=0)) throw std::runtime_error("automation: positive shape addresses required");
         if(source.empty() || source.size()>(1u<<23))throw std::runtime_error("automation: invalid recording point count");
+        if (thinning && (!std::isfinite(thinning->maxValueError) || thinning->maxValueError < 0 ||
+                         !std::isfinite(thinning->sampleRate) || thinning->sampleRate <= 0 ||
+                         thinning->sampleRate > 768000))
+            throw std::runtime_error("automation: thinning needs a finite tolerance and session rate");
         double low=source.front().value, high=low;std::int64_t previous=source.front().time;
         for(const auto& p:source) {
             if(p.point_id || p.flags || p.reserved || p.time<0 || p.time<previous || !std::isfinite(p.value) ||
@@ -108,6 +206,30 @@ std::optional<PreparedShape> prepareAutomationWrite(Store& store,std::int64_t da
         if((!metadata.getColumn(0).isNull() && low<metadata.getColumn(0).getDouble()) ||
             (!metadata.getColumn(1).isNull() && high>metadata.getColumn(1).getDouble()))
             throw std::runtime_error("automation: shape exceeds lane bounds");
+        if (thinning && !clip)
+            thinArrangement(store.db(), generated, metadata.getColumn(2).getInt(), *thinning);
+        constexpr const char *label = "Record Automation";
+        const auto removed = source.size() - generated.size();
+        const std::string description = removed > 0 && thinning
+            ? "Automation thinning removed " + std::to_string(removed) + " points at tolerance " +
+                  textproj::renderF64(thinning->maxValueError)
+            : std::string{};
+        if (!clip && generated.front().time < generated.back().time) {
+            const double rate = thinning ? thinning->sampleRate
+                                         : store.db().execAndGet("SELECT sample_rate FROM project WHERE id=1").getDouble();
+            auto splice = prepareEnvelopeSplice(store, lane, generated.front().time, generated.back().time,
+                                               nativeReplacement(generated), rate, 1u << 23,
+                                               {data, label, description});
+            if (splice.ok) {
+                result.requests = std::move(splice.requests);
+                if (txn)
+                    txn->commit();
+                error.clear();
+                return result;
+            }
+            if (!splice.subSample)
+                throw std::runtime_error(splice.error);
+        }
         if(clip) {
             SQLite::Statement q(store.db(),"SELECT 1 FROM clips WHERE id=?");q.bind(1,*clip);
             if(!q.executeStep())throw std::runtime_error("automation: missing shape clip");
@@ -145,18 +267,48 @@ std::optional<PreparedShape> prepareAutomationWrite(Store& store,std::int64_t da
             write.push_back({{"id",p.point_id},{"time",p.time},{"value",p.value},{"curve",p.curve},{"tension",p.tension}});
         }
         result.requests.push_back(writePoints(data,lane,clipValue,std::move(write)));
-        for(auto& request:result.requests)request.label="Record Automation";
+        for (auto &request : result.requests) {
+            request.label = label;
+            request.actorDetail = description;
+        }
         if(txn)txn->commit();
         error.clear();return result;
     } catch(const std::exception& e) { error=e.what();return std::nullopt; }
 }
 std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t data,std::int64_t lane,
-    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error) {
+    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error,
+    std::optional<double> sessionRate) {
     try {
+        if (audio::onAudioThread)
+            throw std::runtime_error("automation shape belongs off the audio callback");
         const auto points=generateShape(spec);
-        auto prepared=prepareAutomationWrite(store,data,lane,clip,points,error);
-        if(prepared)for(auto& request:prepared->requests)request.label="Insert Automation Shape";
-        return prepared;
+        constexpr const char *label = "Insert Automation Shape";
+        if (clip) {
+            auto prepared = prepareAutomationWrite(store, data, lane, clip, points, error);
+            if (prepared) {
+                for (auto &request : prepared->requests)
+                    request.label = label;
+            }
+            return prepared;
+        }
+
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto head = OpJournal(store).headSeq();
+        const double rate = sessionRate ? *sessionRate
+                                       : db.execAndGet("SELECT sample_rate FROM project WHERE id=1").getDouble();
+        auto splice = prepareEnvelopeSplice(store, lane, spec.start, spec.end, nativeReplacement(points), rate,
+                                           kSplicePointBudget, {data, label});
+        if (!splice.ok) {
+            error = std::move(splice.error);
+            return std::nullopt;
+        }
+        if (read)
+            read->commit();
+        error.clear();
+        return PreparedShape{std::move(splice.requests), head, &store, store.clientId()};
     }catch(const std::exception& e){error=e.what();return std::nullopt;}
 }
 CommitResult commitShapeInsertion(Store& store,const PreparedShape& p) {

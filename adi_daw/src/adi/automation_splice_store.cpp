@@ -126,8 +126,10 @@ static void stageSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds 
                         const edit::TimeMap &time, std::int64_t laneId, std::int64_t begin,
                         std::int64_t end, std::span<const NativeSpliceKnot> replacement,
                         double rate, OpTransactionInputs *guards, std::size_t budget,
-                        std::optional<double> simplification) {
+                        std::optional<double> simplification,
+                        std::optional<std::int64_t> dataIdHint = {}, bool *subSample = nullptr) {
     require(!audio::onAudioThread, "automation splice belongs off the audio callback");
+    require(!dataIdHint || *dataIdHint > 0, "automation data ID must be positive");
     require(!store.readOnly(), "project is read-only");
     require(std::isfinite(rate) && rate > 0 && rate <= 768000,
             "automation splice needs a supported session sample rate");
@@ -153,6 +155,14 @@ static void stageSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds 
             "Simplify Envelope does not change enum automation");
     require(!simplification || (std::isfinite(*simplification) && *simplification >= 0),
             "Simplify Envelope needs a finite nonnegative tolerance");
+    if (subSample) {
+        // AU-03: a request's pass must be ordered and wider than one sample.
+        require(begin < end, "automation splice needs ordered native bounds");
+        if (sampleAt(time, base, begin, rate) == sampleAt(time, base, end, rate)) {
+            *subSample = true;
+            throw std::runtime_error("automation splice boundaries project to one sample");
+        }
+    }
     guardRow(guards, "automation_lanes", laneId, storedLane);
     if (guards)
         (void)guardedRows(store, "tempo_map", Payload::object(), guards);
@@ -170,6 +180,8 @@ static void stageSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds 
     std::int64_t dataId = 0;
     if (row) {
         dataId = integer(row->at("id"));
+        require(!dataIdHint || *dataIdHint == dataId,
+                "automation data address differs from the lane's stream");
         original = decode(*row, base, time, rate, budget);
         const auto ranges = currentRows(
             guardedRows(store, "automation_segment_ranges", {{"data_id", dataId}}, guards),
@@ -191,7 +203,16 @@ static void stageSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds 
     } else {
         if (simplification)
             return;
-        dataId = ids.next("automation_data");
+        if (dataIdHint) {
+            dataId = *dataIdHint;
+            require(!detail::captureRow(db, "automation_data", "id", dataId) &&
+                        std::none_of(changes.begin(), changes.end(), [&](const Payload& change) {
+                            return change.at("table") == "automation_data" && integer(change.at("id")) == dataId;
+                        }),
+                    "automation data ID is already used");
+        } else {
+            dataId = ids.next("automation_data");
+        }
         guardRow(guards, "automation_data", dataId, std::nullopt);
         original.header = {
             static_cast<std::uint32_t>(FourCC::Automation), 1, sizeof(AutomationPoint), 0,
@@ -301,9 +322,8 @@ void stageEnvelopeSplice(Store &store, edit::RowEdits &edits, clip_edit::CopyIds
 static PreparedEnvelopeSplice prepareSplice(Store &store, std::int64_t laneId, std::int64_t begin,
                                              std::int64_t end,
                                              std::span<const NativeSpliceKnot> replacement,
-                                             double rate, std::size_t budget, std::string_view label,
-                                             std::optional<Payload> selection,
-                                             std::optional<double> simplification) {
+                                             double rate, std::size_t budget, EnvelopeSpliceRequest request_,
+                                             std::optional<double> simplification, bool checked) {
     PreparedEnvelopeSplice result;
     try {
         require(!audio::onAudioThread, "automation splice belongs off the audio callback");
@@ -318,7 +338,8 @@ static PreparedEnvelopeSplice prepareSplice(Store &store, std::int64_t laneId, s
         clip_edit::CopyIds ids(db);
         edit::RowEdits edits(db);
         stageSplice(store, edits, ids, time, laneId, begin, end, replacement, rate,
-                    &inputs, budget, simplification);
+                    &inputs, budget, simplification, request_.dataId,
+                    checked ? &result.subSample : nullptr);
         const auto changes = edits.changes();
         if (simplification && changes.empty()) {
             result.ok = true;
@@ -331,8 +352,9 @@ static PreparedEnvelopeSplice prepareSplice(Store &store, std::int64_t laneId, s
         OpRequest request;
         request.opType = "arranger.splice";
         request.payload = {{"id", 0}, {"changes", changes}};
-        request.label = label;
-        request.selBefore = std::move(selection);
+        request.label = request_.label;
+        request.actorDetail = request_.actorDetail;
+        request.selBefore = std::move(request_.selection);
         request.targetKind = "automation";
         request.targetId = laneId;
         result.requests.push_back(std::move(request));
@@ -351,14 +373,23 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
                                              std::span<const NativeSpliceKnot> replacement,
                                              double rate, std::size_t budget, std::string_view label,
                                              std::optional<Payload> selection) {
-    return prepareSplice(store, laneId, begin, end, replacement, rate, budget, label,
-                         std::move(selection), {});
+    return prepareSplice(store, laneId, begin, end, replacement, rate, budget,
+                         {{}, label, {}, std::move(selection)}, {}, false);
+}
+
+PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
+                                             std::int64_t end,
+                                             std::span<const NativeSpliceKnot> replacement,
+                                             double rate, std::size_t budget,
+                                             EnvelopeSpliceRequest request) {
+    return prepareSplice(store, laneId, begin, end, replacement, rate, budget, std::move(request), {},
+                         true);
 }
 
 PreparedEnvelopeSplice prepareSimplifyEnvelope(Store &store, std::int64_t laneId, std::int64_t begin,
                                                 std::int64_t end, double rate, double maxValueError,
                                                 std::optional<Payload> selection) {
-    return prepareSplice(store, laneId, begin, end, {}, rate, kSplicePointBudget, "Simplify Envelope",
-                         std::move(selection), maxValueError);
+    return prepareSplice(store, laneId, begin, end, {}, rate, kSplicePointBudget,
+                         {{}, "Simplify Envelope", {}, std::move(selection)}, maxValueError, false);
 }
 } // namespace adi::automation
