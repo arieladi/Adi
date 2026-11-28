@@ -200,7 +200,51 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The search field's own keys: Down enters the list and Escape clears the search.
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
+    // The AI mode (ADR-0261 d2 and d7, ADR-0262; collab/window/design/proposals/browser-2.png, states
+    // C and D): the last label of Categories, there only while ADI's agent can answer or a proposal
+    // waits. Choosing it shows in the content pane who answers and how far it may go, and each waiting
+    // proposal as a card: its request, its count of changes, Apply, Reject and Open the list. A card
+    // whose song moved on offers no Apply: it says how far the song moved and offers Ask again.
+    struct AgentCard {
+        // Where the proposal's base stands against the song now (control::Freshness, by value).
+        enum class Moved { No, Behind, Ahead, Elsewhere, Unknown };
+        std::string id;
+        std::string request;
+        std::size_t changes = 0;
+        Moved moved = Moved::No;
+        std::size_t steps = 0;    // the Undos (Behind) or Redos (Ahead) that make it current
+        bool canAskAgain = false; // ADI's own agent's proposals only
+    };
+    struct AgentMode {
+        bool canAnswer = false; // ADI's agent can answer now (AppControl::agentReadiness)
+        std::string head;       // who answers and how far it may go: "Agent · asks first · local model"
+        std::vector<AgentCard> cards;
+        bool shown() const noexcept { return canAnswer || !cards.empty(); }
+    };
+    // The root calls this when the queue, the head or the agent's readiness changes, never from a paint.
+    void setAgentMode(AgentMode);
+    const AgentMode &agentMode() const noexcept { return agentMode_; }
+    // Whether the AI label is chosen, so the content pane shows the conversation and the cards.
+    bool agentChosen() const noexcept;
+    enum class CardButton { Apply, Reject, OpenList, AskAgain };
+    // A card, and one of its buttons where a click finds it; empty when it is off the pane or the card
+    // does not offer that button.
+    juce::Rectangle<int> agentCardArea(std::size_t card) const;
+    juce::Rectangle<int> agentButtonArea(std::size_t card, CardButton) const;
+    // What a card says under its request: its count of changes, or how far the song moved.
+    static juce::String agentCardDetail(const AgentCard &);
+    // The root's seams: Apply and Reject review the proposal, Open the list shows its full list in a
+    // floating window (ADR-0262 d2), Ask again sends its request again on a fresh read (ADR-0261 d7).
+    std::function<void(const std::string &id)> onApplyCard, onRejectCard, onOpenCardList, onAskAgain;
+    // What a click on a card's button does; false when the card does not offer it.
+    bool pressAgentButton(std::size_t card, CardButton);
+
   private:
+    AgentMode agentMode_;
+    std::vector<juce::String> agentRequests_, agentDetails_; // built in setAgentMode, drawn by paint
+    juce::String agentHead_;
+    void paintAgentPane(juce::Graphics &);
+    bool setAgentLabelVisible(bool);
     void setSidebarScroll(double);
     void revealSidebarSelection();
     bool setCurrentProjectLabelVisible(bool);

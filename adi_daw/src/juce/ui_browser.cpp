@@ -13,8 +13,46 @@ namespace {
 constexpr int kSearchClearSlot = 21;
 constexpr int kFolderIndent = 12, kFolderDisclosureWidth = 20;
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
-             Samples, Grooves, Templates, Packs, User, Project, AddFolder, All };
+             Samples, Grooves, Templates, Packs, User, Project, AddFolder, All, Ai };
 constexpr auto kLastLabel = "browser.lastLabel";
+constexpr auto kAiLabel = "label:AI";
+// A proposal's card in the AI mode's pane (browser-2.png, state C): its request, one line under it,
+// then its buttons.
+constexpr int kCardPad = 6, kCardTitle = 18, kCardDetail = 16, kCardMovedDetail = 30, kCardButtons = 20,
+              kCardGap = 8, kCardButtonGap = 4;
+int cardHeight(const BrowserPanel::AgentCard &card) {
+    using Moved = BrowserPanel::AgentCard::Moved;
+    return kCardPad + kCardTitle + (card.moved == Moved::No ? kCardDetail : kCardMovedDetail) + kCardButtonGap +
+           kCardButtons + kCardPad;
+}
+// The buttons a card offers, left to right: Apply only on a current card; Ask again in its place on a
+// moved card of ADI's own agent.
+std::vector<BrowserPanel::CardButton> cardButtons(const BrowserPanel::AgentCard &card) {
+    using B = BrowserPanel::CardButton;
+    if (card.moved == BrowserPanel::AgentCard::Moved::No)
+        return {B::Apply, B::Reject, B::OpenList};
+    if (card.canAskAgain)
+        return {B::AskAgain, B::Reject, B::OpenList};
+    return {B::Reject, B::OpenList};
+}
+int cardButtonWidth(BrowserPanel::CardButton b) {
+    using B = BrowserPanel::CardButton;
+    return b == B::Apply || b == B::Reject ? 50 : 64;
+}
+const char *cardButtonLabel(BrowserPanel::CardButton b) {
+    using B = BrowserPanel::CardButton;
+    switch (b) {
+    case B::Apply:
+        return "Apply";
+    case B::Reject:
+        return "Reject";
+    case B::OpenList:
+        return "Open list";
+    case B::AskAgain:
+        return "Ask again";
+    }
+    return "";
+}
 constexpr auto kAllLabel = "label:All";
 constexpr auto kFirstLabel = "label:Instruments";
 constexpr auto kSamplesLabel = "label:Samples";
@@ -74,7 +112,7 @@ juce::String rowName(const BrowserPanel::Row &row) {
         return juce::String::fromUTF8(row.savedPreset->name.c_str());
     return row.file ? juce::String::fromUTF8(row.file->name.c_str()) : row.heading;
 }
-void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
+void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r, std::optional<juce::Colour> ink = {}) {
     g.setColour(look::text);
     const float x = r.getX(), y = r.getY(), w = r.getWidth(), h = r.getHeight();
     juce::Path p;
@@ -168,6 +206,22 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
         g.fillRect(r.getCentreX() - 3, r.getCentreY() - 0.6f, 6.f, 1.2f);
         g.fillRect(r.getCentreX() - 0.6f, r.getCentreY() - 3, 1.2f, 6.f);
         break;
+    case Ai: {
+        // The sheet's four-pointed spark, in the accent; dark on the lit label.
+        g.setColour(ink.value_or(look::accent));
+        const float cx = r.getCentreX(), cy = r.getCentreY(), reach = w / 2.f - 1.f, waist = 1.6f;
+        p.startNewSubPath(cx, cy - reach);
+        p.lineTo(cx + waist, cy - waist);
+        p.lineTo(cx + reach, cy);
+        p.lineTo(cx + waist, cy + waist);
+        p.lineTo(cx, cy + reach);
+        p.lineTo(cx - waist, cy + waist);
+        p.lineTo(cx - reach, cy);
+        p.lineTo(cx - waist, cy - waist);
+        p.closeSubPath();
+        g.fillPath(p);
+        break;
+    }
     default:
         break;
     }
@@ -778,6 +832,8 @@ struct BrowserListPosition {
 };
 } // namespace
 void BrowserPanel::refill(int selectRow, bool keepListPosition) {
+    // The AI mode's pane takes the list's place.
+    list.setVisible(!agentChosen());
     std::optional<BrowserListPosition> previous;
     if (keepListPosition) {
         auto &position = previous.emplace();
@@ -1511,8 +1567,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
             if (row.getY() >= sidebarArea_.getBottom())
                 break;
             const auto &e = sidebar_[static_cast<std::size_t>(i)];
+            // The sheet lights the chosen AI label in the accent (browser-2.png, states C and D).
+            const bool litAi = !hotSwap_ && i == highlighted && e.glyph == Ai;
             if (!hotSwap_ && i == highlighted) {
-                g.setColour(look::selection);
+                g.setColour(litAi ? look::accent : look::selection);
                 g.fillRect(row);
             }
             if (e.heading) {
@@ -1520,8 +1578,9 @@ void BrowserPanel::paint(juce::Graphics &g) {
                 g.setFont(look::font(look::fontField));
                 g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
             } else {
-                icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
-                g.setColour(hotSwap_ ? look::textDim : look::text);
+                icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13),
+                     litAi ? std::optional<juce::Colour>(look::ink) : std::nullopt);
+                g.setColour(litAi ? look::ink : hotSwap_ ? look::textDim : look::text);
                 g.setFont(look::font(look::fontHeading));
                 g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
             }
@@ -1541,6 +1600,8 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.setColour(look::accent);
         g.drawFittedText(target.isEmpty() ? juce::String("Hot-Swap") : "Hot-Swap  " + target,
                          header.reduced(4, 0), juce::Justification::centredLeft, 1);
+    } else if (agentChosen()) {
+        paintAgentPane(g);
     } else {
         g.setColour(look::text);
         g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
@@ -1615,6 +1676,8 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
             return;
         }
         if (!hotSwap_ && nameHeaderArea().contains(e.getPosition())) {
+            if (agentChosen())
+                return; // the AI mode's head line sorts nothing
             nameSortAscending_ = !nameSortAscending_.value_or(true);
             refill(-1, true);
             repaint(nameHeaderArea());
@@ -1624,6 +1687,15 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
     const auto wave = previewWaveformArea();
     if (!e.mods.isPopupMenu() && previewPeaks_ && wave.contains(e.getPosition()) && selectedSample()) {
         previewSelected(static_cast<double>(e.x - wave.getX()) / std::max(1, wave.getWidth() - 1));
+        return;
+    }
+    if (agentChosen() && !e.mods.isPopupMenu() && contentArea_.contains(e.getPosition())) {
+        for (std::size_t i = 0; i < agentMode_.cards.size(); ++i)
+            for (const auto b : cardButtons(agentMode_.cards[i]))
+                if (agentButtonArea(i, b).contains(e.getPosition())) {
+                    pressAgentButton(i, b);
+                    return;
+                }
         return;
     }
     const int y = e.y - sidebarRowBounds(0).getY();
@@ -1848,5 +1920,162 @@ void BrowserPanel::focusLost(FocusChangeType) {
     ring_ = false;
     addFolderFocused_ = false;
     repaint();
+}
+
+// --- the AI mode ---------------------------------------------------------------------------
+bool BrowserPanel::agentChosen() const noexcept {
+    return !hotSwap_ && selected_ >= 0 && static_cast<std::size_t>(selected_) < sidebar_.size() &&
+           sidebar_[static_cast<std::size_t>(selected_)].glyph == Ai;
+}
+bool BrowserPanel::setAgentLabelVisible(bool visible) {
+    const int ai = findLabel(kAiLabel);
+    if (visible == (ai >= 0))
+        return false;
+    const auto key = labelKey(selected_);
+    if (visible) {
+        // ADR-0261 d2: the last label of Categories (the sheet puts it after Templates, which this
+        // Browser does not list yet; Samples ends Categories here).
+        const int samples = findLabel(kSamplesLabel);
+        if (samples < 0)
+            return false;
+        sidebar_.insert(sidebar_.begin() + static_cast<std::ptrdiff_t>(samples + 1), Entry{"AI", Ai});
+        ++baseEntries_;
+    } else {
+        sidebar_.erase(sidebar_.begin() + static_cast<std::ptrdiff_t>(ai));
+        --baseEntries_;
+    }
+    selected_ = findLabel(key);
+    const bool selectionRemoved = selected_ < 0;
+    if (selectionRemoved) {
+        selected_ = findLabel(kAllLabel);
+        setPreviewRowShown(false);
+    }
+    setSidebarScroll(sidebarScroll_);
+    repaint();
+    return selectionRemoved;
+}
+juce::String BrowserPanel::agentCardDetail(const AgentCard &card) {
+    using Moved = AgentCard::Moved;
+    const auto count = [](std::size_t n, const char *one, const char *many) {
+        return juce::String(static_cast<juce::int64>(n)) + " " + (n == 1 ? one : many);
+    };
+    const auto changes = count(card.changes, "change", "changes");
+    switch (card.moved) {
+    case Moved::No:
+        return changes;
+    case Moved::Behind:
+        return changes + ". The song moved on: " + count(card.steps, "edit", "edits") + " came after it; " +
+               count(card.steps, "Undo makes", "Undos make") + " it current.";
+    case Moved::Ahead:
+        return changes + ". " + count(card.steps, "step was", "steps were") + " undone since it was made; " +
+               count(card.steps, "Redo makes", "Redos make") + " it current.";
+    case Moved::Elsewhere:
+        return changes + ". The song is on another branch of its history now.";
+    case Moved::Unknown:
+        return changes + ". Where it stands in the song's history cannot be read.";
+    }
+    return changes;
+}
+void BrowserPanel::setAgentMode(AgentMode mode) {
+    const bool wasChosen = agentChosen();
+    agentMode_ = std::move(mode);
+    agentHead_ = juce::String::fromUTF8(agentMode_.head.c_str());
+    agentRequests_.clear();
+    agentDetails_.clear();
+    for (const auto &card : agentMode_.cards) {
+        agentRequests_.push_back(juce::String::fromUTF8(card.request.c_str()));
+        agentDetails_.push_back(agentCardDetail(card));
+    }
+    const bool removed = setAgentLabelVisible(agentMode_.shown());
+    if (removed || wasChosen != agentChosen())
+        refill();
+    repaint();
+}
+juce::Rectangle<int> BrowserPanel::agentCardArea(std::size_t card) const {
+    const auto &cards = agentMode_.cards;
+    if (card >= cards.size() || contentArea_.isEmpty())
+        return {};
+    int y = nameHeaderArea().getBottom() + kCardGap;
+    for (std::size_t i = 0; i < card; ++i)
+        y += cardHeight(cards[i]) + kCardGap;
+    const juce::Rectangle<int> area{contentArea_.getX() + kCardPad, y,
+                                    std::max(0, contentArea_.getWidth() - 2 * kCardPad), cardHeight(cards[card])};
+    return area.getBottom() <= contentArea_.getBottom() ? area : juce::Rectangle<int>{};
+}
+juce::Rectangle<int> BrowserPanel::agentButtonArea(std::size_t card, CardButton which) const {
+    const auto area = agentCardArea(card);
+    if (area.isEmpty())
+        return {};
+    int x = area.getX() + 8;
+    const int y = area.getBottom() - kCardPad - kCardButtons;
+    for (const auto b : cardButtons(agentMode_.cards[card])) {
+        const int width = cardButtonWidth(b);
+        if (b == which)
+            return juce::Rectangle<int>{x, y, width, kCardButtons}.getIntersection(area);
+        x += width + kCardButtonGap;
+    }
+    return {};
+}
+bool BrowserPanel::pressAgentButton(std::size_t card, CardButton which) {
+    if (agentButtonArea(card, which).isEmpty())
+        return false;
+    // A copy: the seam may hand the pane new cards before it returns.
+    const std::string id = agentMode_.cards[card].id;
+    const auto &seam = which == CardButton::Apply      ? onApplyCard
+                       : which == CardButton::Reject   ? onRejectCard
+                       : which == CardButton::OpenList ? onOpenCardList
+                                                       : onAskAgain;
+    if (!seam) {
+        root_.say("The agent's proposals are reviewed in the application.");
+        return false;
+    }
+    const auto call = seam; // the seam may be replaced while it runs
+    call(id);
+    return true;
+}
+void BrowserPanel::paintAgentPane(juce::Graphics &g) {
+    // The head line: who answers and how far it may go (the sheet's note 6).
+    const auto header = nameHeaderArea();
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontField));
+    g.drawFittedText(agentHead_.isNotEmpty() ? agentHead_ : juce::String("Proposals that wait for you"),
+                     header.reduced(4, 0), juce::Justification::centredLeft, 1);
+    juce::Graphics::ScopedSaveState clip(g);
+    g.reduceClipRegion(contentArea_.withTrimmedTop(header.getHeight()));
+    if (agentMode_.cards.empty()) {
+        g.drawFittedText("Nothing waits for your Apply.",
+                         contentArea_.withTrimmedTop(header.getHeight()).reduced(kCardPad), juce::Justification::topLeft,
+                         2);
+        return;
+    }
+    for (std::size_t i = 0; i < agentMode_.cards.size(); ++i) {
+        const auto area = agentCardArea(i);
+        if (area.isEmpty())
+            break;
+        const auto &card = agentMode_.cards[i];
+        const bool current = card.moved == AgentCard::Moved::No;
+        // A proposed change is a card (note 7), outlined in the accent while Apply can write it.
+        g.setColour(look::browserEdge);
+        g.fillRoundedRectangle(area.toFloat(), look::radiusControl);
+        g.setColour(current ? look::accent : look::textFaint);
+        g.drawRoundedRectangle(area.toFloat().reduced(0.5f), look::radiusControl, 1.f);
+        auto inner = area.reduced(8, kCardPad);
+        g.setColour(look::text);
+        g.setFont(look::font(look::fontHeading, true));
+        g.drawFittedText(agentRequests_[i], inner.removeFromTop(kCardTitle), juce::Justification::centredLeft, 1);
+        g.setColour(look::textDim);
+        g.setFont(look::font(look::fontField));
+        const int detailHeight = current ? kCardDetail : kCardMovedDetail;
+        g.drawFittedText(agentDetails_[i], inner.removeFromTop(detailHeight), juce::Justification::centredLeft,
+                         current ? 1 : 2);
+        for (const auto b : cardButtons(card)) {
+            const auto button = agentButtonArea(i, b);
+            if (button.isEmpty())
+                continue;
+            controls::button(g, button.toFloat(),
+                             b == CardButton::Apply ? controls::ButtonState::On : controls::ButtonState::Rest,
+                             cardButtonLabel(b), look::fontField);
+        }
+    }
 }
 } // namespace adi::ui

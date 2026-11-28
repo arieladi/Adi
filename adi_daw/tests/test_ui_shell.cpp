@@ -4196,6 +4196,113 @@ void browserSidebarScroll(AppCommands &commands, const std::filesystem::path &di
               viewport.contains(browser.sidebarRowBounds(browser.selected())),
           "SC-124: removing folders clamps the sidebar to its shorter extent");
 }
+// The AI mode (ADR-0261 d2 and d7, ADR-0262; collab/window/design/proposals/browser-2.png, states C
+// and D): AI is the last label of Categories only while ADI's agent can answer or a proposal waits;
+// choosing it shows the head line and a card for each waiting proposal. Apply is offered only on a
+// current card; a moved card of ADI's own agent offers Ask again in its place, another client's neither.
+void browserAgentMode(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-agent.adi", true, {}, error);
+    check(document != nullptr, "AGT-05: a project for the AI mode");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "browser-agent");
+    auto &browser = root->browser;
+    browser.setSize(308, 443);
+    const auto labelIndex = [&browser](const char *name) {
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i)
+            if (!browser.sidebar()[i].heading && browser.sidebar()[i].name == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+    const auto chosenName = [&browser] {
+        return browser.selected() < 0 ? juce::String()
+                                      : browser.sidebar()[static_cast<std::size_t>(browser.selected())].name;
+    };
+    const auto rosterBefore = browser.sidebar().size();
+    check(labelIndex("AI") < 0, "AGT-05: no AI label while no agent can answer and nothing waits");
+
+    using Card = BrowserPanel::AgentCard;
+    using B = BrowserPanel::CardButton;
+    const auto card = [](const char *id, const char *request, std::size_t changes, Card::Moved moved,
+                         std::size_t steps, bool canAskAgain) {
+        Card c;
+        c.id = id;
+        c.request = request;
+        c.changes = changes;
+        c.moved = moved;
+        c.steps = steps;
+        c.canAskAgain = canAskAgain;
+        return c;
+    };
+    BrowserPanel::AgentMode ready;
+    ready.canAnswer = true;
+    ready.head = "Agent \xc2\xb7 asks first \xc2\xb7 local model";
+    browser.setAgentMode(ready);
+    const int ai = labelIndex("AI");
+    check(ai >= 0 && ai == labelIndex("Samples") + 1 && browser.sidebar()[static_cast<std::size_t>(ai + 1)].heading &&
+              browser.sidebar().size() == rosterBefore + 1,
+          "AGT-05: once ADI's agent can answer, AI is the last label of Categories");
+    browser.choose(ai);
+    check(browser.agentChosen() && !browser.list.isVisible() && browser.agentCardArea(0).isEmpty(),
+          "AGT-05: choosing AI shows its pane in the list's place; with nothing waiting, no card");
+    const auto lit = browser.sidebarRowBounds(ai);
+    check(renderedPixel(browser, {lit.getRight() - 2, lit.getY() + 1}) == look::accent,
+          "AGT-05: the chosen AI label is lit in the accent, as the sheet draws it");
+
+    std::vector<std::string> applied, rejected, opened, asked;
+    browser.onApplyCard = [&applied](const std::string &id) { applied.push_back(id); };
+    browser.onRejectCard = [&rejected](const std::string &id) { rejected.push_back(id); };
+    browser.onOpenCardList = [&opened](const std::string &id) { opened.push_back(id); };
+    browser.onAskAgain = [&asked](const std::string &id) { asked.push_back(id); };
+    BrowserPanel::AgentMode waiting = ready;
+    waiting.cards.push_back(card("cs-1", "Tighten drums, bars 25-33", 14, Card::Moved::No, 0, true));
+    waiting.cards.push_back(card("cs-2", "A darker kick", 3, Card::Moved::Behind, 2, true));
+    waiting.cards.push_back(card("cs-3", "Rename the bass", 1, Card::Moved::Ahead, 1, false));
+    browser.setAgentMode(waiting);
+    check(browser.agentChosen() && chosenName() == "AI", "AGT-05: AI stays chosen as the cards arrive");
+    const auto c0 = browser.agentCardArea(0), c1 = browser.agentCardArea(1), c2 = browser.agentCardArea(2);
+    check(!c0.isEmpty() && !c1.isEmpty() && !c2.isEmpty() && c1.getY() > c0.getBottom() &&
+              c2.getY() > c1.getBottom() && browser.contentArea().contains(c2),
+          "AGT-05: each waiting proposal is a card, oldest first");
+    check(BrowserPanel::agentCardDetail(waiting.cards[0]) == "14 changes", "AGT-05: a current card counts its changes");
+    check(BrowserPanel::agentCardDetail(waiting.cards[1]) ==
+              "3 changes. The song moved on: 2 edits came after it; 2 Undos make it current.",
+          "ADR-0261 d7: a card behind the song says how many edits came after and that Undo makes it current");
+    check(BrowserPanel::agentCardDetail(waiting.cards[2]) ==
+              "1 change. 1 step was undone since it was made; 1 Redo makes it current.",
+          "ADR-0261 d7: a card ahead of the song says Redo makes it current");
+    check(!browser.agentButtonArea(0, B::Apply).isEmpty() && browser.agentButtonArea(0, B::AskAgain).isEmpty() &&
+              !browser.agentButtonArea(0, B::Reject).isEmpty() && !browser.agentButtonArea(0, B::OpenList).isEmpty(),
+          "AGT-05: a current card offers Apply, Reject and Open list");
+    check(browser.agentButtonArea(1, B::Apply).isEmpty() && !browser.agentButtonArea(1, B::AskAgain).isEmpty(),
+          "ADR-0261 d7: a moved card of ADI's agent offers Ask again in Apply's place");
+    check(browser.agentButtonArea(2, B::Apply).isEmpty() && browser.agentButtonArea(2, B::AskAgain).isEmpty() &&
+              !browser.agentButtonArea(2, B::Reject).isEmpty(),
+          "ADR-0261 d7: a moved card of another client offers neither, only Reject and Open list");
+    check(renderedPixel(browser, {c0.getRight() - 3, c0.getCentreY()}) == look::browserEdge,
+          "AGT-05: a card is drawn on the Browser's dark block");
+
+    const auto click = [&browser](juce::Rectangle<int> r) {
+        browser.mouseDown(pressAt(browser, r.getCentre().toFloat()));
+    };
+    click(browser.agentButtonArea(0, B::Apply));
+    click(browser.agentButtonArea(1, B::AskAgain));
+    click(browser.agentButtonArea(2, B::Reject));
+    click(browser.agentButtonArea(0, B::OpenList));
+    click({c0.getX() + 10, c0.getY() + 4, 4, 4}); // the request's line: no button there
+    check(applied == std::vector<std::string>{"cs-1"} && asked == std::vector<std::string>{"cs-2"} &&
+              rejected == std::vector<std::string>{"cs-3"} && opened == std::vector<std::string>{"cs-1"},
+          "AGT-05: each button hands its seam its own card's id, and a click beside them does nothing");
+    check(!browser.pressAgentButton(1, B::Apply) && applied.size() == 1,
+          "ADR-0261 d7: Apply cannot be pressed on a moved card");
+
+    browser.setAgentMode({});
+    check(labelIndex("AI") < 0 && !browser.agentChosen() && browser.list.isVisible() && chosenName() == "All" &&
+              browser.sidebar().size() == rosterBefore,
+          "AGT-05: when the agent cannot answer and nothing waits, the label goes and the Browser returns to All");
+}
 void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
     std::string why;
     const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
@@ -33155,6 +33262,7 @@ int main(int argc, char **argv) {
     trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("deviceOutputMeters", [&] { deviceOutputMeters(commands, temp.path()); });
     trace("browserSidebarScroll", [&] { browserSidebarScroll(commands, temp.path()); });
+    trace("browserAgentMode", [&] { browserAgentMode(commands, temp.path()); });
     trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
