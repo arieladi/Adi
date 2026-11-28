@@ -82,11 +82,7 @@ bool sameStoredLaunchSources(const ClipProject& a, const ClipProject& b) {
         std::ranges::equal(a.session->settingsRows(), b.session->settingsRows());
 }
 
-bool sameStoredWarpSource(const ClipProject& a, const ClipProject& b, std::int64_t id) {
-    const auto left = std::ranges::find(a.rows.slotClips,id,&rows::Clip::id);
-    const auto right = std::ranges::find(b.rows.slotClips,id,&rows::Clip::id);
-    if (left == a.rows.slotClips.end() || right == b.rows.slotClips.end() || left->gainDb != right->gainDb)
-        return false;
+static bool sameStoredAudioBacking(const ClipProject& a, const ClipProject& b, std::int64_t id) {
     const auto leftAudio = std::ranges::find(a.rows.audioClips,id,&rows::AudioClip::clipId);
     const auto rightAudio = std::ranges::find(b.rows.audioClips,id,&rows::AudioClip::clipId);
     if (leftAudio == a.rows.audioClips.end() || rightAudio == b.rows.audioClips.end() || *leftAudio != *rightAudio)
@@ -100,6 +96,13 @@ bool sameStoredWarpSource(const ClipProject& a, const ClipProject& b, std::int64
     const auto leftHint = a.hints.find(mediaId);
     const auto rightHint = b.hints.find(mediaId);
     return leftHint != a.hints.end() && rightHint != b.hints.end() && leftHint->second == rightHint->second;
+}
+
+bool sameStoredWarpSource(const ClipProject& a, const ClipProject& b, std::int64_t id) {
+    const auto left = std::ranges::find(a.rows.slotClips,id,&rows::Clip::id);
+    const auto right = std::ranges::find(b.rows.slotClips,id,&rows::Clip::id);
+    return left != a.rows.slotClips.end() && right != b.rows.slotClips.end() && left->gainDb == right->gainDb &&
+        sameStoredAudioBacking(a,b,id);
 }
 namespace {
 constexpr std::size_t slots = 8;
@@ -1609,7 +1612,7 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
-    std::span<const std::int64_t> warmWarpClips, const LaunchAudioProject* priorPinnedPages,
+    std::span<const std::int64_t> warmWarpClips, StoredLaunchPageReuse priorPinnedPages,
     bool allowColdPinnedPages) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
@@ -1771,14 +1774,24 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     prepared.physicalStartFrame = startFrame;
                     prepared.physicalFrames = endFrame - startFrame;
                     if (!setting.ramMode) {
-                        const auto* prior = priorPinnedPages ? priorPinnedPages->clip(clip->id) : nullptr;
-                        if (prior && prior->pageReader() && prior->latencySamples() == 0 &&
-                            prior->frames() == static_cast<std::uint64_t>(endFrame)) {
-                            // Only the selected graph calls read(). The owner
-                            // copies the immutable clip wrapper and shares its
-                            // driver cursor and existing source pages.
-                            pcm.push_back(*prior);
-                            continue;
+                        if (priorPinnedPages.source && priorPinnedPages.bank) {
+                            const auto* prior = priorPinnedPages.bank->clip(clip->id);
+                            const auto priorSlots = priorPinnedPages.bank->view().slots;
+                            const auto priorSlot = std::ranges::find(priorSlots,clip->id,&LaunchSlot::clip);
+                            const auto& priorClips = priorPinnedPages.source->rows.slotClips;
+                            const auto priorClip = std::ranges::find(priorClips,clip->id,&rows::Clip::id);
+                            if (prior && prior->pageReader() && prior->latencySamples() == 0 &&
+                                prior->pageReader()->matchesFormat(rate,channels,maxFrames) &&
+                                prior->frames() == static_cast<std::uint64_t>(endFrame) &&
+                                priorSlot != priorSlots.end() && priorSlot->physicalStartFrame == startFrame &&
+                                priorSlot->physicalFrames == prepared.physicalFrames &&
+                                priorClip != priorClips.end() && *priorClip == *clip &&
+                                sameStoredAudioBacking(*priorPinnedPages.source,original,clip->id)) {
+                                // Share the warm reader only for this unchanged
+                                // slot. Only the selected graph calls read().
+                                pcm.push_back(*prior);
+                                continue;
+                            }
                         }
                         if (!hasPreparedClock && !allowColdPinnedPages &&
                             prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate))

@@ -31,6 +31,10 @@ const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 bool sameStoredLaunchSources(const ClipProject&, const ClipProject&);
 bool sameStoredWarpSource(const ClipProject&, const ClipProject&, std::int64_t clip);
 inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
+struct StoredLaunchPageReuse {
+    const ClipProject* source = nullptr;
+    const LaunchAudioProject* bank = nullptr;
+};
 /// Owner-only. A scene handover can supply a flat clock for prepared media
 /// and warm the native sources that may inherit an arbitrary source phase.
 /// Cold start-window admission for long pinned media is only for a fresh incarnation.
@@ -38,7 +42,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
     std::uint64_t incarnation, std::vector<std::string>& problems,
     std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
-    std::span<const std::int64_t> warmWarpClips = {}, const LaunchAudioProject* priorPinnedPages = nullptr,
+    std::span<const std::int64_t> warmWarpClips = {}, StoredLaunchPageReuse priorPinnedPages = {},
     bool allowColdPinnedPages = false);
 class ClipPlayback {
 public:

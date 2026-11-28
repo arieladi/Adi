@@ -621,6 +621,64 @@ void physicalOneShotsFollowExternalTempo() {
     }
 }
 
+void retainPagedOneShotOnSlotRefresh() {
+    test::TempDirectory folder{"session_unwarped_one_shot", "unrelated-slot"};
+    auto store = sceneProject(folder.path());
+    store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+    pinUnwarpedOneShot(*store,50031250,4000000000);
+    store->db().exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+    addClip(*store,folder.path(),102,20,3,false);
+    constexpr auto span = 4 * rate;
+    constexpr auto refreshFrame = 2 * rate;
+    constexpr auto tempoTick = quarter / 2;
+    const auto gain = [&](int clip) {
+        OpRequest edit;
+        edit.opType = "clip.setGain";
+        edit.payload = {{"id", clip}, {"gain", -6.0}};
+        require(OpJournal(*store).commit(edit).ok, "persist a slot gain change");
+    };
+    const auto render = [&](bool editSlots) {
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        std::vector<float> pcm(span + blockFrames);
+        Playback playback{session,pcm};
+        playback.paged = true;
+        scene(*store,session,10);
+        playback.through(6000);
+        require(session.setExternalTempoAt(*store,140,tempoTick),"start the performed variable tempo");
+        playback.through(refreshFrame);
+        if (editSlots) {
+            const auto before = trackState(session);
+            const auto swaps = session.graph().stats().swaps;
+            gain(102);
+            require(session.refresh(*store),"refresh the gain of a different stored slot");
+            playback.through(refreshFrame + 1);
+            const auto after = trackState(session);
+            require(before.run != 0 && before.run == after.run && after.clip == 101 &&
+                    after.remainingSamples == span - refreshFrame - 1 &&
+                    session.graph().stats().swaps > swaps && session.problems().empty(),
+                    "the edited graph adopts while the unchanged long source retains its warm page bank");
+
+            const auto adopted = session.graph().stats().swaps;
+            gain(101);
+            require(session.refresh(*store),"prepare a refresh for the running stored slot");
+            playback.through(refreshFrame + rate / 2);
+            require(session.graph().stats().swaps == adopted && trackState(session).run == before.run,
+                    "an incompatible replacement cannot drop the actual active reader");
+        }
+        playback.through(span + blockFrames);
+        require(playback.count == 2 && playback.edges[0].sample == 0 && playback.edges[1].newClip == 0 &&
+                playback.edges[1].sample == span && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                "the long slot reaches its physical end with no callback allocation or file I/O");
+        return pcm;
+    };
+    const auto reference = render(false);
+    require(render(true) == reference, "persisted independent and guarded source edits preserve the full one-shot PCM");
+    std::printf("Paged source reused after a different slot edit: %d identical frames\n",span);
+}
+
 void coldPagedOneShotOnAuthoredRamp() {
     test::TempDirectory folder{"session_unwarped_one_shot", "cold-ramp"};
     auto store = sceneProject(folder.path());
@@ -816,6 +874,7 @@ int main() {
         mixedTempoScene(MixedScene::ChangeNativeGain);
         absoluteWarpFallback();
         physicalOneShotsFollowExternalTempo();
+        retainPagedOneShotOnSlotRefresh();
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();

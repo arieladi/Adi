@@ -987,6 +987,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
     std::shared_ptr<const LaunchAudioProject> beforeClock;
     std::int64_t clockSample = 0;
     const auto* prior = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    bool sameBankSources = false;
     if (!project && clipProject_ && storedLaunchIncarnation_ != 0) {
         const auto rate = static_cast<std::uint32_t>(timing.sampleRate);
         const auto channels = static_cast<std::uint16_t>(timing.spec.channels);
@@ -1009,14 +1010,17 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         timing.protectCompatiblePinnedPages = prior && prior->launchAudio && prior->launchSource &&
             prior->launchAudio->incarnation() == storedLaunchIncarnation_ &&
             prior->sampleRate == timing.sampleRate && prior->spec.channels == timing.spec.channels &&
-            prior->spec.maxFrames == timing.spec.maxFrames &&
+            prior->spec.maxFrames == timing.spec.maxFrames;
+        sameBankSources = timing.protectCompatiblePinnedPages &&
             sameStoredLaunchSources(*prior->launchSource,*clipProject_);
         if (storedLaunchSource_ != clipProject_ || rate != storedLaunchRate_ || channels != storedLaunchChannels_ ||
             storedLaunchBlockFrames_ != timing.spec.maxFrames || storedLaunchTempo_ != timing.tempo.events ||
             storedLaunchPreparedBpm_ != preparedBpm || !std::ranges::equal(storedLaunchWarmWarpClips_,warmWarpClips)) {
             auto diagnostics = model.slotProblems;
-            const auto* priorPinnedPages = timing.protectCompatiblePinnedPages
-                ? prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get() : nullptr;
+            const auto priorPinnedPages = timing.protectCompatiblePinnedPages
+                ? StoredLaunchPageReuse{prior->launchSource.get(),
+                    prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get()}
+                : StoredLaunchPageReuse{};
             const bool hasPriorBank = (storedLaunchProject_ && storedLaunchProject_->incarnation() == storedLaunchIncarnation_) ||
                 (prior && prior->launchAudio && prior->launchAudio->incarnation() == storedLaunchIncarnation_);
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
@@ -1067,7 +1071,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
         // the gain baseline for an identical bank, its outgoing clock bank,
         // or a reprojection of the same stored audio, settings and driver format.
         // The gain driver clears the multiplier when the launch run changes.
-        if (project == priorProject || beforeClock == priorProject || timing.protectCompatiblePinnedPages)
+        if (project == priorProject || beforeClock == priorProject || sameBankSources)
             gainRevision = prior->launchAudio->gainRevision();
     }
     timing.launchAudio = std::make_shared<LaunchAudioRuntime>(project, tracks, timing.spec.maxFrames, beforeClock,

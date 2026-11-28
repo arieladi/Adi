@@ -31,6 +31,9 @@ public:
     /// Owner/worker before publication. Each first/loop phase must be warm at
     /// admission. No Store or future file callback survives into the driver.
     [[nodiscard]] bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    [[nodiscard]] bool matchesFormat(std::uint32_t rate, std::int32_t channels, std::int32_t blockFrames) const noexcept {
+        return sampleRate_ == rate && channels_ == channels && blockFrames_ == blockFrames;
+    }
     [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
     [[nodiscard]] std::int32_t latencySamples(std::int64_t clip) const noexcept;
     /// Owner query after prime for a newly published worker-backed bank.
