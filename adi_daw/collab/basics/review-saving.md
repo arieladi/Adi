@@ -21,8 +21,14 @@ into the chain (`8e68fa122`).
 
 ### State of the proof
 
-The build place (slot 12) was held by a warm-up of another branch, itself waiting for a build place, for
-the whole of this session up to this line. No check of this chain has run yet. What is owed, in this order:
+The build place (slot 12) was held by a warm-up of the base for an hour (it ended with one failure that
+is not this chain's: `adi_decode_space_tests`, "cold progressive worker fully decodes the valid compact
+constant stream"; the same suite passed in the next run, so it looks like a timing fault under load).
+
+**Done at 16:47:** head `8e68fa122`, mode core: MSVC Debug build with warnings as errors, then
+291 of 291 tests passed (`adi_project_files_tests` with `writeProtectedSource` among them).
+**Done at 16:57:** the window build of the same head compiled. Its suites were still running when this
+line was written. What is owed, in this order:
 
 1. `bash /d/adibuild-tools/slot.sh run 12 origin/basics/review-saving-chain all` and wait: both fixes are
    in, everything must pass. The new tests are the four named above.
