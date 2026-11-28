@@ -6619,10 +6619,11 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
     if (pending) std::exchange(pending, nullptr)({{capture(), {}}}, "");
     root.frame(); // the window's view of the project takes the landed clip on its next frame
     check(!root.capturing() && clipsOn() == 1, ("read, the clip lands as the plain drop always did: " + root.error()).c_str());
+    const auto broken = (dir / "Broken.wav").string();
     {
         // SC-389: one bad file among the dropped: the others land, one step, and the bad one is named.
         const auto clipsBefore = clipsOn();
-        check(root.dropAudioFiles({{wav.string(), "Long"}, {(dir / "Broken.wav").string(), "Broken"}}, audioTrack, 0, false) &&
+        check(root.dropAudioFiles({{wav.string(), "Long"}, {broken, "Broken"}}, audioTrack, textproj::kWhole, false) &&
                   asked.size() == 3 && asked.back().size() == 2,
               "SC-389: two files are read together");
         if (pending) std::exchange(pending, nullptr)({{capture(), {}}, {std::nullopt, "it is not audio ADI can read"}}, "");
@@ -6646,6 +6647,22 @@ void plainDropReadsOffTheWindow(AppCommands &commands, settings::AppSettings &se
     root.frame();
     check(clipsOn() == before && root.error().find("changed while the files were read") != std::string::npos,
           ("a capture older than the project is refused, not landed with ids another row may hold: " + root.error()).c_str());
+    root.captureAudio = {};
+    root.importAudio = [&](const std::string &path, AudioImport &out, std::string &reason) {
+        ++inPlace;
+        if (document->prepareImport(path, 1'700'000'000'000'000, out))
+            return true;
+        reason = document->error();
+        return false;
+    };
+    check(root.dropAudioFiles({{broken, "Broken"}, {wav.string(), "Long"}, {wav.string(), "Long again"},
+                               {broken, "Broken again"}},
+                              audioTrack, 2 * textproj::kWhole, false),
+          "SC-389: the synchronous importer handles a repeated file after a bad one");
+    root.frame();
+    check(inPlace == 2 && clipsOn() == before + 2 && root.error().find("other 2 came in") != std::string::npos &&
+              root.error().find("Broken again") == std::string::npos,
+          "SC-389: each file is read once, the two good clips land, and the bad file is named once");
     settings.set("editing.importOptions", wasOptions, {}, why);
     commands.detach(root);
     document->release();
@@ -31707,9 +31724,10 @@ int main(int argc, char **argv) {
             check(in[0]->isEnabled() && in[3]->isEnabled() && !in[1]->isEnabled() && !in[2]->isEnabled() &&
                       in[1]->getTooltip().contains("sync") && in[2]->getTooltip().contains("Remote"),
                   "an input's Track and MPE are switches; Sync and Remote, read by nothing yet, are dimmed and say why");
-            check(std::none_of(out.begin(), out.end(), [](const auto &s) { return s->isEnabled(); }) &&
-                      out[0]->getTooltip().contains("sends no MIDI"),
-                  "an output's four switches are dimmed: ADI sends no MIDI to a port yet");
+            check(out[0]->isEnabled() && !out[1]->isEnabled() && !out[2]->isEnabled() && !out[3]->isEnabled() &&
+                      out[1]->getTooltip().contains("sync") && out[2]->getTooltip().contains("Remote") &&
+                      out[3]->getTooltip().contains("input"),
+                  "an output's Track switch enables hardware routing; Sync, Remote and MPE are dimmed and say why");
         }
         check(settings.get("midi.ports")["in:port-1"].value("name", std::string()) == "Keystation 61",
               "the record keeps the port's name (N61)");

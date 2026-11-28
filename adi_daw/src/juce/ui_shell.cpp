@@ -39,6 +39,7 @@
 #include <limits>
 #include <sqlite3.h>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -4355,30 +4356,27 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     // before it took, and a file dropped twice is captured once.
     std::vector<DroppedAudio> dropped;
     std::vector<std::pair<std::string, std::string>> failed;
-    std::vector<std::string> bad;
+    std::unordered_map<std::string_view, std::optional<std::size_t>> captures;
     std::int64_t nextId = 0;
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        const auto &[path, name] = files[i];
-        if (std::find(bad.begin(), bad.end(), path) != bad.end())
-            continue; // SC-389: a bad file dropped twice is named once
+    for (const auto &[path, name] : files) {
+        const auto [capture, first] = captures.try_emplace(path);
         DroppedAudio file{name, {}};
-        std::size_t seen = 0;
-        while (seen < i && files[seen].first != path)
-            ++seen;
-        if (seen < i) {
-            file.import = dropped[seen].import;
-            file.import.media = {};
-        } else {
+        if (first) {
             file.import.firstFreeId = nextId;
             std::string why;
             if (!importAudio(path, file.import, why)) {
                 // SC-389: one bad file never stops the others; it is named when they have landed.
                 failed.emplace_back(name, why.empty() ? std::string("it could not be read") : why);
-                bad.push_back(path);
                 continue;
             }
             if (!file.import.media.opType.empty())
                 nextId = std::max(nextId, file.import.mediaId + 1);
+            capture->second = dropped.size();
+        } else if (const auto previous = capture->second) {
+            file.import = dropped[*previous].import;
+            file.import.media = {};
+        } else {
+            continue; // A bad file dropped twice is named once.
         }
         dropped.push_back(std::move(file));
     }
