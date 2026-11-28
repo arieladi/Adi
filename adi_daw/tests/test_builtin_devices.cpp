@@ -29,7 +29,9 @@
 #include <exception>
 #include <new>
 #include <set>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -790,6 +792,84 @@ double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double vol
     }
     return peak;
 }
+// SC-483: a Sampler slot's saved state, written by hand as the host writes it
+// (a float backup of the source at its own rate).
+std::vector<std::uint8_t> samplerSlotState(std::int32_t slot,const std::vector<float>& interleaved,int channels,double rate) {
+    auto value=emptyBuiltinSample(samplerUid,slot);
+    value["empty"]=false;value["mediaHash"]=std::string(64,static_cast<char>('a'+slot%6));
+    value["sourceRate"]=rate;value["channels"]=channels;
+    std::vector<std::uint8_t> bytes(interleaved.size()*4);
+    for(std::size_t i=0;i<interleaved.size();++i) {
+        std::uint32_t bits=0;std::memcpy(&bits,&interleaved[i],sizeof bits);
+        for(unsigned byte=0;byte<4;++byte)bytes[i*4+byte]=static_cast<std::uint8_t>((bits>>(8*byte))&255u);
+    }
+    value["source_f32le"]=Payload::binary(std::move(bytes));
+    return Payload::to_cbor(value);
+}
+// SC-483: the hosted Sampler over typed events, 64 frames a block: both channels.
+std::array<std::vector<float>,2> samplerRender(DeviceInstance& sampler,std::span<const Event> input,int count) {
+    std::array<std::vector<float>,2> heard{std::vector<float>(static_cast<std::size_t>(count)),std::vector<float>(static_cast<std::size_t>(count))};
+    std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
+    for(int at=0;at<count;at+=64) {
+        std::array<Event,16> events{};std::int32_t n=0;
+        for(auto event:input)if(event.frame>=at && event.frame<at+64 && n<16) {
+            event.frame-=at;events[static_cast<std::size_t>(n++)]=event;
+        }
+        NodeIo io;io.out=out;io.channels=2;io.frames=std::min(64,count-at);io.events={events.data(),n};
+        allocations.store(0,std::memory_order_relaxed);counting=true;
+        {audio::CallbackScope callback;sampler.process(io);}
+        counting=false;
+        check(allocations.load(std::memory_order_relaxed)==0,"the hosted Sampler allocates nothing while it plays");
+        for(std::size_t c=0;c<2;++c)std::copy_n(output[c].begin(),io.frames,heard[c].begin()+at);
+    }
+    return heard;
+}
+// SC-483: a project saved before the Sampler grew (the build of 28 November
+// 2026: parameters 1 to 24, 32 sample slots and no other state) opens and
+// sounds as it did. The state is written as that build wrote it, every
+// parameter away from its default; the probes are that build's own output.
+void samplerSavedBefore() {
+    const std::array<double,24> real{-6,3,5,80,-9,40,4,1,1,0,1,2500,60,1,2,6,0,1,.5,30,40,1.5,60,20};
+    auto author=load("org.adidaw.builtin.sampler");
+    bool set=true;
+    for(std::size_t i=0;i<real.size();++i)set=author->setParam(std::to_string(i+1),ParamValue::withReal(0,real[i])) && set;
+    auto saved=Payload::from_cbor(author->saveState("state"));
+    for(const char* part:{"params","real","units"}) {
+        auto& object=saved.at(part);
+        for(auto it=object.begin();it!=object.end();) {
+            if(std::stoi(it.key())>24)it=object.erase(it);else ++it;
+        }
+    }
+    check(set && saved.at("params").size()==24,"the state of 28 November: 24 parameters and nothing else");
+    std::vector<float> mono(9600),stereo(2*8820);
+    for(std::size_t i=0;i<9600;++i) {
+        const double t=static_cast<double>(i)/48000;
+        mono[i]=static_cast<float>(.35*std::sin(2*3.141592653589793*220*t)+.2*std::sin(2*3.141592653589793*1760*t+.3)+
+                                   .1*static_cast<double>(i%97)/97-.05);
+    }
+    for(std::size_t i=0;i<8820;++i) {
+        const double t=static_cast<double>(i)/44100;
+        stereo[2*i]=static_cast<float>(.3*std::sin(2*3.141592653589793*330*t));
+        stereo[2*i+1]=static_cast<float>(.25*std::sin(2*3.141592653589793*495*t+1));
+    }
+    auto sampler=load("org.adidaw.builtin.sampler");
+    sampler->prepare(48000,64);
+    check(sampler->loadState("state",Payload::to_cbor(saved)) && sampler->loadState("sample:3",samplerSlotState(3,mono,1,48000)) &&
+          sampler->loadState("sample:7",samplerSlotState(7,stereo,2,44100)),"that project's state and its two samples load");
+    const std::array<Event,5> played{{{0,EventType::NoteOn,0,60,1,0,.9},{300,EventType::NoteOn,0,67,2,0,.5},
+        {1500,EventType::Controller,0,0,0,1,.5},{2000,EventType::NoteOff,0,60,1,0,0},{3500,EventType::NoteOff,0,67,2,0,0}}};
+    const auto heard=samplerRender(*sampler,played,4800);
+    constexpr std::array<std::size_t,12> frames{90,250,420,800,1400,1900,2050,2600,3300,3450,3700,4500};
+    std::array<double,26> probes{};
+    for(std::size_t i=0;i<frames.size();++i)for(std::size_t c=0;c<2;++c)probes[2*i+c]=static_cast<double>(heard[c][frames[i]]);
+    for(std::size_t c=0;c<2;++c)for(const float v:heard[c])probes[24+c]+=std::abs(static_cast<double>(v));
+    std::printf("METRIC Sampler, the state of 28 November:");
+    for(const double probe:probes)std::printf(" %.9g",probe);
+    std::printf("\n");
+    bool finite=true;
+    for(const double probe:probes)finite=finite && std::isfinite(probe);
+    check(finite && probes[24]>1 && probes[25]>1,"the saved project sounds");
+}
 #endif
 void samplerSession() {
 #if ADI_WITH_PD
@@ -827,6 +907,7 @@ void samplerSession() {
     check(device::builtinSampleStateFits(8u*1024u*1024u,1) && device::builtinSampleStateFits(4u*1024u*1024u,2) &&
           !device::builtinSampleStateFits(4u*1024u*1024u+1u,2) && !device::builtinSampleStateFits(0,2),
           "a stereo sample holds at most 4M frames, a mono one 8M");
+    samplerSavedBefore();  // SC-483
 #endif
 }
 #if ADI_WITH_PD
