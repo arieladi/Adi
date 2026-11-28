@@ -151,7 +151,14 @@ class ProjectDocument final : public engine::BlockProcessor {
         bool keepUndoHistory = false;
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out, bool keepUndoHistory = false);
-    static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
+    // Compatibility entry: same work, without a stop/progress control or typed
+    // cancellation field. Existing application callers retain StoreFileResult.
+    static StoreFileResult runCollectAndExport(const ExportJob &);
+    // Worker entry: forwards the archive's existing stop/progress contract and
+    // preserves typed cancellation and warnings. Callbacks run synchronously on
+    // the calling worker; job/control must live until this call returns. This
+    // static operation does not retain or access the preparing document.
+    static media::FileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl &);
     // Finish pending device edits and capture even plug-ins that never report changed state.
     // Call before closing the document or reading the file for an offline render.
     // Save, Export and Quit keep stored state for an unreadable plug-in and

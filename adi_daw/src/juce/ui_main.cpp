@@ -3106,7 +3106,9 @@ class AdiApplication final : public juce::JUCEApplication,
         try {
             export_ = std::thread([job = std::move(job), control = std::move(control),
                                    completion = std::move(completion)]() mutable {
-                completion.set_value_at_thread_exit(ProjectDocument::runCollectAndExport(job, control));
+                auto collected = ProjectDocument::runCollectAndExport(job, control);
+                completion.set_value_at_thread_exit(
+                    StoreFileResult{collected.ok, std::move(collected.error), std::move(collected.warning)});
             });
         } catch (const std::system_error &error) {
             root_->say(std::string("Cannot start Collect and Export: ") + error.what());

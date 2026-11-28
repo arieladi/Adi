@@ -1073,13 +1073,20 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     error_.clear();
     return true;
 }
-StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
+StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+    auto result = runCollectAndExport(job, {});
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+media::FileResult ProjectDocument::runCollectAndExport(const ExportJob &job,
+                                                      const media::ArchiveControl &control) {
     try {
         auto result = media::collectExport(job.project, job.zip, control, job.keepUndoHistory);
         appendWarning(result.warning, job.stateWarning);
-        return {result.ok, result.error, result.warning};
+        return result; // typed cancellation kept
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
+    } catch (...) {
+        return {false, "collection export worker failed", {}};
     }
 }
 void ProjectDocument::refreshSessionSources() {
