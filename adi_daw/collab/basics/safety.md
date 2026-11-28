@@ -1,6 +1,6 @@
 # Basics safety report
 
-SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 follow-up is published. SC-184 is next.
+SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19691` brought the parallel safety implementations for SC-344, SC-184, SC-158, SC-169 and SC-172 onto main. I am checking those in queue order. The SC-344 and SC-184 follow-ups are published. SC-158 is next.
 
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
@@ -9,6 +9,7 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 | SC-151 | `basics/sc-151-playback-problems` at `08ab0ef5` | Session playback problems mark the affected Arrangement clips and device cards. A single Status Bar action shows the count and opens the full list of reasons. The marks and action clear as the problems clear. Touched window/window-fn and device card display code. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The native red and green runs used the same missing-WAV and missing-CLAP fixture. The new app marked both items and the visible list contained both reasons. Window-state and all three acceptance tests passed. The document and shell suites ran with the known timing failures below. | Ready for Windows check |
 | SC-155 | `basics/sc-155-undo-open-state` at `0864420e` | Undo History captures the current cursor when it opens a project. The bottom row returns to that cursor from either direction. Earlier history remains accessible and any creation snapshot has its own row. Touched window/window-fn's history panel and UI submitter. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. History, history-move and window-state passed. The full shell ran the reopened-cursor regression. Native Xvfb reproduced the old four-to-two-track loss and verified the fix restored four from five with Redo intact. Acceptance passed 3/3. Known timing failures are below. | Ready for Windows check |
 | SC-344 | `basics/sc-344-automation-drag-undo` at `8146a636` | Main already commits a line drag in one Undo. The follow-up cancels the pending point on an editing mode or target change, on focus loss, or when a drag encounters a hidden target. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. The complete shell passed 5,407 checks and window-state passed 195. A native Xvfb check passed both held mode round trips and the normal drag, Undo, and Redo. Acceptance passed 3/3. The document timing result is below. | Ready for Windows check |
+| SC-184 | `basics/sc-184-split-undo` at `3789b35a` | Split keeps a time range across Ctrl/Cmd-picked tracks and cuts explicitly picked clips together at the marker. A split keeps each original clip ID on the left. | Linux Debug Ninja with JUCE/Pd/Werror/acceptance. Clip edit, full shell (5,426 checks), window-state (195), and document (1,048) all passed. Native Xvfb verified both gestures, original note bytes on Undo, and exact Redo. Acceptance passed 3/3. | Ready for Windows check |
 
 ### SC-159 verification
 
@@ -41,6 +42,12 @@ SC-159, SC-157, SC-151 and SC-155 have Linux proofs below. Win's merge at `a9c19
 - The old native app wrote separate Add and Move transactions and left a point under the press after one Undo. The first Linux fix at `a9560a7b` passed the native gesture and acceptance. Win's merge included `8334b46e` independently, so the published follow-up uses the landed implementation and tests its cancellation paths.
 - The exact `8146a636` Linux app showed the draft before each held mode round trip. Switching Automation Mode off and back on or Draw Mode on and back off cleared it. Button 1 stayed held, and release left the original envelope bytes and journal head intact. A normal drag created one transaction at the final time and value. Undo and Redo restored the exact before and after states. The shell also covered Escape, focus loss, envelope changes, and hidden targets.
 - The document suite passed 1,047 of 1,048 checks. SC-415 was the sole failure at 322 ms for the longest owner turn out of 944 ms total, the timing case previously reproduced on unmodified main. Built-in realtime passed in 2,579 seconds with the local 5,400-second timeout. All three acceptance tests passed.
+
+### SC-184 verification
+
+- Main's `cc7bc859` already grouped the split for a time selection. On the prior app, splitting a time range across two non-adjacent picked tracks selected the first track's middle piece. With clips picked directly, the same app split the anchor clip alone.
+- The native Linux app at `3789b35a` preserved the two picked tracks and entire time range, and left the track between them whole. The explicit clip selection split both chosen clips, retaining their left-piece IDs in the selection. Each case wrote two `clip.split` operations in one transaction. One Undo recovered all original placements and note streams. Redo recovered the exact split placements and note streams.
+- The shell also covered the marker on the anchor clip's boundary. It left that anchor whole and cut only its picked neighbour. All three acceptance tests passed. Built-in realtime took 2,329 seconds with the local 5,400-second timeout.
 
 ## Build storage
 
