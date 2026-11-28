@@ -591,8 +591,16 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             return static_cast<std::int64_t>(std::llround(value));
         };
         timing->setBraceSamples(sample(image->transport.loopStartTicks), sample(image->transport.loopEndTicks));
-        timing->signatures=image->model.signatures;
+        timing->signatures=owner->playbackSignatures(image->model);
         timing->prepareDeviceClockChanges();
+        if (reusedReaders) {
+            timing->launchAudio = previousTiming->launchAudio;
+            timing->preparedScene = previousTiming->preparedScene;
+        }
+        else {
+            owner->prepareLaunchAudio(*timing, image->model, *out->clips);
+            if (timing->launchAudio) out->midi->attachLaunchPlayback(timing->launchAudio);
+        }
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;

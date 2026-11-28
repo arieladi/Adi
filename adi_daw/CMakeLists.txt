@@ -282,6 +282,16 @@ add_custom_command(
     COMMENT "Embedding schema.sql"
     VERBATIM)
 
+set(ADI_SESSION_SCHEMA_SQL "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/schema-session-1.26.sql")
+set(ADI_SESSION_SCHEMA_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/adi/session_schema_sql.hpp")
+add_custom_command(
+    OUTPUT "${ADI_SESSION_SCHEMA_HPP}"
+    COMMAND "${CMAKE_COMMAND}" -DIN=${ADI_SESSION_SCHEMA_SQL} -DOUT=${ADI_SESSION_SCHEMA_HPP}
+            -DSYMBOL=kSessionSchemaSql -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    DEPENDS "${ADI_SESSION_SCHEMA_SQL}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    COMMENT "Embedding reserved Session schema"
+    VERBATIM)
+
 add_library(adi_core STATIC
     src/adi/applied_batches.cpp
     src/adi/appdata.cpp
@@ -457,6 +467,7 @@ add_library(adi_core STATIC
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
+    "${ADI_SESSION_SCHEMA_HPP}"
 )
 target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp src/adi/device_key_routes.cpp src/adi/device_key_edit.cpp)
 include(cmake/mix_cores.cmake)
@@ -1935,6 +1946,66 @@ add_test(NAME adi_wav_file_tests COMMAND adi_wav_file_tests)
 add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
 target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
+
+target_sources(adi_core PRIVATE src/adi/engine/launch_data.cpp)
+add_executable(adi_launch_data_tests tests/test_launch_data.cpp)
+target_link_libraries(adi_launch_data_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_launch_data_tests COMMAND adi_launch_data_tests)
+
+target_sources(adi_core PRIVATE
+    src/adi/recording_slot_commands.cpp
+    src/adi/session_ops.cpp
+    src/adi/session_performance_capture.cpp
+    src/adi/engine/capture_scene.cpp
+    src/adi/engine/clip_update_rate.cpp
+    src/adi/engine/launch_ops.cpp
+    src/adi/engine/launch_store.cpp
+    src/adi/engine/launch_quantize.cpp
+    src/adi/engine/launcher.cpp
+    src/adi/engine/launch_audio.cpp
+    src/adi/engine/launch_audio_runtime.cpp
+    src/adi/engine/launch_gain_edits.cpp
+    src/adi/engine/launch_paged_audio.cpp
+    src/adi/engine/launch_follow_playback.cpp
+    src/adi/engine/launch_capture.cpp
+    src/adi/engine/launch_midi.cpp
+    src/adi/engine/slot_recording.cpp)
+foreach(_adi_launch_suite IN ITEMS
+        launch_ops launch_store launch_quantize launch_gestures launcher launch_audio launch_audio_runtime
+        launch_follow_playback launch_capture launch_gain_runtime launch_midi
+        slot_recording slot_recording_commit clip_update_rate)
+    add_executable(adi_${_adi_launch_suite}_tests tests/test_${_adi_launch_suite}.cpp)
+    target_link_libraries(adi_${_adi_launch_suite}_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_${_adi_launch_suite}_tests COMMAND adi_${_adi_launch_suite}_tests)
+endforeach()
+target_link_libraries(adi_clip_update_rate_tests PRIVATE adi_settings)
+target_link_libraries(adi_launcher_tests PRIVATE Threads::Threads)
+add_executable(adi_session_arrangement_isolation_tests tests/test_session_arrangement_isolation.cpp)
+target_link_libraries(adi_session_arrangement_isolation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_arrangement_isolation_tests COMMAND adi_session_arrangement_isolation_tests)
+add_executable(adi_session_ops_tests tests/test_session_ops.cpp)
+target_link_libraries(adi_session_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_ops_tests COMMAND adi_session_ops_tests)
+add_executable(adi_session_launch_persisted_tests tests/test_session_launch_persisted.cpp)
+target_link_libraries(adi_session_launch_persisted_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_launch_persisted_tests COMMAND adi_session_launch_persisted_tests)
+add_executable(adi_session_performance_graph_tests tests/test_session_performance_graph.cpp)
+target_link_libraries(adi_session_performance_graph_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_graph_tests COMMAND adi_session_performance_graph_tests)
+add_executable(adi_capture_scene_tests tests/test_capture_scene.cpp)
+target_link_libraries(adi_capture_scene_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_capture_scene_tests COMMAND adi_capture_scene_tests)
+add_executable(adi_session_performance_capture_tests tests/test_session_performance_capture.cpp)
+target_link_libraries(adi_session_performance_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_performance_capture_tests COMMAND adi_session_performance_capture_tests)
+add_executable(adi_session_scene_clock_tests tests/test_session_scene_clock.cpp)
+target_link_libraries(adi_session_scene_clock_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_scene_clock_tests COMMAND adi_session_scene_clock_tests)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_launch_audio_tests PRIVATE ADI_TEST_LAUNCH_WRAP_LOCKS=1)
+    target_link_options(adi_launch_audio_tests PRIVATE
+        -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
 
 add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
 target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)

@@ -401,17 +401,13 @@ WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
 }
 
 namespace {
-struct WarpSourceStamp {
-    media::FileIdentity identity;
-    std::uintmax_t bytes;
-    fs::file_time_type modified;
-    bool operator==(const WarpSourceStamp&) const = default;
-};
-WarpSourceStamp warpSourceStamp(const fs::path& source) {
+media::FileRevision warpSourceStamp(const fs::path& source) {
     std::error_code error;
-    const auto identity = media::readFileIdentity(source, error);
-    if (!identity) throw std::runtime_error("cannot identify the Warp source");
-    return {*identity, fs::file_size(source), fs::last_write_time(source)};
+    // Playback follows links. Read the native revision of that regular file.
+    const auto path = fs::canonical(source,error);
+    const auto revision = error ? std::nullopt : media::readFileRevision(path,error);
+    if (!revision) throw std::runtime_error("cannot read the Warp source revision");
+    return *revision;
 }
 std::vector<std::uint8_t> warpRecipe(const WarpRenderPlan& plan) {
     nlohmann::json anchors = nlohmann::json::array();
@@ -459,13 +455,13 @@ public:
 
 private:
     struct Recent {
-        std::optional<WarpSourceStamp> stamp;
+        std::optional<media::FileRevision> stamp;
         std::weak_ptr<WarpTask> task;
     };
     struct Queued {
         WarpRenderPlan plan;
         std::vector<std::uint8_t> recipe;
-        WarpSourceStamp stamp;
+        media::FileRevision stamp;
         std::shared_ptr<WarpTask> task;
     };
 

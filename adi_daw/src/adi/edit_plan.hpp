@@ -110,6 +110,8 @@ struct PlacementBatch {
 };
 [[nodiscard]] clip_edit::PreparedEdit prepareCaptured(Store&,const EditScope&,
     PlacementBatch,const Options&,clip_edit::CopyIds&,const char* label);
+[[nodiscard]] clip_edit::PreparedEdit prepareCaptured(Store&,const EditScope&,
+    PlacementBatch,const Options&,clip_edit::CopyIds&,const char* label,const edit::TimeMap* prospectiveClock);
 // Reused ED-01 image arithmetic. Freeze before changing any visible boundary;
 // trimFrozenImage performs only value/time-map arithmetic and preserves native
 // outer boundaries supplied by the owner.

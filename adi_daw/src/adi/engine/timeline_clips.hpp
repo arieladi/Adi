@@ -75,8 +75,8 @@ private:
 static_assert(std::forward_iterator<TimelineClipRange::iterator>);
 
 // The arrangement plays the comp in the main lane by default. Editing and
-// persistence still see the stored takes through Model::clips. The selection
-// belongs here so audio, MIDI, envelopes and offline readers agree.
+// persistence still see the stored takes through Model::clips. Session clips
+// have their own vector and never enter this selection.
 [[nodiscard]] inline TimelineClipRange timelineClips(const rows::Model& model) {
     return TimelineClipRange(model);
 }

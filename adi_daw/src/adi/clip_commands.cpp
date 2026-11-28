@@ -8,6 +8,7 @@
 #include "adi/automation_clipboard.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/note_stream_detail.hpp"
 #include "adi/row_capture.hpp"
@@ -428,22 +429,27 @@ void validRange(const RangeSelection& range) {
     for(const auto id:range.tracks)if(!tracks.insert(id).second)throw std::runtime_error("range has duplicate tracks");
 }
 enum class ClipLaneScope { MainLane, AllLanes, OneTake };
-const char* clipRangeQuery(ClipLaneScope scope) {
+std::string clipRangeQuery(const SQLite::Database& db, ClipLaneScope scope) {
+    std::string select = "SELECT id FROM clips WHERE track_id=?";
     switch (scope) {
     case ClipLaneScope::MainLane:
-        return "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id";
+        select += " AND lane_id IS NULL";
+        break;
     case ClipLaneScope::OneTake:
-        return "SELECT id FROM clips WHERE track_id=? AND lane_id=? ORDER BY id";
+        select += " AND lane_id=?";
+        break;
     case ClipLaneScope::AllLanes:
-        return "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+        break;
+    default:
+        throw std::logic_error("unknown clip lane scope");
     }
-    throw std::logic_error("unknown clip lane scope");
+    return select + engine::excludeSlotClips(db, "clips.id") + " ORDER BY id";
 }
 void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelection& range,
                 const edit::TimeMap& time,double rate,ClipLaneScope scope) {
     OpContext context{store,store.db()};
     for(const auto track:range.tracks) {
-        SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,track);
+        SQLite::Statement clips(store.db(),clipRangeQuery(store.db(), scope));clips.bind(1,track);
         while(clips.executeStep()) {
             const auto id=clips.getColumn(0).getInt64();auto image=captureDeleted(context,id);
             const auto& core=image.at("row");const int base=static_cast<int>(detail::signedInteger(core.at("time_base")));
@@ -836,7 +842,8 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
         const auto atNs=time.nanos(atTicks);
         const auto gapNs=exactNanos?*exactNanos:edit::nanosFromSeconds(static_cast<double>(ticks)/textproj::kPPQ*60/time.bpmBefore(atTicks));
         if(gapNs<=0)throw std::runtime_error("Insert Silence is shorter than a nanosecond");
-        SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
+        SQLite::Statement clips(db,"SELECT id FROM clips WHERE 1" +
+            engine::excludeSlotClips(db, "clips.id") + " ORDER BY id");
         while(clips.executeStep()) {
             const auto id=clips.getColumn(0).getInt64();auto core=*plan.current("clips",id);
             const int base=static_cast<int>(detail::signedInteger(core.at("time_base")));
@@ -940,7 +947,8 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
         // created right pieces. No intermediate edit is committed.
         if(!tracks.empty())eraseRange(store,plan,ids,{tracks,{0,beginTicks},{0,endTicks}},time,referenceRate,ClipLaneScope::AllLanes);
         std::set<std::int64_t> candidates;
-        SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
+        SQLite::Statement clips(db,"SELECT id FROM clips WHERE 1" +
+            engine::excludeSlotClips(db, "clips.id") + " ORDER BY id");
         while(clips.executeStep())candidates.insert(clips.getColumn(0).getInt64());
         for(const auto& change:plan.changes())if(change.at("table")=="clips" && !change.at("after").is_null())
             candidates.insert(detail::signedInteger(change.at("id")));
@@ -1061,7 +1069,7 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
-            SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
+            SQLite::Statement clips(store.db(),clipRangeQuery(store.db(), scope));clips.bind(1,selection.tracks[track]);
             if (lane)
                 clips.bind(2, *lane);
             while(clips.executeStep()) {
@@ -1353,7 +1361,7 @@ PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoi
             const auto first=coordinate(begin,1,time),last=coordinate(end,1,time);
             SQLite::Statement clips(store.db(),
                 "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
-                "FROM clips WHERE track_id=? AND lane_id IS NULL");
+                "FROM clips WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
             clips.bind(1,track);
             while(clips.executeStep()) {
                 const auto base=clips.getColumn(0).getInt();

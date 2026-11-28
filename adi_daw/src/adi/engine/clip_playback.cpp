@@ -5,12 +5,17 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/clip_sinc_441_to_480.hpp"
+#include "adi/engine/launch_audio_runtime.hpp"
+#include "adi/engine/launch_follow_playback.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
+#include "adi/engine/launch_store.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -41,8 +46,64 @@ struct ClipProject {
     fs::path folder;
     std::unordered_map<std::int64_t, fs::path> hints;
     NoteExpressionsRead noteExpressions;
+    std::optional<launch::LaunchData> session;
+    std::optional<std::map<std::int64_t,std::optional<media::FileRevision>>> launchFiles;
 };
-std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows) {
+
+namespace {
+struct RelocatedSource { fs::path path; std::string error; };
+
+fs::path clipMediaPath(const ClipProject& project, const rows::Media& source,
+                       std::unordered_map<std::int64_t,RelocatedSource>& relocated) {
+    const auto hint = project.hints.find(source.id);
+    if (source.relPath) {
+        const auto relative = utf8Path(*source.relPath);
+        const auto path = project.folder / relative;
+        if (hint != project.hints.end() && !relative.empty() && *relative.begin() == ".." &&
+            path.lexically_normal() != hint->second.lexically_normal()) {
+            auto [found, inserted] = relocated.try_emplace(source.id);
+            auto& resolved = found->second;
+            if (inserted) resolved.path = media::resolveMedia(project.folder,relative,hint->second,
+                source.origName,source.hashBlake3,resolved.error);
+            if (resolved.path.empty()) {
+                if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
+                throw std::runtime_error(resolved.error);
+            }
+            return resolved.path;
+        }
+        return path;
+    }
+    if (hint != project.hints.end()) return hint->second;
+    throw MissingClipMedia("no media path");
+}
+
+decltype(ClipProject::launchFiles) readLaunchFiles(const ClipProject& project) {
+    std::map<std::int64_t,std::optional<media::FileRevision>> files;
+    std::unordered_map<std::int64_t,RelocatedSource> relocated;
+    for (const auto& clip : project.rows.slotClips) {
+        if (clip.kind != "audio" || clip.muted) continue;
+        const auto audio = std::ranges::find(project.rows.audioClips,clip.id,&rows::AudioClip::clipId);
+        if (audio == project.rows.audioClips.end()) continue;
+        const auto source = std::ranges::find(project.rows.media,audio->mediaId,&rows::Media::id);
+        if (source == project.rows.media.end() || source->embedded) continue;
+        auto [entry, inserted] = files.try_emplace(source->id);
+        if (!inserted) continue;
+        try {
+            std::error_code error;
+            // Playback follows symlinks. Read the resolved regular file's stamp.
+            const auto path = fs::canonical(clipMediaPath(project,*source,relocated),error);
+            if (!error) entry->second = media::readFileRevision(path,error);
+            if (error && error != std::errc::no_such_file_or_directory && error != std::errc::not_a_directory)
+                return std::nullopt;
+        } catch (const MissingClipMedia&) {
+            // Playback also treats this source as unavailable.
+        } catch (const std::runtime_error&) { return std::nullopt; }
+    }
+    return files;
+}
+} // namespace
+
+std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows, bool readSession) {
     auto p = std::make_shared<ClipProject>(); p->rows = rows;
     // SQLite resolves its filename when opening. Store::path() can remain
     // relative, and a subsequent working-directory change must not rebase media.
@@ -52,10 +113,35 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
     p->noteExpressions=readNoteExpressions(store);
+    if (readSession) {
+        p->session = launch::readLaunchData(store, rows);
+        if (p->session) p->launchFiles = readLaunchFiles(*p);
+    }
     return p;
 }
 const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
     return project.noteExpressions;
+}
+
+bool sameLaunchSource(const ClipProject& a, const ClipProject& b) noexcept {
+    if (!a.launchFiles || !b.launchFiles || a.launchFiles != b.launchFiles) return false;
+    if (&a == &b) return true;
+    if (!a.session || !b.session || a.folder != b.folder || a.hints != b.hints ||
+        a.rows.slotClips != b.rows.slotClips || a.rows.audioClips != b.rows.audioClips || a.rows.media != b.rows.media)
+        return false;
+    if (!std::ranges::equal(a.rows.tracks,b.rows.tracks,[](const auto& left, const auto& right) {
+            return left.id == right.id && left.kind == right.kind;
+        }) || !std::ranges::equal(a.rows.clips,b.rows.clips,[](const auto& left, const auto& right) {
+            return left.trackId == right.trackId && left.kind == right.kind;
+        })) return false;
+    return std::ranges::equal(a.session->tracks(),b.session->tracks()) &&
+        std::ranges::equal(a.session->scenes(),b.session->scenes()) &&
+        std::ranges::equal(a.session->slots(),b.session->slots()) &&
+        std::ranges::equal(a.session->settingsRows(),b.session->settingsRows());
+}
+
+bool launchFilesCurrent(const ClipProject& project) {
+    return project.launchFiles && project.launchFiles == readLaunchFiles(project);
 }
 namespace {
 constexpr std::size_t slots = 8;
@@ -173,6 +259,10 @@ struct Clip {
     // worker must not even temporarily claim a page until rendering releases
     // or supersedes it. No callback allocation or shared ownership operation.
     std::array<Page*,slots> admitted{};
+    // Established before a private Session source publishes. The worker
+    // reads only requests, so replacing callback requests with this set keeps
+    // every reachable phase available without adding cache slots.
+    std::optional<std::array<std::int64_t,slots>> retainedPages;
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
@@ -257,7 +347,19 @@ struct Clip {
         if(lookAhead)horizon(pageFrames*2);
         return out;
     }
-    void request(const std::array<std::int64_t,slots>& w) noexcept {
+    void retainUnrolledPages(std::int64_t firstFrame) noexcept {
+        const auto frames = std::min(end,length);
+        if (start != 0 || offset != 0 || loopLength != 0 || firstFrame < 0 || firstFrame >= frames) return;
+        const auto firstPage = firstFrame / pageFrames;
+        const auto lastPage = (frames - 1) / pageFrames;
+        if (lastPage - firstPage >= static_cast<std::int64_t>(slots)) return;
+        auto& retained = retainedPages.emplace();
+        retained.fill(-1);
+        for (auto page = firstPage; page <= lastPage; ++page)
+            retained[static_cast<std::size_t>(page - firstPage)] = page;
+    }
+    void request(const std::array<std::int64_t,slots>& requestedPages) noexcept {
+        const auto& w = retainedPages ? *retainedPages : requestedPages;
         // The same horizon lasts across many callbacks. Keep an in-flight
         // worker snapshot valid until the single producer changes its pages.
         if(std::equal(w.begin(),w.end(),requests.begin(),[](auto page,const auto& requested) {
@@ -526,6 +628,7 @@ public:
     const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
+    std::shared_ptr<const LaunchAudioRuntime> launchAudio;
     // ADR-0207 d2: the clips of one track are a mix point, summed in double
     // and converted once. Sized here, on the message thread, at the shape the
     // session builds this rebuild's graph at, and never resized after.
@@ -540,6 +643,7 @@ public:
     void process(const NodeIo& io) noexcept override {
         if(io.wide()) play<double>(io,io.out64);
         else play<float>(io,io.out);
+        if(launchAudio)launchAudio->overlay(track,io);
     }
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
@@ -641,7 +745,7 @@ struct ClipPlayback::Impl {
         bool mediaOffline;
     };
     Transport& transport;
-    std::int32_t maxFrames;
+    std::int32_t maxFrames, channels;
     const bool synchronousReads;
     std::vector<std::unique_ptr<Clip>> clips;
     std::vector<ClipMediaSource> externalSources;
@@ -656,13 +760,14 @@ struct ClipPlayback::Impl {
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     // Last member so all workers join before any of their clips are destroyed.
     std::vector<std::jthread> workers;
-    Impl(Transport& t,std::int32_t f,bool synchronous):transport(t),maxFrames(f),synchronousReads(synchronous){}
+    Impl(Transport& t,std::int32_t f,std::int32_t ch,bool synchronous)
+        :transport(t),maxFrames(f),channels(ch),synchronousReads(synchronous){}
     ~Impl() { for(auto& worker:workers) worker.request_stop(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
                            double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder,
                            bool synchronousReads)
-    :impl_(std::make_shared<Impl>(transport,maxFrames,synchronousReads)) {
+    :impl_(std::make_shared<Impl>(transport,maxFrames,channels,synchronousReads)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
@@ -673,36 +778,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     std::unordered_map<fs::path, SourceReaders> readers;
     std::unordered_map<const audio::WarpTask*, std::weak_ptr<WarpSource>> warpedReaders;
-    struct RelocatedSource { fs::path path; std::string error; };
     std::unordered_map<std::int64_t, RelocatedSource> relocatedSources;
     const auto mediaRow = [&](std::int64_t id) -> const rows::Media* {
         const auto found = std::find_if(project->rows.media.begin(), project->rows.media.end(),
                                        [id](const auto& media) { return media.id == id; });
         return found == project->rows.media.end() ? nullptr : &*found;
     };
-    const auto mediaPath = [&](const rows::Media& source) -> fs::path {
-        const auto hint = project->hints.find(source.id);
-        if (source.relPath) {
-            const auto relative = utf8Path(*source.relPath);
-            const auto path = project->folder / relative;
-            // In the ordinary case both stored locations name the same file.
-            // Verify differing candidates once per media asset, not per clip.
-            if (hint != project->hints.end() && !relative.empty() && *relative.begin() == ".." &&
-                path.lexically_normal() != hint->second.lexically_normal()) {
-                auto [found, inserted] = relocatedSources.try_emplace(source.id);
-                auto& resolved = found->second;
-                if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
-                    source.origName, source.hashBlake3, resolved.error);
-                if (resolved.path.empty()) {
-                    if (resolved.error.empty()) throw MissingClipMedia("missing media: " + source.origName);
-                    throw std::runtime_error(resolved.error);
-                }
-                return resolved.path;
-            }
-            return path;
-        }
-        if (hint != project->hints.end()) return hint->second;
-        throw MissingClipMedia("no media path");
+    const auto mediaPath = [&](const rows::Media& source) {
+        return clipMediaPath(*project,source,relocatedSources);
     };
     std::unordered_map<std::int64_t, bool> skippedMediaAvailable;
     const auto checkSkippedMedia = [&](std::int64_t clipId, std::int64_t mediaId) {
@@ -1008,9 +1091,237 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     }
 }
 ClipPlayback::~ClipPlayback()=default;
+
+// The private readers share the same projection of the unrolled source.
+static void appendLaunchSource(ClipProject& project, const ClipProject& original, const rows::Clip& authored,
+                               std::int64_t sourceTrack, std::int64_t endTick) {
+    auto& model = project.rows;
+    const auto audioRow = std::ranges::find(original.rows.audioClips, authored.id, &rows::AudioClip::clipId);
+    if (audioRow == original.rows.audioClips.end()) throw std::runtime_error("missing Session audio row");
+    model.audioClips.push_back(*audioRow);
+    const auto media = std::ranges::find(original.rows.media, audioRow->mediaId, &rows::Media::id);
+    if (media == original.rows.media.end()) throw std::runtime_error("missing Session media row");
+    if (std::ranges::find(model.media, media->id, &rows::Media::id) == model.media.end()) model.media.push_back(*media);
+    if (const auto hint = original.hints.find(media->id); hint != original.hints.end())
+        project.hints.emplace(hint->first, hint->second);
+
+    auto source = authored;
+    source.trackId = sourceTrack;
+    source.timeBase = 0;
+    source.posTicks = 0;
+    source.lengthTicks = endTick;
+    source.posNs.reset();
+    source.lengthNs.reset();
+    source.contentOffsetTicks = 0;
+    source.contentOffsetNs.reset();
+    source.loopEnabled = false;
+    source.fadeInTicks = 0;
+    source.fadeOutTicks = 0;
+    source.fadeClockNs = {};
+    source.fadeClockTicks = {};
+    model.clips.push_back(std::move(source));
+}
+
+static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const rows::Clip& authored,
+                                       std::int64_t endTick, double bpm, std::uint32_t rate,
+                                       std::uint16_t channels, std::uint64_t byteBudget) {
+    auto project = std::make_shared<ClipProject>();
+    project->folder = original.folder;
+    project->rows.tempo.push_back({0, bpm, 0, 0.0});
+    appendLaunchSource(*project, original, authored, authored.trackId, endTick);
+    TempoMap tempo;
+    tempo.events.push_back({0, bpm, 0});
+    const auto frames = samples(tempo.ticksToSeconds(endTick), rate);
+    if (channels == 0 || frames <= 0 || static_cast<std::uint64_t>(frames) > byteBudget / sizeof(float) / channels)
+        throw std::length_error("Session clip exceeds the prepared audio budget");
+    constexpr std::int32_t blockSize = 512;
+    Transport transport;
+    ClipPlayback playback(project, transport, rate, channels, blockSize, nullptr, true);
+    if (!playback.problems().empty()) throw std::runtime_error(playback.problems().front());
+    const auto sources = playback.sourcesFor(authored.trackId);
+    if (sources.size() != 1 || !playback.waitForWarp()) throw std::runtime_error("Session clip audio is unavailable");
+    transport.play();
+    std::vector<float> pcm(static_cast<std::size_t>(frames) * channels);
+    std::vector<float> buffer(static_cast<std::size_t>(blockSize) * channels);
+    std::vector<float*> output(channels);
+    for (std::size_t channel = 0; channel < channels; ++channel)
+        output[channel] = buffer.data() + channel * blockSize;
+    NodeIo io;
+    io.channels = channels;
+    io.sampleRate = rate;
+    io.out = output.data();
+    for (std::int64_t first = 0; first < frames; first += io.frames) {
+        io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockSize, frames - first));
+        if (!playback.prime()) throw std::runtime_error("Session clip page could not be read");
+        sources.front()->process(io);
+        for (std::int32_t frame = 0; frame < io.frames; ++frame)
+            for (std::size_t channel = 0; channel < channels; ++channel)
+                pcm[static_cast<std::size_t>(first + frame) * channels + channel] = output[channel][frame];
+        transport.advance(io.frames);
+    }
+    if (playback.readErrors() || playback.underrunSamples())
+        throw std::runtime_error("Session clip playback preparation could not read all pages");
+    const auto& audio = project->rows.audioClips.front();
+    const bool directPcm = !audio.warpEnabled && !audio.reverse && audio.transposeSemis == 0 && audio.formantShift == 0 &&
+        playback.readsNativePcm(authored.id);
+    return LaunchAudioClip::fromSamples(authored.id, rate, channels, std::move(pcm), directPcm);
+}
+
+std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
+    const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
+    std::vector<std::string>& problems, std::uint64_t residentBudget) {
+    if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
+    if (!original.session || original.session->scenes().empty()) return {};
+    const auto& data = *original.session;
+    const auto bpm = clock.bpmAt(0);
+    const bool constantTempo = std::ranges::all_of(clock.events, [bpm](const TempoEvent& e) { return e.bpm == bpm; });
+    TempoMap fixedClock;
+    fixedClock.events.push_back({0, bpm, 0});
+    std::vector<std::int64_t> tracks, midiTracks, scenes;
+    for (const auto id : data.tracks()) {
+        const auto track = std::ranges::find(original.rows.tracks, id, &rows::Track::id);
+        if (track == original.rows.tracks.end()) continue;
+        const bool midi = track->kind == "midi" || track->kind == "instrument";
+        if (track->kind != "audio" && !midi) continue;
+        tracks.push_back(id);
+        const auto onTrack = [id](const rows::Clip& clip) { return clip.trackId == id && clip.kind == "midi"; };
+        if (midi || std::ranges::any_of(original.rows.clips, onTrack) ||
+            std::ranges::any_of(original.rows.slotClips, onTrack)) midiTracks.push_back(id);
+    }
+    std::vector<LaunchSceneClock> sceneClocks;
+    for (const auto& scene : data.scenes()) {
+        scenes.push_back(scene.id);
+        if (scene.tempoEnabled || scene.signatureEnabled) {
+            LaunchSceneClock change;
+            change.scene = scene.id;
+            if (scene.tempoEnabled) change.bpm = scene.tempoBpm;
+            if (scene.signatureEnabled)
+                change.signature = rows::TimeSignature{0, scene.signatureNumerator, scene.signatureDenominator};
+            sceneClocks.push_back(change);
+        }
+    }
+    std::ranges::sort(scenes);
+
+    std::uint64_t remaining = residentBudget;
+    std::vector<LaunchSlot> launchSlots;
+    std::vector<LaunchAudioClip> pcm;
+    auto pagedProject = std::make_shared<ClipProject>();
+    pagedProject->folder = original.folder;
+    pagedProject->rows.tempo.push_back({0, bpm, 0, 0.0});
+    std::vector<LaunchPagedSource> paged;
+    std::vector<std::uint64_t> pagedExtents;
+    const auto add = [](std::int64_t a, std::int64_t b) {
+        if (a < 0 || b < 0 || a > std::numeric_limits<std::int64_t>::max() - b)
+            throw std::runtime_error("invalid Session clip extent");
+        return a + b;
+    };
+    for (const auto& cell : data.slots()) {
+        if (!std::ranges::binary_search(tracks, cell.key.trackId)) continue;
+        LaunchSlot slot;
+        slot.track = cell.key.trackId;
+        slot.scene = cell.key.sceneId;
+        slot.hasStop = cell.hasStop;
+        if (!cell.clipId) {
+            launchSlots.push_back(slot);
+            continue;
+        }
+        const auto clip = std::ranges::find(original.rows.slotClips, *cell.clipId, &rows::Clip::id);
+        if (clip == original.rows.slotClips.end()) continue; // the persisted reader has already validated this
+        const auto audio = std::ranges::find(original.rows.audioClips, *cell.clipId, &rows::AudioClip::clipId);
+        const bool warped = audio != original.rows.audioClips.end() && audio->warpEnabled;
+        const auto setting = data.settings(clip->id).value_or(launch::ClipLaunchSettings{});
+        slot.clip = clip->id;
+        slot.mode = setting.mode;
+        slot.legato = setting.legato;
+        slot.fade = setting.clipFade;
+        slot.nativePcmClock = clip->kind == "audio" && !warped;
+        slot.velocityAmount = static_cast<float>(setting.velocityAmount);
+        if (setting.quantization != 0) slot.quantization = launch::resolveClipQuantization(setting.quantization,
+            LaunchQuantization::Bar);
+        try {
+            const bool usePins = clip->kind == "audio" && !warped;
+            slot.startTick = usePins && clip->contentOffsetNs
+                ? fixedClock.storedNanosecondsToTicks(*clip->contentOffsetNs) : clip->contentOffsetTicks;
+            const auto length = clip->timeBase == 0 ? clip->lengthTicks.value_or(0)
+                : fixedClock.storedNanosecondsToTicks(clip->lengthNs.value_or(0));
+            slot.endTick = usePins && clip->sourceEndNs
+                ? fixedClock.storedNanosecondsToTicks(*clip->sourceEndNs)
+                : clip->endMarkerTicks.value_or(add(slot.startTick, length));
+            if (clip->loopEnabled) {
+                slot.loopStartTick = usePins && clip->loopBeginNs
+                    ? fixedClock.storedNanosecondsToTicks(*clip->loopBeginNs) : clip->loopStartTicks;
+                slot.loopEndTick = usePins && clip->loopEndNs
+                    ? fixedClock.storedNanosecondsToTicks(*clip->loopEndNs)
+                    : add(slot.loopStartTick, clip->loopLenTicks.value_or(0));
+                if (slot.loopEndTick <= slot.loopStartTick) throw std::runtime_error("invalid Session loop bounds");
+            }
+            if (slot.startTick < 0 || slot.endTick <= slot.startTick)
+                throw std::runtime_error("invalid Session start or end marker");
+            launchSlots.push_back(slot);
+            if (clip->kind == "audio" && !clip->muted) {
+                if (!constantTempo) throw std::runtime_error("Session audio requires a constant prepared tempo");
+                const auto end = std::max(slot.endTick, slot.loopEndTick);
+                if (setting.ramMode) {
+                    auto clipAudio = prepareLaunchClipAudio(original, *clip, end, bpm, rate, channels, remaining);
+                    remaining -= clipAudio.bytes();
+                    pcm.push_back(std::move(clipAudio));
+                } else {
+                    const auto frame = [&](std::int64_t tick) { return samples(fixedClock.ticksToSeconds(tick), rate); };
+                    const auto extent = frame(end);
+                    if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
+                    appendLaunchSource(*pagedProject, original, *clip, clip->id, end);
+                    paged.push_back({clip->id, clip->id, frame(slot.startTick),
+                        frame(slot.loopStartTick), frame(slot.loopEndTick), slot.legato});
+                    pagedExtents.push_back(static_cast<std::uint64_t>(extent));
+                }
+            }
+        } catch (const std::exception& e) {
+            problems.push_back("Session clips#" + std::to_string(clip->id) + ": " + e.what());
+        }
+    }
+    if (!paged.empty()) {
+        auto reader = std::make_shared<LaunchPagedAudio>(std::move(pagedProject), paged, rate, channels, maxFrames);
+        if (reader->prime()) {
+            for (std::size_t index = 0; index < paged.size(); ++index) {
+                const auto id = paged[index].clip;
+                if (reader->hasClip(id)) pcm.push_back(LaunchAudioClip::fromPages(id, rate, channels, pagedExtents[index], reader));
+            }
+        }
+        problems.insert(problems.end(), reader->problems().begin(), reader->problems().end());
+    }
+    return std::make_shared<const LaunchAudioProject>(incarnation, bpm, std::move(tracks), std::move(launchSlots),
+        std::move(scenes), std::move(pcm), LaunchQuantization::Bar,
+        std::make_shared<const LaunchFollowPlayer>(data), incarnation, std::move(midiTracks), true, std::move(sceneClocks));
+}
+
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
+}
+
+void ClipPlayback::prefetchSource(Node& node, std::span<const Transport> candidates) noexcept {
+    auto* source = dynamic_cast<TrackSource*>(&node);
+    if (!source || candidates.empty()) return;
+    for (std::size_t index = 0; index < source->clips.size(); ++index) {
+        auto& clip = *source->clips.data()[index];
+        // Mandatory first-frame windows take priority over read-ahead. The
+        // launch, loop head and far Legato cue share the existing page cap.
+        std::array<std::int64_t, slots> requested;
+        requested.fill(-1);
+        auto count = std::size_t{0};
+        for (const auto lookahead : {false, true}) {
+            for (const auto& candidate : candidates) {
+                for (const auto page : clip.wanted(candidate, source->maxFrames, lookahead)) {
+                    if (page < 0 || count == requested.size() ||
+                        std::find(requested.data(), requested.data() + count, page) != requested.data() + count)
+                        continue;
+                    requested.data()[count++] = page;
+                }
+            }
+        }
+        clip.trimAdmission(requested);
+        clip.request(requested);
+    }
 }
 std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
     std::vector<SampleRange> ranges;
@@ -1021,6 +1332,19 @@ std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int6
 void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
     for (auto& clip : impl_->clips)
         if (clip->track == id) clip->monitorInputOnly = true;
+}
+void ClipPlayback::attachLaunchAudio(std::int64_t id, std::shared_ptr<const LaunchAudioRuntime> runtime, bool createIfMissing) {
+    for (auto& track : impl_->tracks) {
+        if (track->track == id) {
+            track->launchAudio = std::move(runtime);
+            return;
+        }
+    }
+    if (!createIfMissing) return;
+    auto track = std::make_unique<TrackSource>(impl_->transport, impl_->maxFrames, impl_->channels, id);
+    track->owner = impl_;
+    track->launchAudio = std::move(runtime);
+    impl_->tracks.push_back(std::move(track));
 }
 void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std::int64_t>& recordingTracks) noexcept {
     for (auto& track : impl_->tracks) {
@@ -1053,12 +1377,26 @@ std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept 
     if(audio::onAudioThread)return {};
     return impl_->externalSources;
 }
+bool ClipPlayback::readsNativePcm(std::int64_t clipId) const noexcept {
+    if (audio::onAudioThread) return false;
+    const auto found = std::ranges::find_if(impl_->clips, [&](const auto& clip) { return clip->clipId == clipId; });
+    if (found == impl_->clips.end()) return false;
+    const auto& clip = **found;
+    return !clip.warp && !clip.progressive && clip.sourceRate == clip.rate && clip.reader && !clip.reader->file.pinned;
+}
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
     impl_->requestProbe.store(probe,std::memory_order_release);
 }
 std::uint32_t ClipPlayback::underrunSamples() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->underruns.load();return n; }
 std::uint32_t ClipPlayback::readErrors() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->errors.load();return n; }
+std::uint64_t ClipPlayback::pageBytesCeiling() const noexcept {
+    std::uint64_t bytes = 0;
+    for (const auto& clip : impl_->clips)
+        bytes += slots * static_cast<std::uint64_t>(clip->pageFrames) * clip->channels * sizeof(float);
+    return bytes;
+}
+
 namespace {
 std::string decodeFailure(const Clip& clip) {
     if (clip.progressive) {
@@ -1160,15 +1498,35 @@ bool ClipPlayback::primeAt(const Transport& snapshot,const Transport& alternate,
                            bool waitForPendingWarp) {
     return primeTargets(snapshot,&alternate,timeout,waitForPendingWarp);
 }
+bool ClipPlayback::primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
+                                std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame) {
+    if (audio::onAudioThread || timeout.count() < 0) return false;
+    if (retainFromFrame)
+        for (auto& clip : impl_->clips)
+            if (clip->track == track) clip->retainUnrolledPages(*retainFromFrame);
+    return primeTargets(first, &loop, timeout, true, {}, track);
+}
+std::optional<ClipPlayback::SampleRange> ClipPlayback::retainedTrackRange(std::int64_t track) const noexcept {
+    for (const auto& clip : impl_->clips) {
+        if (clip->track == track && clip->retainedPages)
+            return SampleRange{clip->retainedPages->front() * clip->pageFrames, std::min(clip->end, clip->length)};
+    }
+    return {};
+}
 bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout,
-                                bool waitForPendingWarp,std::stop_token stop) {
+                                bool waitForPendingWarp,std::stop_token stop,std::optional<std::int64_t> track) {
     if(audio::onAudioThread || timeout.count()<0)return false;
     // One stable request for the entire wait. In particular, a driver advancing
     // the live Transport cannot move a candidate's readiness target mid-wait.
     const Transport target=snapshot;
     const Transport other=alternate?*alternate:Transport{};
     const bool synchronous=impl_->synchronousReads;
+    const auto selected = [track](const Clip& clip) { return !track || clip.track == *track; };
     auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
+        if (clip.retainedPages) {
+            pages = *clip.retainedPages;
+            return true;
+        }
         pages=clip.wanted(target,impl_->maxFrames,!synchronous);
         if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames,!synchronous)) {
             if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;
@@ -1181,10 +1539,11 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     const auto started=std::chrono::steady_clock::now();
     std::array<std::int64_t,slots> pages;
     // Refuse the complete preparation before posting any partial union.
-    if(alternate)for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
-    const auto releaseAll=[&]()noexcept{for(auto& clip:impl_->clips)clip->releaseAdmission();};
+    if(alternate)for(const auto& clip:impl_->clips)if(selected(*clip) && !wanted(*clip,pages))return false;
+    const auto releaseAll=[&]()noexcept{for(auto& clip:impl_->clips)if(selected(*clip))clip->releaseAdmission();};
     if(!synchronous)releaseAll();
     for(auto& clip:impl_->clips) {
+        if(!selected(*clip))continue;
         (void)wanted(*clip,pages);
         if(synchronous)clip->trimAdmission(pages);
         clip->request(pages);
@@ -1197,7 +1556,7 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
         if(stop.stop_requested()){releaseAll();return false;}
         bool ready=true;
         for(auto& clip:impl_->clips) {
-            if(clip->monitorInputOnly)continue;
+            if(!selected(*clip) || clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)) {
                 if(!waitForPendingWarp && clip->warp)continue;
                 releaseAll();

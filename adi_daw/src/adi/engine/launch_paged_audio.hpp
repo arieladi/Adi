@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+
+#include "adi/engine/clip_playback.hpp"
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <span>
+#include <vector>
+
+namespace adi::engine {
+
+struct LaunchPagedSource {
+    std::int64_t clip = 0, sourceTrack = 0;
+    std::int64_t firstFrame = 0, loopBeginFrame = 0, loopEndFrame = 0;
+    bool legato = false;
+};
+
+/// One paged player for a published collection of unrolled slot sources. A
+/// source has a private track ID unique to its clip. The existing ClipPlayback
+/// worker group serves every slot; the driver changes only a sample cursor and
+/// a preallocated planar buffer. The graph's serial source path owns read().
+class LaunchPagedAudio {
+public:
+    LaunchPagedAudio(std::shared_ptr<const ClipProject>, std::span<const LaunchPagedSource>,
+                      std::uint32_t sampleRate, std::int32_t channels, std::int32_t maxFrames);
+    LaunchPagedAudio(const LaunchPagedAudio&) = delete;
+    LaunchPagedAudio& operator=(const LaunchPagedAudio&) = delete;
+
+    /// Owner/worker before publication. Each first/loop phase must be warm at
+    /// admission. No Store or future file callback survives into the driver.
+    [[nodiscard]] bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    [[nodiscard]] bool hasClip(std::int64_t clip) const noexcept;
+    /// Immutable after publication. Ordinary streaming pages cannot prove
+    /// coverage because subsequent worker requests can recycle them.
+    [[nodiscard]] bool retainsRange(std::int64_t clip, std::int64_t first, std::int64_t end) const noexcept;
+    /// Driver only. Queue an idle clip's upcoming source phase while keeping
+    /// its ordinary start and loop head in the same bounded worker request.
+    void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
+
+    /// Driver only. Missing pages emit silence and report the normal reader
+    /// underrun count. Planar channels remain valid until the next read.
+    [[nodiscard]] bool read(std::int64_t clip, std::int64_t firstFrame,
+                            std::int32_t frames, bool allowLoop = true) noexcept;
+    [[nodiscard]] std::span<const float> channel(std::int32_t channel) const noexcept;
+    [[nodiscard]] std::uint32_t underrunSamples() const noexcept;
+    [[nodiscard]] std::uint64_t pageBytesCeiling() const noexcept { return pages_.pageBytesCeiling(); }
+    [[nodiscard]] const std::vector<std::string>& problems() const noexcept;
+    void setRequestSnapshotProbeForTest(const ClipPlayback::RequestSnapshotProbeForTest* probe) noexcept {
+        pages_.setRequestSnapshotProbeForTest(probe);
+    }
+
+private:
+    struct Entry {
+        LaunchPagedSource source;
+        Node* playback;
+        std::optional<ClipPlayback::SampleRange> retained{};
+    };
+    [[nodiscard]] const Entry* find(std::int64_t clip) const noexcept;
+    Transport clock_;
+    ClipPlayback pages_;
+    std::vector<Entry> sources_;
+    std::vector<float> output_;
+    std::vector<std::string> problems_;
+    std::int32_t channels_, blockFrames_, readFrames_ = 0;
+    std::uint32_t sampleRate_;
+};
+
+} // namespace adi::engine

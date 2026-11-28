@@ -180,6 +180,7 @@ struct Clip {
     std::optional<std::int64_t> signatureNumerator = {}, signatureDenominator = {};
     std::optional<std::int64_t> scaleRoot = {}, scaleMask = {};
     std::optional<std::string> scaleId = {};
+    bool operator==(const Clip&) const = default;
 };
 
 struct AudioClip {
@@ -194,6 +195,7 @@ struct AudioClip {
     bool reverse = false;
     std::int64_t channelMode = 0;
     std::optional<std::vector<std::byte>> warpMarkers{};
+    bool operator==(const AudioClip&) const = default;
 };
 
 /// A note, already decoded out of its clip's `ANOT` blob. The projection never
@@ -240,6 +242,7 @@ struct Media {
     std::optional<std::int64_t> bitDepth;
     bool embedded = false;
     bool missing = false;
+    bool operator==(const Media&) const = default;
 };
 
 struct Routing {
@@ -418,9 +421,12 @@ struct Model {
     std::vector<Track> tracks;
     std::vector<MixerStrip> strips;
     std::vector<Lane> lanes;
-    std::vector<Clip> clips;
+    std::vector<Clip> clips; // Arrangement main and take lanes
+    std::vector<Clip> slotClips;
     std::vector<AudioClip> audioClips;
     std::vector<Note> notes;
+    std::vector<Note> slotNotes;
+    std::vector<std::string> slotProblems;
     std::vector<controllers::Lane> controllers;
     std::vector<Marker> markers;
     std::vector<Media> media;

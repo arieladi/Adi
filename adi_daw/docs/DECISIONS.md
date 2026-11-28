@@ -7772,6 +7772,14 @@ position or a slot reference, never both, and `clips.track_id` stays `NOT NULL`.
 The launch settings are columns on `clips`, nullable, present only on slot
 clips.
 
+**Amended by TM-SV-02, 27 November 2026.** The reserved Session format 1.26
+introduces the `scenes`, `clip_slots` and `clip_launch` side tables. A slot
+clip keeps its track, has zero timeline origin and has no take lane.
+The slot reference establishes its ownership. Arrangement readers exclude
+those clips. The `org.adidaw.session` essential extension marks a project
+when it contains occupied slots. Older supported readers need to check that
+marker before they enumerate Arrangement clips.
+
 ### 3. Tuning systems (closes ADR-0103's open item)
 
 **Relational child tables, for the agent's sake.** `tuning_systems` (id, name,

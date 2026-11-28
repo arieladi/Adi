@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace adi::edit {
 std::int64_t addTime(std::int64_t a,std::int64_t b) {
@@ -26,6 +27,17 @@ TimeMap::TimeMap(SQLite::Database& db) {
         fastest_=std::max(fastest_,bpm);tempo_.events.push_back({position,bpm,st.getColumn(2).getInt()});
     }
     if(tempo_.events.empty() || tempo_.events.front().posTicks!=0)tempo_.events.insert(tempo_.events.begin(),{0,120,0});
+}
+TimeMap::TimeMap(engine::TempoMap tempo) : tempo_(std::move(tempo)) {
+    std::int64_t previous = -1;
+    for (const auto& event : tempo_.events) {
+        if (event.posTicks <= previous || !std::isfinite(event.bpm) || event.bpm <= 0)
+            throw std::runtime_error("edit needs an ordered valid tempo map");
+        previous = event.posTicks;
+        fastest_ = std::max(fastest_, event.bpm);
+    }
+    if (tempo_.events.empty() || tempo_.events.front().posTicks != 0)
+        tempo_.events.insert(tempo_.events.begin(), {0, 120, 0});
 }
 double TimeMap::seconds(std::int64_t ticks)const {
     if(ticks<0)throw std::runtime_error("edit ticks must be nonnegative");
