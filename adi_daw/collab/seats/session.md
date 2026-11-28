@@ -62,8 +62,8 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-04 clock launch beyond the loop | Ported the companion clock admission rule using the published driver loop bounds and projected Loop End (`0ae2bfff4`). | The persisted native suite checks the exact End and beyond, the active loop, short preparation lead, and loop settings that the driver is still adopting. | Pushed. Verified in the full run at `3711e1455`. |
 | TM-SV-03 prepared resident source replacement | Added an explicit engine entry point for one same-shape Fade-off resident source. It switches at Clip Update Rate, retires across stop or bank change, and counts both buffers against the resident budget (`3c4f0e32a`). | The native graph tests exercise independent gain and PCM cuts at frames 3,000 and 6,000, six short loop laps, run identity, capture refusal, racing stop, and owner reclamation after device release. | Pushed. Verified in the full run at `3711e1455`. |
 | Main device-round notes | Merged the documentation-only PR #837 at `e0ecd0026` (`3711e1455`). | The tree delta from the queued engine head is the director’s device-round notes in `collab/win.md` and `docs/SANITY-CHECK.md`. | Pushed. Verified in the full run at `3711e1455`. |
-| TM-SV-04 optional tape and authored Warp | Offered raw source-range receipts only for verified native-rate, untransformed resident WAV preparation (`930ac5eb7`). | The native fixture keeps a nonidentity Warp loop replayable with the optional tape enabled, then compares 1,000 samples at a different callback width and through Undo, Redo and reopen. | Pushed. Full headless rerun pending. |
-| TM-SV-04 resident tempo-bank history | Retained multiple clock periods within the resident budget, reused banks only for the same verified source image, and staged incompatible source or tempo edits with atomic fallback (`249b98ca7`). | The native fixture seeks among 120, 140 and 160 BPM banks, cancels and restores a scene clock, replaces a same-path WAV, and checks both failed and successful ordinary tempo publication. | Pushed. Full headless rerun pending. |
+| TM-SV-04 optional tape and authored Warp | Offered raw source-range receipts only for verified native-rate, untransformed resident WAV preparation (`930ac5eb7`). | The native fixture keeps a nonidentity Warp loop replayable with the optional tape enabled, then compares 1,000 samples at a different callback width and through Undo, Redo and reopen. | Pushed. Verified in the full run at `249b98ca7`. |
+| TM-SV-04 resident tempo-bank history | Retained multiple clock periods within the resident budget, reused banks only for the same verified source image, and staged incompatible source or tempo edits with atomic fallback (`249b98ca7`). | The native fixture seeks among 120, 140 and 160 BPM banks, cancels and restores a scene clock, replaces a same-path WAV, and checks both failed and successful ordinary tempo publication. | Pushed. Verified in the full run at `249b98ca7`. |
 
 ## Readings owed
 
@@ -74,6 +74,8 @@ Session engine seat taken on 27 November 2026.
 The plan calls the material writes literal `clip.create`. The present `clip.create` payload omits source pins and native BLOBs. `capture.sessionPerformance` uses the existing literal Arrangement row planner and keeps the complete linked rows in one transaction. Win can accept that journal representation or reserve a full-image `clip.create` contract for a combined follow-up.
 
 ## Verification
+
+- `249b98ca7` passed all 303 suites in 185.23 s under GCC 14 Debug with Pd on, JUCE off, `ADI_WERROR=ON` and `ctest -LE performance`. Schema, op, parity, Pd and CI validators passed. The platform checker results recorded below cover earlier heads.
 
 - `3711e1455` passed all 303 suites in 186.97 s under GCC 14 Debug with Pd on, JUCE off, `ADI_WERROR=ON` and `ctest -LE performance`. Schema, op, parity, Pd and CI validators passed. The platform checker results recorded below cover earlier heads.
 
