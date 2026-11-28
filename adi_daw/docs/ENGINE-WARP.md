@@ -92,8 +92,10 @@ that musical clock and take precedence over earlier fixed nanosecond pins.
 This path needs a new prepared render for a tempo change.
 The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
 the default is zero. Matching Pitch Editor edits are applied in source coordinates
-before Warp preparation. Both plain and pitch-edited clips use the same directed
-marker and tempo mapping when the page reader reverses the prepared window.
+before Warp. Streaming Re-Pitch reads the corrected native-rate window on the
+same marker and tempo clock as a plain clip, including during A/B comparison.
+Prepared renders use the same directed mapping when the page reader reverses
+the prepared window.
 Channel aliases remain unsupported.
 
 Split, copy and range/Time material edits retain warped fade shapes on the

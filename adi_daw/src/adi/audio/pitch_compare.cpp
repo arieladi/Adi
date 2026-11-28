@@ -42,14 +42,16 @@ void PitchComparePlayback::select(PitchCompareSide side) noexcept {
     requestedCorrected_.store(side == PitchCompareSide::Corrected, std::memory_order_relaxed);
 }
 
-bool PitchComparePlayback::readAt(std::uint64_t firstFrame, std::span<float> interleaved) noexcept {
-    if (!pcm_) return false;
-    const auto channels = pcm_->channels();
-    const auto count = interleaved.size() / channels;
-    if (interleaved.size() % channels != 0 || firstFrame > pcm_->frames() || count > pcm_->frames() - firstFrame)
-        return false;
-    if (count == 0) return true;
+std::span<const float> PitchComparePlayback::source(PitchCompareSide side) const noexcept {
+    if (!pcm_) return {};
+    return side == PitchCompareSide::Corrected ? pcm_->corrected_ : pcm_->original_;
+}
 
+float PitchComparePlayback::nextMix() noexcept {
+    return advanceCrossfade(beginCrossfade());
+}
+
+bool PitchComparePlayback::beginCrossfade() noexcept {
     const bool selected = requestedCorrected_.load(std::memory_order_relaxed);
     const float target = selected ? 1.0f : 0.0f;
     if (!started_ || crossfadeFrames_ == 0) {
@@ -61,18 +63,38 @@ bool PitchComparePlayback::readAt(std::uint64_t firstFrame, std::span<float> int
     }
     started_ = true;
     latchedCorrected_ = selected;
+    return selected;
+}
+
+float PitchComparePlayback::advanceCrossfade(bool corrected) noexcept {
+    const float previous = mix_;
+    if (remaining_ != 0) {
+        --remaining_;
+        mix_ = remaining_ == 0 ? (corrected ? 1.0f : 0.0f) : std::clamp(mix_ + step_, 0.0f, 1.0f);
+    }
+    return previous;
+}
+
+bool PitchComparePlayback::readAt(std::uint64_t firstFrame, std::span<float> interleaved) noexcept {
+    if (!pcm_) return false;
+    const auto channels = pcm_->channels();
+    const auto count = interleaved.size() / channels;
+    if (interleaved.size() % channels != 0 || firstFrame > pcm_->frames() || count > pcm_->frames() - firstFrame)
+        return false;
+    if (count == 0) return true;
+
+    const bool selected = beginCrossfade();
     const auto firstSample = static_cast<std::size_t>(firstFrame) * channels;
     const auto* original = pcm_->original_.data() + firstSample;
     const auto* corrected = pcm_->corrected_.data() + firstSample;
     auto* destination = interleaved.data();
     std::size_t frame = 0;
     for (; frame < count && remaining_ != 0; ++frame) {
+        const auto amount = advanceCrossfade(selected);
         for (std::size_t channel = 0; channel < channels; ++channel) {
             const auto sample = frame * channels + channel;
-            destination[sample] = std::lerp(original[sample], corrected[sample], mix_);
+            destination[sample] = std::lerp(original[sample], corrected[sample], amount);
         }
-        --remaining_;
-        mix_ = remaining_ == 0 ? target : std::clamp(mix_ + step_, 0.0f, 1.0f);
     }
     const auto firstPureSample = frame * channels;
     if (firstPureSample < interleaved.size())

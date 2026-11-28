@@ -51,7 +51,14 @@ public:
     // On failure the destination and crossfade state are unchanged.
     [[nodiscard]] bool readAt(std::uint64_t firstFrame, std::span<float> interleaved) noexcept;
 
+    // A streaming processor can read the two native-rate inputs and apply the
+    // same selection ramp after rendering one frame of each side.
+    [[nodiscard]] std::span<const float> source(PitchCompareSide) const noexcept;
+    [[nodiscard]] float nextMix() noexcept;
+
 private:
+    [[nodiscard]] bool beginCrossfade() noexcept;
+    [[nodiscard]] float advanceCrossfade(bool corrected) noexcept;
     const std::shared_ptr<const PitchComparePcm> pcm_;
     const std::uint32_t crossfadeFrames_;
     std::atomic<bool> requestedCorrected_{true};

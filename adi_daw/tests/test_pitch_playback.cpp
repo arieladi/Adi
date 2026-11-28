@@ -237,6 +237,19 @@ void run() {
         throw std::runtime_error(comparisonError);
     check(reversedWarpPcm == render(reversedWarp, 12000) && frequency(reversedWarpPcm) > 100,
           "reversed Warp comparison uses the exact output samples of ordinary corrected playback");
+    if (!reversedWarp.clips()->preparePitchComparison(7, audio::PitchCompareSide::Original, comparisonError, 4))
+        throw std::runtime_error(comparisonError);
+    const auto reversedDry = render(reversedWarp, 12000);
+    check(std::abs(frequency(reversedDry) - 110) < 0.5 &&
+          reversedWarp.clips()->selectPitchComparison(7, audio::PitchCompareSide::Corrected),
+          "the reversed Re-Pitch comparison uses the same streaming clock for the original");
+    const auto crossfade = render(reversedWarp, 12000);
+    check(crossfade[0] == reversedDry[0] &&
+          crossfade[1] == std::lerp(reversedDry[1], reversedWarpPcm[1], 0.25f) &&
+          crossfade[2] == std::lerp(reversedDry[2], reversedWarpPcm[2], 0.5f) &&
+          crossfade[3] == std::lerp(reversedDry[3], reversedWarpPcm[3], 0.75f) &&
+          std::equal(crossfade.begin() + 4, crossfade.end(), reversedWarpPcm.begin() + 4),
+          "the four-frame comparison ramp mixes both sides on the transport sample clock");
     check(callbackAllocations.load() == 0 && audio::callbackFileIo.load() == 0,
           "Session's edited source uses no callback allocations or file I/O");
     std::printf("Session pitch edit %.3f Hz to %.3f Hz (%+.3f cents), then Re-Pitch %.3f Hz\n",

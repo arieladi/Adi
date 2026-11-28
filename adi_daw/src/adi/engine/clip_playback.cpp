@@ -812,6 +812,42 @@ struct PitchComparison : Sequenced {
     PitchComparison(const Clip* target, std::shared_ptr<const audio::PitchComparePcm> pcm,
                     std::uint32_t fadeFrames)
         : clip(target), playback(std::move(pcm), fadeFrames) {}
+
+    bool renderRePitch(std::int64_t time, std::span<float> output) const noexcept {
+        using Side = audio::PitchCompareSide;
+        const auto render = [&](Side side, std::span<float> frame) {
+            struct Input {
+                std::span<const float> pcm;
+                std::uint16_t channels;
+
+                audio::WarpStreamPcm run(std::int64_t position) const noexcept {
+                    if (position < 0 || static_cast<std::uint64_t>(position) >= pcm.size() / channels)
+                        return {};
+                    const auto index = static_cast<std::size_t>(position) * channels;
+                    return {pcm.data() + index, static_cast<std::uint32_t>((pcm.size() - index) / channels)};
+                }
+            } input{playback.source(side), clip->channels};
+            const audio::WarpStreamInput reader{
+                &input,
+                [](void* context, std::int64_t position, std::uint16_t channel) noexcept {
+                    const auto run = static_cast<const Input*>(context)->run(position);
+                    return run.data ? run.data[channel] : 0.0f;
+                },
+                [](void* context, std::int64_t position) noexcept {
+                    return static_cast<const Input*>(context)->run(position);
+                }};
+            return clip->streamingWarp->renderFrame(time, reader, frame);
+        };
+        const auto mix = playback.nextMix();
+        if (mix == 0.0f) return render(Side::Original, output);
+        if (mix == 1.0f) return render(Side::Corrected, output);
+        std::array<float, 64> corrected;
+        if (!render(Side::Original, output) ||
+            !render(Side::Corrected, std::span(corrected.data(), output.size()))) return false;
+        for (std::size_t channel = 0; channel < output.size(); ++channel)
+            output[channel] = std::lerp(output[channel], corrected[channel], mix);
+        return true;
+    }
 };
 
 class TrackSource final : public Node {
@@ -947,7 +983,7 @@ public:
         // Raw indices avoid MSVC Debug vector-iterator ownership locks.
         for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
             auto* clip=clips[clipIndex];
-            auto* compare = activeComparison && activeComparison->clip == clip ? &activeComparison->playback : nullptr;
+            const auto* compare = activeComparison && activeComparison->clip == clip ? activeComparison : nullptr;
             if(io.blockOffset==0){
                 const auto required=clip->wanted(transport,maxFrames,false);
                 clip->trimAdmission(required);
@@ -970,8 +1006,10 @@ public:
                 if (clip->streamingWarp) {
                     if (time < clip->start || time >= clip->end) continue;
                     streamReader.missing = false;
-                    if (!clip->streamingWarp->renderFrame(warpCursor,time,streamInput,
-                                                         std::span(warpedFrame.data(),clip->channels))) {
+                    const std::span warpedSamples(warpedFrame.data(), clip->channels);
+                    const bool rendered = compare ? compare->renderRePitch(time, warpedSamples)
+                        : clip->streamingWarp->renderFrame(warpCursor, time, streamInput, warpedSamples);
+                    if (!rendered) {
                         if (!clip->invalidWarpRate.exchange(true,std::memory_order_relaxed))
                             clip->errors.fetch_add(1,std::memory_order_relaxed);
                         continue;
@@ -985,7 +1023,7 @@ public:
                         const auto frame = clip->reverse && clip->pitchComparisonPlan->warp
                             ? clip->sourceLength - 1 - static_cast<std::uint64_t>(n)
                             : static_cast<std::uint64_t>(n);
-                        if(!compare->readAt(frame,comparisonSamples)) continue;
+                        if(!compare->playback.readAt(frame,comparisonSamples)) continue;
                         sample=comparisonFrame.data();
                     } else {
                         if(n/clip->pageFrames!=number) {
@@ -1107,7 +1145,11 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto warpMode = a->warpEnabled ? audio::parseWarpMode(a->warpMode) : std::nullopt;
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
             const bool arrangementStreaming = warpPlayback == WarpPlayback::Streaming;
-            const bool nativeWarp = !pitch && (arrangementStreaming || warpPlayback == WarpPlayback::NativePages) &&
+            // Re-Pitch reads the same native-rate window before and after
+            // flattening. Other edited Warp modes still prepare the composite.
+            const bool nativePitchRePitch = pitch && arrangementStreaming && warpMode == audio::WarpMode::RePitch;
+            const bool nativeWarp = (!pitch || nativePitchRePitch) &&
+                (arrangementStreaming || warpPlayback == WarpPlayback::NativePages) &&
                 warpMode && a->formantShift == 0 && (!a->reverse || arrangementStreaming) &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
                  *warpMode == audio::WarpMode::RePitch);
@@ -1150,7 +1192,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     clip->channels=static_cast<std::uint16_t>(info.channels);
                     clip->sourceRate=info.sampleRate;
                     sourceFrames=info.frames;
-                    if ((nativeWarp || r3Mode) && info.frames && *info.frames) {
+                    if (!pitch && (nativeWarp || r3Mode) && info.frames && *info.frames) {
                         auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
                         clip->progressive=service.openSaved(clip->path,info,source->hashBlake3);
                     }
@@ -1244,7 +1286,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             const bool r3 = r3Mode && audio::RealtimeWarpR3::supports(spec,clip->sourceRate,clip->channels) &&
                 supportsR3Ratios(map.markers,warpClock,static_cast<double>(sourceOrigin),r3EndTick);
-            const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive);
+            const bool stream = (nativeWarp || r3) && (clip->reader || clip->progressive || nativePitchRePitch);
             if (warpPlayback == WarpPlayback::NativePages && !stream)
                 throw std::runtime_error("raw Session Warp pages need a native mode and readable source");
             if (warpPlayback == WarpPlayback::NativePages && warpMode == audio::WarpMode::RePitch &&
@@ -2089,13 +2131,17 @@ bool ClipPlayback::preparePitchComparison(std::int64_t id, audio::PitchCompareSi
         // comparison uses mirrored output addresses for the same Warp result.
         // At native rate, reverse before resampling the comparison sides.
         if (!plan.warp) plan.reverse = (*clip)->reverse;
-        auto ready=media::prepareClipPitchCompare(plan,stop,(*clip)->rate);
+        const bool nativeRePitch = (*clip)->streamingWarp != nullptr;
+        const auto comparisonRate = nativeRePitch ? (*clip)->sourceRate : (*clip)->rate;
+        const auto comparisonFrames = nativeRePitch ? (*clip)->sourceLength
+            : static_cast<std::uint64_t>((*clip)->length);
+        auto ready=media::prepareClipPitchCompare(plan,stop,comparisonRate);
         if(!ready) {
             error=ready.detail.value_or("cannot prepare pitch comparison");
             return false;
         }
-        if(ready.prepared->channels()!=(*clip)->channels || ready.prepared->rate()!=(*clip)->rate ||
-           ready.prepared->frames()<static_cast<std::uint64_t>((*clip)->length)) {
+        if(ready.prepared->channels()!=(*clip)->channels || ready.prepared->rate()!=comparisonRate ||
+           ready.prepared->frames()<comparisonFrames) {
             error="prepared pitch comparison disagrees with the clip clock";
             return false;
         }
