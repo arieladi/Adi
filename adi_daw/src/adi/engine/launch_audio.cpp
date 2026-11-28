@@ -169,20 +169,26 @@ float LaunchAudioClip::sample(std::int64_t frame, std::int32_t channel) const no
     return samples_.data()[static_cast<std::size_t>(frame) * channels_ + static_cast<std::size_t>(source)];
 }
 
-void LaunchAudioClip::prefetchWarp(LaunchWarpPosition position) const noexcept {
+namespace {
+LaunchWarpSource::Window warpWindow(const WarpClipPlayer& player, LaunchWarpPosition position) noexcept {
+    return {player.launchAt(static_cast<double>(position.anchorTick),
+                            static_cast<double>(position.anchorSourceTick)),position.frame};
+}
+}
+
+void LaunchAudioClip::prefetchWarp(LaunchWarpPosition position, std::optional<LaunchWarpPosition> loopHead) const noexcept {
     if (auto* pages = pagedWarp_.get()) {
-        const auto placement = pages->player().launchAt(static_cast<double>(position.anchorTick),
-                                                        static_cast<double>(position.anchorSourceTick));
-        if (placement) pages->prefetch(placement,position.frame);
+        const auto cue = warpWindow(pages->player(),position);
+        if (cue.placement) pages->prefetch(cue,loopHead ? warpWindow(pages->player(),*loopHead) : LaunchWarpSource::Window{});
     }
 }
 
-bool LaunchAudioClip::reserveWarpCue(LaunchWarpPosition position, std::int32_t frames) const noexcept {
+bool LaunchAudioClip::reserveWarpCue(LaunchWarpPosition position, std::int32_t frames,
+                                   std::optional<LaunchWarpPosition> loopHead) const noexcept {
     auto* pages = pagedWarp_.get();
     if (!pages) return false;
-    const auto placement = pages->player().launchAt(static_cast<double>(position.anchorTick),
-                                                    static_cast<double>(position.anchorSourceTick));
-    return pages->reserveCue(placement,position.frame,frames);
+    const auto head = loopHead ? warpWindow(pages->player(),*loopHead) : LaunchWarpSource::Window{};
+    return (!loopHead || head.placement) && pages->reserveCue(warpWindow(pages->player(),position),frames,head);
 }
 
 bool LaunchAudioClip::renderWarp(const AudioIo& io, std::int32_t offset, std::int32_t count,

@@ -301,23 +301,37 @@ void pagedLegato(Fixture& fixture) {
         static_cast<long long>(barFrames));
 }
 
-void nativePagedLegato(std::string_view mode) {
+void nativePagedLegato(std::string_view mode, bool looping = false) {
     constexpr std::uint32_t rate = 48'000;
     constexpr std::int64_t targetId = 106, targetScene = 60;
     constexpr std::int64_t coldDue = 24'000, warmDue = 48'000;
     constexpr auto ppq = textproj::kPPQ;
-    constexpr auto coldPage = 48'000 / 8192;
+    constexpr auto ticksForFrames = [](std::int64_t frames) { return (frames * ppq + 12'000) / 24'000; };
+    constexpr auto loopTail = ticksForFrames(48);
+    constexpr auto loopBegin = 5 * ppq + loopTail;
+    constexpr auto loopLength = ppq;
+    constexpr auto loopCue = 6 * ppq;
+    constexpr auto loopHeadPage = (120'048 + 239'000) / 8192;
+    constexpr auto oneShotColdPage = 48'000 / 8192;
     constexpr std::uint64_t incarnation = 89;
     Fixture fixture;
     {
-        constexpr std::uint32_t frames = 384'000;
+        const std::uint32_t frames = looping ? 623'000 : 384'000;
         std::vector<float> waveform(frames);
         for (std::size_t index = 0; index < waveform.size(); ++index)
             waveform[index] = .125f + static_cast<float>(index % 9323) / 32768.f;
         audio::WavWriter wave(fixture.directory.path() / "native-legato.wav",rate,1,audio::WavFormat::Float32);
         wave.write(waveform.data(),frames);
         wave.close();
-        const auto markers = audio::writeWarpMap(std::array{WarpMarker{0,0},WarpMarker{frames,16*ppq}},frames);
+        std::vector<WarpMarker> geometry{{0,0}};
+        if (looping) {
+            // Requesting a block here touches all eight raw pages and
+            // displaces the separately primed loop head.
+            geometry.push_back({60'000,ticksForFrames(60'000)});
+            geometry.push_back({300'000,ticksForFrames(61'000)});
+        }
+        geometry.push_back({frames,16*ppq});
+        const auto markers = audio::writeWarpMap(geometry,frames);
         require(static_cast<bool>(markers),"encode the long native Warp markers");
         auto& db = fixture.store->db();
         db.exec("INSERT INTO scenes(id,ord,name) VALUES(60,9,'Native Legato'),(61,10,'Tempo cue');"
@@ -327,30 +341,54 @@ void nativePagedLegato(std::string_view mode) {
                 " VALUES(106,1,'audio',0,86486400,5765760);"
                 "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,106);"
                 "INSERT INTO clip_launch(clip_id,legato,ram_mode) VALUES(106,1,0)");
+        if (looping) {
+            SQLite::Statement clip(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=?,loop_enabled=1,"
+                                      "loop_start_ticks=?,loop_len_ticks=? WHERE id=106");
+            clip.bind(1,static_cast<std::int64_t>(5*ppq));
+            clip.bind(2,static_cast<std::int64_t>(11*ppq));
+            clip.bind(3,static_cast<std::int64_t>(loopBegin));
+            clip.bind(4,static_cast<std::int64_t>(loopLength));
+            clip.exec();
+        }
         SQLite::Statement row(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers)"
-                                 " VALUES(106,6,384000,1,?,?)");
-        row.bind(1,std::string(mode));
-        row.bind(2,markers.bytes.data(),static_cast<int>(markers.bytes.size()));
+                                 " VALUES(106,6,?,1,?,?)");
+        row.bind(1,static_cast<std::int64_t>(frames));
+        row.bind(2,std::string(mode));
+        row.bind(3,markers.bytes.data(),static_cast<int>(markers.bytes.size()));
         row.exec();
     }
 
     struct Gate {
-        std::atomic<bool> held{false}, resume{false};
-    } gate;
+        const std::int64_t page;
+        std::atomic<bool> evicted{false}, held{false}, resume{false};
+    } gate{looping ? loopHeadPage : oneShotColdPage};
     const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
         .beforePageClaim=[](void* raw,std::int64_t,std::int64_t page) noexcept {
             auto& state = *static_cast<Gate*>(raw);
-            if (page != coldPage || state.resume.load(std::memory_order_acquire)) return;
+            if (page != state.page || state.resume.load(std::memory_order_acquire)) return;
             state.held.store(true,std::memory_order_release);
             while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
+        },
+        .afterPageClaimAttempt=[](void* raw,std::int64_t oldPage,std::int64_t requestedPage,bool claimed) noexcept {
+            auto& state = *static_cast<Gate*>(raw);
+            if (claimed && oldPage == state.page && requestedPage != state.page)
+                state.evicted.store(true,std::memory_order_release);
         }};
     TempoMap clock;
     clock.events.push_back({0,120,0});
+    if (looping) clock.events.push_back({2*ppq,125,0});
+    const auto sampleAt = [&](std::int64_t tick) { return std::llround(clock.ticksToSeconds(tick)*rate); };
+    const auto warmSourceTick = looping ? loopCue : 3*ppq;
+    const LaunchWarpPosition warmCue{warmDue,2*ppq,warmSourceTick};
+    const auto warmHead = looping
+        ? std::optional<LaunchWarpPosition>{{sampleAt(2*ppq+loopTail),2*ppq+loopTail,loopBegin}}
+        : std::nullopt;
     const auto prepare = [&] {
         const auto model = rows::readModel(*fixture.store);
         const auto project = readClipProject(*fixture.store,model,true);
         std::vector<std::string> problems;
-        auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems);
+        auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockSize,incarnation,problems,
+            kSessionResidentPcmBudget,looping ? std::optional<double>{120} : std::nullopt);
         require(bank && problems.empty(),"prepare the persisted native Legato source");
         return bank;
     };
@@ -419,6 +457,16 @@ void nativePagedLegato(std::string_view mode) {
         return ready();
     };
 
+    if (looping) {
+        constexpr auto denseSource = ticksForFrames(60'110);
+        constexpr auto denseTick = 3*ppq;
+        {
+            const audio::CallbackScope scope;
+            target->prefetchWarp({sampleAt(denseTick),denseTick,denseSource});
+        }
+        require(wait([&] { return gate.evicted.load(std::memory_order_acquire); }),
+                "the dense request displaces the saved loop-head page");
+    }
     post(10,101);
     render();
     require(output.count == 1 && output.edges[0].newClip == 101,"start the outgoing resident source");
@@ -426,6 +474,15 @@ void nativePagedLegato(std::string_view mode) {
     render();
     require(wait([&] { return gate.held.load(std::memory_order_acquire); }),
             "the real worker asks for the exact far cue and is held before claiming its page");
+    if (looping) {
+        bool tailReady = false;
+        {
+            const audio::CallbackScope scope;
+            tailReady = target->reserveWarpCue({coldDue,ppq,loopCue},blockSize);
+            if (tailReady) pages.releaseCue();
+        }
+        require(tailReady,"the disjoint launch tail alone is fully resident while the loop head is held");
+    }
     while (transport.position() <= coldDue) render();
     require(output.count == 1 && pages.underrunSamples() == 0,
             "cold scheduled native Legato preserves the old run and never starts an underrun");
@@ -437,20 +494,26 @@ void nativePagedLegato(std::string_view mode) {
     render();
     require(wait([&] {
         const audio::CallbackScope scope;
-        if (!target->reserveWarpCue({warmDue,2*ppq,3*ppq},blockSize)) return false;
+        if (!target->reserveWarpCue(warmCue,blockSize,warmHead)) return false;
         pages.releaseCue();
         return true;
     }),"the second scheduled forecast fills its exact native pages");
     while (transport.position() <= warmDue) render();
     const auto offset = static_cast<std::int32_t>(warmDue - (transport.position() - blockSize));
     require(output.count == 2 && output.edges[1].newClip == targetId &&
-            output.edges[1].sample == warmDue && output.edges[1].sourceTick == 3*ppq &&
+            output.edges[1].sample == warmDue && output.edges[1].sourceTick == warmSourceTick &&
             output.edges[1].offset == offset,
             "the warmed cue changes run at the exact sample and trimmed musical phase");
     std::array<float,blockSize> expectedLeft{}, expectedRight{};
     float* channels[]{expectedLeft.data(),expectedRight.data()};
     const AudioIo expected{channels,nullptr,2,0,blockSize,0};
-    renderLaunchAudio(expected,offset,blockSize-offset,reference,0,1.0f,-1,{warmDue,2*ppq,3*ppq});
+    const auto firstFrames = warmHead ? static_cast<std::int32_t>(warmHead->frame - warmDue) : blockSize-offset;
+    renderLaunchAudio(expected,offset,firstFrames,reference,0,1.0f,-1,warmCue);
+    if (warmHead) {
+        require(firstFrames == 46 && offset + firstFrames < blockSize,
+                "the effective 125 BPM clock puts the reanchored head inside the actual warm callback");
+        renderLaunchAudio(expected,offset+firstFrames,blockSize-offset-firstFrames,reference,0,1.0f,-1,*warmHead);
+    }
     bool audible = false;
     for (auto frame = std::int32_t{0}; frame < blockSize; ++frame) {
         const auto index = static_cast<std::size_t>(frame);
@@ -464,8 +527,8 @@ void nativePagedLegato(std::string_view mode) {
     }
     require(audible && pages.underrunSamples() == 0 && allocations == 0 && audio::callbackFileIo == 0,
             "the warm native cue is audible with zero misses, callback allocations or callback file reads");
-    std::printf("PASS -- native %.*s refused the cold cue at %lld and matched every warm sample at %lld\n",
-                static_cast<int>(mode.size()),mode.data(),
+    std::printf("PASS -- native %.*s %s refused the cold cue at %lld and matched every warm sample at %lld\n",
+                static_cast<int>(mode.size()),mode.data(),looping ? "loop" : "one-shot",
                 static_cast<long long>(coldDue),static_cast<long long>(warmDue));
 }
 
@@ -535,6 +598,8 @@ int main() {
         Fixture legato;
         pagedLegato(legato);
         for (const auto mode : {"beats","texture","re-pitch"}) nativePagedLegato(mode);
+        nativePagedLegato("re-pitch",true);
+        nativePagedLegato("texture",true);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;

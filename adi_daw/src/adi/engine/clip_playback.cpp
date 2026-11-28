@@ -1335,25 +1335,27 @@ public:
         cue_.fill(-1);
     }
 
-    void prefetch(WarpClipPlayer::Placement placement, std::int64_t first) noexcept override {
+    void prefetch(Window cue, Window loopHead) noexcept override {
         if (clip_.cueAdmitted) return;
         Pages pages;
         pages.fill(-1);
-        (void)addRange(pages,placement,first,maxFrames_);
+        (void)addCueRanges(pages,cue,maxFrames_,loopHead);
         forecast_ = pages;
         for (const auto page : warmed_)
             if (page >= 0) (void)append(pages,page);
-        (void)addRange(pages,placement,first,lookAhead_);
+        (void)addRange(pages,cue.placement,cue.first,lookAhead_);
         clip_.request(pages);
     }
 
-    bool reserveCue(WarpClipPlayer::Placement placement, std::int64_t first,
-                    std::int32_t frames) noexcept override {
-        if (!placement || first < placement.firstFrame || first >= placement.endFrame ||
+    bool reserveCue(Window cue, std::int32_t frames, Window loopHead) noexcept override {
+        if (!cue.placement || cue.first < cue.placement.firstFrame || cue.first >= cue.placement.endFrame ||
             frames <= 0 || frames > maxFrames_ || clip_.cueAdmitted || readErrors()) return false;
+        if (loopHead.placement &&
+            (loopHead.first < loopHead.placement.firstFrame || loopHead.first >= loopHead.placement.endFrame))
+            return false;
         Pages pages;
         pages.fill(-1);
-        if (!addRange(pages,placement,first,frames) || pages.front() < 0) return false;
+        if (!addCueRanges(pages,cue,frames,loopHead) || pages.front() < 0) return false;
         clip_.trimAdmission(pages);
         for (const auto page : pages) {
             if (page >= 0 && !clip_.reserve(page)) {
@@ -1468,6 +1470,16 @@ private:
         if (open == pages.end()) return false;
         *open = page;
         return true;
+    }
+
+    bool addCueRanges(Pages& pages, Window cue, std::int32_t frames, Window loopHead) const noexcept {
+        // Keep the initial placement through the whole callback for a tail.
+        const bool initial = addRange(pages,cue.placement,cue.first,frames);
+        if (!loopHead.placement) return initial;
+        if (cue.first < 0 || loopHead.first <= cue.first) return false;
+        const auto offset = loopHead.first - cue.first;
+        if (offset >= frames) return false;
+        return addRange(pages,loopHead.placement,loopHead.first,frames - static_cast<std::int32_t>(offset)) && initial;
     }
 
     bool addRange(Pages& pages, WarpClipPlayer::Placement placement, std::int64_t first,

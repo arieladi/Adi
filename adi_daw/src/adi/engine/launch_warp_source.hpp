@@ -21,10 +21,13 @@ public:
 
     // A read is confined to the driver's current render slice. All setup
     // and cleanup here exchanges page leases without waiting for a worker.
-    virtual void prefetch(WarpClipPlayer::Placement, std::int64_t first) noexcept = 0;
+    struct Window {
+        WarpClipPlayer::Placement placement;
+        std::int64_t first = 0;
+    };
+    virtual void prefetch(Window cue, Window loopHead) noexcept = 0;
     // An exact cue reservation spans every overlay slice in this driver block.
-    [[nodiscard]] virtual bool reserveCue(WarpClipPlayer::Placement, std::int64_t first,
-                                          std::int32_t frames) noexcept = 0;
+    [[nodiscard]] virtual bool reserveCue(Window cue, std::int32_t frames, Window loopHead) noexcept = 0;
     virtual void releaseCue() noexcept = 0;
     virtual void begin(WarpClipPlayer::Placement, std::int64_t first, std::int32_t frames) noexcept = 0;
     virtual void renderFrame(WarpClipPlayer::Placement, std::int64_t, std::span<float>) noexcept = 0;

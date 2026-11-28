@@ -32,6 +32,37 @@ bool needsCueLease(const LaunchSlot& slot, std::uint32_t rate) noexcept {
     return slot.physicalStartFrame + slot.physicalFrames - start > 3 * ClipPlayback::readAheadFrames(rate);
 }
 
+bool nativeCueClockStable(const LaunchBlock& block, const LaunchFollowPlayer* follow,
+                          std::uint64_t performedScene, std::int64_t clip) noexcept {
+    return (!block.preparedScene || block.preparedScene->token <= performedScene) &&
+        (!block.followActionsEnabled || !follow || !follow->hasClipOrSceneActions(clip));
+}
+
+struct NativeCueWrap {
+    std::optional<LaunchWarpPosition> head;
+    bool bounded = true;
+};
+
+NativeCueWrap nativeCueWrap(const LaunchBlock& block, const LaunchSlot& slot,
+                           LaunchWarpPosition cue, std::int32_t frames) noexcept {
+    if (slot.loopEndTick <= slot.loopStartTick) return {};
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+    if (cue.frame < 0 || frames <= 0 || cue.frame > limit - frames || cue.anchorTick < 0 ||
+        cue.anchorSourceTick < 0 || cue.anchorSourceTick >= slot.loopEndTick) return {{},false};
+    const auto ticksToWrap = slot.loopEndTick - cue.anchorSourceTick;
+    if (cue.anchorTick > limit - ticksToWrap) return {{},false};
+    const auto tick = cue.anchorTick + ticksToWrap;
+    const auto first = block.sampleAtTick(block.clock,tick);
+    // The Launcher can give a sub-sample lap one frame. Leave that case on
+    // its existing path rather than guessing the resulting anchor.
+    if (first <= cue.frame) return {{},false};
+    const auto end = cue.frame + frames;
+    if (first >= end) return {};
+    const auto lapTicks = slot.loopEndTick - slot.loopStartTick;
+    const bool bounded = tick > limit - lapTicks || block.sampleAtTick(block.clock,tick + lapTicks) >= end;
+    return {LaunchWarpPosition{first,tick,slot.loopStartTick},bounded};
+}
+
 bool needsRetainedPages(const LaunchSlot& slot, std::uint32_t rate) noexcept {
     return slot.physicalLoopEndFrame > 0 || slot.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate);
 }
@@ -575,9 +606,21 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto& media = *call.runtime.mediaAt(due);
         if (&media != call.media) return;
         const auto* clip = media.clip(track.queued.clip);
-        if (clip && clip->followsTempo())
-            clip->prefetchWarp({due,track.queued.tick,*track.queued.legatoSourceTick});
-        else if (clip && clip->pageReader()) {
+        if (clip && clip->followsTempo()) {
+            const LaunchWarpPosition cue{due,track.queued.tick,*track.queued.legatoSourceTick};
+            std::optional<LaunchWarpPosition> head;
+            const auto slots = call.view.slots;
+            const auto slot = std::ranges::lower_bound(slots,std::pair{track.track,track.queued.scene},{},
+                [](const LaunchSlot& item) noexcept { return std::pair{item.track,item.scene}; });
+            const auto* nativePages = clip->warpPageReader();
+            if (nativePages && !nativePages->wholeSourceFitsPageCache() && slot != slots.end() &&
+                slot->clip == track.queued.clip && slot->mode != LaunchMode::Repeat &&
+                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),slot->clip)) {
+                const auto wrap = nativeCueWrap(call.block,*slot,cue,call.runtime.maxFrames_);
+                if (wrap.bounded) head = wrap.head;
+            }
+            clip->prefetchWarp(cue,head);
+        } else if (clip && clip->pageReader()) {
             const auto* rendered = call.runtime.trackRanges(track.track);
             if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == clip->clip()) return;
             const auto frame = track.queued.legatoSourceFrame ? *track.queued.legatoSourceFrame
@@ -617,15 +660,12 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                      : cueAdmission != LaunchCueAdmission::Scheduled) return true;
         const auto* pcm = call.media->clip(target.clip);
         auto* nativePages = pcm ? pcm->warpPageReader() : nullptr;
-        if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache() &&
-            target.loopEndTick <= target.loopStartTick) {
+        if (nativePages && target.mode != LaunchMode::Repeat && !nativePages->wholeSourceFitsPageCache()) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
             // launches keep the usual reader path.
             if (call.offset + call.block.frames != call.frames ||
-                (call.block.preparedScene &&
-                 call.block.preparedScene->token > call.driver.performedSceneToken()) ||
-                (call.block.followActionsEnabled && call.follow && call.follow->hasClipOrSceneActions(target.clip)))
+                !nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip))
                 return true;
             auto* rendered = call.runtime.trackRanges(target.track);
             if (!rendered || rendered->cuePages || rendered->warpCuePages) return true;
@@ -637,7 +677,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
             for (std::size_t index = 0; index < rendered->tailCount; ++index)
                 if (sameReader(rendered->tails.data()[index].range)) return true;
             const auto remaining = call.frames - call.offset - offset;
-            if (!pcm->reserveWarpCue({call.block.sample + offset,tick,cue.tick},remaining)) return false;
+            const LaunchWarpPosition position{call.block.sample + offset,tick,cue.tick};
+            const auto wrap = nativeCueWrap(call.block,target,position,remaining);
+            if (!wrap.bounded) return true;
+            if (!pcm->reserveWarpCue(position,remaining,wrap.head)) return false;
             rendered->warpCuePages = nativePages;
             return true;
         }

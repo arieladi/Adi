@@ -78,8 +78,9 @@ public:
     [[nodiscard]] bool followsTempo() const noexcept { return warp_ || pagedWarp_; }
     [[nodiscard]] bool allWarpPhasesPrimed() const noexcept;
     [[nodiscard]] LaunchWarpSource* warpPageReader() const noexcept { return pagedWarp_.get(); }
-    void prefetchWarp(LaunchWarpPosition) const noexcept;
-    [[nodiscard]] bool reserveWarpCue(LaunchWarpPosition, std::int32_t frames) const noexcept;
+    void prefetchWarp(LaunchWarpPosition, std::optional<LaunchWarpPosition> loopHead = {}) const noexcept;
+    [[nodiscard]] bool reserveWarpCue(LaunchWarpPosition, std::int32_t frames,
+                                      std::optional<LaunchWarpPosition> loopHead = {}) const noexcept;
     // Returns false for a regular PCM backend and lets the fixed render proceed.
     bool renderWarp(const AudioIo&, std::int32_t offset, std::int32_t frames,
                     LaunchWarpPosition, double gain, std::int64_t fadeElapsed,
