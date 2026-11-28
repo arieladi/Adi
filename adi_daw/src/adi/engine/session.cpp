@@ -48,7 +48,7 @@ constexpr std::size_t kMaximumStoredLaunchTracks = 1024;
 std::atomic<std::uint64_t> nextLaunchIncarnation{1};
 
 bool pinnedLegatoTarget(const LaunchSlot& slot, std::int64_t scene) noexcept {
-    return slot.scene == scene && slot.legato && slot.physicalFrames > 0 && !slot.physicalLoopEndFrame;
+    return slot.scene == scene && slot.legato && slot.physicalFrames > 0;
 }
 
 bool hasReadyPhysicalSource(const LaunchAudioClip* clip, const LaunchSlot& slot) noexcept {
@@ -1115,7 +1115,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
                         hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
                         oldAudio->pageReader() == newAudio->pageReader();
-                    if (!samePhysical && (newSlot == after.end() ||
+                    if (!samePhysical && (target.physicalLoopEndFrame || newSlot == after.end() ||
                         !sameResidentWarpWindow(oldAudio,oldSlot,newAudio,*newSlot)))
                         throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");
                     if (oldSlot.clip == target.clip && (!pinnedLegatoTarget(*newSlot,preparedScene_->scene) ||

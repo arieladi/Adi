@@ -1386,12 +1386,15 @@ std::unique_ptr<Store> physicalLegatoProject(const std::filesystem::path& folder
     return store;
 }
 
-void physicalLegatoOneShotTempoScene() {
-    constexpr auto cue = 3086 + 12000; // Second signed attack in the saved target.
+void physicalLegatoTempoScene(bool loop) {
     constexpr auto targetStart = 4800;
-    constexpr auto elapsed = cue - targetStart;
-    constexpr auto oldLaunch = tempoSceneFrame - elapsed;
-    constexpr auto stop = oldLaunch + rate;
+    constexpr auto loopBegin = 3086, loopEnd = 40000, sourceEnd = 51600;
+    static_assert(sourceEnd - loopBegin <= 3 * ClipPlayback::readAheadFrames(rate));
+    const auto cue = loopBegin + (loop ? 2 : 1) * 12000;
+    const auto elapsed = cue - targetStart;
+    const auto oldLaunch = tempoSceneFrame - elapsed;
+    const auto wrap = tempoSceneFrame + loopEnd - cue;
+    const auto stop = loop ? wrap + 2 * (loopEnd - loopBegin) : oldLaunch + rate;
     enum class Scene { Steady, Tempo, ChangedSource, EditedWhilePending, ToggledWhilePending, LongPaged };
     const auto render = [&](bool ram, Scene type) {
         test::TempDirectory folder{"physical_legato_scene", ram ? "ram" : "paged"};
@@ -1400,6 +1403,22 @@ void physicalLegatoOneShotTempoScene() {
         auto& db = store->db();
         db.exec("UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101");
         if (type != Scene::Steady) db.exec("UPDATE scenes SET tempo_bpm=140,tempo_enabled=1 WHERE id=20");
+        if (loop) {
+            const auto ns = [](std::int64_t frame) { return (frame * 1'000'000'000 + rate / 2) / rate; };
+            SQLite::Statement loopRow(db, "UPDATE clips SET loop_enabled=1,loop_start_ticks=?,loop_len_ticks=?,"
+                                          "length_ns=975000000 WHERE id=102");
+            loopRow.bind(1, loopBegin * quarter / (rate / 2));
+            loopRow.bind(2, (loopEnd - loopBegin) * quarter / (rate / 2));
+            loopRow.exec();
+            SQLite::Statement pins(db, "UPDATE clip_playback_details SET loop_begin_ns=?,loop_end_ns=?,source_end_ns=? "
+                                       "WHERE clip_id=102");
+            pins.bind(1, ns(loopBegin));
+            pins.bind(2, ns(loopEnd));
+            pins.bind(3, ns(sourceEnd));
+            pins.exec();
+            db.exec("UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1 "
+                    "WHERE clip_id=102");
+        }
         if (longTarget) db.exec("UPDATE clip_playback_details SET source_end_ns=4100000000 WHERE clip_id=102;"
                                 "UPDATE clips SET length_ns=4000000000 WHERE id=102");
         store.reset();
@@ -1451,19 +1470,45 @@ void physicalLegatoOneShotTempoScene() {
         const auto active = trackState(session);
         require(playback.count == 2 && playback.edges[1].sample == tempoSceneFrame &&
                 playback.edges[1].newClip == 102 && active.clip == 102 && active.run != previous.run &&
-                active.remainingSamples == rate - elapsed - 1 && pcm[tempoSceneFrame] == -.6f,
-                "the scene starts at the inherited physical cue with the exact remaining duration");
+                (loop ? active.completedLoops == 0 : active.remainingSamples == rate - elapsed - 1) &&
+                pcm[tempoSceneFrame] == (loop ? -.7f : -.6f),
+                "the scene starts at the inherited physical cue on the new run");
         require(playback.sceneCount == 1 && playback.scenes[0].scene == 20 &&
                 playback.scenes[0].sample == tempoSceneFrame &&
                 session.beginRender().bpmAtTick(4 * quarter) == (type == Scene::Steady ? 120 : 140),
                 "the scene event and its clock coincide with the inherited-cue launch");
+        if (loop) {
+            playback.through(wrap);
+            require(trackState(session).completedLoops == 0, "the inherited partial lap has no early wrap");
+            playback.through(wrap + 1);
+            const auto wrapped = trackState(session);
+            require(wrapped.run == active.run && wrapped.completedLoops == 1 &&
+                    pcm[static_cast<std::size_t>(wrap)] == -.5f,
+                    "the original run wraps to the prewarmed Loop Begin before its saved Start");
+            playback.through(stop - 1);
+            require(trackState(session).run == active.run && trackState(session).completedLoops == 2,
+                    "the linked Follow waits for the original run's third physical boundary");
+        }
         playback.through(stop + blockFrames);
         require(playback.count == 3 && playback.edges[2].sample == stop && playback.edges[2].newClip == 0 &&
                 std::all_of(pcm.begin() + stop, pcm.end(), [](float sample) { return sample == 0; }) &&
                 session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
-                "the inherited raw slot stops on its physical End without callback allocation or file I/O");
-        std::printf("Physical Legato %s scene: cue %d, launch %lld, stop %lld, attack %.6f\n",
-                    ram ? "RAM" : "paged", cue, static_cast<long long>(tempoSceneFrame),
+                "the inherited raw slot stops on its physical boundary without callback allocation or file I/O");
+        if (loop) {
+            audio::WavReader source(folder.path() / "102.wav");
+            std::vector<float> raw(loopEnd);
+            require(source.read(raw.data(), loopEnd) == raw.size(), "read the source of the admitted loop");
+            auto read = cue;
+            bool identical = true;
+            for (auto sample = tempoSceneFrame; sample < stop; ++sample) {
+                identical &= pcm[static_cast<std::size_t>(sample)] == raw[static_cast<std::size_t>(read++)];
+                if (read == loopEnd) read = loopBegin;
+            }
+            require(identical, "the partial and wrapped laps return the exact source PCM");
+        }
+        std::printf("Physical Legato %s %s scene: cue %d, launch %lld, wrap %lld, stop %lld, attack %.6f\n",
+                    ram ? "RAM" : "paged", loop ? "loop" : "one-shot", cue,
+                    static_cast<long long>(tempoSceneFrame), static_cast<long long>(loop ? wrap : 0),
                     static_cast<long long>(stop), static_cast<double>(pcm[tempoSceneFrame]));
         return pcm;
     };
@@ -2138,7 +2183,8 @@ int main() {
         physicalLegatoOneShotFollowsExternalTempo();
         physicalLegatoOneShotRetainedByTempoScene(true);
         physicalLegatoOneShotRetainedByTempoScene(false);
-        physicalLegatoOneShotTempoScene();
+        physicalLegatoTempoScene(false);
+        physicalLegatoTempoScene(true);
         for (const auto* mode : {"re-pitch","beats","texture"}) nativeWarpToPhysicalLegatoScene(mode);
         physicalLegatoRebasesItsCueOnLaterBank();
         physicalLegatoLoopFollowsExternalTempo();

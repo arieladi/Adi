@@ -1807,7 +1807,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                                 prior->pageReader()->matchesFormat(rate,channels,maxFrames) &&
                                 prior->frames() == static_cast<std::uint64_t>(endFrame) &&
                                 priorSlot != priorSlots.end() && priorSlot->physicalStartFrame == startFrame &&
-                                (!physicalLoop || !warmPhysicalWindow || priorSlot->legato) &&
+                                (!physicalLoop || !warmPhysicalWindow ||
+                                 prior->pageReader()->allPhysicalPhasesPrimed(clip->id)) &&
                                 priorSlot->physicalFrames == prepared.physicalFrames &&
                                 priorSlot->physicalLoopBeginFrame == prepared.physicalLoopBeginFrame &&
                                 priorSlot->physicalLoopEndFrame == prepared.physicalLoopEndFrame &&
