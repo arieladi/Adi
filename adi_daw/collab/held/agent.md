@@ -26,17 +26,21 @@ look follows the agreed sheet only (ADR-0262, `collab/window/design/proposals/br
 | 3 | ADR-0265 d1, d2 (Stop Agent's reach) | (no change) | **Checked, nothing to build.** The director answered the control seat's A and B on 28 November with "A a, B a". What is built already matches: the one write method, `changeset.propose`, is closed by the agent write gate for every credential, ADI's agent and outside clients alike, while reads stay open; Stop cancels only Agent and Foundry jobs, and an ordinary render keeps running and keeps its own Cancel. | Existing tests: `adi_app_control_tests` (an outside client's proposal is refused while stopped; reads still answer), `adi_jobs_tests` `stopAgentJobs` (an ordinary job is not signalled and can still be enqueued). | done |
 
 | 4 | AGT-08 (its tasks half), AGT-02 | 879444b72 | **An agent's real work through the four tools: a MIDI track, a clip, notes, automation, a rename.** Writing the test found two gaps an agent could not get past. (a) `project_read` gave an automation lane but none of its points, and `nextIds` had no id for its stream, which `automation.writePoints` and its siblings address (`id` is the `automation_data` row, beside `lane`): an agent could write points it could never read back, and could not name a new stream. Level 1 now gives each lane its `timeBase`, `domain`, `unit`, `min`, `max` and `data`: its streams `{id, clip, points[{id, time, at, value, curve, tension}], nextPoint}`, at most 4,000 points per read in all (`kMaxPointsPerRead`, `pointsTruncated` beyond; ids past the cap still count for `nextPoint`; a stream that does not decode says `unreadable`); `nextIds.automationData` is new. (b) `automation.writePoints`, `deletePoints`, `movePoints`, `setCurve` and `restoreData` read their optional `clip` with `at()`, so a changeset that followed the op's own schema and left it out failed; an absent `clip` now reads as null, the arrangement's stream (`clipOf` in `automation_edits.cpp`). `docs/CONTROL-MCP.md` §4.2 and §6.1 say so. | `adi_control_mcp_tests` `testAgentCorpus`: the payloads read through `ops_describe` (all six ops `agentMayEmit`; `clip` not required), ids from `nextIds`, one `changeset_propose` of eight ops (track, clip, three notes, a volume lane, two points with `clip` left out, a rename) waits for review with the file untouched; applied as the user does it, one agent undo step named from the request; read back: level 0 the track and `nextIds` past every new row, level 1 the renamed clip at `2|1|0` two bars long, the lane's unit and bounds, its stream and two points (`2|1|0` at -24 dB, `4|1|0` at 0 dB, `nextPoint` 3), level 2 the three notes by name, position and length; one Undo restores the text projection exactly. Check: see the note under this table. | done, check owed |
-| 5 | AGT-08 (devices), AGT-02 | 636103837 | **An agent's work on devices.** `device.move` and `device.insert` take a stored `ord`, and the read gave only the list's order, so an agent could not name a place between two devices. Each device row at level 0 now carries `ord` (beside `chain`). | `adi_control_mcp_tests` `testAgentDeviceWork`: a chain of two plug-ins on Bass; one changeset sets Echo's mix, bypasses and renames Space, moves Echo to ord 2; read back in the new order with the new values (the untouched parameter kept); a second proposal removes Echo, and one Undo brings it back exactly, with mix 0.8, not the plug-in's default. `adi_control_projection_tests` `testLevel0`: each device's `ord` in its own chain. Check: see below. | done, check owed |
+| 5 | AGT-08 (devices), AGT-02 | 636103837, cc2df548a | **An agent's work on devices.** `device.move` and `device.insert` take a stored `ord`, and the read gave only the list's order, so an agent could not name a place between two devices. Each device row at level 0 now carries `ord` (beside `chain`). | `adi_control_mcp_tests` `testAgentDeviceWork`: a chain of two plug-ins on Bass; one changeset sets Echo's mix, bypasses and renames Space, moves Echo to ord 2; read back in the new order with the new values (the untouched parameter kept); a second proposal removes Echo, and one Undo brings it back exactly, with mix 0.8, not the plug-in's default. `adi_control_projection_tests` `testLevel0`: each device's `ord` in its own chain. cc2df548a adds a lane on Space's parameter `2` (a device lane names a plug-in parameter by its canonical decimal id, ADR-0165, as `params` shows it), two points written with `clip: null`, read back in the track's scope. Check: see below. | done, check owed |
+| 6 | AGT-02 | feb363468 | **The read's points, at their edges.** | `adi_control_projection_tests` `testAutomationPoints` on an in-memory model: `nextIds.automationData` 1 with no stream, then one past the highest; a stream of `kMaxPointsPerRead + 1` points cut at the cap with `pointsTruncated`, and `nextPoint` 70001 from the top id past the cap; a point's fields and `at`; three bytes that are not a stream say `unreadable` with no points; a clip's envelope gives its clip, both points, no `at`, `nextPoint` 3. | done, check owed |
 
 **The checks.** The full `core` check of e260668df started at the end of round 1 sat "waiting for a build place"
-for over an hour on 28 November (about twenty sessions share the build PC), and slot 20 refuses a new run
-until it ends. Round 2 left that run in place: the next session runs `slot.sh wait 20`, then
-`slot.sh run 20 origin/held/agent-chain core` on the chain head, which carries items 1 to 5. Until that
-passes, items 4 and 5 are written and read but not built: MSVC has not seen them.
+from 16:00 to past 18:30 on 28 November and never started, and slot 20 refuses a new run until it ends.
+At 18:30 slot 1 still showed "UI CTEST" from 15:31 and slots 5, 10, 19 and 21 all waited too: the build
+PC's one build place looked held (see "For win"). Round 2 left the run in place: the next session runs
+`slot.sh wait 20`, then `slot.sh run 20 origin/held/agent-chain core` on the chain head (cc2df548a or
+later), which carries items 1 to 6. Until that passes, items 4 to 6 are written and read twice but not
+built: MSVC has not seen them. Round 2 wrote no window code for that reason: a JUCE change with no build
+behind it would only pile up fixes.
 
 ## Next, in this order
 
-1. **Prove items 4 and 5 on the build PC** (above), then fix what it finds. Quick turn:
+1. **Prove items 4 to 6 on the build PC** (above), then fix what it finds. Quick turn:
    `slot.sh run 20 origin/held/agent-chain core 'adi_control_(mcp|projection)|adi_automation|adi_changeset'`.
 2. **A tool the agent lacks: adding a device.** A built-in device or a plug-in enters a chain through
    `prepareBuiltinInsert` / `preparePluginInsert` (`src/adi/builtin_catalog.hpp`), which compose
@@ -48,20 +52,29 @@ passes, items 4 and 5 are written and read but not built: MSVC has not seen them
    (see "For win"). The window's `retainedDeviceId` rule (ids held for Undo) must be honoured: ask the
    live document for it on the owner thread. **Blocked on the reservation:** `collab/RESERVATIONS.md` on
    main had no row for it on 28 November (round 2 looked). Take it as soon as win reserves it.
-3. **What the corpus still lacks, found while writing items 4 and 5** (no new names needed):
-   - a test of `pointsTruncated`: write one stream of `kMaxPointsPerRead + 1` points with
-     `Store::putAutomationData` and check the cap, the flag and that `nextPoint` is still past the top id;
-   - a device parameter's lane: `automation.createLane` with `owner_kind` `device` refuses a `param_ref`
-     that is not a canonical decimal parameter id, while `plugin_params.param_id` as `project_read`
-     shows it can be any text (the projection fixture uses `p1`). Find how the window makes a device
-     lane (`ui/automation_mode.*`) and give the agent the same id in the read, then a corpus test;
-   - clip envelopes (a stream with `clip` set): the read lists them, no test writes one through the tools.
+3. **What the corpus still lacks** (no new names needed; round 2 did the point cap and a device
+   parameter's lane, items 5 and 6):
+   - a clip envelope written through the tools (`automation.writePoints` with `clip` set) and read back;
+   - whether `device.remove` takes a lane owned by that device with it, and whether its Undo brings the
+     lane back: the device corpus removes Echo, which owns no lane, on purpose; test the other case.
 4. **The window's half of item 1, from the agreed sheet only** (`proposals/browser-2.png`, states C and
    D; ADR-0262 d1, d2): the card (request, "14 changes · late by 12 to 31 ms" line, Apply, Reject,
    Open the list), the floating window with the same two buttons, the freshness notice with "Ask again",
    the head of the pane ("Agent · asks first · local model"). It shows only when ADR-0261 d2's gate
    holds (`agentReadiness(...).canAnswer()`, or a proposal waits). The window files are shared; keep each
    change small and use the view's seams, never a real menu or window in a test.
+   Where it goes, as read in round 2: the Browser has no AI label yet. `BrowserPanel`'s constructor
+   (`src/juce/ui_browser.cpp`, the `sidebar_` list) ends Categories with Samples; the sheet puts AI after
+   Templates as the last Categories label, shown only while the gate holds. A plan in small commits:
+   (a) a setter on `BrowserPanel` taking the gate and `std::vector<ProposalCard>` (from
+   `AppControl::reviewCards`, called when the queue or the head changes, never from a paint) that adds or
+   removes the AI label; (b) choosing AI widens the column by itself (ADR-0262 d1, state D); (c) the
+   content area: the head line, the conversation, the cards with Apply/Reject/Open the list as
+   `std::function` seams (`onApplyCard`, `onRejectCard`, `onOpenCardList`, `onAskAgain`) that the root
+   wires to `AppControl::review` and `askAgain`; Apply drawn only for a `current` card, the freshness
+   notice otherwise; (d) Open the list: a floating window, behind a seam a test counts (never shown in a
+   test). Tests in `tests/test_ui_shell.cpp` beside the Browser's, run in a Debug build (a frame must not
+   allocate) and with no display.
 
 ## For the director
 
@@ -69,6 +82,9 @@ passes, items 4 and 5 are written and read but not built: MSVC has not seen them
 
 ## For win
 
+- **The build PC, 28 November:** from about 16:00 to past 18:30 no slot got a build place; slot 1 still
+  showed `UI CTEST` from 15:31, and slots 5, 10, 19, 20 and 21 waited. If slot 1's run is hung, it holds
+  everyone's checks.
 - **Reserve (asked in round 1, still open; "Next" item 2 waits for it):** the control method
   `device.insertOps` and its MCP tool `device_insert_ops` (read-only, Propose tier: it returns ops and
   writes nothing). Recommendation: reserve under AGT-05 / this stream.
