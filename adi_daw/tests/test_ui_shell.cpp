@@ -10294,6 +10294,30 @@ void arrangementScrubEdgeScroll(AppCommands &commands, const std::filesystem::pa
     geometry.left = 0;
     geometry.scale = 100;
     geometry.grid.snap = false;
+
+    using Cursor = juce::MouseCursor;
+    using Brace = ScrubArea::BracePart;
+    const auto box = scrub.braceBox({2 * beat, 4 * beat});
+    check(box == juce::Rectangle<float>(200.f, 0.f, 200.f, 8.f), "SC-468: the test brace spans x=200 to 400");
+    const auto hover = [&](juce::Point<float> point, Brace expectedHit, Cursor::StandardCursorType expectedCursor) {
+        scrub.mouseMove(pressAt(scrub, point));
+        return scrub.bracePart(point) == expectedHit && scrub.getMouseCursor() == expectedCursor;
+    };
+    const juce::Point<float> leftEnd(box.getX(), box.getCentreY());
+    scrub.mouseEnter(pressAt(scrub, leftEnd));
+    check(scrub.getMouseCursor() == Cursor::LeftRightResizeCursor, "SC-468: entering over the left end shows a horizontal resize");
+    check(hover(leftEnd.translated(-5.f, 0.f), Brace::Start, Cursor::LeftRightResizeCursor) &&
+              hover({box.getRight() + 5.f, box.getCentreY()}, Brace::End, Cursor::LeftRightResizeCursor),
+          "SC-468: the pointer identifies the exact horizontal edge-drag regions on both ends");
+    check(hover(leftEnd.translated(-6.f, 0.f), Brace::None, Cursor::PointingHandCursor) &&
+              hover(box.getCentre(), Brace::Bar, Cursor::PointingHandCursor) &&
+              hover({box.getX(), box.getBottom()}, Brace::None, Cursor::PointingHandCursor),
+          "SC-468: outside an edge, on the brace bar, and below it keep the scrub hand");
+    check(hover({box.getRight(), box.getCentreY()}, Brace::End, Cursor::LeftRightResizeCursor),
+          "SC-468: moving from the scrub band to the right end restores horizontal resize");
+    scrub.mouseExit(pressAt(scrub, leftEnd.translated(0.f, -5.f)));
+    check(scrub.getMouseCursor() == Cursor::PointingHandCursor, "SC-468: leaving the scrub area clears the resize pointer");
+
     const auto locator = locatorsOf(*root.reader().get());
     check(locator.size() == 1, "one locator to drag");
     if (locator.size() != 1) return;

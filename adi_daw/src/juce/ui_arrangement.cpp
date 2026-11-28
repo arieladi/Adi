@@ -456,6 +456,13 @@ void ScrubArea::paint(juce::Graphics &g) {
                        false);
         }
 }
+void ScrubArea::mouseEnter(const juce::MouseEvent &e) { mouseMove(e); }
+void ScrubArea::mouseMove(const juce::MouseEvent &e) {
+    const auto part = bracePart(e.position);
+    const bool resizes = part == BracePart::Start || part == BracePart::End;
+    setMouseCursor(resizes ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::PointingHandCursor);
+}
+void ScrubArea::mouseExit(const juce::MouseEvent &) { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     view.canvas.clearAutomationSelection();
     // The loop brace pressed is selected, and the material in the loop with it (manual 6.6: "Clicking

@@ -59,6 +59,9 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
   public:
     explicit ScrubArea(ArrangementView &);
     void paint(juce::Graphics &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
     void mouseDown(const juce::MouseEvent &) override;
     // A marker dragged follows the mouse, to the nearest grid line while snapping, never before the
     // first grid line; let go, it moves there, one step (manual 6.5).
