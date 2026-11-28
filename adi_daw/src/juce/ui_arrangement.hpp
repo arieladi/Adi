@@ -614,8 +614,8 @@ class ArrangementCanvas final : public juce::Component,
                        float bottom) const;
     // Draw the snapshot's note bars over the body, spreading the keys used by
     // the clip over its height (Live 12 manual 6.1).
-    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
-                    float bottom) const;
+    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, std::int64_t clipEnd,
+                    float left, float right, float top, float bottom) const;
     void paintLiveMidiTake(juce::Graphics &, const LiveMidiTake &, const engine::TrackNode &,
                            std::size_t trackNumber, int y, int height) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;

@@ -35,6 +35,10 @@
 #include <string_view>
 namespace adi::ui {
 namespace {
+void paintLoopTurn(juce::Graphics &g, int x, float top, float bottom, bool muted) {
+    g.setColour(look::ink.withAlpha(muted ? .22f : .47f));
+    g.drawVerticalLine(x, top, bottom);
+}
 const juce::MouseCursor &arrangementZoomCursor() {
     static const juce::MouseCursor cursor = [] {
         constexpr int size = 18, scale = 2;
@@ -3423,6 +3427,20 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left), static_cast<float>(clipHeight - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(clipY + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            const auto tintSelectedBody = [&] {
+                if (!selectedRange || geo.selection.start == geo.selection.end)
+                    return;
+                const float s0 = std::max(left, static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end))));
+                const float s1 = std::min(right, static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end))));
+                if (s1 <= s0)
+                    return;
+                g.setColour(look::selection.withAlpha(0.85f));
+                g.fillRect(s0, static_cast<float>(clipY + 1 + kClipBarHeight), s1 - s0,
+                           static_cast<float>(std::max(0, clipHeight - 4 - kClipBarHeight)));
+            };
+            // Keep the loop turns and repeated content readable through the time selection.
+            if (c->loopEnabled)
+                tintSelectedBody();
             const bool offline = view.root.clipMediaOffline(*c);
             const bool unavailable = offline ||
                 (view.root.clipPlaybackUnavailable && view.root.clipPlaybackUnavailable(c->id));
@@ -3430,7 +3448,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 paintWaveform(g, *c, contentPos, left, right, static_cast<float>(clipY + 1 + kClipBarHeight),
                               static_cast<float>(clipY + clipHeight - 3));
             if (!c->audio)
-                paintNotes(g, *c, contentPos, left, right, static_cast<float>(clipY + 1 + kClipBarHeight),
+                paintNotes(g, *c, contentPos, pos + length, left, right, static_cast<float>(clipY + 1 + kClipBarHeight),
                            static_cast<float>(clipY + clipHeight - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
@@ -3452,17 +3470,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 const float markX = std::max(left, right - markWidth - 1.f);
                 paintPlaybackProblemMark(g, {markX, static_cast<float>(clipY + 2), markWidth, kPlaybackProblemMarkSize});
             }
-            // Live tints the selected part of a clip's body, under its title strip (the manual's Cut
-            // Time and Consolidate figures).
-            if (selectedRange && geo.selection.start != geo.selection.end) {
-                const float s0 = std::max(left, static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end))));
-                const float s1 = std::min(right, static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end))));
-                if (s1 > s0) {
-                    g.setColour(look::selection.withAlpha(0.85f));
-                    g.fillRect(s0, static_cast<float>(clipY + 1 + kClipBarHeight), s1 - s0,
-                               static_cast<float>(std::max(0, clipHeight - 4 - kClipBarHeight)));
-                }
-            }
+            if (!c->loopEnabled)
+                tintSelectedBody();
             // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
             // not while it moves.
             if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
@@ -5718,7 +5727,6 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     }
     const auto channels = finest ? finest->channels : 0;
     const float band = channels > 0 ? (bottom - top) / static_cast<float>(channels) : 0.f;
-    const auto repeatColour = waveColour.withMultipliedAlpha(.55f);
     for (int x = from; x < to; ++x) {
         const double rightEdge = std::min(static_cast<double>(x + 1), static_cast<double>(right));
         const auto column = source.framesAcross(geo.tick(x), geo.tick(rightEdge));
@@ -5741,8 +5749,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
         }
         // At overview scales several short repeats can share one pixel and one boundary mark.
         if (column.repeats && x + 1 < to) {
-            g.setColour(repeatColour);
-            g.drawVerticalLine(x, top, bottom);
+            paintLoopTurn(g, x + 1, top, bottom, clip.muted);
             g.setColour(waveColour);
         }
     }
@@ -5793,48 +5800,69 @@ void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake 
     g.setColour(look::record.darker(0.5f));
     g.drawRect(left, top, width, static_cast<float>(height - 4), 1.f);
 }
-void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
-                                   float right, float top, float bottom) const {
-    if (bottom - top < 4.f || right <= left || !clip.midiPreview || clip.midiPreview->bars.empty())
+void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos,
+                                   std::int64_t clipEnd, float left, float right, float top, float bottom) const {
+    if (bottom <= top || right <= left || !clip.midiPreview)
         return;
     const auto &held = *clip.midiPreview;
     const auto &geo = view.geometry;
+    const auto visibleStart = std::max(pos, geo.tick(left));
+    const auto visibleEnd = std::min(clipEnd, geo.tick(right) + 1);
+    const auto period = held.loopLength;
+    const auto offset = held.startMarker;
+    const auto loopStart = held.loopStart;
+    const auto loopEnd = loopStart + period;
+
+    // The same source phase as MIDI playback: a lead-in plays once, or we
+    // enter partway through the loop if the start marker is inside it.
+    const auto firstRepeat = period <= 0 ? 0 : offset < loopStart ? loopEnd - offset : -((offset - loopStart) % period);
+    // Below pixel resolution, one occurrence per column suffices. Begin at
+    // the visible repeat so a long clip can be scrolled without replaying its prefix.
+    const auto stride = period > 0
+                            ? std::max<std::int64_t>(1, (geo.tick(left + 1.) - geo.tick(left)) / period)
+                            : 1;
+    const auto firstVisiblePass = [&](std::int64_t start) {
+        return visibleStart > start && period > 0 ? (visibleStart - start) / period : 0;
+    };
+    if (period > 0) {
+        const auto firstTurn = pos + (firstRepeat > 0 ? firstRepeat : firstRepeat + period);
+        for (auto turn = firstTurn + firstVisiblePass(firstTurn) * period; turn < visibleEnd; turn += period * stride) {
+            const int x = juce::roundToInt(geo.x(turn));
+            if (static_cast<float>(x) > left && static_cast<float>(x) < right)
+                paintLoopTurn(g, x, top, bottom, clip.muted);
+        }
+    }
+    if (bottom - top < 4.f || held.bars.empty())
+        return;
+
     // The keys in use over the body's height, never fewer than an octave so one note is not a slab.
     const int keys = std::max(12, held.high - held.low + 1);
     const int lowest = held.low - (keys - (held.high - held.low + 1)) / 2;
     const float inner = bottom - top - 2.f;
     const float pitch = inner / static_cast<float>(keys);
     const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
-    const std::int64_t clipEnd = pos + clip.lengthTicks;
-    auto bar = [&](std::int64_t source, const engine::MidiClipPreview::Bar &n) {
-        const auto start = pos + (source - held.startMarker);
-        const auto end = std::min(start + n.duration, clipEnd);
-        if (end <= pos || start >= clipEnd)
+    auto bar = [&](std::int64_t start, std::int64_t end, const engine::MidiClipPreview::Bar &n) {
+        if (end <= std::max(start, visibleStart) || start >= visibleEnd)
             return;
         const float x0 = std::max(left, static_cast<float>(geo.x(std::max(start, pos)))),
-                    x1 = std::min(right, static_cast<float>(geo.x(end)));
-        if (x1 <= left || x0 >= right)
+                    x1 = std::min(right, static_cast<float>(geo.x(std::min(end, clipEnd))));
+        if (x1 <= x0)
             return;
         const float y = top + 1.f + inner - (static_cast<float>(n.key - lowest) + 1.f) * pitch + (pitch - thick) * .5f;
         g.setColour(look::ink.withAlpha(clip.muted || !n.active ? 0.35f : 0.9f));
-        g.fillRect(x0, y, std::max(1.f, x1 - x0), thick);
+        g.fillRect(x0, y, std::min(std::max(1.f, x1 - x0), right - x0), thick);
     };
     for (const auto &n : held.bars) {
-        if (held.loopLength > 0) {
-            // A looped clip plays to the loop's end once, then the loop again and again: what lies
-            // after the loop is never heard, and what lies in it is drawn at each pass.
-            if (n.start >= held.loopStart + held.loopLength)
-                continue;
-            bar(n.start, n);
-            if (n.start >= held.loopStart)
-                for (std::int64_t pass = 1; pass < 4096; ++pass) {
-                    const auto source = n.start + pass * held.loopLength;
-                    if (pos + (source - held.startMarker) >= clipEnd)
-                        break;
-                    bar(source, n);
-                }
-        } else {
-            bar(n.start, n);
+        const auto noteEnd = n.start + n.duration;
+        if (period <= 0 || offset < loopStart)
+            bar(pos + n.start - offset, pos + (period > 0 ? std::min(noteEnd, loopEnd) : noteEnd) - offset, n);
+        if (period > 0 && n.start < loopEnd && noteEnd > loopStart) {
+            const auto start = pos + firstRepeat + std::max(n.start, loopStart) - loopStart;
+            const auto duration = std::min(noteEnd, loopEnd) - std::max(n.start, loopStart);
+            // Keep one prior pass in case its tail crosses the viewport's left edge.
+            const auto first = start + std::max<std::int64_t>(0, firstVisiblePass(start) - 1) * period;
+            for (auto at = first; at < visibleEnd; at += period * stride)
+                bar(at, at + duration, n);
         }
     }
 }

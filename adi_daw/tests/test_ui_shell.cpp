@@ -18162,6 +18162,142 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     root.afterEdit = nullptr;
     document->release();
 }
+void arrangementClipRepeats(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr auto beat = textproj::kPPQ;
+    constexpr int rowHeight = 56;
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arrangement-repeats.adi", true, {}, error);
+    check(document != nullptr, "SC-448: open a project for the repeat preview");
+    if (!document)
+        return;
+
+    const auto wav = dir / "Repeat.wav";
+    {
+        constexpr std::uint32_t frames = 48000;
+        std::vector<float> samples(frames);
+        std::fill(samples.begin() + 6000, samples.begin() + 18000, .6f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), frames);
+    }
+    AudioImport source;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, source)) {
+        check(false, "SC-448: prepare the two-beat audio sample");
+        return;
+    }
+    auto dropped = dropAudio(*document->view().current(), 4, beat, "Repeat", source);
+    if (!dropped.refusal.empty() || !document->ops().submit(std::move(dropped.ops)).ok || !document->synchronise()) {
+        check(false, "SC-448: put the audio clip on the Arrangement");
+        return;
+    }
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "arrangement-repeats");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &document->waveforms();
+    root.setSize(1280, 820);
+    if (!root.insertMidiClips({2}, beat, 3 * beat)) {
+        check(false, "SC-448: put a new two-beat MIDI loop on the Arrangement");
+        return;
+    }
+    root.frame();
+    const auto *midiTrack = root.reader().findTrack(2);
+    const auto *audioTrack = root.reader().findTrack(4);
+    if (!midiTrack || midiTrack->clips.empty() || !audioTrack || audioTrack->clips.empty()) {
+        check(false, "SC-448: both fixtures reach the view snapshot");
+        return;
+    }
+    const auto midi = midiTrack->clips.front()->id, audio = audioTrack->clips.front()->id;
+    check(root.submitEdit("note.insert",
+                          {{"clip", midi}, {"note", 1}, {"start", beat / 4}, {"dur", beat / 2}, {"key", 60}, {"vel", 100}},
+                          "Add Note") &&
+              root.submitEdit("clip.setLoop", {{"id", audio}, {"on", true}, {"start", 0}, {"length", 2 * beat}}, "Set Loop") &&
+              root.submitEdit("clip.resize", {{"id", audio}, {"pos", beat}, {"length", 6 * beat}}, "Resize Clip"),
+          "SC-448: add the MIDI note and extend the looped audio");
+    root.frame();
+
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    geo.resizeTrack(2, rowHeight);
+    geo.resizeTrack(4, rowHeight);
+    root.mark(DirtySet::Layout);
+    root.frame();
+    geo.scale = 64.;
+    geo.left = 0.;
+    const auto pixel = [&](std::int64_t tick) { return juce::roundToInt(geo.x(tick)); };
+    const auto paint = [&] {
+        juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    const auto marked = [&](const juce::Image &image, int track, std::int64_t tick) {
+        const auto x = pixel(tick), top = laneTop(root, track) + 1 + ArrangementCanvas::kClipBarHeight;
+        const auto darker = [&](int y) {
+            const auto centre = image.getPixelAt(x, y).getBrightness();
+            // The left column may have a different selection tint at the original resize edge.
+            return centre + .1f < image.getPixelAt(x + 1, y).getBrightness();
+        };
+        return darker(top + 2) && darker(top + 12);
+    };
+    const auto content = [&](const juce::Image &image, int track, std::int64_t tick) {
+        const auto x = pixel(tick), lane = laneTop(root, track);
+        const auto top = lane + 1 + ArrangementCanvas::kClipBarHeight;
+        const auto bottom = lane + rowHeight - 4;
+        const auto plain = image.getPixelAt(x, top + 2).getBrightness();
+        // Even silence has the waveform's centre line. Look above it for the audio pulse.
+        const auto last = track == 4 ? (top + bottom) / 2 - 2 : bottom;
+        for (int y = top + 5; y < last; ++y)
+            if (image.getPixelAt(x, y).getBrightness() + .1f < plain)
+                return true;
+        return false;
+    };
+
+    paint(); // Ask for the peaks without a peer.
+    auto &waves = document->waveforms();
+    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto main = paint();
+    check(marked(main, 4, 3 * beat) && marked(main, 4, 5 * beat) &&
+              !marked(main, 4, 4 * beat) && !marked(main, 4, 7 * beat),
+          "SC-448: audio turn rules sit at the two internal wrap positions");
+    check(content(main, 4, beat + beat / 2) && content(main, 4, 3 * beat + beat / 2) &&
+              content(main, 4, 5 * beat + beat / 2) && !content(main, 4, 6 * beat),
+          "SC-448: the audio waveform repeats, with the source's silence");
+
+    const auto edge = juce::Point<float>{static_cast<float>(pixel(3 * beat) - 1), static_cast<float>(laneTop(root, 2) + 5)};
+    const auto longer = edge.withX(static_cast<float>(pixel(7 * beat)));
+    canvas.mouseDown(pressAt(canvas, edge));
+    canvas.mouseDrag(dragAt(canvas, edge, longer));
+    const auto preview = paint();
+    check(marked(preview, 2, 3 * beat) && marked(preview, 2, 5 * beat) && !marked(preview, 2, 4 * beat),
+          "SC-448: the MIDI resize preview shows both turn rules");
+    check(content(preview, 2, beat + beat / 2) && content(preview, 2, 3 * beat + beat / 2) &&
+              content(preview, 2, 5 * beat + beat / 2) && !content(preview, 2, 6 * beat),
+          "SC-448: the MIDI notes extend in the preview and keep their rests");
+    canvas.mouseUp(dragAt(canvas, edge, longer));
+    root.frame();
+    const auto committed = paint();
+    check(marked(committed, 2, 5 * beat) && content(committed, 2, 5 * beat + beat / 2),
+          "SC-448: the committed clip retains the last mark and repeated note");
+
+    check(root.submitEdit("clip.setStartMarker", {{"id", midi}, {"ticks", beat / 2}}, "Set Clip Start"),
+          "SC-448: start the MIDI clip inside its source loop");
+    root.frame();
+    const auto phased = paint();
+    check(marked(phased, 2, 2 * beat + beat / 2) && marked(phased, 2, 4 * beat + beat / 2) &&
+              !marked(phased, 2, 3 * beat) && content(phased, 2, 2 * beat + beat * 7 / 8),
+          "SC-448: the turn and following note move with the MIDI source phase");
+
+    check(root.submitEdit("clip.resize", {{"id", midi}, {"pos", beat}, {"length", 10'010 * beat}}, "Resize Clip"),
+          "SC-448: extend the fixture past 4,096 repeats");
+    root.frame();
+    geo.left = 10'000.;
+    const auto scrolled = paint();
+    check(marked(scrolled, 2, 10'000 * beat + beat / 2) && content(scrolled, 2, 10'000 * beat + beat * 7 / 8),
+          "SC-448: notes and turns remain visible far into a scrolled loop");
+}
 void reverseAudioSelection(AppCommands &commands, const std::filesystem::path &dir) {
     constexpr auto quarter = textproj::kPPQ;
     StoreError error{};
@@ -33027,6 +33163,7 @@ int main(int argc, char **argv) {
     trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("arrangementClipRepeats", [&] { arrangementClipRepeats(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
     trace("clipWarpSwitchWithOnsets", [&] { clipWarpSwitchWithOnsets(commands, temp.path()); });
     trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, settings, temp.path()); });
