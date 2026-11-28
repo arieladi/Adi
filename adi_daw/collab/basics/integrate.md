@@ -1,3 +1,5 @@
+Ready for review: basics/integrate-3 at 83e1f7681a2ccfd938141747a1c3ad71b69422ae
+
 # Basics integration
 
 ## Integrate-3
@@ -30,6 +32,20 @@
 | 22. Portability and Browser/Mixer controls | `482e2f078`, `d8c8467cf` | Use the standard filesystem hash without relying on the newer path specialization, keep network mount IDs available on older Linux headers, use explicit UTF-8 at API boundaries, and include the standard headers directly. Three header diagnostics reproduced under the old-header probe and cleared. The shell reproduced three failures for MIDI activation and Resampling with no physical provider. The normal app supplies a provider, while the chooser also supports hosts without one. |
 
 Review fixes through `98914809944a02dc6d9c5d870ebe521a10696b13`. The four Browser and window regressions reproduced four failures in 51 peerless checks on main. The combined check passed all 52 after the fixes. The WIP branch supplied candidate changes that were reviewed individually. The integration contains independently checked fixes.
+
+### First published bundle
+
+| Owner tip | Integration merge | Composition |
+|---|---|---|
+| SC-155 `0864420e8c8fdedf6304b0ab6f8333def3432cd9` | `6029db35a24537eaff80000d1bb8d9e1a2ae51ca` | Resolved five history, shell and fixture conflicts. Main's retained opening state and snapshot reload stay available across compaction. The separate Project created row, Undo and Redo from the owner also remain. Four focused history fixtures passed 80 checks. |
+| SC-158 `01d9c08854bc2b69fe0c210d3f2e959e3df79ed1` | `12bd518f6678481e03ed7ef894df0f56915357bc` | The clean merge brings the exact SC-184 `3789b35ac4c9a4d2ec9a4c1456577159856fb29e` and SC-344 `8146a636190f52aea35ff0a514068fed97c2a88a` tips as ancestors. Kept one-Undo grouped drops, defaults and replacement while plain drops reuse identical pending audio. Retained selected Split targets and cancellation of stale breakpoint drafts. |
+| SC-180 `c7f792c13fb91b451a704425581c13e7f91b0ad3` | `8a28e5f53f1f9db26c9c78ae0925f97c27b56d01` | The clean merge brings grouped keyboard movement and its SC-178 Consolidate dependency. Preserved the earlier editor and envelope paths, existing command IDs, and the owner's exact keymap additions. |
+
+Window comparisons use software renders with Graphics closed before reading. The checked-in goldens retain their text masks. Same-run image checks mask glyphs too, and the Info View fixture separately verifies that the description's glyphs stay inside its bounds. Compared path text uses native separators. These checks are in `77544c7f9`, `989148099`, `a2cee2a3d` and `8bbbfc074`.
+
+Wincheck's serialization and shadow fixes and the libc++ sample-rate casts are already in the main base or have equivalent fixes there. The MIDI checker row adds no correction. `7d79bb339` adapts the applicable Wincheck AAC fixture for MSVC Debug iterator proxies and retains the zero-allocation check with other CRTs. [Windows check](https://github.com/arieladi/Adi/blob/1a46eb5eecc629f7e4f6cf53a9a2aa7357008624/adi_daw/collab/basics/wincheck.md) [libc++ check](https://github.com/arieladi/Adi/blob/63f07083bc68c93e73e39f80c6ecb7811cb3f835/adi_daw/collab/basics/libcxx.md)
+
+Review head `83e1f7681a2ccfd938141747a1c3ad71b69422ae` passed the full Linux GCC 14 Debug build with JUCE, Pd and warnings as errors, including `adi_app` and `adi_play`. All 295 non-performance suites, 18 display-free window suites, 3 acceptance suites, six validators and the landing-check tests passed.
 
 ## Tenth stack, first review bundle
 
