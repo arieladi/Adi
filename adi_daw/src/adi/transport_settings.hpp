@@ -24,9 +24,9 @@ struct TransportSettings {
     std::int32_t countInBars = 0;               // none, 1, 2 or 4; applies only to a record start
     std::optional<std::int64_t> songStartTicks; // absent: insert marker/time selection
     bool punchIn=false,punchOut=false;         // the loop brace's start and end, independent of Loop
+    MetronomeOptions metronomeOptions;
     std::optional<LaunchQuantization> launchQuantization = std::nullopt;
     bool followActionsEnabled = true;
-    MetronomeOptions metronomeOptions;
     friend bool operator==(const TransportSettings&,const TransportSettings&)=default;
 };
 TransportSettings readTransportSettings(const Store&);

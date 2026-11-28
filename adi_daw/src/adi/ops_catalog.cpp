@@ -17,6 +17,7 @@
 #include "adi/split_pan_ops.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/engine/launch_ops.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/session_ops.hpp"
 #include "adi/session_performance_capture.hpp"
 #include "adi/clip_image.hpp"
@@ -742,14 +743,13 @@ bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- tempo and signature ------------------------------------------------------
 
-// A musical start follows the tempo map, while Warp-off material retains its
-// authored duration. Reproject its visible length rather than expanding it
-// to the source window: that window can contain audio beyond a split or trim.
+// A musical Arrangement start follows the tempo map, while Warp-off material
+// retains its authored duration. The source window can extend beyond a trim.
 Payload captureUnwarpedTempoLengths(SQLite::Database& db, const Payload& p, bool insert) {
     SQLite::Statement clips(db, "SELECT c.id,c.pos_ticks,c.length_ticks FROM clips c "
         "JOIN audio_clips a ON a.clip_id=c.id "
         "WHERE c.time_base=0 AND c.loop_enabled=0 AND a.warp_enabled=0 "
-        "AND c.pos_ticks>=0 AND c.length_ticks>0 ORDER BY c.id");
+        "AND c.pos_ticks>=0 AND c.length_ticks>0" + engine::excludeSlotClips(db, "c.id") + " ORDER BY c.id");
     Payload lengths = Payload::array();
     if (!clips.executeStep()) return lengths;
 

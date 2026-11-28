@@ -6,6 +6,7 @@
 #include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/timeline_clip_sql.hpp"

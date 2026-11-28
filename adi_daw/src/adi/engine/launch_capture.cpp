@@ -7,10 +7,34 @@
 #include <cmath>
 #include <map>
 #include <tuple>
+#include <utility>
 
 namespace adi::engine {
+namespace {
+constexpr auto noPcmRange = std::numeric_limits<std::size_t>::max();
+
+bool validPcmRange(const LaunchCapturedPcmRange& range) noexcept {
+    return range.track > 0 && range.clip > 0 && range.run != 0 &&
+        range.beginSample >= 0 && range.endSample > range.beginSample && range.firstSourceFrame >= 0 &&
+        std::isfinite(range.playbackGain) && range.playbackGain >= 0 &&
+        range.firstSourceFrame <= std::numeric_limits<std::int64_t>::max() - (range.endSample - range.beginSample);
+}
+} // namespace
+
 LaunchCaptureBuffer::LaunchCaptureBuffer(std::span<LaunchTransition> storage) noexcept
     : storage_(storage) {}
+
+LaunchCaptureBuffer::LaunchCaptureBuffer(std::span<LaunchTransition> storage,
+                                         std::span<LaunchCapturedPcmRange> pcmStorage,
+                                         std::span<LaunchPcmTrackCursor> pcmTracks) noexcept
+    : storage_(storage), pcmStorage_(pcmStorage), pcmTracks_(pcmTracks), capturesPcm_(true) {
+    auto last = std::int64_t{0};
+    for (auto& track : pcmTracks_) {
+        if (track.track <= last) pcmInvalid_ = true;
+        last = track.track;
+        track.lastRange = noPcmRange;
+    }
+}
 
 bool LaunchCaptureBuffer::append(const LaunchTransition& transition) noexcept {
     if (size_ == storage_.size()) {
@@ -21,15 +45,64 @@ bool LaunchCaptureBuffer::append(const LaunchTransition& transition) noexcept {
     return true;
 }
 
+void LaunchCaptureBuffer::notePcmTimeline(std::int64_t firstSample, std::int64_t endSample) noexcept {
+    if (!capturesPcm_ || pcmInvalid_) return;
+    if (firstSample < 0 || endSample <= firstSample || (pcmTimelineEnd_ >= 0 && firstSample != pcmTimelineEnd_)) {
+        markPcmDiscontinuity();
+        return;
+    }
+    pcmTimelineEnd_ = endSample;
+}
+
+bool LaunchCaptureBuffer::appendPcmRange(const LaunchCapturedPcmRange& range) noexcept {
+    if (!capturesPcm_) return true;
+    if (pcmInvalid_ || pcmOverflowed_) return false;
+    const auto cursor = std::ranges::lower_bound(pcmTracks_,range.track,{},&LaunchPcmTrackCursor::track);
+    if (!validPcmRange(range) || cursor == pcmTracks_.end() || cursor->track != range.track) {
+        pcmInvalid_ = true;
+        return false;
+    }
+    if (cursor->lastRange != noPcmRange) {
+        auto& previous = pcmStorage_[cursor->lastRange];
+        if (range.beginSample < previous.endSample) {
+            pcmInvalid_ = true;
+            return false;
+        }
+        const auto next = previous.firstSourceFrame + (previous.endSample - previous.beginSample);
+        if (previous.clip == range.clip && previous.run == range.run &&
+            previous.endSample == range.beginSample && next == range.firstSourceFrame &&
+            previous.playbackGain == range.playbackGain) {
+            previous.endSample = range.endSample;
+            previous.liveRegionEdit |= range.liveRegionEdit;
+            return true;
+        }
+    }
+    if (pcmSize_ == pcmStorage_.size()) {
+        pcmOverflowed_ = true;
+        return false;
+    }
+    cursor->lastRange = pcmSize_;
+    pcmStorage_[pcmSize_++] = range;
+    return true;
+}
+
 std::span<const LaunchTransition> LaunchCaptureBuffer::transitions() const noexcept {
     return std::span<const LaunchTransition>(storage_.data(), size_);
+}
+
+std::span<const LaunchCapturedPcmRange> LaunchCaptureBuffer::pcmRanges() const noexcept {
+    return pcmStorage_.first(pcmSize_);
 }
 
 LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCaptureTime begin,
                                     LaunchCaptureTime end,
                                     std::span<const LaunchCapturedStart> initial) {
+    if (trace.pcmOverflowed())
+        return {LaunchCaptureError::PcmRangeOverflow, {}};
     if (trace.overflowed())
         return {LaunchCaptureError::Overflow, {}};
+    if (trace.pcmInvalid())
+        return {LaunchCaptureError::InvalidPcmRange, {}};
     if (trace.sourceEdited())
         return {LaunchCaptureError::SourceEdited, {}};
     if (begin.sample < 0 || begin.tick < 0 || end.sample <= begin.sample || end.tick < begin.tick)
@@ -55,10 +128,11 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
     }
 
     LaunchCapturePlan plan;
+    plan.pcmTraceEnabled = trace.capturesPcm();
     const auto close = [&](std::int64_t track, const TrackRun& run, LaunchCaptureTime at) {
         if (!run.arrangement && at.sample > run.begin.sample)
             plan.spans.push_back({track, run.clip, run.sourceTick, run.begin, at,
-                run.velocity, run.fade, run.fadeElapsed});
+                run.velocity, run.fade, run.fadeElapsed, plan.pcmTraceEnabled ? run.serial : 0});
     };
     for (const auto& transition : trace.transitions()) {
         const LaunchCaptureTime at{transition.sample, transition.tick};
@@ -88,6 +162,31 @@ LaunchCapturePlan planLaunchCapture(const LaunchCaptureBuffer& trace, LaunchCapt
     std::sort(plan.spans.begin(), plan.spans.end(), [](const auto& left, const auto& right) {
         return std::tie(left.begin.sample, left.track) < std::tie(right.begin.sample, right.track);
     });
+    if (!trace.pcmRanges().empty()) {
+        // Ranges are track-interleaved, so find the most recent span on
+        // their track at the first sample and verify it contains the range.
+        std::vector<const LaunchCapturedSpan*> byTrack;
+        byTrack.reserve(plan.spans.size());
+        for (const auto& span : plan.spans)
+            byTrack.push_back(&span);
+        std::ranges::sort(byTrack,{},[](const auto* span) { return std::pair{span->track,span->begin.sample}; });
+        for (const auto& range : trace.pcmRanges()) {
+            const auto key = std::pair{range.track,range.beginSample};
+            const auto upper = std::ranges::upper_bound(byTrack,key,{},[](const auto* span) {
+                return std::pair{span->track,span->begin.sample};
+            });
+            if (!validPcmRange(range) || upper == byTrack.begin())
+                return {LaunchCaptureError::InvalidPcmRange, {}};
+            const auto& span = **(upper - 1);
+            if (span.track != range.track || span.clip != range.clip || span.run != range.run ||
+                range.endSample > span.end.sample)
+                return {LaunchCaptureError::InvalidPcmRange, {}};
+        }
+        plan.pcmRanges.assign(trace.pcmRanges().begin(),trace.pcmRanges().end());
+        std::sort(plan.pcmRanges.begin(),plan.pcmRanges.end(),[](const auto& left, const auto& right) {
+            return std::tie(left.beginSample,left.track) < std::tie(right.beginSample,right.track);
+        });
+    }
     return plan;
 }
 } // namespace adi::engine

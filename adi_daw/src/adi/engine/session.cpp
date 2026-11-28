@@ -1690,13 +1690,14 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
         else c->appendExportBlockingProblems(problems);
     }
     append(sessionProblems_);
-    if (includeUnavailable) append(launchProblems_);
-    if (includeUnavailable)
+    if (includeUnavailable) {
+        append(launchProblems_);
         for (const auto& row : model_.devices) {
             const auto* entry = entryFor(row.id);
             if (entry && entry->placeholder && !entry->retired)
                 problems.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + entry->error);
         }
+    }
     append(strips_.problems());
     append(summing_.problems());
     // The program's own findings only when there is automation to find them in:

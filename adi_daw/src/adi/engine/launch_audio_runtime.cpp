@@ -332,6 +332,11 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 driver.loopEnd_ == transport.loopEnd()));
         if (block.frames <= 0)
             break;
+        if (capture && capture->capturesPcm()) {
+            if (block.sample <= std::numeric_limits<std::int64_t>::max() - block.frames)
+                capture->notePcmTimeline(block.sample, block.sample + block.frames);
+            else capture->markPcmDiscontinuity();
+        }
         context.media = mediaAt(block.sample).get();
         context.view = context.media->view();
         context.view.tracks = tracks_;
@@ -395,9 +400,6 @@ void LaunchAudioRuntime::fadeOut(LaunchAudioDriver& driver, const LaunchAudioPro
 void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProject& media, const LaunchSection& section,
                              const LaunchBlock& block, std::int32_t base, LaunchCaptureBuffer* capture) noexcept {
     const auto gain = gains.range(block, section);
-    if (capture && section.clip != 0 && (section.regionIsLiveEdit ||
-        (gain.beforeFrames > 0 && gain.before != 1.0f) ||
-        (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
     if (section.arrangement || section.frames <= 0 || tracks_.empty())
         return;
     const auto* ids = tracks_.data();
@@ -413,18 +415,32 @@ void LaunchAudioRuntime::add(LaunchClipGainEdits& gains, const LaunchAudioProjec
     const auto source = anchor <= std::numeric_limits<std::int64_t>::max() - section.framesSinceSourceAnchor
         ? anchor + section.framesSinceSourceAnchor : std::numeric_limits<std::int64_t>::max();
     const auto fade = section.fade ? section.framesSinceStart : -1;
-    LaunchWarpPosition warp{block.sample+section.offset,section.clockAnchorTick,section.clockAnchorSourceTick};
-    if (gain.beforeFrames > 0)
-        ranges.items.data()[ranges.size++] = {base + section.offset, gain.beforeFrames, pcm, source,
-            section.velocity * gain.before, fade, warp};
+    const bool tapePcm = capture && capture->capturesPcm() && media.stored() && pcm &&
+        !pcm->usesPages() && !pcm->followsTempo() && fade < 0 && section.velocity == 1.0f && source >= 0 &&
+        static_cast<std::uint64_t>(source) <= pcm->frames() &&
+        static_cast<std::uint64_t>(section.frames) <= pcm->frames() - static_cast<std::uint64_t>(source);
+    if (capture && !tapePcm && section.clip != 0 && (section.regionIsLiveEdit ||
+        (gain.beforeFrames > 0 && gain.before != 1.0f) ||
+        (gain.beforeFrames < section.frames && gain.after != 1.0f))) capture->markSourceEdit();
+
+    const auto addRange = [&](std::int32_t skip, std::int32_t frames, std::int64_t firstSource,
+                              float multiplier, std::int64_t fadeElapsed) noexcept {
+        const auto first = block.sample + section.offset + skip;
+        const LaunchWarpPosition warp{first,section.clockAnchorTick,section.clockAnchorSourceTick};
+        ranges.items.data()[ranges.size++] = {base + section.offset + skip, frames, pcm, firstSource,
+            section.velocity * multiplier, fadeElapsed, warp};
+        if (tapePcm) {
+            (void)capture->appendPcmRange({section.track, section.clip, section.run, first, first + frames, firstSource,
+                section.regionIsLiveEdit, multiplier});
+        }
+    };
+    if (gain.beforeFrames > 0) addRange(0, gain.beforeFrames, source, gain.before, fade);
     if (gain.beforeFrames < section.frames && ranges.size < ranges.items.size()) {
         const auto advanced = source + std::min<std::int64_t>(gain.beforeFrames,
             std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, source));
         const auto elapsed = fade < 0 ? -1 : fade + std::min<std::int64_t>(gain.beforeFrames,
             std::numeric_limits<std::int64_t>::max() - fade);
-        warp.frame += gain.beforeFrames;
-        ranges.items.data()[ranges.size++] = {base + section.offset + gain.beforeFrames,
-            section.frames - gain.beforeFrames, pcm, advanced, section.velocity * gain.after, elapsed, warp};
+        addRange(gain.beforeFrames, section.frames - gain.beforeFrames, advanced, gain.after, elapsed);
     }
 }
 

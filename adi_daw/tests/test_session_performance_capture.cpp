@@ -373,7 +373,7 @@ struct NoteProbe final : device::DeviceInstance {
     }
 };
 
-std::vector<HeardNote> renderMidi(Store& store, LaunchCaptureBuffer* tape) {
+std::vector<HeardNote> renderMidi(Store& store, LaunchCaptureBuffer* tape, std::int64_t launch = 55) {
     Session session;
     session.graph().setFadeFrames(0);
     NoteProbe* probe = nullptr;
@@ -389,9 +389,9 @@ std::vector<HeardNote> renderMidi(Store& store, LaunchCaptureBuffer* tape) {
     std::array output{pcm.data(), pcm.data() + 257};
     std::int64_t at = 0;
     for (const auto frames : {55, 197, 257, 221, 79}) {
-        if (tape && (at == 55 || at == 730)) {
+        if (tape && (at == launch || at == 730)) {
             LaunchRequest request;
-            request.kind = at == 55 ? LaunchRequestKind::SlotPress : LaunchRequestKind::BackToArrangement;
+            request.kind = at == launch ? LaunchRequestKind::SlotPress : LaunchRequestKind::BackToArrangement;
             request.track = 21;
             request.scene = 1;
             request.clip = 51;
@@ -554,6 +554,74 @@ void heldControllerCapture() {
         "reopened Arrangement matches the literal CC performance and one Undo and Redo");
 }
 
+void multipleHeldControllersCapture() {
+    Project project;
+    prepareMidiProbe(project, 0.0f);
+    const std::array volume{controllers::Point{1, 0, 0.25, 0, 0, 0},
+        controllers::Point{2, tick(493), 0.75, 0, 0, 0}};
+    const std::array cutoff{controllers::Point{3, 0, 0.125, 0, 0, 0},
+        controllers::Point{4, tick(331), 0.5, 0, 0, 0}};
+    const auto write = [&](int channel, int address, std::span<const controllers::Point> points) {
+        const auto prepared = controllers::prepareWrite(*project.store, 51, channel, address, points);
+        require(prepared.ok && controllers::commitPrepared(*project.store, prepared).ok, "store authored held CC");
+    };
+    // Authored order differs from address order. Different channels also
+    // make this an exact check of both parts of each native address.
+    write(3, 7, volume);
+    write(1, 74, cutoff);
+    const auto source = project.freeze();
+    std::array<LaunchTransition, 8> edges{};
+    LaunchCaptureBuffer tape(edges);
+    const auto heard = renderMidi(*project.store, &tape, 0);
+    require(heard.size() == 6 &&
+        heard[0] == HeardNote{0, EventType::Controller, 1, 0, 74, 0.125} &&
+        heard[1] == HeardNote{0, EventType::Controller, 3, 0, 7, 0.25} &&
+        heard[2].sample == 20 && heard[2].type == EventType::NoteOn &&
+        heard[3] == HeardNote{331, EventType::Controller, 1, 0, 74, 0.5} &&
+        heard[4] == HeardNote{493, EventType::Controller, 3, 0, 7, 0.75} &&
+        heard[5].sample == 720 && heard[5].type == EventType::NoteOff,
+        "Session chases both lanes in address order and sends subsequent held changes at their distinct samples");
+    const auto plan = planLaunchCapture(tape, {0, 0}, {809, tick(809)}, {});
+    require(plan.error == LaunchCaptureError::None && plan.spans.size() == 1, "capture both held lanes in one run");
+
+    auto delayed = plan;
+    delayed.spans.front().begin = {55, tick(55)};
+    const auto unsafeStart = prepareSessionPerformance(*project.store, source, delayed, 48000);
+    require(!unsafeStart.ok && unsafeStart.error.find("song start") != std::string::npos,
+        "a later simultaneous chase does not have a known Arrangement address order");
+    auto coincident = cutoff;
+    coincident.back().timeTicks = volume.back().timeTicks;
+    write(1, 74, coincident);
+    const auto unsafeKnots = prepareSessionPerformance(*project.store, project.freeze(), plan, 48000);
+    require(!unsafeKnots.ok && unsafeKnots.error.find("same sample") != std::string::npos,
+        "later same-frame changes have an ambiguous ordering under Arrangement's rotating cursor");
+    require(History(*project.store).undo().ok, "restore the staggered controller knots");
+
+    const auto prepared = prepareSessionPerformance(*project.store, source, plan, 48000);
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+    project.db().exec("UPDATE event_streams SET controller=75 WHERE clip_id=51 AND stream_kind='cc' AND controller=74");
+    const auto altered = digestProject(*project.store).text;
+    require(!clip_edit::commitPrepared(*project.store, prepared).ok && digestProject(*project.store).text == altered,
+        "one late controller address change rolls back every captured lane atomically");
+    project.db().exec("UPDATE event_streams SET controller=74 WHERE clip_id=51 AND stream_kind='cc' AND controller=75");
+    const auto before = digestProject(*project.store).text;
+    const auto committed = clip_edit::commitPrepared(*project.store, prepared);
+    if (!committed.ok) throw std::runtime_error(committed.error);
+    require(project.count("SELECT count(*) FROM event_streams a,event_streams b WHERE a.clip_id=51 "
+        "AND b.clip_id<>51 AND a.stream_kind='cc' AND b.stream_kind='cc' AND a.channel=b.channel "
+        "AND a.controller=b.controller AND a.id<>b.id AND a.data=b.data") == 2,
+        "the Arrangement copied both literal ACTL streams with fresh row IDs");
+    const auto after = digestProject(*project.store).text;
+    project.store.reset();
+    StoreError error{};
+    project.store = Store::open(project.path, error, false);
+    require(project.store && renderMidi(*project.store, nullptr) == heard &&
+        History(*project.store).undo().ok && digestProject(*project.store).text == before &&
+        History(*project.store).redo().ok && digestProject(*project.store).text == after,
+        "reopened Arrangement matches the ordered multi-controller trace and one Undo and Redo");
+    std::puts("PASS -- two held MIDI controllers replay in exact frame and address order");
+}
+
 } // namespace
 
 int main() {
@@ -566,6 +634,7 @@ int main() {
                                 Curve::SCurve, Curve::Bezier})
             expressionCapture(shape);
         heldControllerCapture();
+        multipleHeldControllersCapture();
         std::printf("Session performance capture replays literal Arrangement ranges and native MIDI bytes.\n");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
