@@ -235,6 +235,8 @@ void testRulings() {
     };
     check(onPage("midi.chaseNotes", "Tempo & MIDI", true) && onPage("midi.envelopeAutoReset", "Tempo & MIDI", true),
           "Chase MIDI Notes and MIDI Envelope Auto-Reset: Tempo & MIDI switches, on as Live's Options");
+    check(onPage("sync.audioGridderDiscovery", "Plug-Ins", false),
+          "plug-in server discovery is local app settings and disabled by default");
     check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
               onPage("audio.recordPdcThresholdEnabled", "Audio", false),
           "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");

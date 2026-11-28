@@ -1256,7 +1256,7 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                         matches=matches && (std::fabs(attached.inst->getParam(parameter).normalized-value)<=tolerance_ ||
                             (attached.inst->hasPendingParamChanges() && intended));
                     }
-                    if(task->state)for(const auto& [role,bytes]:task->input.roles)
+                    if(task->state && !task->captureForSave)for(const auto& [role,bytes]:task->input.roles)
                         matches=matches && hashOf(attached.inst->saveState(role))==bytesHash(bytes);
                     if(!matches && !newer && !task->captureForSave)return false;
                     // An explicit save records the sampled image. Its own
@@ -1813,9 +1813,12 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, S
         auto& session = *replay_->session;
         for (std::size_t i = 0; i < session.entryCount(); ++i) {
             const auto& entry = session.entryAt(i);
-            if (entry.placeholder || entry.parked || entry.retired ||
-                (onlyDevice && entry.deviceId != *onlyDevice)) continue;
+            if (entry.parked || entry.retired || (onlyDevice && entry.deviceId != *onlyDevice)) continue;
             const auto id = entry.deviceId;
+            if (entry.placeholder) {
+                if (bestEffort && entry.resolvedRemoteHost) markSnapshotStale(id);
+                continue;
+            }
             if (std::find(result.staleDevices.begin(), result.staleDevices.end(), id) != result.staleDevices.end())
                 continue; // A failed signalled read already left this device's state stale.
             device = id;
@@ -2271,6 +2274,10 @@ bool ParamOps::Runtime::readImage(Attached& attached,ParameterImage& image,Image
 gesture::Status ParamOps::Runtime::readSnapshotImage(Attached& attached, ParameterImage& image) {
     try {
         if (readImage(attached, image)) return {};
+        if (attached.inst && !attached.sessionLife.expired()) {
+            const auto issue = attached.inst->stateCaptureIssue();
+            if (!issue.empty()) return {gesture::Error::CaptureFailed, std::string(issue)};
+        }
         return {gesture::Error::CaptureFailed, "device returned an incomplete state image"};
     } catch (const std::exception& error) {
         return captureFailure(error);
