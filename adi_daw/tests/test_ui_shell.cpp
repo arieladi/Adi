@@ -27296,6 +27296,50 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
         commands.reload();
     }
 }
+void settingsInfoView(const std::filesystem::path &dir) {
+    settings::AppSettings settings(appdata::App::Daw, dir / "info-settings.json");
+    AppCommands commands(settings);
+    std::string error;
+    auto document = ProjectDocument::open(dir / "info-settings.adi", true, {}, error);
+    check(document != nullptr, "a peer-free project for the Info View setting");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "info-settings");
+    root.setSize(1440, 900);
+    root.frame();
+    const auto browserWithInfo = root.browserArea();
+    const auto devices = root.deviceArea();
+    check(!browserWithInfo.isEmpty() && !root.infoArea().isEmpty(), "Info View starts in the open Browser column");
+
+    SettingsPanel panel(settings);
+    panel.showPage("Display & Input");
+    panel.onChange = [&] { commands.reload(); };
+    const auto control = std::find_if(panel.rows().begin(), panel.rows().end(), [](const auto &row) {
+        return row->setting.key == "lookfeel.showInfoView";
+    });
+    auto *info = control == panel.rows().end() ? nullptr : dynamic_cast<juce::TextButton *>((*control)->control.get());
+    check(info && info->isEnabled(), "Show Info View is an enabled Settings switch");
+    if (!info)
+        return;
+    const auto setInfo = [&](bool show) {
+        info->setToggleState(show, juce::dontSendNotification);
+        info->onClick();
+        root.frame();
+        return commands.infoView() == show;
+    };
+    check(setInfo(false) && root.infoArea().isEmpty() && !root.browserArea().isEmpty(),
+          "turning Info View off keeps the open Browser");
+    check(root.command(AppCommands::ToggleBrowser) && root.browserArea().isEmpty(), "hide the Browser before turning Info on");
+    check(setInfo(true) && root.browserArea() == browserWithInfo && !root.infoArea().isEmpty() && root.deviceArea() == devices,
+          "turning Info View on in Settings reopens the Browser column with its Info dock");
+    if (!root.browserArea().isEmpty())
+        check(root.command(AppCommands::ToggleBrowser), "the Browser can still be closed explicitly while Info is on");
+    root.frame();
+    check(root.browserArea().isEmpty(), "an ordinary frame leaves an explicitly closed Browser alone");
+    check(setInfo(false) && root.browserArea().isEmpty() && root.infoArea().isEmpty(),
+          "turning Info View off does not open a closed Browser");
+}
 void agentSettingsAvailability(const std::filesystem::path &dir) {
     const auto file = dir / "agent-settings.json";
     settings::AppSettings settings(appdata::App::Daw, file);
@@ -28324,6 +28368,7 @@ int main(int argc, char **argv) {
     };
     if (argc == 2 && std::string(argv[1]) == "--appearance-settings-only") {
         appearanceSettingsView(settings, commands, temp.path());
+        settingsInfoView(temp.path());
         std::printf("%d checks, %d failures (appearance settings components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -28490,6 +28535,7 @@ int main(int argc, char **argv) {
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
         appearanceSettingsView(settings, commands, temp.path());
+        settingsInfoView(temp.path());
         // The shared controls (DF-W24 step 3; language.png parts B, C, D): one painter each.
         look::apply(ThemeId::Dark, DensityId::Compact);
         {

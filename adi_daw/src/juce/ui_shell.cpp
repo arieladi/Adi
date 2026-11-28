@@ -1963,8 +1963,12 @@ void AdiRootComponent::frame() noexcept {
     if (namesBar.lock.getToggleState() != envelopesLocked)
         namesBar.lock.setToggleState(envelopesLocked, juce::dontSendNotification);
     // The Info View and density are app-scoped and can change in another window.
-    if (infoShown_ != commands_.infoView() || appliedDensity_ != look::densityId()) {
-        infoShown_ = commands_.infoView();
+    const bool showInfo = commands_.infoView();
+    if (infoShown_ != showInfo || appliedDensity_ != look::densityId()) {
+        const bool openingInfo = showInfo && !infoShown_;
+        infoShown_ = showInfo;
+        if (openingInfo && state_.panels.find(Panel::Browser)->collapsed)
+            (void)toggle(Panel::Browser);
         resized();
     }
     if (!infoArea_.isEmpty())
