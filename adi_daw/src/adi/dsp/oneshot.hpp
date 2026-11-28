@@ -92,6 +92,8 @@ class OneShot final : public DeviceInstance {
         LfoRetrigger,
         LfoOffset,
         LfoKey,
+        GlideMode,
+        GlideTime,
         Count
     };
     /// SC-482: the filter circuits, as Live's two choosers name them. Low- and
@@ -195,6 +197,9 @@ class OneShot final : public DeviceInstance {
         std::uint64_t id = 0, age = 0;
         int key = 60, stage = 0;
         Envelope filterEnv, pitchEnv;
+        // SC-482: semitones still to slide to the voice's own pitch, and the
+        // slide's step a sample (Glide and Portamento).
+        double glide = 0, glideStep = 0;
         std::uint8_t channel = 0;
         double position = 0, begin = 0, end = 0, loop = 0, env = 0, releaseStep = 0, velocity = 1,
                phase = 0, random = 0, tuning = 0, gain = 1;

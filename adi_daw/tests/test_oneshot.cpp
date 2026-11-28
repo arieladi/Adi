@@ -475,6 +475,42 @@ void lfoControls() {
     check(about(up[1800], 0) && about(root[1800], .5) && about(upFixed[1800], .5),
           "LFO < Key runs a higher note's LFO faster, and C3's as it was");
 }
+// SC-482: Glide (mono, legato) and Portamento (poly). On a ramp the output's
+// step is the sum of the sounding voices' read increments, 2^(st / 12) each.
+void glideModes() {
+    std::vector<float> ramp(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i)
+        ramp[i] = static_cast<float>(i) / 8192.f;
+    OneShot d;
+    configure(d);
+    check(d.publishSample(ramp, 1, 48000), "glide ramp publishes");
+    set(d, OneShot::GlideTime, 10);  // 480 samples
+    const auto step = [](const std::vector<float> &x, std::size_t i) {
+        return (x[i] - x[i - 1]) * 8192.;
+    };
+    const auto play = [&] { return playNotes(d, 2048, {{0, 60}, {1000, 72}}); };
+    const auto off = play();
+    check(std::abs(step(off, 1010) - 3) < 2e-3, "with Glide off the octave sounds at once beside C3");
+    set(d, OneShot::GlideMode, 1);
+    const auto mono = play();
+    std::printf("METRIC Glide: step %.4f at +10, %.4f at +240, %.4f at +600\n", step(mono, 1010),
+                step(mono, 1240), step(mono, 1600));
+    check(std::abs(step(mono, 1001) - 1) < 2e-3,
+          "Glide: the new note starts at the held note's pitch, in its voice and place");
+    check(std::abs(step(mono, 1240) - std::sqrt(2.)) < .01, "slides through the half-way pitch");
+    check(std::abs(step(mono, 1600) - 2) < 2e-3, "and reaches its own, alone");
+    set(d, OneShot::GlideMode, 2);
+    const auto poly = play();
+    std::printf("METRIC Portamento: step %.4f at +10, %.4f at +600\n", step(poly, 1010),
+                step(poly, 1600));
+    check(step(poly, 1010) > 1.95 && step(poly, 1010) < 2.1,
+          "Portamento: a new voice beside the held one, starting at its pitch");
+    check(std::abs(step(poly, 1600) - 3) < 2e-3, "and sliding to its own while both sound");
+    set(d, OneShot::Mode, 2);
+    set(d, OneShot::SlicePlayback, 1);
+    const auto sliced = playNotes(d, 2048, {{0, 36}, {1000, 37}});
+    check(std::abs(step(sliced, 1010) - 2) < 2e-3, "Slice mode does not glide");
+}
 // DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
 // a Transient or Manual slice is refused past End and cut at End.
 void sliceKeys() {
@@ -822,6 +858,7 @@ int main() {
     pitchEnvelope();
     filterCircuits();
     lfoControls();
+    glideModes();
     parameterModulation();
     midiControllers();
     preparedSamples();

@@ -94,7 +94,14 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"lfo_attack", "LFO attack", "ms", 0, 10000, 0, 0},
                        {"lfo_retrigger", "LFO retrigger", "", 0, 1, 1, 2},
                        {"lfo_offset", "LFO offset", "deg", 0, 360, 0, 0},
-                       {"lfo_key", "LFO < Key", "%", 0, 100, 0, 0}};
+                       {"lfo_key", "LFO < Key", "%", 0, 100, 0, 0},
+                       // SC-482: Glide (mono, legato: a note played over a
+                       // held one slides the same voice to it) and Portamento
+                       // (polyphonic: each new note slides from the last
+                       // one's pitch), both only from a note still sounding.
+                       // Off is what OneShot did. The Time range is a reading.
+                       {"glide_mode", "Glide", "", 0, 2, 0, 3},
+                       {"glide_time", "Glide time", "ms", 0, 5000, 50, 0}};
 // SC-482: Filter < Vel at 100 % opens the cutoff this far at full velocity
 // (ADI's span: Live's is a reading still to take); a softer note, less.
 constexpr double kFilterVelocityOctaves = 4;
@@ -182,6 +189,8 @@ std::string OneShot::paramText(const std::string &id, double n) const {
                 return std::array{"Clean", "OSR", "MS2", "SMP", "PRD"}[k];
             if (i == FilterCircuitBp)
                 return std::array{"Clean", "OSR"}[k];
+            if (i == GlideMode)
+                return std::array{"Off", "Glide", "Portamento"}[k];
             if (specs[i].steps == 2)
                 return value > 0 ? "On" : "Off";
             return std::to_string(value) + " " + specs[i].unit;
@@ -479,7 +488,38 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
         }
         return;
     }
-    const bool mono = mode == 1 || (mode == 2 && p[SlicePlayback] != 1);
+    // SC-482: Glide and Portamento slide from the pitch the newest sounding
+    // note is at (its key and what it still has to slide). A slice's pitch is
+    // not its key's, so Slice mode does not glide.
+    const int glide = mode == 2 ? 0 : static_cast<int>(p[GlideMode]);
+    double from = std::numeric_limits<double>::quiet_NaN();
+    if (glide != 0) {
+        const Voice *newest = nullptr;
+        for (const auto &w : voices_)
+            if (w.active && (!newest || w.age > newest->age))
+                newest = &w;
+        if (newest)
+            from = newest->key + newest->glide;
+    }
+    const double glideSamples = std::max(1., rate_ * p[GlideTime] * .001);
+    if (glide == 1 && voices_[0].active && voices_[0].held) {
+        // Glide is legato: the held voice keeps its envelopes and its place
+        // in the sample, takes the new note's identity and slides to its key.
+        auto &v = voices_[0];
+        if (noteGainCount_ > 0) {
+            noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
+            --noteGainCount_;
+        }
+        v.glide = from - e.dim;
+        v.glideStep = v.glide / glideSamples;
+        v.key = e.dim;
+        v.id = e.noteId;
+        v.channel = e.channel;
+        v.age = ++age_;
+        v.sustained = false;
+        return;
+    }
+    const bool mono = mode == 1 || (mode == 2 && p[SlicePlayback] != 1) || glide == 1;
     const int count = mono ? 1 : static_cast<int>(p[Voices]);
     Voice *selected = nullptr;
     for (int i = 0; i < 32; ++i)
@@ -513,6 +553,10 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     // started before); off, at the free-running LFO's phase.
     v.phase = p[LfoRetrigger] > 0 ? p[LfoOffset] / 360. : lfoClock_;
     v.phase -= std::floor(v.phase);
+    if (!std::isnan(from)) {
+        v.glide = from - e.dim;
+        v.glideStep = v.glide / glideSamples;
+    }
     v.begin = begin;
     v.end = end;
     v.loop = v.end - (v.end - v.begin) * p[LoopLength] / 100.;
@@ -827,6 +871,10 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                    p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation;
                     if (pitchEnvHeard)
                         pitch += v.pitchEnv.value * p[PitchEnvAmount];
+                    if (v.glide != 0) {
+                        pitch += v.glide;
+                        v.glide = std::abs(v.glide) <= std::abs(v.glideStep) ? 0 : v.glide - v.glideStep;
+                    }
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {

@@ -139,6 +139,10 @@
 #X msg 2520 58 p 59 \$1;
 #X obj 2520 110 adi.param \$0 61 0 100 0 % lin LFO_<_Key;
 #X msg 2520 148 p 60 \$1;
+#X obj 2520 200 adi.param \$0 62 0 2 0 - menu Glide Off Glide Portamento;
+#X msg 2520 238 p 61 \$1;
+#X obj 2520 290 adi.param \$0 63 0 5000 50 ms lin Glide_time;
+#X msg 2520 328 p 62 \$1;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 2 0 3 0;
@@ -278,3 +282,7 @@
 #X connect 137 0 0 0;
 #X connect 138 0 139 0;
 #X connect 139 0 0 0;
+#X connect 140 0 141 0;
+#X connect 141 0 0 0;
+#X connect 142 0 143 0;
+#X connect 143 0 0 0;

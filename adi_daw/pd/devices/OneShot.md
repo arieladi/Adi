@@ -24,7 +24,12 @@ quiet signal; Live's own circuits are readings still to take. The LFO's Attack
 (its depth fades in linearly from note-on), Retrigger (on, the default: each
 note starts its LFO at Offset, 0..360 degrees; off: at the phase of a
 free-running LFO that runs through silence too) and LFO < Key (100 %: an octave
-above C3 runs the LFO twice as fast).
+above C3 runs the LFO twice as fast). Glide (Off, Glide, Portamento) and Glide
+time: Glide is mono and legato, a note played over a held one takes that voice,
+its envelopes and its place in the sample, and slides to its own pitch;
+Portamento is polyphonic, each new voice sliding from the pitch of the newest
+note still sounding. Neither glides from silence, and Slice mode never glides.
+Whether Live's legato Glide restarts the sample is a reading still to take.
 
 Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
 shares with Simpler are Live 12.4's own, read from the default Simpler preset
