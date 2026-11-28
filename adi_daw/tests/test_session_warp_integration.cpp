@@ -18,6 +18,7 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
+#include "adi/warp_commands.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -718,6 +719,79 @@ void unpinnedAbsoluteOneShotFollowsItsSource() {
     require(matched,"a saved unpinned absolute slot reads the original PCM to its physical End on all clocks");
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,
             "an inferred absolute source window adds no callback allocation or file I/O");
+}
+
+void musicalPlacementPhysicalPins(bool ram) {
+    constexpr auto start = 1200, end = 4 * rate, span = end - start;
+    test::TempDirectory folder{"musical_placement_physical_pins", ram ? "ram" : "paged"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    addClip(*store,folder.path(),101,10,8,false,2400);
+    db.exec("DELETE FROM clip_slots WHERE clip_id=101;"
+            "UPDATE clips SET loop_enabled=0,loop_len_ticks=NULL WHERE id=101");
+    {
+        SQLite::Statement trim(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=length_ticks-? WHERE id=101");
+        trim.bind(1,quarter / 20);
+        trim.bind(2,quarter / 20);
+        trim.exec();
+    }
+    clip_edit::WarpOptions off;
+    off.enabled = false;
+    const auto edit = clip_edit::prepareSetWarp(*store,101,off,rate);
+    if (!edit.ok) throw std::runtime_error(edit.error);
+    require(clip_edit::commitPrepared(*store,edit).ok,"turn Warp off through the normal captured edit");
+    OpRequest assign;
+    assign.opType = "session.setSlotClip";
+    assign.payload = {{"track",1},{"scene",10},{"clip",101}};
+    require(OpJournal(*store).commit(assign).ok,"assign the musical clip with physical pins to its slot");
+    if (!ram) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+    require(db.execAndGet("SELECT count(*) FROM clips JOIN clip_playback_details ON clips.id=clip_id "
+                         "WHERE id=101 AND time_base=0 AND content_offset_ns=25000000 "
+                         "AND source_end_ns=4000000000").getInt() == 1,
+            "Warp Off leaves musical placement and saves both physical pins");
+    store.reset();
+    StoreError error{};
+    store = Store::open(folder.path() / "song.adi",error);
+    require(static_cast<bool>(store),"reopen the saved musical slot with physical pins");
+
+    const auto render = [&](bool performed) {
+        Session session;
+        session.graph().setFadeFrames(0);
+        if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+        require(session.problems().empty(),"physical pins on a musical slot keep the source admitted");
+        std::vector<float> pcm(span + blockFrames);
+        Playback playback{session,pcm};
+        playback.paged = !ram;
+        scene(*store,session,10);
+        playback.through(6000);
+        if (performed)
+            require(session.setExternalTempoAt(*store,140,quarter / 2),"perform 140 BPM on the active musical slot");
+        playback.through(static_cast<std::int64_t>(pcm.size()));
+        require(playback.count == 2 && playback.edges[0].newClip == 101 && playback.edges[0].sample == 0 &&
+                playback.edges[1].newClip == 0 && playback.edges[1].sample == span,
+                "musically placed Warp Off slot stops at the physical End");
+        if (performed)
+            require(session.beginRender().bpmAtTick(quarter / 2) == 140,"the external clock adopts during the pinned run");
+        return pcm;
+    };
+    const auto steady = render(false);
+    audio::WavReader file(folder.path() / "101.wav");
+    std::vector<float> raw(end);
+    require(file.read(raw.data(),end) == raw.size(),"read the original PCM for physical Start comparison");
+    require(std::equal(raw.begin() + start,raw.end(),steady.begin()) &&
+            std::all_of(steady.begin() + span,steady.end(),[](float value) { return value == 0; }),
+            "play every raw sample between the saved physical pins exactly once");
+    require(render(true) == steady,"performed tempo leaves the musically placed pinned PCM exact");
+    store->db().exec("UPDATE tempo_map SET curve=1 WHERE pos_ticks=0");
+    SQLite::Statement ramp(store->db(),"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,140)");
+    ramp.bind(1,4 * quarter);
+    ramp.exec();
+    require(render(false) == steady,"authored tempo ramp leaves the musically placed pinned PCM exact");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "musical placement with physical pins does not allocate or read files in the callback");
+    std::printf("Musical placement pins %s: exact %d samples from %d to %d through saved and performed tempo\n",
+                ram ? "RAM" : "paged",span,start,end);
 }
 
 void retainPagedOneShotOnSlotRefresh() {
@@ -3231,6 +3305,8 @@ int main() {
         mixedTempoScene(MixedScene::ChangeNativeGain);
         absoluteWarpFallback();
         physicalOneShotsFollowExternalTempo();
+        musicalPlacementPhysicalPins(true);
+        musicalPlacementPhysicalPins(false);
         unpinnedAbsoluteOneShotFollowsItsSource();
         retainPagedOneShotOnSlotRefresh();
         relaunchEditedPinnedOneShot();

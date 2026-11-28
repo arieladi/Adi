@@ -1754,7 +1754,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                 sourceStartNs = 0;
                 sourceEndNs = clip->lengthNs;
             }
-            const bool physicalSource = usePins && clip->timeBase == 1 && sourceStartNs && sourceEndNs && *sourceStartNs >= 0;
+            const bool physicalSource = usePins && sourceStartNs && sourceEndNs && *sourceStartNs >= 0;
             const bool physicalLoop = physicalSource && clip->loopEnabled && clip->loopBeginNs && clip->loopEndNs &&
                 *clip->loopBeginNs >= 0 && *clip->loopEndNs <= *sourceEndNs &&
                 *clip->loopEndNs > std::max(*clip->loopBeginNs,*sourceStartNs) &&
