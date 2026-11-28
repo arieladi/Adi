@@ -261,24 +261,45 @@ bool splitInverse(OpContext& context,const Payload& payload,Payload& inverse,std
     try{validSplit(payload,Joining);return edit::inverseRows(context,payload,inverse,error);}
     catch(const std::exception& exception){error=exception.what();return false;}
 }
+// The Loop switch and the loop brace are transport commands: they write the
+// saved loop and leave no Undo step. When history replays a time edit and the
+// loop is no longer as that edit left it, the replay must not refuse, or Undo
+// stops there for good. A loop whose brace still stands where the edit left it
+// takes the edit's brace and keeps its own switch. A brace placed since stays.
+std::optional<std::string> replayedLoop(const Payload& stored,const Payload& expected,const Payload& after) {
+    try {
+        if(!stored.is_string() || !expected.is_string())return std::nullopt;
+        const auto now=Payload::parse(stored.get_ref<const std::string&>());
+        const auto left=Payload::parse(expected.get_ref<const std::string&>());
+        if(!now.is_object() || !left.is_object() || !now.at("on").is_boolean() ||
+           detail::signedInteger(now.at("start"))!=detail::signedInteger(left.at("start")) ||
+           detail::signedInteger(now.at("end"))!=detail::signedInteger(left.at("end")))
+            return std::nullopt;
+        auto value=after;value["on"]=now.at("on");
+        return value.dump();
+    } catch(const std::exception&) {return std::nullopt;}
+}
 bool arrangerApply(OpContext& context,const Payload& payload,std::string& error) {
     try {
+        std::optional<std::string> loop;
         if(payload.contains("loop")) {
             const auto& change=payload.at("loop");
             SQLite::Statement read(context.db,"SELECT value FROM session_state WHERE key='transport.loop'");
             const Payload before=read.executeStep()?Payload(read.getColumn(0).getString()):Payload{};
-            if(before!=change.at("before"))throw std::runtime_error("loop changed after edit preparation");
             const auto& after=change.at("after");
             if(!after.is_string())throw std::runtime_error("captured loop must retain its stored value");
             const auto value=Payload::parse(after.get<std::string>());
             const auto start=detail::signedInteger(value.at("start")),end=detail::signedInteger(value.at("end"));
             if(!value.at("on").is_boolean() || start<0 || end<=start)throw std::runtime_error("captured loop is invalid");
+            if(before==change.at("before"))loop=after.get<std::string>();
+            else if(!context.replay)throw std::runtime_error("loop changed after edit preparation");
+            else loop=replayedLoop(before,change.at("before"),value);
         }
         if(!payload.at("changes").empty() && !edit::applyRows(context,payload,error))return false;
         if(payload.at("changes").empty() && !payload.contains("loop"))throw std::runtime_error("arrangement edit is empty");
-        if(payload.contains("loop")) {
+        if(loop) {
             SQLite::Statement write(context.db,"UPDATE session_state SET value=? WHERE key='transport.loop'");
-            write.bind(1,payload.at("loop").at("after").get<std::string>());write.exec();
+            write.bind(1,*loop);write.exec();
         }
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
