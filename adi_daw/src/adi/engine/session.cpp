@@ -69,12 +69,12 @@ bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexc
         before.physicalLoopEndFrame == after.physicalLoopEndFrame;
 }
 
-bool sameResidentWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
+bool sameNativeWarpWindow(const LaunchAudioClip* beforeAudio, const LaunchSlot& before,
                             const LaunchAudioClip* afterAudio, const LaunchSlot& after) noexcept {
-    const auto residentWarp = [](const LaunchAudioClip* clip) {
-        return clip && clip->followsTempo() && !clip->usesPages() && clip->latencySamples() == 0;
+    const auto nativeWarp = [](const LaunchAudioClip* clip) {
+        return clip && clip->followsTempo() && clip->latencySamples() == 0;
     };
-    return residentWarp(beforeAudio) && residentWarp(afterAudio) &&
+    return nativeWarp(beforeAudio) && nativeWarp(afterAudio) && beforeAudio->usesPages() == afterAudio->usesPages() &&
         before.track == after.track && before.startTick == after.startTick && before.endTick == after.endTick &&
         before.loopStartTick == after.loopStartTick && before.loopEndTick == after.loopEndTick;
 }
@@ -1103,6 +1103,8 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             timing.preparedPinnedRestart = true;
         }
         if (pinnedLegato) {
+            const bool adoptedBefore = adoptedCompatible &&
+                adopted->launchAudio->mediaAt(clockSample - 1) == beforeClock;
             const auto before = beforeClock->view().slots;
             const auto after = storedLaunchProject_ ? storedLaunchProject_->view().slots : std::span<const LaunchSlot>{};
             for (const auto& target : before) {
@@ -1115,9 +1117,14 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
                         hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
                         oldAudio->pageReader() == newAudio->pageReader();
-                    if (!samePhysical && (target.physicalLoopEndFrame || newSlot == after.end() ||
-                        !sameResidentWarpWindow(oldAudio,oldSlot,newAudio,*newSlot)))
+                    const bool sameWarp = !target.physicalLoopEndFrame && newSlot != after.end() &&
+                        sameNativeWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
+                    if (!samePhysical && !sameWarp)
                         throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");
+                    // An unadopted replacement pager may only have pages
+                    // around Start and Loop Begin.
+                    if (sameWarp && oldAudio->usesPages() && !adoptedBefore && !oldAudio->allWarpPhasesPrimed())
+                        throw std::runtime_error("a pinned Session Legato scene waits for the adopted outgoing bank");
                     if (oldSlot.clip == target.clip && (!pinnedLegatoTarget(*newSlot,preparedScene_->scene) ||
                         !readyPinnedLegatoTarget(*storedLaunchProject_,*newSlot)))
                         throw std::runtime_error("a pinned Session Legato scene needs the target's complete physical window");
