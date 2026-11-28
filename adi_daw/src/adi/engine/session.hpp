@@ -673,6 +673,7 @@ private:
         [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
         void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
+        [[nodiscard]] const std::pair<std::int64_t, std::int64_t>* nextDeviceClockChange(std::int64_t sample) const noexcept;
         void applyLoop() const noexcept;
         [[nodiscard]] bool projectLoop(Transport&) const noexcept;
         [[nodiscard]] bool readyToAdopt(const GraphTransportState*) const noexcept override;

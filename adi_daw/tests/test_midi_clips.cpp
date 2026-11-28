@@ -64,6 +64,7 @@ struct Instrument final:device::DeviceInstance {
     bool audible=false;int voices=0;
     bool wantsClock = false;
     std::array<DeviceTransport,32> positions{};
+    std::array<TransportInfo,32> blockPositions{};
     std::size_t positionCount = 0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
@@ -73,8 +74,10 @@ struct Instrument final:device::DeviceInstance {
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
-        if (io.deviceTransport && positionCount < positions.size())
+        if (io.deviceTransport && positionCount < positions.size()) {
+            if (io.transport) blockPositions[positionCount] = *io.transport;
             positions[positionCount++] = *io.deviceTransport;
+        }
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
         if(audible) {
             auto event=io.events.begin();
@@ -1143,6 +1146,87 @@ void livePlayQuantizeRamp() {
         }
     }
 }
+void roundedSessionMetadata() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr auto edge = 4 * quarter, nextEdge = 10 * quarter;
+    struct Case { int opening, sample; bool crowded; };
+    const auto beforeAllocations = allocations.load();
+    const auto beforeIo = audio::callbackFileIo.load();
+    for (const auto reading : {Case{127,90709,false},Case{129,89302,false},Case{129,89302,true}}) {
+        Fixture f(48000,64);
+        f.firstDeviceWantsClock = true;
+        auto& db = f.store->db();
+        db.exec("UPDATE tracks SET monitor_mode=1 WHERE id=1;DELETE FROM tempo_map;DELETE FROM time_signature_map");
+        const auto latest = edge + (reading.crowded ? 24 : 0);
+        const auto bpm = reading.crowded ? 173.0 : 143.0;
+        const auto numerator = reading.crowded ? 5 : 3;
+        const auto denominator = reading.crowded ? 16 : 4;
+        {
+            SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,?)");
+            const auto addTempo = [&](std::int64_t tick, double rate) {
+                tempo.bind(1,tick); tempo.bind(2,rate); tempo.exec(); tempo.reset();
+            };
+            addTempo(0,reading.opening); addTempo(edge,143);
+            if (reading.crowded) { addTempo(edge+8,155); addTempo(edge+16,173); }
+            addTempo(nextEdge,111);
+            SQLite::Statement meter(db,"INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,?,?)");
+            const auto addMeter = [&](std::int64_t tick, int n, int d) {
+                meter.bind(1,tick); meter.bind(2,n); meter.bind(3,d); meter.exec(); meter.reset();
+            };
+            addMeter(0,4,4); addMeter(edge,3,4);
+            if (reading.crowded) { addMeter(edge+12,7,8); addMeter(latest,numerator,denominator); }
+        }
+        f.store.reset();
+        StoreError error{};
+        f.store = Store::open(f.dir.path()/"session.adi",error);
+        if (!f.store) throw std::runtime_error("reopen rounded Session metadata");
+        f.load();
+        const auto tempo = TempoMap::fromRows(f.session.model().tempo);
+        const double seconds = static_cast<double>(reading.sample)/f.rate;
+        const auto raw = tempo.secondsToTicks(seconds);
+        const auto snapped = std::max(raw,latest);
+        const auto quarters = std::max(static_cast<double>(latest)/quarter,
+            static_cast<double>(raw)/quarter + (seconds-tempo.ticksToSeconds(raw))*tempo.bpmAt(raw)/60);
+        std::int64_t following;
+        {
+            const auto view = f.session.beginRender();
+            following = view.sampleAtTick(nextEdge);
+            check(view.sampleAtTick(edge) == reading.sample && view.sampleAtTick(latest) == reading.sample &&
+                  view.tickAtSample(reading.sample) == raw && (raw < edge) == (reading.opening == 129),
+                  "authored tempo and meter share their rounded sample while the raw inverse stays continuous");
+        }
+        const auto render = [&](std::int64_t sample, int frames) {
+            f.instrument->positionCount = 0;
+            f.clock = sample;
+            f.session.transport().locate(sample);
+            f.render(frames);
+        };
+        const auto& block = f.instrument->blockPositions;
+        const auto& device = f.instrument->positions;
+        render(reading.sample-2,6);
+        check(f.instrument->positionCount == 2 && block[0].bpm == reading.opening &&
+              block[1].bpm == reading.opening && device[0].nextChange == reading.sample &&
+              device[1].sample == reading.sample && device[1].bpm == bpm && device[1].nextChange == following,
+              "hosted event still splits once inside a held block and preserves preceding/following edges");
+        render(reading.sample,1);
+        std::printf("Rounded Session %d: raw %lld, block %.0f %d/%d, device %.0f %d/%d\n",reading.sample,
+            static_cast<long long>(raw),block[0].bpm,block[0].timeSigNumerator,block[0].timeSigDenominator,
+            device[0].bpm,device[0].numerator,device[0].denominator);
+        check(f.instrument->positionCount == 1 && block[0].timelineSample == reading.sample &&
+              block[0].bpm == bpm && block[0].ticksInQuarter == snapped%quarter &&
+              block[0].timeSigNumerator == numerator && block[0].timeSigDenominator == denominator &&
+              device[0].bpm == bpm && device[0].numerator == numerator && device[0].denominator == denominator &&
+              device[0].nextChange == following && std::abs(device[0].quarterNotes-quarters) < 1e-11,
+              "block and hosted clocks agree on the newest authored BPM and meter at the rounded edge");
+        render(following+257,1);
+        check(f.instrument->positionCount == 1 && block[0].bpm == 111 && device[0].bpm == 111 &&
+              device[0].nextChange == std::numeric_limits<std::int64_t>::max(),
+              "an ordinary later nonzero locate preserves block and hosted clocks");
+    }
+    check(allocations.load() == beforeAllocations && audio::callbackFileIo.load() == beforeIo,
+          "rounded Session metadata performs no driver allocation or file IO");
+}
+
 void indexedSessionTransport() {
     constexpr auto quarter = textproj::kPPQ;
     constexpr int lead = 96;
@@ -2400,6 +2484,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "play-quantize-ramp") livePlayQuantizeRamp(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "rounded-metadata") roundedSessionMetadata(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "indexed-transport") indexedSessionTransport(); }
     catch (const std::exception& e) { check(false, e.what()); }

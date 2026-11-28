@@ -2822,7 +2822,9 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     info.playing = transport.playing();
     info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
-    const auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
+    auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
+    const auto* next = nextDeviceClockChange(info.timelineSample);
+    if (next != deviceClockChanges.data()) ticks = std::max(ticks,(next - 1)->second);
     info.bpm = tempoClock.bpmAt(ticks);
     constexpr auto ppq = textproj::kPPQ; // SPEC 4.2; exact as Pd float
     constexpr auto whole = textproj::kWhole;
@@ -2889,6 +2891,12 @@ double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
     return static_cast<double>(wholeTick) / ppq + remainder * tempoClock.bpmAt(wholeTick) / 60.0;
 }
 
+const std::pair<std::int64_t, std::int64_t>* Session::TimingView::nextDeviceClockChange(std::int64_t sample) const noexcept {
+    const auto* changes = deviceClockChanges.data();
+    return std::upper_bound(changes, changes + deviceClockChanges.size(), sample,
+        [](std::int64_t value, const auto& change) { return value < change.first; });
+}
+
 DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
     constexpr double ppq = static_cast<double>(textproj::kPPQ);
     DeviceTransport result;
@@ -2896,8 +2904,7 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     result.quarterNotes = quartersAt(sample);
     const auto* changes = deviceClockChanges.data();
     const auto* endOfChanges = changes + deviceClockChanges.size();
-    const auto* next = std::upper_bound(changes, endOfChanges, sample,
-        [](std::int64_t value, const auto& change) { return value < change.first; });
+    const auto* next = nextDeviceClockChange(sample);
     if (next != endOfChanges) result.nextChange = next->first;
     constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
     const auto seconds = static_cast<double>(sample) / sampleRate;
