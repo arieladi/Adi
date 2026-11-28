@@ -192,6 +192,71 @@ No branch is "abandoned by its seat" or "unclear": the seat's log requests every
   Spectrum page beside the Filled Spectrum`.
 - 28 Nov, round 1: `origin/land/basics-1128c` landed on main (#838), so **BASE is now `origin/main`**;
   merged it into the chain (documentation only). Second check `all` started in slot 13.
+- 28 Nov, round 1: **second check, `all`, at `9e4eb807`: core and ui both build** (MSVC Debug, /WX).
+  Core: 286 of 291 pass. UI (the four window suites): shell, seams and window_state pass; document fails
+  one check. The failures, one by one:
+  - `adi_ui_shared_analysis_tests` (`tests/test_shared_analysis.cpp`), 2 of 1434: "a stamped broadband
+    copy 137 samples late suggests an advance of 2.8541667 ms without allocations" and "unequal physical
+    heads resolve the same exact heard interval without allocation or tap mutation". **The seat's own**:
+    its full-rate Align (MX-13, `src/adi/ui/focus_lag.hpp`) held its wide capture in an empty
+    `std::vector`, which in an MSVC Debug build already allocates (the seat proved it in Release). The fix
+    is plain and is on the chain: a `unique_ptr` made only when the capture outgrows the local array.
+  - `adi_mix_render_intent_tests`, 2 of 25: "the real export session invokes a zero-tail device on a
+    silent block" and "the normal-quality offline session invokes a zero-tail device on a silent block".
+    **The seat's own and deliberate**: `offline-suspension-regression-20261119` is a reproduction the seat
+    wrote for the Engine seat (its log, 19 Nov: "demonstrates the ADR-0043 d5 gap ... not a landing
+    candidate by itself"). `Graph::runNode` suspends a zero-tail device on silence whatever the render
+    context. The fix is the Engine seat's (Graph needs an offline flag apart from export quality), not
+    plain, so it is left; see question B. My survey's "to take" for this branch was too quick.
+  - `adi_agent_log_tests` (three checks on child processes writing one timeline), `adi_link_playback_tests`
+    (two "prepares off callback" checks), `adi_library_tests` (timeout at 120 s) and `adi_ui_document_tests`
+    ("opening yields to the owner between slow plug-in loads"): the chain changes none of their code; all
+    four are timing or process checks on a build PC shared by about twenty sessions. Rerun in the next
+    check to be sure.
+  - **Not run here:** `adi_ui_shared_spectrum_tests` (`tests/test_ui_shared_analysis.cpp`) and
+    `adi_ui_mix_functions_tests` (`tests/test_ui_mix_functions.cpp`). `slot.sh` builds and runs only the four
+    window suites, and these two are the suites the merge touched most (the Spectrum pages, pins, Phase,
+    Filled Spectrum). They are proved only by CI's `ui.yml` (Linux, no display) or a build that names
+    them. This is the chain's largest unproved part.
+- 28 Nov, round 1: focus lag fix pushed; third check `core` with the five failing suites as filter started.
+
+## Step 4: the account
+
+What the chain adds to ADI, as a user would notice it (all in the Mix View; nothing outside it changes
+what a user sees):
+- **Line Spectrum page** (new entry at the end of the Analysers page list): the seat's line spectrum with
+  six traces (Realtime, Realtime Average, Cumulative Average, Realtime Sigma, Realtime Maximum, Cumulative
+  Maximum), Stack pins overlaid on the primary, block size, overlap and display smoothing choices, and a
+  statistics strip (integrated RMS, held crest, held sample peak and clip counts, optional true peak, two
+  second stereo balance, Reset).
+- **Spectrum layouts** (Wide, Detail, Extended, Device) followed by the Info box and Compare; a spectrum
+  cursor with frequency, pitch and level on every scale, the Device Spectrum included.
+- **Spectrogram**: five frequency scales, a frequency ruler, floor/ceiling and contrast, a cursor reading,
+  PNG export of the displayed history, and a Pre/Post comparison (signed change between a channel's input
+  and output, with its own Sweep, ruler, scales, cursor and PNG).
+- **Phase**: per-band correlation, width and pan under the stereo picture.
+- **Main analysis**: peak-to-loudness ratio (PLR).
+- **Mixer strips**: a small shared spectrum and scope summary per visible strip, idle when not shown.
+- **Focus Scope**: capture by beat, bar, two or four bars, 1/16 note or 85/170/340 ms; the beat and bar
+  grid at heard positions; time zoom and pan, vertical zoom and pan; a cursor and a measured region; Freeze
+  and a held picture on Stop; independent layer channels; polarity and timing previews; Difference
+  spectrum, Difference RMS and captured true peak; full-rate Align at high sample rates.
+- **Channel browser**: search folds accents and case.
+- **Native EQ and Limiter**: their clocks keep time while the graph suspends them in silence (DF-M34), so
+  a wake does not jump.
+- Underneath, many "parked" analysis paths: stopped or silent sources stop costing worker passes and
+  resume on the same hop grid.
+
+Left out, and why:
+- `mixview/param-replacement-receipt-regression-20261119`, `mixview/matched-filters-20261113`: already on
+  main by another route.
+- `mixview/review-cumulative-20261122`: its five commits are in the stack top; its own merges of an older
+  main add nothing.
+- Nothing of the stack was left out. The two red render-intent checks are carried, not fixed (question B).
+
+What the director must decide before the chain lands: questions A and B below, and the picture of the Line
+Spectrum page (ADR-0243). The seat's own open questions (its log's "FOR THE DIRECTOR") are unchanged by
+this chain.
 
 ## For the director
 
@@ -209,3 +274,11 @@ picture is owed to you before it lands (ADR-0243). A2 would leave about a hundre
 failing. One check fails under every choice: the seat's "the All spectrum tile uses the selected layout"
 (DF-M55), because your All page now shows the Filled Spectrum tile, which has one fixed grid. Reply "A1",
 "A2" or "A3".
+
+**B. The seat's red reproduction for the Engine.** `offline-suspension-regression-20261119` adds two checks
+that fail until the Engine stops suspending zero-tail devices in export and in normal-quality offline
+renders (ADR-0043 d5).
+- B1: keep the two checks in the chain; it lands only after the Engine's fix joins it.
+- B2: take the reproduction out of this chain (a revert of its merge) and hand it to the Engine seat's queue.
+Recommendation: B2. The Mix View work should not wait on an Engine fix, and the seat itself called the
+branch "not a landing candidate by itself". Reply "B1" or "B2".
