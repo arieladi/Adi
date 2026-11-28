@@ -103,7 +103,11 @@ class Sampler final : public DeviceInstance {
     static void applyZone(OneShot &, const Zone &) noexcept;
     // The Sampler's own parameters, after the 23 it hands to every layer.
     static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25, kRoundRobin = 26,
-                                 kRoundRobinMode = 27, kInterpolation = 28, kSnap = 29;
+                                 kRoundRobinMode = 27, kInterpolation = 28, kSnap = 29, kDetune = 30,
+                                 kSpread = 31, kZoneShift = 32;
+    /// SC-483, Spread: at 100 % the two voices of a note play this many cents
+    /// below and above it. ADI's law; Live's is a reading still owed.
+    static constexpr double kSpreadCents = 25;
     /// The parameters a state of the first version held (SC-483 added to them).
     static constexpr std::size_t kFirstParams = 24;
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,

@@ -96,10 +96,14 @@ double bin(const std::vector<float> &a, int k) {
 // playing slot i+1's prepared sample, borrowed per call.
 using SlotArray = std::array<device::Sampler::SlotSample, device::Sampler::kSlots>;
 std::vector<float> renderSlots(device::Sampler &d, int count, std::span<const engine::Event> input,
-                               const std::function<void(int, SlotArray &)> &slotsAt) {
+                               const std::function<void(int, SlotArray &)> &slotsAt,
+                               std::vector<float> *right = nullptr) {
     d.release();
     d.prepare(48000, 64);
     std::vector<float> output(static_cast<std::size_t>(count));
+    if (right != nullptr) {
+        right->assign(static_cast<std::size_t>(count), 0.f);
+    }
     std::array<float, 64> l{}, r{};
     float *ch[]{l.data(), r.data()};
     SlotArray slots{};
@@ -124,6 +128,9 @@ std::vector<float> renderSlots(device::Sampler &d, int count, std::span<const en
         audit = false;
         check(allocations == 0, "slot mode processing allocates nothing");
         std::copy_n(l.begin(), io.frames, output.begin() + at);
+        if (right != nullptr) {
+            std::copy_n(r.begin(), io.frames, right->begin() + at);
+        }
     }
     return output;
 }
@@ -632,6 +639,70 @@ void slotQuality() {
               "Snap on: the loop's end moves to frame 4100 and the loop starts again at frame 2100");
     }
 }
+// SC-483, Live's Pitch/Osc tab: the instrument's Detune, Spread and Key Zone Shift.
+void slotPitch() {
+    using S = device::Sampler;
+    using Table = std::array<S::Zone, S::kSlots>;
+    const auto about = [](float value, double expected) {
+        return std::abs(static_cast<double>(value) - expected) < 1e-6;
+    };
+    std::vector<float> ramp(8192);
+    for (std::size_t i = 0; i < ramp.size(); ++i) {
+        ramp[i] = static_cast<float>(i) / 8192.f;
+    }
+    const auto sample = device::OneShot::prepareSample(ramp, 1, 48000);
+    const auto fill = [&](int, SlotArray &slots) { slots[2] = {sample.get(), 1}; };
+    const auto note = std::array{on(0, 60)};
+    {
+        const auto d = plainSlots();
+        set(*d, "detune", 25);
+        check(about(renderSlots(*d, 2048, note, fill)[1000], 1000 * std::exp2(.25 / 12) / 8192),
+              "Detune: +25 cents reads every zone an eighth of a tone faster");
+        Table table{};
+        table[2].detune = -25;
+        check(d->publishSlotZones(table) && renderSlots(*d, 2048, note, fill)[1000] == 1000.f / 8192,
+              "the instrument's Detune and a zone's add: +25 and -25 cents play the sample at its own pitch");
+    }
+    {
+        const auto d = plainSlots();
+        std::vector<float> right;
+        const auto plainLeft = renderSlots(*d, 2048, note, fill, &right);
+        check(plainLeft[1000] == 1000.f / 8192 && right[1000] == 1000.f / 8192, "Spread 0: one voice in the middle");
+        set(*d, "spread", 100);
+        const std::array<engine::Event, 2> held{on(0, 60), engine::Event{1500, engine::EventType::NoteOff, 0, 60, 1, 0, 0}};
+        const auto left = renderSlots(*d, 2048, held, fill, &right);
+        check(about(left[1000], std::sqrt(2.) * 1000 * std::exp2(-.25 / 12) / 8192) &&
+                  about(right[1000], std::sqrt(2.) * 1000 * std::exp2(.25 / 12) / 8192),
+              "Spread 100 %: two voices, 25 cents below on the left and 25 cents above on the right");
+        check(left[1700] == 0 && right[1700] == 0, "a note-off ends both voices of the pair");
+        set(*d, "spread", 50);
+        renderSlots(*d, 2048, note, fill, &right);
+        check(about(right[1000], std::sqrt(2.) * 1000 * std::exp2(.125 / 12) / 8192), "Spread 50 %: 12.5 cents apart from the note");
+    }
+    {
+        // Two zones split at C3; the lower one a steady level, so a frame
+        // names the zone that played.
+        const std::vector<float> level(8192, .1f);
+        const auto steady = device::OneShot::prepareSample(level, 1, 48000);
+        const auto both = [&](int, SlotArray &slots) {
+            slots[1] = {steady.get(), 1};
+            slots[2] = {sample.get(), 1};
+        };
+        Table table{};
+        table[1].key = {0, 59, 0, 0};
+        table[2].key = {60, 127, 0, 0};
+        const auto d = plainSlots();
+        check(d->publishSlotZones(table), "two zones split at C3");
+        const auto low = std::array{on(0, 50)};
+        check(renderSlots(*d, 2048, low, both)[1000] == .1f, "no shift: D2 plays the zone below C3");
+        set(*d, "zone_shift", 12);
+        check(about(renderSlots(*d, 2048, low, both)[1000], 1000 * std::exp2(-10. / 12) / 8192),
+              "Zone shift +12: D2 plays the zone above C3, at its own pitch ten semitones below the root");
+        set(*d, "zone_shift", -12);
+        const auto high = std::array{on(0, 65)};
+        check(renderSlots(*d, 2048, high, both)[1000] == .1f, "Zone shift -12: F3 plays the zone below C3");
+    }
+}
 // SC-483, Round Robin: with it on, one of the layers a note matches plays it.
 // Three slots hold three steady levels, so a frame names the layer that played.
 void slotRoundRobin() {
@@ -709,22 +780,26 @@ void slotRoundRobin() {
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
     device::Sampler d(device::Sampler::slotBacked);
-    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 30 &&
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 33 &&
               static_cast<int>(parsed.params.size()) == d.paramCount(),
-          "the Sampler's declarations parse: 30 parameters");
+          "the Sampler's declarations parse: 33 parameters");
     // SC-483: ids are fixed. The 24 of 28 November keep their places; what was
     // added since follows them.
-    check(parsed.params.size() == 30 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
+    check(parsed.params.size() == 33 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
               parsed.params[24].name == "Reverse" && parsed.params[24].def == 0 && parsed.params[25].def == 1,
           "Volume is still 1 and Sample select 24; Reverse is 25, off; the loop fades' law 26, constant power");
-    check(parsed.params.size() == 30 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
+    check(parsed.params.size() == 33 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
               parsed.params[27].items == std::vector<std::string>{"Forward", "Backward", "Random", "Other"} &&
               parsed.params[27].def == 0,
           "Round Robin is 27, off; its mode 28: Forward, Backward, Random, Other");
-    check(parsed.params.size() == 30 && parsed.params[28].name == "Interpolation" &&
+    check(parsed.params.size() == 33 && parsed.params[28].name == "Interpolation" &&
               parsed.params[28].items == std::vector<std::string>{"None", "Normal", "Good"} && parsed.params[28].def == 1 &&
               parsed.params[29].name == "Snap" && parsed.params[29].def == 0,
           "Interpolation is 29, Normal; Snap 30, off");
+    check(parsed.params.size() == 33 && parsed.params[30].name == "Detune" && parsed.params[31].name == "Spread" &&
+              parsed.params[32].name == "Zone shift" && parsed.params[30].def == 0 && parsed.params[31].def == 0 &&
+              parsed.params[32].def == 0,
+          "Detune is 31, Spread 32, Zone shift 33, each at 0");
     bool same = true;
     for (std::size_t i = 0; i < parsed.params.size(); ++i) {
         const auto &decl = parsed.params[i];
@@ -760,6 +835,7 @@ int main(int argc, char **argv) {
     slotZoneState();
     slotLoops();
     slotQuality();
+    slotPitch();
     slotRoundRobin();
     midiControllers();
     declarations();

@@ -83,8 +83,11 @@ class OneShot final : public DeviceInstance {
     /// order, one per note-on; a note-on with none queued plays at 1. The
     /// Sampler sends each zone's crossfade weight this way, so Vel > Vol acts
     /// on the played velocity only. `reverse` (SC-483) plays that note from
-    /// its end to its start.
-    void queueNoteGain(double gain, bool reverse = false) noexcept;
+    /// its end to its start. `cents` and `pan` (-1 left .. 1 right) are that
+    /// voice's own, for the Sampler's Spread; a `partner` is the second voice
+    /// of such a pair and does not retrigger the first.
+    void queueNoteGain(double gain, bool reverse = false, double cents = 0, double pan = 0,
+                       bool partner = false) noexcept;
     /// SC-483, for the Sampler's layers: how a voice travels its sample beyond
     /// OneShot's own controls. Positions are fractions of the whole sample. A
     /// fresh Travel is OneShot's own behaviour, bit for bit.
@@ -100,6 +103,8 @@ class OneShot final : public DeviceInstance {
         /// Live's loop Detune: cents a voice plays at while it is inside the
         /// sustain loop, and inside the release loop after note-off.
         double loopCents = 0, releaseCents = 0;
+        /// The instrument's Detune, in cents, for every voice.
+        double cents = 0;
         /// How a transposed sample is read between its frames: 0 the nearest
         /// frame below, 1 a straight line (OneShot's own), 2 a four-point cubic.
         int interpolation = 1;
@@ -188,12 +193,15 @@ class OneShot final : public DeviceInstance {
         // tail: released, and out of the sustain loop for the rest of the sample.
         double loopEnd = 0, releaseLoop = 0, mirror = 0;
         bool backward = false, tail = false, reversed = false;
+        double spreadCents = 0, pan = 0;  // SC-483: a Spread voice's own, from its ticket
         Filter filters[2][2];
     };
     /// What the next note-ons take, in order (a zone weight from the Sampler).
     struct NoteTicket {
         double gain = 1;
         bool reverse = false;
+        double cents = 0, pan = 0;
+        bool partner = false;
     };
     std::array<NoteTicket, 256> noteGains_{};
     std::size_t noteGainHead_ = 0, noteGainCount_ = 0;

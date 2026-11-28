@@ -359,9 +359,12 @@ void OneShot::readBoth(const Sample &s, double position, double *x, int quality)
             x[c] = y + (s.data[b * stride + ch] - y) * t;
     }
 }
-void OneShot::queueNoteGain(double gain, bool reverse) noexcept {
-    if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
-    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = {std::max(0., gain), reverse};
+void OneShot::queueNoteGain(double gain, bool reverse, double cents, double pan, bool partner) noexcept {
+    if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain) || !std::isfinite(cents) ||
+        !std::isfinite(pan))
+        return;
+    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = {
+        std::max(0., gain), reverse, std::clamp(cents, -100., 100.), std::clamp(pan, -1., 1.), partner};
     ++noteGainCount_;
 }
 
@@ -418,9 +421,11 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     }
     const bool mono = mode == 1 || (mode == 2 && p[SlicePlayback] != 1);
     const int count = mono ? 1 : static_cast<int>(p[Voices]);
+    // SC-483: the second voice of a Spread pair does not retrigger the first.
+    const bool partner = noteGainCount_ > 0 && noteGains_[noteGainHead_].partner;
     Voice *selected = nullptr;
     for (int i = 0; i < 32; ++i)
-        if (i >= count || (p[Retrigger] > 0 && voices_[static_cast<std::size_t>(i)].key == e.dim))
+        if (i >= count || (p[Retrigger] > 0 && !partner && voices_[static_cast<std::size_t>(i)].key == e.dim))
             voices_[static_cast<std::size_t>(i)].active = false;
     for (int i = 0; i < count; ++i)
         if (!voices_[static_cast<std::size_t>(i)].active) {
@@ -444,6 +449,8 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     if (noteGainCount_ > 0) {
         v.gain = noteGains_[noteGainHead_].gain;
         reverse = noteGains_[noteGainHead_].reverse;
+        v.spreadCents = noteGains_[noteGainHead_].cents;
+        v.pan = noteGains_[noteGainHead_].pan;
         noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
         --noteGainCount_;
     }
@@ -737,13 +744,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     }
                     const auto &midi = midiChannels_[v.channel];
                     // SC-483: a loop's own Detune, while the voice is inside
-                    // that loop (a fresh Travel adds 0, which changes no pitch).
+                    // that loop; the instrument's Detune; a Spread voice's own
+                    // (a fresh Travel and ticket add 0, which changes no pitch).
                     const double loopCents = (sustainLoop || tailLoop) && v.position >= from
                                                  ? (sustainLoop ? travel.loopCents : travel.releaseCents)
                                                  : 0.;
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation +
-                                         loopCents / 100.;
+                                         (loopCents + travel.cents + v.spreadCents) / 100.;
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {
@@ -784,7 +792,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             if (p[Slope] > 0)
                                 x = v.filters[c][1].run(x, g, r, d, static_cast<int>(p[FilterType]));
                         }
-                        const double pan = lfo * p[LfoPan] * midi.modulation / 100.;
+                        const double pan = lfo * p[LfoPan] * midi.modulation / 100. + v.pan;
                         // sqrt(1) is exactly 1: no pan, no square root.
                         acc[c][k] += x * amplitude *
                                      (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));

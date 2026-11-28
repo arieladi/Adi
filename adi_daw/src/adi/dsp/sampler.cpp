@@ -139,6 +139,28 @@ void Sampler::initialise() {
     menu("interpolation", "Interpolation", 3, 1);
     // Live's Snap: the start, end and loop points move to the next zero crossing.
     toggle("snap", "Snap", 0);
+    const auto dial = [this](const char *id, const char *name, const char *unit, double lo, double hi,
+                             int steps) {
+        ParamDescriptor p;
+        p.id = id;
+        p.name = name;
+        p.unit = unit;
+        p.hasRealRange = true;
+        p.minReal = lo;
+        p.maxReal = hi;
+        p.domain = steps ? ParamDomain::Enum : ParamDomain::Real;
+        p.shape = steps ? ParamShape::Menu : ParamShape::Continuous;
+        p.stepCount = steps;
+        p.defaultValue = ParamValue::withReal(lo < 0 ? -lo / (hi - lo) : 0., 0);  // at 0
+        params_.push_back(p);
+        destinations_.push_back(OneShot::Count);
+    };
+    // Live's Pitch/Osc tab: the instrument's Detune, Spread (two voices a
+    // note, one each side, detuned apart) and Key Zone Shift (the key a note
+    // chooses its zones by, its pitch kept). Each is 0 by default: no change.
+    dial("detune", "Detune", "cents", -50, 50, 0);
+    dial("spread", "Spread", "%", 0, 100, 0);
+    dial("zone_shift", "Zone shift", "st", -48, 48, 97);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
 }
@@ -389,6 +411,7 @@ void Sampler::chooseLayers(const engine::NodeIo &io,
     const int mode = static_cast<int>(
         real(params_[kRoundRobinMode], initial[kRoundRobinMode] + modulation_[kRoundRobinMode]));
     double select = initial[kSelect], selectMod = modulation_[kSelect];
+    const double shift = real(params_[kZoneShift], initial[kZoneShift] + modulation_[kZoneShift]);
     std::size_t note = 0;
     for (const auto &e : io.events) {
         if ((e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) &&
@@ -414,7 +437,7 @@ void Sampler::chooseLayers(const engine::NodeIo &io,
                 continue;
             }
             const auto &z = *zones[i];
-            if (weight(z.key, e.dim, z.constantPower) * weight(z.velocity, e.value * 127, z.constantPower) *
+            if (weight(z.key, e.dim + shift, z.constantPower) * weight(z.velocity, e.value * 127, z.constantPower) *
                     weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127, z.constantPower) > 0) {
                 matching[count++] = static_cast<std::int8_t>(i);
             }
@@ -486,6 +509,9 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
     travel.releaseCents = z.releaseDetune;
     travel.interpolation = std::clamp(
         static_cast<int>(real(params_[kInterpolation], initial[kInterpolation] + modulation_[kInterpolation])), 0, 2);
+    travel.cents = real(params_[kDetune], initial[kDetune] + modulation_[kDetune]);
+    const double spread = real(params_[kSpread], initial[kSpread] + modulation_[kSpread]);
+    const double shift = real(params_[kZoneShift], initial[kZoneShift] + modulation_[kZoneShift]);
     engine.setTravel(travel);
     engine.setRealAt(OneShot::Snap, initial[kSnap] + modulation_[kSnap] >= .5 ? 1 : 0);
     bool notes = false;  // a note-on this layer takes this block
@@ -514,7 +540,9 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
                                 chosen_[index] != static_cast<std::int8_t>(layer))) {
                 continue;
             }
-            const double w = weight(z.key, e.dim, z.constantPower) *
+            // SC-483, Key Zone Shift: the note chooses its zones as the key
+            // `shift` semitones away, and keeps its own pitch.
+            const double w = weight(z.key, e.dim + shift, z.constantPower) *
                              weight(z.velocity, e.value * 127, z.constantPower) *
                              weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127,
                                     z.constantPower);
@@ -525,8 +553,19 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             // at note-on -- not a scaled velocity, which Vel > Vol would
             // squeeze (0.825 for a 0.5 fade at 35 %). Queued only for a
             // note-on the layer will see, so later notes keep their own.
-            if (events.push(e)) {
-                engine.queueNoteGain(w, reverse + reverseMod >= .5);
+            const bool backwards = reverse + reverseMod >= .5;
+            if (spread > 0) {
+                // SC-483, Spread: two voices, the lower one left, the higher right.
+                const double cents = spread / 100 * kSpreadCents;
+                if (events.push(e)) {
+                    engine.queueNoteGain(w, backwards, -cents, -1);
+                    notes = true;
+                    if (events.push(e)) {
+                        engine.queueNoteGain(w, backwards, cents, 1, true);
+                    }
+                }
+            } else if (events.push(e)) {
+                engine.queueNoteGain(w, backwards);
                 notes = true;
             }
             continue;
