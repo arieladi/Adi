@@ -164,6 +164,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC-452 | `basics/test-chain-2` at `eda879365` | Show the Note Editor grid in its boxed header chooser. Clip and look seats. | The chooser geometry and actual Cmd/Ctrl+1 and +2 were checked independently of the Arrangement grid. The software reference changes only at the new readout. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-458 | `basics/test-chain-2` at `aa1575ca5` | Select the automation lane when a supported control is touched. Automation, device and mixer seats. | The peerless regression exercises explicit control interaction in and out of Automation Mode. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 | SC-347 | `basics/test-chain-2` at `aa1575ca5` | The automation curve gesture and rendering already landed in #830. Automation and Arrangement seats. | The current suite exercises the curve gesture and the stored curve rendering. Physical Option on macOS remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Already on main |
+| SC-448 | `basics/test-chain-2` at `46512e011` | Draw loop repeats with marks at the points where the loop turns. Clips and Arrangement seats. | Software-painted loop fixtures check repeated contents and marks through the Arrangement renderer. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -302,3 +303,21 @@ Candidate `bf9766610`. A focused JUCE probe with `DISPLAY` unset compiled the ex
 #### SC-347 · Bend an automation segment
 
 Main already carries `835e403ae` from #830. The existing peerless Arrangement fixture drives Alt-drag on the Pan line with two breakpoints at bars 2 and 3. A 24 px vertical drag previews the curve, commits its tension without moving or adding breakpoints, and takes one Undo. A seeded Bezier then hits at the engine's curved midpoint and inserts the exact evaluated value there. The existing Option double-click reset is also exercised through the Alt modifier. The physical Option key still belongs to the Mac retest.
+
+#### 12 · SC-448 · Arrangement clip repeats
+
+The audio waveform already repeated. Its rule was drawn one column before each turn. MIDI drew repeat bars only after committing the resize, drew no internal turn rules, and stopped drawing notes after 4,096 passes. ADI now draws the same one-pixel body rule for audio and MIDI at the playback turn. MIDI repeats follow the source phase and extend in the resize preview. For loop-enabled clips, the selected body’s tint lies behind the notes, waveform and rules, so the repeated content stays visible on mouse-up.
+
+Measurements are canvas-local logical pixels from a 1280 × 820 peerless software render at 64 px per quarter note. Both fixture rows are 56 px tall. The two-beat loop starts at x64, with a 128 px period. The drag moves the right edge from x192 to x448, producing a 384 px clip preview.
+
+| Body or state | Before | After |
+| --- | --- | --- |
+| Audio turn rules | x191 and x319, y156, 1 × 40 px each | x192 and x320, y156, 1 × 40 px each |
+| MIDI while dragging the right edge | The existing note occupies x80–112. The selection tint changes near x192. | Turn rules at x192 and x320, y12, 1 × 40 px each. The same note repeats at x208–240 and x336–368. The note bars are 32 × 2.25 logical px at y33. |
+| MIDI after mouse-up | No internal turn rules | x192 and x320, y12, 1 × 40 px each through the selected body |
+| MIDI starting half a beat into the loop | No internal turn rules | First two measured at x160 and x288, y12, 1 × 40 px each |
+| MIDI scrolled to beat position 10,000 | No marks or notes in the visible fixture area beyond 4,096 passes | First two measured at x32 and x160, y12, 1 × 40 px each, with the note present after each turn |
+
+The focused peerless fixture ran on the exact preceding chain at `eda879365` with DISPLAY unset. Six SC-448 assertions failed before the fix and all 29 passed with it, including the 4,200-clip redraw check with zero SQLite stream or clip-detail reads. The selected unlooped audio body and border had the same raster checksum `c5a05bca84ef3c2d` before and after. GCC compiled both Arrangement versions and the fixture with warnings as errors.
+
+The registered sheet shows the title and content layout, and the manual documents repeated content and internal clip-loop boundaries. The glyph uses ADI’s existing body rule. For an exact glyph comparison, I recommend a close-up of an extended loop in Win’s next Live reading. [Arrangement sheet](../window/pictures/2026-11-18-arrangement-sheet.png), [Live Arrangement View §§6.7–6.13](https://www.ableton.com/en/live-manual/12/arrangement-view/#moving-and-resizing-clips), [Live Clip View §8.9](https://www.ableton.com/en/live-manual/12/clip-view/#looping-clips).
