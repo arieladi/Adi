@@ -1609,7 +1609,8 @@ static LaunchAudioClip prepareLaunchClipAudio(const ClipProject& original, const
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject& original,
     const TempoMap& clock, std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames, std::uint64_t incarnation,
     std::vector<std::string>& problems, std::uint64_t residentBudget, std::optional<double> preparedBpm,
-    std::span<const std::int64_t> warmWarpClips, const LaunchAudioProject* priorPinnedPages) {
+    std::span<const std::int64_t> warmWarpClips, const LaunchAudioProject* priorPinnedPages,
+    bool allowColdPinnedPages) {
     if (audio::onAudioThread) throw std::logic_error("prepare Session clips off the callback");
     if (!original.session || original.session->scenes().empty()) return {};
     const auto& data = *original.session;
@@ -1779,7 +1780,8 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                             pcm.push_back(*prior);
                             continue;
                         }
-                        if (!hasPreparedClock && prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate))
+                        if (!hasPreparedClock && !allowColdPinnedPages &&
+                            prepared.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate))
                             throw std::runtime_error("Session unwarped source needs an identical running page bank");
                     }
                 }

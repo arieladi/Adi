@@ -1017,8 +1017,10 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
             auto diagnostics = model.slotProblems;
             const auto* priorPinnedPages = timing.protectCompatiblePinnedPages
                 ? prior->launchAudio->mediaAt(std::numeric_limits<std::int64_t>::max()).get() : nullptr;
+            const bool hasPriorBank = (storedLaunchProject_ && storedLaunchProject_->incarnation() == storedLaunchIncarnation_) ||
+                (prior && prior->launchAudio && prior->launchAudio->incarnation() == storedLaunchIncarnation_);
             auto prepared = prepareStoredLaunchProject(*clipProject_, timing.tempo, rate, channels, timing.spec.maxFrames,
-                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips,priorPinnedPages);
+                storedLaunchIncarnation_, diagnostics, budget, preparedBpm, warmWarpClips, priorPinnedPages, !hasPriorBank);
             if (prepared && prepared->view().tracks.size() > kMaximumStoredLaunchTracks)
                 throw std::runtime_error("Session launch track capacity exceeded");
             if (beforeClock) {

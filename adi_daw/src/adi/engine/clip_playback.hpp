@@ -33,11 +33,13 @@ bool sameStoredWarpSource(const ClipProject&, const ClipProject&, std::int64_t c
 inline constexpr std::uint64_t kSessionResidentPcmBudget = std::uint64_t{256} << 20;
 /// Owner-only. A scene handover can supply a flat clock for prepared media
 /// and warm the native sources that may inherit an arbitrary source phase.
+/// Cold start-window admission for long pinned media is only for a fresh incarnation.
 std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipProject&, const TempoMap&,
     std::uint32_t rate, std::uint16_t channels, std::int32_t maxFrames,
     std::uint64_t incarnation, std::vector<std::string>& problems,
     std::uint64_t residentBudget = kSessionResidentPcmBudget, std::optional<double> preparedBpm = {},
-    std::span<const std::int64_t> warmWarpClips = {}, const LaunchAudioProject* priorPinnedPages = nullptr);
+    std::span<const std::int64_t> warmWarpClips = {}, const LaunchAudioProject* priorPinnedPages = nullptr,
+    bool allowColdPinnedPages = false);
 class ClipPlayback {
 public:
     enum class WarpPlayback { Streaming, Prepared, NativePages, AlignedR3 };

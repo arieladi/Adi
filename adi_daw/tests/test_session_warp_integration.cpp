@@ -592,7 +592,7 @@ void physicalOneShotsFollowExternalTempo() {
         test::TempDirectory folder{"session_unwarped_one_shot", ram ? "ram" : "paged"};
         auto store = sceneProject(folder.path());
         // The long paged case cannot fit the bounded whole-window admission.
-        // A new initial long bank on a ramp, Loop and Legato still need their own admission.
+        // Loop and Legato still need their own admission.
         const auto seconds = ram ? 1 : 4;
         const auto pinNs = ram ? std::int64_t{50000000} : std::int64_t{50031250}; // paged: 2401.5 samples
         const int trimFrame = ram ? 2400 : 2402;
@@ -619,6 +619,46 @@ void physicalOneShotsFollowExternalTempo() {
         std::printf("Physical unwarped %s: %lld exact frames through ordinary tempo updates\n",
                     ram ? "RAM" : "paged",static_cast<long long>(span));
     }
+}
+
+void coldPagedOneShotOnAuthoredRamp() {
+    test::TempDirectory folder{"session_unwarped_one_shot", "cold-ramp"};
+    auto store = sceneProject(folder.path());
+    auto& db = store->db();
+    SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
+    tempo.bind(1,lastBeat * quarter);
+    tempo.exec();
+    constexpr auto span = 4 * rate;
+    constexpr auto pinNs = 50031250; // 2401.5 samples at 48 kHz
+    addClip(*store,folder.path(),101,10,17,false,5402,1,12000);
+    pinUnwarpedOneShot(*store,pinNs,4000000000);
+    db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id=101");
+
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store, {}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    session.transport().play();
+    const auto launch = frameAtBeat(4);
+    const auto finish = launch + span + blockFrames;
+    std::vector<float> pcm(static_cast<std::size_t>(finish));
+    Playback playback{session,pcm};
+    playback.paged = true;
+    playback.through(blockFrames);
+    scene(*store,session,10);
+    playback.through(finish);
+
+    int pulses = 0;
+    for (auto frame = launch + 3000; frame < launch + span; frame += 12000)
+        if (std::abs(pcm[static_cast<std::size_t>(frame)] - .55f) < 1e-6f) ++pulses;
+    const auto stop = playback.count == 2 ? playback.edges[1].sample : -1;
+    std::printf("Cold paged one-shot on authored ramp: %d/16 attacks, launch %lld, stop %lld\n",
+        pulses,static_cast<long long>(playback.edges[0].sample),static_cast<long long>(stop));
+    require(session.problems().empty() && pulses == 16, "a fresh project primes and streams the long physical slot");
+    require(playback.count == 2 && playback.edges[0].newClip == 101 && playback.edges[0].sample == launch &&
+            playback.edges[1].newClip == 0 && stop == launch + span,
+            "the ramp quantizes the launch but preserves the complete physical one-shot");
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,
+            "cold paged playback starts without allocation or file reads in the callback");
 }
 
 void physicalOneShotToWarpLegato() {
@@ -714,6 +754,7 @@ int main() {
         mixedTempoScene(MixedScene::ChangeNativeGain);
         absoluteWarpFallback();
         physicalOneShotsFollowExternalTempo();
+        coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
