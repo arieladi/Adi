@@ -28128,6 +28128,43 @@ void heldOutputKeepsInput(const std::filesystem::path &dir) {
           "the free input is open, inputs 1/2 on, though the output is not");
     check(why.contains("Settings"), "and it says where to choose another output");
 }
+void deviceOutputGrantPublication() {
+    struct Processor final : engine::BlockProcessor {
+        std::function<void()> onPrepare;
+        engine::OutputChannelMap rendered;
+        void prepare(double, std::int32_t) override { onPrepare(); }
+        void process(const engine::AudioIo &io) noexcept override { rendered = io.outputChannels; }
+        void release() override {}
+    } processor;
+    device::DeviceBridge bridge(processor);
+    ListedAudioType::Device driver("Sparse outputs", {}, false);
+    driver.outs = engine::OutputChannelMap::maximumChannels;
+    const auto configure = [&](const juce::BigInteger &enabled) {
+        driver.open({}, enabled, 48000., 256);
+        bridge.audioDeviceAboutToStart(&driver);
+    };
+    std::optional<engine::OutputChannelMap> duringPrepare;
+    processor.onPrepare = [&] { duringPrepare = bridge.physicalOutputChannels(); };
+    juce::BigInteger sparse;
+    sparse.setRange(2, 2, true);
+    sparse.setRange(6, 2, true);
+    const engine::OutputChannelMap sparseGrant{0b11001100};
+    configure(sparse);
+    check(!duringPrepare && bridge.physicalOutputChannels() == sparseGrant,
+          "the first physical grant becomes visible only after its processor is ready");
+    bridge.audioDeviceIOCallbackWithContext(nullptr, 0, nullptr, 4, 1, {});
+    check(processor.rendered == sparseGrant, "the driver callback receives the published sparse grant");
+    configure({});
+    check(duringPrepare == sparseGrant && bridge.physicalOutputChannels() == engine::OutputChannelMap{0},
+          "restarting keeps the previous complete grant until the new grant is ready, including an empty grant");
+    juce::BigInteger all;
+    all.setRange(0, engine::OutputChannelMap::maximumChannels, true);
+    configure(all);
+    check(bridge.physicalOutputChannels() == engine::OutputChannelMap{},
+          "the complete grant preserves all 64 output bits");
+    bridge.audioDeviceStopped();
+    check(!bridge.physicalOutputChannels(), "a stopped device has no output grant");
+}
 void missingCueOutputStatus(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "missing-cue.adi", true, {}, error);
@@ -32248,6 +32285,7 @@ int main(int argc, char **argv) {
     trace("playbackProblemNotices", [&] { playbackProblemNotices(commands, temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
+    trace("deviceOutputGrantPublication", deviceOutputGrantPublication);
     trace("missingCueOutputStatus", [&] { missingCueOutputStatus(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
