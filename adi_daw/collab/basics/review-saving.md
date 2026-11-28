@@ -76,6 +76,27 @@ set back: the oldest of the other backups is offered instead". Step 1 now covers
   destination; for a first save its media were already taken back, so that leftover file would open with
   its samples missing. The open project is untouched. Not reproduced.
 
+Added in round 2:
+
+- **A song whose own folder is named "Backup" never gets a timed backup, and nothing says so.**
+  `requestProjectBackup` in `src/juce/ui_main.cpp` turns the schedule off when
+  `store().path().parent_path().filename() == "Backup"` (meant for a backup opened from its song's
+  Backup folder). `backup::prepare` already refuses a real backup by its stamp (`backup::isBackup`), so
+  the name test only catches songs kept in a folder of that name (an external drive's "Backup" folder,
+  say). Suggested fix: test `backup::isBackup(store)` instead. In the application's own file, which no
+  headless test reaches; a test needs the predicate moved into `src/adi/ui/project_backup_schedule.hpp`.
+- **Timed backups follow any write, not only an edit.** The schedule's revision is
+  `sqlite3_total_changes64` plus `PRAGMA data_version` (`queueProjectBackup`), and a selection change,
+  Play or Stop also write to the project (finding 2 depends on that). So a session spent only listening
+  and clicking writes a backup every ten minutes, and after 100 minutes the ten kept are copies of the
+  same state, the earlier distinct ones gone to the Recycle Bin. Not reproduced: the revision is read in
+  the application's file. If it holds, the revision should be the undo head and op count (as
+  `DailyHistorySnapshots` uses), not the raw change counter.
+- **macOS: a project path spelled in another Unicode normalization than its stamp.** `readOwnedBackup`
+  compares the stored `backup_origin` byte for byte with `project.filename()`. A name with an accent,
+  opened once by an NFC path and once by an NFD one (Recent list, Finder, command line), may stop
+  matching its own backups. Needs a Mac to try.
+
 ## For the director
 
 1. **Finding 1 adds one sentence a user sees**, in today's Status Bar notice at open: "This project's
