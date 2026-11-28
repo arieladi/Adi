@@ -1132,7 +1132,7 @@ void Session::prepareLaunchAudio(TimingView& timing, const rows::Model& model, C
                     const bool samePhysical = newSlot != after.end() && samePhysicalWindow(oldSlot,*newSlot) &&
                         hasReadyPhysicalSource(oldAudio,oldSlot) && hasReadyPhysicalSource(newAudio,*newSlot) &&
                         oldAudio->pageReader() == newAudio->pageReader();
-                    const bool sameWarp = !target.physicalLoopEndFrame && newSlot != after.end() &&
+                    const bool sameWarp = !retained && newSlot != after.end() &&
                         sameNativeWarpWindow(oldAudio,oldSlot,newAudio,*newSlot);
                     if (!samePhysical && !sameWarp)
                         throw std::runtime_error("a pinned Session Legato scene needs unchanged outgoing source windows");

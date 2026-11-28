@@ -2176,9 +2176,11 @@ void physicalLegatoLoopFollowsExternalTempo() {
             "physical loop Legato performs no callback allocation or file I/O");
 }
 
-void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged) {
+void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged, bool targetLoop = false) {
     constexpr auto targetStart = 4800, cue = 15086;
     constexpr auto phaseFrames = cue - targetStart;
+    constexpr auto loopBegin = 9600, loopEnd = 21600, loopLength = loopEnd - loopBegin;
+    constexpr auto firstWrap = tempoSceneFrame + loopEnd - cue;
     const auto render = [&](bool tempo,bool wraps,bool pendingRefresh = false) {
         test::TempDirectory folder{"native_warp_to_raw_legato",wraps ? "wrap" : "advance"};
         auto store = sceneProject(folder.path());
@@ -2200,6 +2202,11 @@ void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged) {
                 "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,1100000000);"
                 "UPDATE clip_launch SET launch_quant=1 WHERE clip_id=101;");
         if (paged) db.exec("UPDATE clip_launch SET ram_mode=0 WHERE clip_id IN (101,102)");
+        if (targetLoop) {
+            db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=2306304,loop_len_ticks=2882880 WHERE id=102;"
+                    "UPDATE clip_playback_details SET loop_begin_ns=200000000,loop_end_ns=450000000 WHERE clip_id=102;"
+                    "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_loop_count=3,follow_a=1 WHERE clip_id=102;");
+        }
         constexpr auto oldStart = quarter/5;
         constexpr auto phaseTick = phaseFrames * quarter / (rate/2);
         SQLite::Statement oldGeometry(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=?,"
@@ -2217,8 +2224,8 @@ void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged) {
         if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
         session.transport().play();
         const auto launch = tempoSceneFrame - (wraps ? wrapQuarters*rate/2 : phaseFrames);
-        constexpr auto stop = tempoSceneFrame + rate - phaseFrames;
-        std::vector<float> pcm(stop+blockFrames);
+        const auto stop = targetLoop ? firstWrap + 2*loopLength : tempoSceneFrame + rate - phaseFrames;
+        std::vector<float> pcm(static_cast<std::size_t>(stop+blockFrames));
         Playback playback{session,pcm};
         playback.paged = paged;
         playback.through(launch);
@@ -2242,7 +2249,31 @@ void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged) {
                     "a pending paged replacement cannot supply the scene's before bank");
             return pcm;
         }
+        bool exactLaps = true;
+        if (targetLoop) {
+            playback.through(firstWrap);
+            const auto partial = trackState(session);
+            playback.through(firstWrap+1);
+            const auto firstFull = trackState(session);
+            playback.through(firstWrap+loopLength+1);
+            const auto finalLap = trackState(session);
+            exactLaps = partial.clip == 102 && partial.run == firstFull.run && partial.run == finalLap.run &&
+                partial.completedLoops == 0 && firstFull.completedLoops == 1 && finalLap.completedLoops == 2;
+        }
         playback.through(stop+blockFrames);
+        if (targetLoop) {
+            audio::WavReader original(folder.path() / "102.wav");
+            std::array<float,loopEnd> raw;
+            require(original.read(raw.data(),static_cast<std::uint32_t>(raw.size())) == raw.size(),"read saved raw loop PCM");
+            auto source = cue;
+            for (auto sample=tempoSceneFrame; sample<stop; ++sample) {
+                exactLaps &= pcm[static_cast<std::size_t>(sample)] == raw[static_cast<std::size_t>(source++)];
+                if (source == loopEnd) source = loopBegin;
+            }
+            exactLaps &= std::all_of(pcm.begin()+stop,pcm.end(),[](float sample) { return sample == 0; });
+            std::printf("Mixed physical loop: first wrap %lld, linked Stop %lld, exact phase and PCM %d\n",
+                static_cast<long long>(firstWrap),static_cast<long long>(stop),exactLaps);
+        }
         const auto* edge = playback.count >= 2 ? &playback.edges[1] : nullptr;
         const auto actualStop = playback.count >= 3 ? playback.edges[2].sample : -1;
         std::printf("Native %s %s Warp to raw Legato wraps=%d tempo=%d, cut %lld, source tick %lld, stop %lld/%lld, attack %.6f, clock %.0f\n",
@@ -2256,12 +2287,12 @@ void nativeWarpToPhysicalLegatoScene(const char* mode, bool paged) {
                 edge->newClip == 102 && edge->sample == tempoSceneFrame && playback.count == 3 &&
                 playback.edges[2].newClip == 0 && actualStop == stop && pcm[tempoSceneFrame] == -.6f &&
                 session.graph().renderedLatency() == 0 && session.problems().empty() &&
-                callbackAllocations == 0 && audio::callbackFileIo == 0,
+                exactLaps && callbackAllocations == 0 && audio::callbackFileIo == 0,
                 "native outgoing source phase maps to the exact raw cue and End on the scene clock");
         return pcm;
     };
     for (bool wraps : {false,true}) {
-        if (paged && !wraps) continue;
+        if ((paged || targetLoop) && !wraps) continue;
         const auto steady = render(false,wraps);
         const auto moved = render(true,wraps);
         require(steady == moved,"the tempo scene inherits the same source phase as the unchanged clock");
@@ -2368,6 +2399,8 @@ int main() {
         }
         physicalLegatoTempoScene(false);
         physicalLegatoTempoScene(true);
+        nativeWarpToPhysicalLegatoScene("re-pitch",false,true);
+        nativeWarpToPhysicalLegatoScene("re-pitch",true,true);
         for (const auto* mode : {"re-pitch","beats","texture"}) {
             nativeWarpToPhysicalLegatoScene(mode,false);
             nativeWarpToPhysicalLegatoScene(mode,true);
