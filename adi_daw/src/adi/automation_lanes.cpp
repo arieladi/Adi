@@ -43,10 +43,15 @@ void validateRow(OpContext& c, const Payload& row) {
     const auto& paramRef=row.at("param_ref").get_ref<const std::string&>();
     if (paramRef.empty()) throw std::runtime_error("automation: empty parameter");
     // Replay can contain non-canonical device param_refs logged by earlier versions (ops.hpp).
-    if (!c.replay && row.at("owner_kind").get_ref<const std::string&>()=="device" &&
-        !isCanonicalDeviceParamRef(paramRef))
-        throw std::runtime_error("automation: device param_ref must be a canonical decimal parameter id");
     const auto& domain=row.at("value_domain").get_ref<const std::string&>();
+    if (!c.replay && row.at("owner_kind").get_ref<const std::string&>()=="device") {
+        if (paramRef == kDeviceActivatorParamRef) {
+            if (domain != "enum")
+                throw std::runtime_error("automation: Device Activator requires an enum lane");
+        } else if (!isCanonicalDeviceParamRef(paramRef)) {
+            throw std::runtime_error("automation: device param_ref must be a canonical decimal parameter id");
+        }
+    }
     if (domain!="normalized" && domain!="real" && domain!="enum") throw std::runtime_error("automation: unknown value domain");
     for (const auto* col:{"enabled","visible"})
         if (number(row.at(col))!=0 && number(row.at(col))!=1) throw std::runtime_error("automation: invalid lane switch");

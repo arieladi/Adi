@@ -336,13 +336,26 @@ void exportHistory() {
     History history(*f.store);check(history.undo().ok,"ZIP fixture has media only in history");
     const auto before=digestProject(*f.store).text,ids=identities(*f.store);
     const auto zip=f.temp.path()/"history.zip";
-    check(f.store->collectAndExport(zip).ok,"Store ZIP export collects history-only media");
+    f.store->db().exec("INSERT INTO agent_requests(txn_id,request,created_utc) "
+                       "SELECT MAX(txn_id),'TEST_ARCHIVE_AGENT_REQUEST',0 FROM ops;");
+    check(f.store->collectAndExport(zip, true).ok,"Store ZIP export with Undo collects history-only media");
     check(digestProject(*f.store).text==before && identities(*f.store)==ids,"ZIP export leaves live source pool and history unchanged");
     ZipReader archive(zip);const auto unpacked=f.temp.path()/"unpacked";
     check(archive.extract(unpacked),"history ZIP extracts");
     fs::remove_all(f.temp.path()/"elsewhere");
     StoreError error{};auto copy=Store::open(unpacked/"song.adi",error);
     check(copy && History(*copy).redo().ok && resolves(*copy,7),"ZIP's redo restores media without access to original files");
+    check(read(unpacked/"song.adi").find("TEST_ARCHIVE_AGENT_REQUEST") == std::string::npos,
+          "keeping ZIP history does not preserve the private request text");
+    const auto defaultZip = f.temp.path()/"default.zip";
+    check(f.store->collectAndExport(defaultZip).ok, "default ZIP succeeds with the history-only file missing");
+    ZipReader defaultArchive(defaultZip);
+    const auto defaultUnpacked = f.temp.path()/"default-unpacked";
+    check(defaultArchive.extract(defaultUnpacked), "default ZIP extracts");
+    auto current = Store::open(defaultUnpacked/"song.adi", error);
+    check(current && !History(*current).canUndo() && !History(*current).canRedo() &&
+          current->db().execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 0,
+          "default ZIP has no history-only sample or edit to redo");
 }
 // On unix SQLite names a project by its resolved path (macOS's temporary folder
 // /var/... is a link to /private/var/...) and ".." climbs physical parents. A

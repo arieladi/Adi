@@ -5,6 +5,13 @@ include(GNUInstallDirs)
 install(TARGETS adi_app adi_plugin_scanner
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT adi_base)
 
+set(_adi_starter_drums_data "${CMAKE_INSTALL_DATAROOTDIR}/adi/starter-drums")
+install(DIRECTORY "${_adi_starter_drums}/" DESTINATION "${_adi_starter_drums_data}" COMPONENT adi_base
+    FILES_MATCHING PATTERN "*.wav")
+file(RELATIVE_PATH _adi_starter_drums_relative "${CMAKE_INSTALL_FULL_BINDIR}"
+    "${CMAKE_INSTALL_FULL_DATAROOTDIR}/adi/starter-drums")
+target_compile_definitions(adi_app PRIVATE ADI_STARTER_DRUMS_RELATIVE="${_adi_starter_drums_relative}")
+
 set(_adi_license_dir "${CMAKE_INSTALL_DATAROOTDIR}/doc/adi/licenses")
 install(FILES LICENSE docs/EXTERNAL-CODE.md DESTINATION "${_adi_license_dir}" COMPONENT adi_base)
 install(DIRECTORY third_party_notices/ DESTINATION "${_adi_license_dir}/notices" COMPONENT adi_base)

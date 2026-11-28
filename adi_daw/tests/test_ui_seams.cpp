@@ -15,6 +15,7 @@
 // use-after-free under the design this one replaced.
 
 #include "temp_directory.hpp"
+#include "return_project_fixture.hpp"
 
 #include "adi/automation_lanes.hpp"
 #include "adi/clip_commands.hpp"
@@ -1918,8 +1919,8 @@ void insertReturnTrackStandsBeforeMain() {
     section("Insert Return Track: after the returns, before Main; every index its own (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-return");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);
@@ -2588,7 +2589,11 @@ void heldIdsAreSkipped() {
     const auto next = rows.next("tracks");
     auto made2 = ui::insertTrack(view.current()->tracks, 0, false, nullptr, next);
     check(next == 5 && !made2.ops.empty() && made2.ops.front().payload["id"] == 5, "Insert Audio Track takes 5 from RowIds");
-    auto dropped = ui::newAudioTrack(*view.current());
+    ui::AudioImport preparedAudio;
+    preparedAudio.mediaId = 1;
+    preparedAudio.sampleRate = 48000;
+    preparedAudio.frames = 480;
+    const auto dropped = ui::dropAudio(*view.current(), 0, 0, "Sample", std::move(preparedAudio));
     check(!dropped.ops.empty() && dropped.ops.front().payload["id"] == 5, "a dropped file's new track takes 5 too");
     check(sub.submit(std::move(made2.ops)).ok && view.current()->findTrack(5) != nullptr, "and lands");
     check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(4) != nullptr, "Undo brings Kick back, with its id");
@@ -2649,11 +2654,11 @@ void anEmptyRenameGivesTheDefaultNameBack() {
           "a return and Main keep the name they have");
 }
 void insertTrackMovesTheReturnsAndMainDown() {
-    section("Insert Track in the default project: every later track down one, the returns and Main too (manual 18.2)");
+    section("Insert Track in a saved project: every later track down one, the returns and Main too (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-foot");
     StoreError err = StoreError::Ok;
-    auto store = Store::createNewProject(temp.path() / "p.adi", err);
-    check(store != nullptr, "the default project");
+    auto store = test::createProjectWithReturns(temp.path() / "p.adi", err);
+    check(store != nullptr, "a saved project with two returns");
     if (!store) return;
     engine::ProjectView view;
     ui::OpSubmitter sub(*store, view);
