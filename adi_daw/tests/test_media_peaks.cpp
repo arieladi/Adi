@@ -46,8 +46,15 @@ void run() {
     check(decoded && *decoded.data==data,"bounded cache codec round trips all channels and content identity");
     check(bytes.size()==112 && bytes[0]==std::byte{'A'} && bytes[4]==std::byte{1} && bytes[6]==std::byte{80} && bytes[8]==std::byte{0x80} && bytes[9]==std::byte{0xbb} && bytes[82]==std::byte{0x80} && bytes[83]==std::byte{0xbf},"APKS header and negative float have fixed little-endian bytes independent of native layout");
     cache(*store,bytes);const auto cached=readMediaPeaks(*store,1);check(cached && *cached.data==data,"pool cache reader validates hash and dimensions");
+    const auto refined=buildMediaPeaks(*store,1,16,{},&decoding,&analysis,PeakCacheResolution::PreferRequested);
+    check(refined && refined.data->framesPerBin==1 && refined.data->bins[4]==PeakBin{2,2} &&
+          readMediaPeaks(*store,1).data==cached.data,"a detail request upgrades coarse pool and shared caches while preserving the pool BLOB");
     std::filesystem::remove(source);auto readonly=Store::open(store->path(),error,true);if(!readonly)throw std::runtime_error(toString(error));
     const auto missing=buildMediaPeaks(*readonly,1,16,{},&decoding,&analysis);check(missing && *missing.data==data,"read-only worker can draw a valid pool cache when source audio is missing");
+    const auto sharedDetail=buildMediaPeaks(*readonly,1,16,{},&decoding,&analysis,PeakCacheResolution::PreferRequested);
+    check(sharedDetail && sharedDetail.data==refined.data,"a detailed shared cache supersedes coarse pool peaks with the source offline");
+    const auto fallback=buildMediaPeaks(*readonly,1,16,{},&decoding,nullptr,PeakCacheResolution::PreferRequested);
+    check(fallback && fallback.data==cached.data,"a coarse pool cache remains usable when detail cannot be built");
     check(readMediaPeaks(*store,999).problem==PeakProblem::unknownMedia,"unknown media is explicit");
     store->db().exec("UPDATE media_files SET frames=6 WHERE id=1");check(readMediaPeaks(*store,1).problem==PeakProblem::invalidCache,"changed pool dimensions invalidate cached waveform");store->db().exec("UPDATE media_files SET frames=5,hash_blake3='other' WHERE id=1");
     check(readMediaPeaks(*store,1).problem==PeakProblem::invalidCache,"changed content identity invalidates cached waveform");

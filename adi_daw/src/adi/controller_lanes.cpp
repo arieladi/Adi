@@ -34,7 +34,7 @@ Address address(const Payload &payload) {
     result.id = integer(payload.at("id"));
     result.clipId = integer(payload.at("clip"));
     const auto channel = integer(payload.at("channel")), controller = integer(payload.at("controller"));
-    if (channel < 0 || channel > 15 || controller < 0 || controller > 127)
+    if (channel < 0 || channel > 15 || !validController(controller))
         throw std::runtime_error("invalid MIDI controller address");
     result.channel = static_cast<int>(channel);
     result.controller = static_cast<int>(controller);
@@ -113,6 +113,18 @@ struct Stream {
         return result;
     }
 };
+const char *streamKind(Address location) noexcept {
+    return location.controller == kPitchBend ? "pitchbend" : "cc";
+}
+void bindSlot(SQLite::Statement &statement, int first, Address location) {
+    statement.bind(first, location.clipId);
+    statement.bind(first + 1, streamKind(location));
+    statement.bind(first + 2, location.channel);
+    if (location.controller == kPitchBend)
+        statement.bind(first + 3);
+    else
+        statement.bind(first + 3, location.controller);
+}
 std::optional<std::vector<std::byte>> readSlot(SQLite::Database &db, Address location) {
     SQLite::Statement clip(db, "SELECT 1 FROM clips WHERE id=?");
     clip.bind(1, location.clipId);
@@ -120,17 +132,17 @@ std::optional<std::vector<std::byte>> readSlot(SQLite::Database &db, Address loc
         throw std::runtime_error("no such controller clip");
     SQLite::Statement rows(db,
                            "SELECT id,clip_id,stream_kind,channel,controller,data FROM event_streams WHERE "
-                           "id=? OR (clip_id=? AND stream_kind='cc' AND channel=? AND controller=?)");
+                           "id=? OR (clip_id=? AND stream_kind=? AND channel=? AND controller IS ?)");
     rows.bind(1, location.id);
-    rows.bind(2, location.clipId);
-    rows.bind(3, location.channel);
-    rows.bind(4, location.controller);
+    bindSlot(rows, 2, location);
     std::optional<std::vector<std::byte>> result;
     while (rows.executeStep()) {
+        const auto controller = rows.getColumn(4);
+        const bool matchesController = location.controller == kPitchBend ? controller.isNull()
+            : !controller.isNull() && controller.getInt64() == location.controller;
         if (result || rows.getColumn(0).getInt64() != location.id ||
-            rows.getColumn(1).getInt64() != location.clipId || rows.getColumn(2).getString() != "cc" ||
-            rows.getColumn(3).isNull() || rows.getColumn(3).getInt64() != location.channel ||
-            rows.getColumn(4).isNull() || rows.getColumn(4).getInt64() != location.controller)
+            rows.getColumn(1).getInt64() != location.clipId || rows.getColumn(2).getString() != streamKind(location) ||
+            rows.getColumn(3).isNull() || rows.getColumn(3).getInt64() != location.channel || !matchesController)
             throw std::runtime_error("controller stream ID/address collision");
         result = blob(rows.getColumn(5));
     }
@@ -148,14 +160,12 @@ bool save(OpContext &context, Address location, const std::optional<std::vector<
         }
         SQLite::Statement write(context.db,
                                 "INSERT INTO event_streams(id,clip_id,stream_kind,channel,controller,data) "
-                                "VALUES(?,?,'cc',?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data");
+                                "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data");
         write.bind(1, location.id);
-        write.bind(2, location.clipId);
-        write.bind(3, location.channel);
-        write.bind(4, location.controller);
+        bindSlot(write, 2, location);
         if (data->size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             throw std::runtime_error("controller stream exceeds SQLite blob limit");
-        write.bind(5, data->data(), static_cast<int>(data->size()));
+        write.bind(6, data->data(), static_cast<int>(data->size()));
         write.exec();
         return true;
     } catch (const std::exception &e) {
@@ -348,8 +358,9 @@ ReadResult readLanes(const Store &store, std::optional<std::int64_t> clip) {
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
             transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
         SQLite::Statement query(
-            db, "SELECT id,clip_id,channel,controller,data FROM event_streams WHERE stream_kind='cc' AND (? "
-                "IS NULL OR clip_id=?) ORDER BY clip_id,channel,controller,id");
+            db, "SELECT id,clip_id,channel,controller,data,stream_kind FROM event_streams "
+                "WHERE stream_kind IN ('cc','pitchbend') AND (? IS NULL OR clip_id=?) "
+                "ORDER BY clip_id,channel,stream_kind,controller,id");
         if (clip) {
             query.bind(1, *clip);
             query.bind(2, *clip);
@@ -367,9 +378,12 @@ ReadResult readLanes(const Store &store, std::optional<std::int64_t> clip) {
                 lane.controller = query.getColumn(3).getInt64();
             lane.data = blob(query.getColumn(4));
             try {
-                if (!lane.channel || !lane.controller || *lane.channel < 0 || *lane.channel > 15 ||
-                    *lane.controller < 0 || *lane.controller > 127)
+                const bool pitch = query.getColumn(5).getString() == "pitchbend";
+                if (!lane.channel || *lane.channel < 0 || *lane.channel > 15 ||
+                    (pitch ? lane.controller.has_value() : !lane.controller || !validCc(*lane.controller)))
                     throw std::runtime_error("invalid/unbound controller lane address");
+                if (pitch)
+                    lane.controller = kPitchBend;
                 const Stream stream(lane.data);
                 for (const auto &record : stream.records) {
                     const auto &value = record.point;
@@ -429,10 +443,8 @@ PreparedWrite prepareWrite(Store &store, std::int64_t clip, int channel, int con
         auto location = address(packet({0, clip, channel, controller}));
         {
             SQLite::Statement slot(store.db(), "SELECT id FROM event_streams WHERE clip_id=? AND "
-                                               "stream_kind='cc' AND channel=? AND controller=?");
-            slot.bind(1, clip);
-            slot.bind(2, channel);
-            slot.bind(3, controller);
+                                               "stream_kind=? AND channel=? AND controller IS ?");
+            bindSlot(slot, 1, location);
             if (slot.executeStep())
                 location.id = slot.getColumn(0).getInt64();
             else {

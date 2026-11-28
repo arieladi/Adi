@@ -49,11 +49,13 @@ public:
     HeadlessProject& operator=(const HeadlessProject&) = delete;
 
     [[nodiscard]] const std::string& handle() const override { return handle_; }
+    [[nodiscard]] std::string projectUuid() const override { return projectUuid_; }
     [[nodiscard]] std::string label() const override;
     [[nodiscard]] ReadSnapshot read(std::string& error) override;
     [[nodiscard]] std::optional<std::int64_t> head(std::string& error) override;
     [[nodiscard]] std::string fileSchema() override;
     [[nodiscard]] agent::Preview preview(const agent::Changeset&, const agent::Limits&) override;
+    [[nodiscard]] std::optional<Tier> agentTierOverride() override;
     [[nodiscard]] bool wasApplied(const std::string& actorDetail) override;
     [[nodiscard]] bool live() const override { return false; }
     [[nodiscard]] std::shared_ptr<const TelemetryFrame> telemetry() const override { return nullptr; }
@@ -79,6 +81,7 @@ private:
     std::filesystem::path scratch_;
     std::unique_ptr<Store> snapshot_;
     std::string handle_;
+    std::string projectUuid_;
     std::string label_;
     mutable std::mutex mutex_;
 };

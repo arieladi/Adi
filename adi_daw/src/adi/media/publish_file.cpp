@@ -205,6 +205,18 @@ std::optional<FileIdentity> windowsIdentityOf(NativeFile file,std::error_code& e
     if(!result){error=std::make_error_code(std::errc::operation_not_supported);return {};}
     error.clear();return result;
 }
+std::optional<FileRevision> windowsRevisionOf(NativeFile file, std::error_code& error) noexcept {
+    const auto identity=windowsIdentityOf(file,error,true);
+    if(!identity)return {};
+    FILE_BASIC_INFO times{};
+    FILE_STANDARD_INFO dimensions{};
+    if(!GetFileInformationByHandleEx(file,FileBasicInfo,&times,sizeof(times)) ||
+       !GetFileInformationByHandleEx(file,FileStandardInfo,&dimensions,sizeof(dimensions))){error=nativeError();return {};}
+    if(dimensions.EndOfFile.QuadPart<0){error=std::make_error_code(std::errc::invalid_argument);return {};}
+    error.clear();
+    return FileRevision{*identity,static_cast<std::uint64_t>(dimensions.EndOfFile.QuadPart),
+                        {times.LastWriteTime.QuadPart,0},{times.ChangeTime.QuadPart,0}};
+}
 #endif
 std::optional<FileIdentity> identityOf(NativeFile file,std::error_code& error) noexcept {
 #if defined(_WIN32)
@@ -409,11 +421,38 @@ std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_cod
     if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
     return identityAt(path,error);
 }
+std::optional<FileRevision> readFileRevision(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+#if defined(_WIN32)
+    NativeOwner file;
+    file.value=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    if(file.value==invalidFile){error=nativeError();return {};}
+    return windowsRevisionOf(file.value, error);
+#else
+    struct stat info{};
+    if(::lstat(path.c_str(),&info)!=0){error=nativeError();return {};}
+    if(!S_ISREG(info.st_mode) || info.st_size<0){error=std::make_error_code(std::errc::invalid_argument);return {};}
+#if defined(__APPLE__)
+    const auto modified=info.st_mtimespec;
+    const auto changed=info.st_ctimespec;
+#else
+    const auto modified=info.st_mtim;
+    const auto changed=info.st_ctim;
+#endif
+    error.clear();
+    return FileRevision{{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)},
+                        static_cast<std::uint64_t>(info.st_size),
+                        {static_cast<std::int64_t>(modified.tv_sec),static_cast<std::int64_t>(modified.tv_nsec)},
+                        {static_cast<std::int64_t>(changed.tv_sec),static_cast<std::int64_t>(changed.tv_nsec)}};
+#endif
+}
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
     fs::path path;
     FileIdentity id;
     bool created=false;
+    bool exclusive=false;
     ~Impl(){closeNative(file);}
 };
 ProjectFileLease::ProjectFileLease(std::unique_ptr<Impl> value):impl_(std::move(value)){}
@@ -489,7 +528,7 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
         // this Store onto a different inode after we acquired the old one.
         const auto current=identityAt(value->path,error);
         if(!current || *current!=*identity){if(!error)error=std::make_error_code(std::errc::state_not_recoverable);return {};}
-        value->id=*identity;value->created=create;error.clear();
+        value->id=*identity;value->created=create;value->exclusive=exclusive;error.clear();
         return std::shared_ptr<ProjectFileLease>(new ProjectFileLease(std::move(value)));
     }catch(const fs::filesystem_error& exception){error=exception.code();return {};}
     catch(...){error=std::make_error_code(std::errc::not_enough_memory);return {};}
@@ -499,7 +538,49 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::createShared(const fs::path&
 std::shared_ptr<ProjectFileLease> ProjectFileLease::openExclusive(const fs::path& path,std::error_code& error) noexcept {return open(path,false,true,error);}
 FileIdentity ProjectFileLease::identity()const noexcept{return impl_->id;}
 const fs::path& ProjectFileLease::path()const noexcept{return impl_->path;}
-bool ProjectFileLease::removeCreated(std::error_code& error) noexcept {
+bool ProjectFileLease::removeExclusive(const FileRevision& expected, std::error_code& error,
+                                       const std::function<std::error_code()>& validate) noexcept {
+    if(audio::onAudioThread || !impl_->exclusive || impl_->file==invalidFile){
+        error=std::make_error_code(std::errc::operation_not_permitted);
+        return false;
+    }
+    try {
+#if defined(_WIN32)
+        // The existing lease shares delete. A second handle pins the name and excludes writers
+        // and competing delete handles until this file has been marked for deletion.
+        NativeOwner removable;
+        removable.value=CreateFileW(impl_->path.c_str(),DELETE|FILE_READ_ATTRIBUTES,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+        if(removable.value==invalidFile){error=nativeError();return false;}
+#endif
+        if(validate && (error=validate()))return false;
+#if defined(_WIN32)
+        const auto current=windowsRevisionOf(removable.value,error);
+#else
+        const auto current=readFileRevision(impl_->path,error);
+#endif
+        if(current!=expected || expected.identity!=impl_->id){
+            if(!error)error=std::make_error_code(std::errc::state_not_recoverable);
+            return false;
+        }
+#if defined(_WIN32)
+        FILE_DISPOSITION_INFO disposition{};
+        disposition.DeleteFile=TRUE;
+        if(!SetFileInformationByHandle(removable.value,FileDispositionInfo,&disposition,sizeof(disposition))){
+            error=nativeError();
+            return false;
+        }
+        closeNative(impl_->file);
+        impl_->file=invalidFile;
+        return true;
+#else
+        return fs::remove(impl_->path,error);
+#endif
+    }catch(const fs::filesystem_error& exception){error=exception.code();return false;}
+    catch(...){error=std::make_error_code(std::errc::io_error);return false;}
+}
+bool ProjectFileLease::removeCreated(std::error_code& error,
+                                     const std::function<std::error_code()>& validate) noexcept {
     if(audio::onAudioThread || !impl_->created){error=std::make_error_code(std::errc::operation_not_permitted);return false;}
     try {
         // A second real reader can have opened the fully seeded file before a
@@ -515,6 +596,9 @@ bool ProjectFileLease::removeCreated(std::error_code& error) noexcept {
         if(removable.value==invalidFile){error=nativeError();return false;}
         unlockNative(impl_->file);
         if((error=lockNative(removable.value,true)))return false;
+#endif
+        if(validate && (error=validate()))return false;
+#if defined(_WIN32)
         closeNative(impl_->file);impl_->file=invalidFile;
 #endif
         const bool removed=fs::remove(impl_->path,error);return removed && !error;
@@ -641,6 +725,10 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
 
 std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) noexcept {
     return classicReplace(source, target);
+}
+std::error_code syncPublishedDirectory(const fs::path& path) noexcept {
+    if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
+    return syncFolder(path);
 }
 std::error_code removePublishedFile(const fs::path& path,const FileIdentity& expected) noexcept {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);

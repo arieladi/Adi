@@ -37,6 +37,8 @@
 #include <memory>
 #include <span>
 #include <thread>
+#include <type_traits>
+#include <utility>
 namespace adi::ui {
 class MidiInputFeed {
   public:
@@ -46,10 +48,22 @@ class MidiInputFeed {
         std::uint32_t port = 0; // the host's slot: stable while the input stays open
         bool track = false, remote = false, mpe = false;
         std::uint64_t serial = 0; // which opening of the slot: a new one starts with a clean parser
+        std::uint64_t portKey = 0;
     };
     static constexpr std::size_t kMaxSources = 64;
     // Events taken from the rings in one block; the rest wait in their rings for the next.
     static constexpr std::size_t kMaxPerBlock = 512;
+
+    // The message thread supplies typed notes with unique computer-keyboard identities.
+    // They share the port clock and the audio callback's single Session producer.
+    bool pushComputerMidi(double timeMs, const engine::Event &event) noexcept {
+        if (!std::isfinite(timeMs) || !engine::isNoteStream(event.type))
+            return false;
+        if (computerMidi_.push({timeMs, event}))
+            return true;
+        computerOverflow_.store(true, std::memory_order_release);
+        return false;
+    }
 
     // Message thread. The sources the audio thread drains from its next block on. Returns once the audio
     // thread no longer reads the list this replaces, so the rings only that list named may then be freed.
@@ -68,17 +82,30 @@ class MidiInputFeed {
         while (reading_.load(std::memory_order_seq_cst) == 1 - next)
             std::this_thread::yield();
     }
-    // The device restarted its sample clock: the anchor and the parsers' notes go at the next pump.
+    // The device restarted its sample clock: reset the anchor and parsers, and discard queued computer notes.
     void restart() noexcept { restart_.store(true, std::memory_order_release); }
     // Events read but not enqueued because the session's queue was full or refused them.
     std::uint64_t refused() const noexcept { return refused_.load(std::memory_order_relaxed); }
 
     // Audio thread, once per device callback, before the document processes the block that starts at
     // stream sample `blockStart` and lasts `frames` at `sampleRate`; `nowMs` is the ports' clock now.
-    // `enqueue(streamSample, event)` returns whether the session took it. Returns how many it took.
+    // `enqueue(streamSample, event, inputSample, portKey)` returns whether the session took it. Returns how many it took.
     template <class Enqueue>
     std::size_t pump(std::int64_t blockStart, std::int32_t frames, double sampleRate, double nowMs, Enqueue &&enqueue) noexcept {
-        if (restart_.exchange(false, std::memory_order_acq_rel)) {
+        return pump(blockStart, frames, sampleRate, nowMs, std::forward<Enqueue>(enqueue), []() noexcept {});
+    }
+    // If the keyboard queue overflowed, its missing event may be a release. Reset the Session's
+    // live input before enqueueing any new events so old voices end on this callback.
+    template <class Enqueue, class ResetComputerMidi>
+    std::size_t pump(std::int64_t blockStart, std::int32_t frames, double sampleRate, double nowMs,
+                     Enqueue &&enqueue, ResetComputerMidi &&resetComputerMidi) noexcept {
+        const bool restarted = restart_.exchange(false, std::memory_order_acq_rel);
+        const bool overflowed = computerOverflow_.exchange(false, std::memory_order_acq_rel);
+        if (restarted || overflowed)
+            computerMidi_.discardPending();
+        if (overflowed && !restarted)
+            resetComputerMidi();
+        if (restarted) {
             for (auto &p : *parsers_)
                 p.reset();
             seen_.fill(0);
@@ -98,6 +125,16 @@ class MidiInputFeed {
         const auto &list = lists_[static_cast<std::size_t>(now)];
         std::size_t taken = 0;
         pending_ = 0;
+        // Give computer notes their own bounded share and keep all remaining
+        // capacity available to the physical ports, including when idle.
+        std::array<ComputerMidi, kMaxComputerPerBlock> computer;
+        for (auto &message : computer) {
+            if (!computerMidi_.pop(message))
+                break;
+            MidiPortEvent stamp;
+            stamp.timeMs = message.timeMs;
+            buffer_[pending_++] = {stamp, &message.event};
+        }
         // The block's budget is shared in turn: the port served first rotates, and each takes at most an
         // equal share of what is left, so one busy port cannot starve the others.
         const std::size_t n = list.count;
@@ -121,7 +158,7 @@ class MidiInputFeed {
                 if (!s.track)
                     continue; // Remote only: no track hears it
                 e.port = s.port;
-                buffer_[pending_++] = e;
+                buffer_[pending_++] = {e, nullptr, s.portKey};
             }
         }
         reading_.store(-1, std::memory_order_release);
@@ -131,37 +168,54 @@ class MidiInputFeed {
         for (std::size_t i = 1; i < pending_; ++i) {
             const auto e = buffer_[i];
             std::size_t j = i;
-            for (; j > 0 && e.timeMs < buffer_[j - 1].timeMs; --j)
+            for (; j > 0 && e.wire.timeMs < buffer_[j - 1].wire.timeMs; --j)
                 buffer_[j] = buffer_[j - 1];
             buffer_[j] = e;
         }
         const std::int64_t first = blockStart, lastSample = blockStart + std::max<std::int32_t>(frames, 1) - 1;
         for (std::size_t i = 0; i < pending_; ++i) {
-            const auto &e = buffer_[i];
+            const auto &e = buffer_[i].wire;
+            const auto *computerEvent = buffer_[i].computer;
+            auto inputSample = first;
             auto sample = first;
-            if (sampleRate > 0 && std::isfinite(e.timeMs) && std::isfinite(nowMs))
+            if (sampleRate > 0 && std::isfinite(e.timeMs) && std::isfinite(nowMs)) {
                 // The ports stamp with JUCE's millisecond counter, which some backends read in its 32-bit
                 // form that wraps every 2^32 ms while the high-resolution one does not: the age is taken
                 // modulo the wrap.
-                sample = blockStart + frames +
-                         static_cast<std::int64_t>(std::llround(std::remainder(e.timeMs - nowMs, 4294967296.0) * sampleRate / 1000.0));
+                inputSample = blockStart + static_cast<std::int64_t>(
+                    std::llround(std::remainder(e.timeMs - nowMs, 4294967296.0) * sampleRate / 1000.0));
+                sample = inputSample + frames;
+            }
             sample = std::clamp(sample, std::max(first, last_), lastSample);
+            inputSample = std::clamp(inputSample, std::int64_t{0}, sample);
             Out out{};
-            (*parsers_)[e.port].feed(e.bytes.data(), e.size, &Out::sink, &out);
+            if (computerEvent) {
+                out.events[0] = *computerEvent;
+                out.count = 1;
+            } else {
+                (*parsers_)[e.port].feed(e.bytes.data(), e.size, &Out::sink, &out);
+            }
             for (std::size_t k = 0; k < out.count; ++k) {
                 auto ev = out.events[k];
                 ev.frame = 0;
-                // The parser numbers a note's channel 1 to 16 and a controller's 0 to 15
-                // (`midi_memory.hpp`); the session takes every channel from 0.
-                if (ev.type != engine::EventType::Controller)
-                    ev.channel = static_cast<std::uint8_t>(ev.channel > 0 ? ev.channel - 1 : 0);
-                // A release whose note the parser no longer holds (one from before a restart) has no
-                // id, and the session would refuse it: it plays nothing either way.
-                if ((ev.type == engine::EventType::NoteOn || ev.type == engine::EventType::NoteOff) && ev.noteId == 0)
-                    continue;
-                if (ev.noteId != 0)
-                    ev.noteId = (static_cast<std::uint64_t>(e.port + 1) << 40) | (ev.noteId & ((std::uint64_t{1} << 40) - 1));
-                if (enqueue(sample, ev)) {
+                if (!computerEvent) {
+                    // The parser numbers a note's channel 1 to 16 and a controller's 0 to 15.
+                    // Computer events already have their Session channel and unique ID.
+                    if (ev.type != engine::EventType::Controller)
+                        ev.channel = static_cast<std::uint8_t>(ev.channel > 0 ? ev.channel - 1 : 0);
+                    // A release after a restart has no note identity and plays nothing.
+                    if ((ev.type == engine::EventType::NoteOn || ev.type == engine::EventType::NoteOff) && ev.noteId == 0)
+                        continue;
+                    if (ev.noteId != 0)
+                        ev.noteId = (static_cast<std::uint64_t>(e.port + 1) << 40) | (ev.noteId & ((std::uint64_t{1} << 40) - 1));
+                }
+                const bool accepted = [&] {
+                    if constexpr (std::is_invocable_v<Enqueue &, std::int64_t, const engine::Event &, std::int64_t, std::uint64_t>)
+                        return enqueue(sample, ev, inputSample, buffer_[i].portKey);
+                    else
+                        return enqueue(sample, ev, inputSample);
+                }();
+                if (accepted) {
                     ++taken;
                     last_ = sample;
                 } else {
@@ -173,6 +227,16 @@ class MidiInputFeed {
     }
 
   private:
+    static constexpr std::size_t kMaxComputerPerBlock = 32;
+    struct ComputerMidi {
+        double timeMs = 0;
+        engine::Event event;
+    };
+    struct PendingInput {
+        MidiPortEvent wire;
+        const engine::Event *computer = nullptr;
+        std::uint64_t portKey = 0;
+    };
     struct List {
         std::array<Source, kMaxSources> items{};
         std::size_t count = 0;
@@ -192,7 +256,9 @@ class MidiInputFeed {
     std::array<List, 2> lists_{};
     std::atomic<int> active_{0};
     std::atomic<int> reading_{-1};
-    std::atomic<bool> restart_{true};
+    std::atomic<bool> restart_{false};
+    MidiEventRing<1024, ComputerMidi> computerMidi_;
+    std::atomic<bool> computerOverflow_{false};
     std::atomic<std::uint64_t> refused_{0};
     // Audio thread only.
     // About 74 kB a parser: on the heap, so a feed fits on any stack. Made with the feed, never on the
@@ -202,7 +268,7 @@ class MidiInputFeed {
     std::size_t start_ = 0;
     std::array<std::uint64_t, kMaxSources> seen_{};
     std::array<bool, kMaxSources> mpe_{};
-    std::array<MidiPortEvent, kMaxPerBlock> buffer_{};
+    std::array<PendingInput, kMaxPerBlock> buffer_{};
     std::size_t pending_ = 0;
     std::int64_t last_ = -1;
 };

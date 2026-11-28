@@ -114,10 +114,14 @@ public:
     /// Owner-only snapshot; capture bytes only at a complete stable watermark.
     [[nodiscard]] Watermarks watermarks() const noexcept;
     Status acknowledgePrefix(const PendingCapture&, std::uint64_t published);
+    /// A save can use stored state when the plug-in returns no readable image.
+    /// Acknowledge only the published prefix whose failed capture is marked stale.
+    Status discardStalePrefix(std::uint64_t published);
     /// Requires detached/quiescent producer, explicit cancel/reseed and an
     /// owned recovery entry. It is not an automatic fault-dismissal path.
     Status resetAfterDetach(const PendingCapture&);
 private:
+    Status consumePrefix(std::uint64_t published);
     struct Data;
     std::shared_ptr<Data> data_;
     friend struct CaptureAccess;
@@ -130,6 +134,7 @@ StateFenceResult registerStateProducer(const AppliedSource&, std::size_t pending
 /// Snapshot opaque bytes only with reserved==published, stable SDK epoch and
 /// stable watermarks before/after capture. Acknowledge only that prefix; never
 /// reset a counter and erase a concurrent signal. Transfer reservations into
-/// a provisional owner lease before releasing the consumed source count.
+/// a provisional owner lease before releasing the consumed source count,
+/// except when an explicit Save, Export or Quit marks unreadable state stale.
 
 } // namespace adi::gesture::detail

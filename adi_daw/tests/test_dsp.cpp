@@ -45,18 +45,24 @@ std::atomic<long> g_allocs{0};
 std::atomic<bool> g_counting{false};
 }  // namespace
 
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     if (g_counting.load(std::memory_order_relaxed))
         g_allocs.fetch_add(1, std::memory_order_relaxed);
     void* p = std::malloc(n == 0 ? 1 : n);
     if (p == nullptr) throw std::bad_alloc();
     return p;
 }
-void* operator new[](std::size_t n) { return operator new(n); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void* operator new[](std::size_t n) { return operator new(n); }
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 

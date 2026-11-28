@@ -170,6 +170,12 @@ public:
     bool blockScan(const std::string& format, const std::string& path,
                    const std::string& reason, std::int64_t nowUtc, std::string& error);
     bool unblockScan(const std::string& format, const std::string& path, std::string& error);
+    /// SC-319, the user's Rescan: every block the scanner placed itself (two
+    /// crashes or two timeouts) is lifted as `unblockScan` lifts one, in one
+    /// transaction, so each is probed afresh by the scan that follows. A
+    /// manual block and a Pending row (a scan another owner is running) stay.
+    /// Returns how many were lifted.
+    std::optional<std::size_t> unblockBlockedScans(std::string& error);
     /// Whole sorted list (including pending), never a silently truncated list.
     /// 1..65536 rows and 16 MiB aggregate text; error/nullopt on any invalid row.
     std::optional<std::vector<ScanBlock>> scanBlocks(std::string& error,

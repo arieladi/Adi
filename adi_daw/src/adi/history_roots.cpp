@@ -158,5 +158,18 @@ void syncCurrentRoot(Store &store) {
     content.bind(1, *hash);
     content.exec();
 }
+std::int64_t seedShareBaseline(Store &store) {
+    auto &db = store.db();
+    const auto hash = storeCheckpointContent(db, checkpointState(store));
+    const auto root = materializeRoot(store, std::nullopt, hash);
+    SQLite::Statement origin(db, "INSERT INTO history_origin_root VALUES(1,?)");
+    origin.bind(1, root);
+    origin.exec();
+    SQLite::Statement branch(db, "UPDATE op_branches SET head_seq=? WHERE is_current=1");
+    branch.bind(1, root);
+    branch.exec();
+    syncCurrentRoot(store);
+    return root;
+}
 } // namespace history_detail
 } // namespace adi

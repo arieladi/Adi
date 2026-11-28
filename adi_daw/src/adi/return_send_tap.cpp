@@ -49,22 +49,22 @@ Payload state(SQLite::Database& db,std::int64_t id,bool includeIndividual=false)
 std::set<std::int64_t> edgeIds(const Payload& image) {
     const bool individual=image.contains("individual");
     if(!image.is_object() || image.size()!=(individual?3u:2u) || (!image.at("choice").is_null() && !image.at("choice").is_boolean()) || !image.at("routes").is_array())throw std::runtime_error("invalid return tap image");
-    std::set<std::int64_t> ids;std::optional<std::int64_t> previous;
+    std::set<std::int64_t> ids;bool hasPrevious=false;std::int64_t previous=0;
     for(const auto& edge:image.at("routes")) {
         if(!edge.is_object() || edge.size()!=2 || !edge.at("pre").is_boolean())throw std::runtime_error("invalid return tap edge image");
         const auto id=detail::signedInteger(edge.at("id"));
-        if(previous && id<=*previous)throw std::runtime_error("return tap edge image must be ordered and unique");
-        previous=id;ids.insert(id);
+        if(hasPrevious && id<=previous)throw std::runtime_error("return tap edge image must be ordered and unique");
+        previous=id;hasPrevious=true;ids.insert(id);
     }
     if (individual) {
         if (!image.at("individual").is_array()) throw std::runtime_error("invalid individual return tap image");
-        previous.reset();
+        hasPrevious=false;
         for (const auto& row:image.at("individual")) {
             const auto id=detail::signedInteger(row.at("routing_id"));
-            if (!ids.contains(id) || (previous && id<=*previous) ||
+            if (!ids.contains(id) || (hasPrevious && id<=previous) ||
                 !parseIndividualTap(row.at("tap").get<std::string>()))
                 throw std::runtime_error("individual return tap image has an invalid edge");
-            previous=id;
+            previous=id;hasPrevious=true;
         }
     }
     return ids;

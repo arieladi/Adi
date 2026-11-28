@@ -63,7 +63,7 @@ public:
         }
         current_.assign(descriptors_.size(),0.0);offset_.assign(descriptors_.size(),0.0);
         samples_.declare(declarations_.samples);sampleBlock_.declare(declarations_.samples);
-        if(info_.midi)midi_.resize(4096);
+        if(info_.midi && !native_->usesTypedMidi())midi_.resize(4096);
     }
     const DeviceIdentity& identity()const noexcept override{return identity_;}
     // DEV-21: an instrument consumes the notes it is given; an effect passes them.
@@ -112,6 +112,9 @@ public:
         std::vector<std::pair<std::int32_t,std::unique_ptr<PdSampleBuffer>>> preparedSamples;
         for(const auto& [slot,state]:sampleStates_)preparedSamples.emplace_back(slot,restoreBuiltinSample(state,rate));
         native_->prepare(rate,frames);
+        if(native_->usesTypedMidi())
+            typedMidi_.resize(static_cast<std::size_t>(std::max(
+                engine::Graph::deriveEventCapacity(rate,frames,32),512)));
         for(auto& [slot,sample]:preparedSamples)(void)samples_.publish(slot,std::move(sample));
         applyParameters(true);publishLatency();
         router_.configure(desiredRoute(),engine::ExpressionCaps{},15);router_.reset();
@@ -124,8 +127,21 @@ public:
         applyParameters();
         if(io.transport && !info_.usesTransportPosition)native_->tempo(io.transport->bpm);
         engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
-        if(info_.midi) {
-            const auto desired=desiredRoute();if(router_.current()!=desired)router_.switchTo(desired,io.blockOffset,messages);
+        engine::EventList notes(typedMidi_.data(),static_cast<std::int32_t>(typedMidi_.size()));
+        const bool typed=native_->usesTypedMidi();
+        const auto desired=desiredRoute();
+        if(typed) {
+            for(const auto& event:io.events) {
+                const bool perNoteExpression=event.type==engine::EventType::NoteExpression && event.noteId!=0;
+                if(engine::isNoteStream(event.type) && !(desired==engine::ExpressionRoute::Plain && perNoteExpression))
+                    notes.push(event);
+            }
+            if(notes.dropped()!=0) {
+                native_->resetTypedMidi();
+                notes.clear();
+            }
+        } else if(info_.midi) {
+            if(router_.current()!=desired)router_.switchTo(desired,io.blockOffset,messages);
             router_.route(io.events.first,io.events.count,io.blockOffset,messages);
         }
         const PdSampleBlock::Read read(sampleBlock_,samples_);
@@ -138,7 +154,9 @@ public:
         if(!automated) {
             // No lane moves this device in this block: exactly as before.
             for(std::int32_t i=0;i<messages.size();++i)native_->midi(messages.at(i));
-            native_->process(io);publishLatency();return;
+            auto piece=io;
+            if(typed)piece.events={notes.begin(),notes.size()};
+            native_->process(piece);publishLatency();return;
         }
         // DF-E50: a lane's ParamValue (and a modulator's ParamMod) addressed to
         // this device is applied AT ITS FRAME: the native process is split
@@ -146,7 +164,7 @@ public:
         // piece they fall in. Frames count from the block's start; one before
         // this segment applies at its start, one past it at its end.
         const std::int32_t start=io.blockOffset,end=io.blockOffset+std::max(0,io.frames);
-        std::int32_t position=start,message=0;
+        std::int32_t position=start,message=0,note=0;
         const auto feed=[&](std::int32_t before) {
             for(;message<messages.size() && messages.at(message).frame<before;++message)native_->midi(messages.at(message));
         };
@@ -154,6 +172,11 @@ public:
             if(until<=position)return;
             feed(until);
             engine::NodeIo piece=io;piece.blockOffset=position;piece.frames=until-position;
+            if(typed) {
+                const auto first=note;
+                while(note<notes.size() && notes.at(note).frame<until)++note;
+                piece.events={notes.begin()+first,note-first};
+            }
             // A position-synced core keeps its own clock after the segment's
             // first piece: io's transport is the segment start's, not this piece's.
             if(info_.usesTransportPosition && position>start){piece.deviceTransport=nullptr;piece.transport=nullptr;}
@@ -313,6 +336,7 @@ private:
     std::atomic<std::int32_t> latency_{0};std::atomic<std::uint64_t> epoch_{0};
     std::atomic<engine::ExpressionRoute> route_{engine::ExpressionRoute::MpeMidi};
     engine::MpeRouter router_;std::vector<engine::MpeOut> midi_;
+    std::vector<engine::Event> typedMidi_;
     PdSampleSlots samples_;PdSampleBlock sampleBlock_;Payload extra_=Payload::object();
     std::map<std::int32_t,Payload> sampleStates_;
 };

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixview.hpp"
+#include "ui_controls.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include "adi/ui/meters.hpp"
@@ -20,33 +21,22 @@ void FloatButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(look::text);
     g.drawRect(front, look::hairline);
 }
-void ReferenceButton::paintButton(juce::Graphics &g, bool over, bool) {
-    const auto r = getLocalBounds().toFloat();
-    look::box(g, r, getToggleState() ? look::accent : over ? look::chooser : look::button);
-    g.setColour(look::text);
-    g.setFont(look::font(look::fontBody, true));
-    g.drawText("REF", r, juce::Justification::centred);
-}
-void ReferenceButton::mouseDown(const juce::MouseEvent &e) {
-    juce::Button::mouseDown(e);
-    root_.referenceKey(true, root_.input.ms()); // through the seam a test sets (DF-W18)
-    setToggleState(root_.reference().on(), juce::dontSendNotification);
-}
-void ReferenceButton::mouseUp(const juce::MouseEvent &e) {
-    juce::Button::mouseUp(e);
-    root_.referenceKey(false, root_.input.ms());
-    setToggleState(root_.reference().on(), juce::dontSendNotification);
+void ReferenceButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    controls::button(g, getLocalBounds().toFloat(), controls::stateOf(false, over, down, isEnabled()), "REF");
 }
 void EyeButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto r = getLocalBounds().toFloat();
-    look::box(g, r, getToggleState() ? look::accent : over ? look::chooser : look::button);
+    if (isEnabled())
+        look::box(g, r, getToggleState() ? look::accent : over ? look::chooser : look::button);
+    else
+        controls::button(g, r, controls::ButtonState::Disabled);
     // The eye: an almond and its pupil.
     const juce::Rectangle<float> eye(r.getX() + 5, r.getCentreY() - 3.5f, 14, 7);
     juce::Path almond;
     almond.startNewSubPath(eye.getX(), eye.getCentreY());
     almond.quadraticTo(eye.getCentreX(), eye.getY() - 3, eye.getRight(), eye.getCentreY());
     almond.quadraticTo(eye.getCentreX(), eye.getBottom() + 3, eye.getX(), eye.getCentreY());
-    g.setColour(look::text);
+    g.setColour(isEnabled() ? look::text : controls::labelColour(controls::ButtonState::Disabled));
     g.strokePath(almond, juce::PathStrokeType(1.f));
     g.fillEllipse(eye.getCentreX() - 2, eye.getCentreY() - 2, 4, 4);
     g.setFont(look::font(11.5f));
@@ -161,7 +151,7 @@ void MixSongStrip::mouseUp(const juce::MouseEvent& e) {
     if (!root_.playFrom(tickAt(e.position.x))) moveHead(headX(root_.timelineTick()));
 }
 MixViewPanel::MixViewPanel(AdiRootComponent &root)
-    : song(root), ref(root), stack(root), channels(root), focusOwner_(std::make_unique<MixFocus>(root)),
+    : song(root), stack(root), channels(root), focusOwner_(std::make_unique<MixFocus>(root)),
       focusPage(*focusOwner_), root_(root) {
     setTitle("Mix View");
     addAndMakeVisible(song);
@@ -182,11 +172,12 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
     floating.setMouseClickGrabsKeyboardFocus(false);
     floating.onClick = [this] { root_.command(AppCommands::DetachMixView); };
     addAndMakeVisible(floating);
-    ref.setTooltip("REF. Plays the Reference track alone, the Main bypassed: hold to audition, tap to latch "
-                   "(Shift+R).");
+    ref.setEnabled(false);
+    ref.setTooltip(AdiRootComponent::kNoReferenceTrack);
     ref.setMouseClickGrabsKeyboardFocus(false);
     addAndMakeVisible(ref);
-    eye.setTooltip("Reference Track. Shows the Reference track in the arrangement; it is hidden by default.");
+    eye.setEnabled(false);
+    eye.setTooltip(AdiRootComponent::kNoReferenceTrack);
     eye.setMouseClickGrabsKeyboardFocus(false);
     eye.onClick = [this] { root_.command(AppCommands::ToggleReferenceTrack); };
     addAndMakeVisible(eye);
@@ -326,10 +317,18 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     const juce::Component::SafePointer<MixViewPanel> alive(this);
     refreshTheme();
     floating.setToggleState(root_.state().mixViewDetached, juce::dontSendNotification);
-    if (ref.getToggleState() != root_.reference().on() || eye.getToggleState() != root_.state().showReference ||
-        root_.playing()) {
-        ref.setToggleState(root_.reference().on(), juce::dontSendNotification);
-        eye.setToggleState(root_.state().showReference, juce::dontSendNotification);
+    const bool assigned = root_.referenceTrack() != 0;
+    if (referenceAssigned_ != assigned) {
+        referenceAssigned_ = assigned;
+        eye.setEnabled(assigned);
+        if (!alive) return;
+        eye.setTooltip(assigned ? "Show or hide the Reference track in the Arrangement." : AdiRootComponent::kNoReferenceTrack);
+        ref.setTooltip(assigned ? AdiRootComponent::kReferencePlaybackUnavailable : AdiRootComponent::kNoReferenceTrack);
+        repaint(strip());
+    }
+    const bool referenceShown = assigned && root_.state().showReference;
+    if (eye.getToggleState() != referenceShown || root_.playing()) {
+        eye.setToggleState(referenceShown, juce::dontSendNotification);
         repaint(strip());
     }
     const int stored = std::clamp(root_.state().mixViewTab, 0, kTabCount - 1);
@@ -532,7 +531,7 @@ void MixViewPanel::paint(juce::Graphics &g) {
     if (track == nullptr) {
         g.setColour(look::textDim);
         g.setFont(look::font(measures.fontBody));
-        g.drawText("A track's Reference role arrives with the format (N38); its route with the cue path (N23).",
+        g.drawText(AdiRootComponent::kNoReferenceTrack,
                    line.reduced(measures.gap - measures.border / 2, 0), juce::Justification::centredLeft, true);
     } else if (line.getWidth() > 0) {
         const auto end = static_cast<double>(root_.arrangement.geometry.end(root_.reader()));

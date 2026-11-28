@@ -1,21 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/audio/wav_file.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/track_recording.hpp"
 #include "adi/ui/track_edits.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 namespace adi::ui {
+inline constexpr std::string_view kResamplingInput = "resampling";
+
+// An enabled external input. Its reference stores physical channel numbers,
+// and its channels are indices in the current driver's packed input buffer.
+struct ExternalAudioInput {
+    std::string ref, label;
+    std::vector<std::uint32_t> channels;
+};
+
+inline const ExternalAudioInput *resolveExternalAudioInput(std::span<const ExternalAudioInput> inputs,
+                                                          const std::optional<std::string> &ref) noexcept {
+    const std::string_view wanted = ref ? std::string_view(*ref) : "ext:stereo:1";
+    const auto found = std::find_if(inputs.begin(), inputs.end(),
+                                    [wanted](const ExternalAudioInput &input) { return input.ref == wanted; });
+    if (found != inputs.end())
+        return &*found;
+    return ref || inputs.empty() ? nullptr : &inputs.front();
+}
+
+inline audio::WavFormat recordingWavFormat(int bitDepth) noexcept {
+    switch (bitDepth) {
+    case 16: return audio::WavFormat::Pcm16;
+    case 24: return audio::WavFormat::Pcm24;
+    default: return audio::WavFormat::Float32;
+    }
+}
+
 // A track's recording options (#397, N31; MR V.2 §9; Live 12 manual 18.8): Rec-Q, the quantize new
 // recordings get ([1/16] or [Free]), and Play-Q, the live quantization of what is played, on a MIDI
 // track's header; Keep Monitoring Latency in Recorded Audio, from a right-click on the In or Auto
 // monitor button. Each change is one op, one undo step, from the snapshot the command lands on.
 //
-// Nothing follows a choice yet: Play-Q is not scheduled, nothing records MIDI, and the recorder
-// ignores Keep Monitoring Latency (#406). The window stores them and says nothing of the sound.
+// Rec-Q takes effect when a take lands, in its own Undo step. Play-Q delays monitored live MIDI
+// while the transport runs, with the enabled state highlighted to show the added latency.
 inline constexpr std::array<const char *, 4> kQuantizeGrids{"1/4", "1/8", "1/16", "1/32"};
 // What Rec-Q shows: its grid, or Free when off. Play-Q: its grid, or Off.
 inline std::string recordQuantizeText(const TrackRecordingOptions &o) { return o.recordEnabled ? o.recordGrid : "Free"; }

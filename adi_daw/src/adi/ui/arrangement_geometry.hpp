@@ -8,7 +8,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <utility>
 #include <map>
+#include <set>
+#include <span>
 #include <vector>
 #include <string>
 namespace adi::ui {
@@ -101,6 +107,10 @@ struct ArrangementGeometry {
     // geometry used without its view: the foot then follows the tracks.
     int lanesHeight = 0;
     std::map<std::int64_t, int> heights;
+    // Total height of this track's separate automation lanes, after its clip row.
+    std::map<std::int64_t, int> automationLaneHeights;
+    // Folded ordinary tracks keep their row and their expanded height.
+    std::set<std::int64_t> foldedTracks;
     // Bitwig's Use Large Track Height (Master Reference 10, Figure 33): off, every track shows
     // at half its height, never below the smallest. The heights kept are the large ones.
     bool largeTracks = true;
@@ -181,13 +191,27 @@ struct ArrangementGeometry {
     int heightFor(std::int64_t id) const noexcept {
         if (!shown(id))
             return 0;
+        if (foldedTracks.contains(id))
+            return kMinTrackHeight;
         const auto i = heights.find(id);
         const int h = i == heights.end() ? height : i->second;
         return largeTracks ? h : std::max(kMinTrackHeight, h / 2);
     }
+    int stackHeightFor(std::int64_t id) const noexcept {
+        const int base = heightFor(id);
+        if (base == 0 || automationLaneHeights.empty() || foldedTracks.contains(id))
+            return base;
+        const auto it = automationLaneHeights.find(id);
+        return it == automationLaneHeights.end() ? base : base + std::max(0, it->second);
+    }
     // `next` is a height as shown; while the tracks are small it is kept at twice that, so
     // the track comes back at the size it was given.
     void resizeTrack(std::int64_t id, int next, bool all = false) {
+        if (!all && foldedTracks.contains(id)) {
+            if (next <= kMinTrackHeight)
+                return; // A drag that leaves the row folded keeps its expanded height.
+            foldedTracks.erase(id);
+        }
         next = std::clamp(next, kMinTrackHeight, kMaxTrackHeight);
         if (!largeTracks)
             next = std::min(kMaxTrackHeight, next * 2);
@@ -272,15 +296,14 @@ struct ArrangementGeometry {
     static constexpr std::array<const char *, 5> kAdaptiveNames{"Widest", "Wide", "Medium", "Narrow",
                                                                 "Narrowest"};
     static constexpr int kGridNarrowest = 2;
-    // The step between grid lines, in quarter notes. The adaptive grid at its default keeps
-    // lines at least 14 pixels apart and never finer than a quarter, as it is drawn.
+    // The step between grid lines, in quarter notes. The default adaptive width
+    // aims for at least 14 pixels between lines until it reaches a thirty-second.
     double gridQuarters() const noexcept {
         return grid.triplet ? plainGridQuarters() * 2 / 3 : plainGridQuarters();
     }
     // The same step before triplets.
     double plainGridQuarters() const noexcept {
-        const double adaptive = std::max(1., std::pow(2., std::ceil(std::log2(14. / scale)))) *
-                                std::pow(2., -grid.narrow);
+        const double adaptive = std::exp2(std::ceil(std::log2(14. / scale)) - grid.narrow);
         return std::clamp(grid.fixed ? grid.fixedQuarters : adaptive, kFinestGrid, kWidestGrid);
     }
     // The project's meters (#299), for a grid in the meter in force: set by the view for each
@@ -342,6 +365,39 @@ struct ArrangementGeometry {
                 return;
             line = next;
         }
+    }
+    // Sub-beat grid lines get a short ruler mark. Label the eighths and sixteenths
+    // the grid lands on when there is room for a bar.beat.sixteenth label.
+    static constexpr double kRulerLabelSpacing = 56.;
+    template <class Visit>
+    void forEachRulerSubdivision(std::int64_t from, std::int64_t to,
+                                 const std::vector<textproj::Meter> &songMeters, Visit &&visit) const {
+        const double step = gridQuarters();
+        if (step >= 1. || step * scale < 4.)
+            return;
+        constexpr auto sixteenth = textproj::kWhole / 16;
+        const auto labelStep = scale / 4 >= kRulerLabelSpacing ? sixteenth :
+                               scale / 2 >= kRulerLabelSpacing ? 2 * sixteenth : 0;
+        forEachBar(from - meterAt(from, songMeters).barTicks(), to, songMeters,
+                   [&](std::int64_t start, std::int64_t bar) {
+            const auto &meter = meterAt(start, songMeters);
+            const auto next = std::upper_bound(songMeters.begin(), songMeters.end(), start,
+                                               [](auto at, const auto &m) { return at < m.start_ticks; });
+            const auto end = next == songMeters.end() ? start + meter.barTicks() :
+                                                        std::min(start + meter.barTicks(), next->start_ticks);
+            const auto beat = textproj::kWhole / std::max<std::int64_t>(1, meter.denominator);
+            forEachGridLine(std::max(from, start), std::min(to, end - 1), [&](std::int64_t line) {
+                const auto intoBar = line - start;
+                const auto intoBeat = intoBar % beat;
+                if (intoBeat == 0)
+                    return;
+                std::optional<BarPosition> label;
+                if (labelStep != 0 && intoBeat % labelStep == 0 &&
+                    x(std::min(end, line + beat - intoBeat)) - x(line) >= kRulerLabelSpacing)
+                    label = BarPosition{bar, intoBar / beat + 1, intoBeat / sixteenth + 1};
+                visit(line, label);
+            });
+        });
     }
     // The grid line after `tick`, or the one before it: where an arrow key takes the insert
     // marker, a clip or a selection's edge (online §41.4.1.3). Never before the start.
@@ -411,7 +467,7 @@ struct ArrangementGeometry {
         left = std::max(0., at - pixel / scale);
     }
     void zoomAround(double factor, std::int64_t at) noexcept { zoom(factor, x(at)); }
-    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true) noexcept {
+    void fit(std::int64_t start, std::int64_t end, int width, bool remember = true, double minimumQuarters = 1.) noexcept {
         if (remember) {
             if (historySize == history.size()) {
                 std::move(history.begin() + 1, history.end(), history.begin());
@@ -421,7 +477,7 @@ struct ArrangementGeometry {
         }
         left = static_cast<double>(start) / textproj::kPPQ;
         scale = std::clamp(static_cast<double>(std::max(width, 1)) /
-                               std::max(1., static_cast<double>(end - start) / textproj::kPPQ),
+                               std::max(minimumQuarters, static_cast<double>(end - start) / textproj::kPPQ),
                            1., 4096.);
     }
     void back() noexcept {
@@ -439,12 +495,39 @@ struct ArrangementGeometry {
             --i;
         return i;
     }
+    static constexpr int takeLaneHeight = 40;
+    std::set<std::int64_t> shownTakeLanes;
+    std::span<const engine::TakeLaneNode> takeLanes(const engine::TrackNode &track) const noexcept {
+        if (shown(track.id) && shownTakeLanes.contains(track.id) && !foldedTracks.contains(track.id))
+            return track.takeLanes;
+        return {};
+    }
+    int rowHeight(const engine::TrackNode &track) const noexcept {
+        return stackHeightFor(track.id) + takeLaneHeight * static_cast<int>(takeLanes(track).size());
+    }
+    struct TakeLaneHit {
+        const engine::TrackNode *track;
+        const engine::TakeLaneNode *lane;
+    };
+    std::optional<TakeLaneHit> takeLaneAt(const SnapshotReader &r, int y) const noexcept {
+        int top = 0;
+        const auto position = rowAt(r, y, &top);
+        const auto all = rows(r);
+        if (position >= all.size())
+            return {};
+        const auto *track = all[position].track;
+        const auto offset = y - top - stackHeightFor(track->id);
+        const auto visible = takeLanes(*track);
+        if (offset < 0 || static_cast<std::size_t>(offset / takeLaneHeight) >= visible.size())
+            return {};
+        return TakeLaneHit{track, &visible[static_cast<std::size_t>(offset / takeLaneHeight)]};
+    }
     // The foot's height, and the tracks' above it, as shown.
     int footHeight(const SnapshotReader &r) const noexcept {
         const auto all = rows(r);
         int total = 0;
         for (auto i = footStart(all); i < all.size(); ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     int tracksHeight(const SnapshotReader &r) const noexcept {
@@ -452,7 +535,7 @@ struct ArrangementGeometry {
         const auto foot = footStart(all);
         int total = 0;
         for (std::size_t i = 0; i < foot; ++i)
-            total += heightFor(all[i].track->id);
+            total += rowHeight(*all[i].track);
         return total;
     }
     // Where the foot begins in the lanes: at their bottom, whatever the scroll; right after the
@@ -474,39 +557,47 @@ struct ArrangementGeometry {
                 y = footTop(r);
             if (all[i].track->id == id)
                 return heightFor(id) > 0 ? y : -1;
-            y += heightFor(all[i].track->id);
+            y += rowHeight(*all[i].track);
         }
         return -1;
     }
     // The most the tracks scroll: the foot never scrolls, and the last track keeps a sliver in
     // sight.
     int maxScroll(const SnapshotReader &r) const noexcept { return std::max(0, tracksHeight(r) - kMinTrackHeight); }
-    // Scrolls the tracks just enough to show track `id` whole above the foot, as Live brings a newly
-    // inserted track into sight (manual 18.2). A row of the foot is always shown; a geometry without
-    // its view has nothing to scroll. True when the scroll moved.
-    bool reveal(const SnapshotReader &r, std::int64_t id) noexcept {
+    // Scrolls to show track `id` above the foot. Pointer selection can leave a partly visible row in place.
+    // The foot is pinned and a geometry without its view has nothing to scroll. True when the scroll moved.
+    bool reveal(const SnapshotReader &r, std::int64_t id, bool fully = true) noexcept {
         const auto all = rows(r);
         const auto i = all.find(id);
-        const int h = heightFor(id);
+        const int h = stackHeightFor(id);
         if (lanesHeight <= 0 || i >= footStart(all) || h <= 0)
             return false;
         int top = 0;
         for (std::size_t k = 0; k < i; ++k)
-            top += heightFor(all[k].track->id);
+            top += rowHeight(*all[k].track);
         const int before = scrollY;
-        if (top + h - scrollY > footTop(r))
-            scrollY = top + h - footTop(r);
+        const int footY = footTop(r);
+        if (!fully && top + h > scrollY && top < scrollY + footY)
+            return false;
+        if (top + h - scrollY > footY)
+            scrollY = top + h - footY;
         if (top < scrollY)
             scrollY = top;
         scrollY = std::clamp(scrollY, 0, maxScroll(r));
         return scrollY != before;
     }
+    // Clip rows alone are hit targets for existing clip and mixer interactions.
     const engine::TrackNode *trackAt(const SnapshotReader &r, int y) const noexcept {
         const auto all = rows(r);
-        const auto i = rowAt(r, y);
-        return i < all.size() ? all[i].track : nullptr;
+        int top = 0;
+        const auto i = rowAt(r, y, &top);
+        if (i >= all.size())
+            return nullptr;
+        const auto *track = all[i].track;
+        return y - top < heightFor(track->id) ? track : nullptr;
     }
-    // The row at `y`, or the rows' size when there is none; `top` gets where it begins.
+    // The track stack at `y`, including separate automation lanes, or the rows'
+    // size when there is none; `top` gets the start of its clip row.
     // The foot stands over the tracks scrolled under it, so a point there is the foot's.
     std::size_t rowAt(const SnapshotReader &r, int y, int *top = nullptr) const noexcept {
         const auto all = rows(r);
@@ -517,7 +608,7 @@ struct ArrangementGeometry {
         const bool inFoot = foot < all.size() && y >= footY;
         int at = inFoot ? footY : -scrollY;
         for (std::size_t i = inFoot ? foot : 0; i < (inFoot ? all.size() : foot); ++i) {
-            const int h = heightFor(all[i].track->id);
+            const int h = rowHeight(*all[i].track);
             if (y >= at && y < at + h) {
                 if (top != nullptr)
                     *top = at;

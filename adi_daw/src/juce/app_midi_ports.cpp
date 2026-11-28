@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "app_midi_ports.hpp"
+#include "adi/engine/midi_input_route.hpp"
 #include <algorithm>
+#include <bitset>
+#include <chrono>
+#include <map>
 #include <utility>
 namespace adi::ui {
 namespace ump = juce::universal_midi_packets;
@@ -37,17 +41,78 @@ struct MidiPortHost::Input final : ump::Consumer {
     ump::Input connection;
     MidiEventRing<1024> ring;
 };
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, Writer write)
-    : read_(std::move(ports)), write_(std::move(write)), session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
+// Connections are opened and destroyed on the message thread. Only this
+// worker and the message thread can access them, never the audio callback.
+struct MidiPortHost::Output {
+    struct Channel {
+        std::bitset<128> notes;
+        std::bitset<3> pedals;
+    };
+    std::string id;
+    std::uint64_t key;
+    OutputConnection connection;
+    std::map<std::pair<std::int64_t, std::uint32_t>, Channel> channels;
+
+    bool send(std::int64_t track, std::uint32_t word) {
+        if (word == engine::kMidiHardwareRelease) {
+            release(track);
+            return false;
+        }
+        if (!connection.send(word)) return false;
+        const auto status = (word >> 20) & 0x0fu;
+        const auto channel = (word >> 16) & 0x0fu;
+        const auto data = (word >> 8) & 0x7fu;
+        const auto value = word & 0x7fu;
+        if (status == 9 && value != 0) {
+            channels[{track, channel}].notes.set(data);
+        } else if (status == 8 || (status == 9 && value == 0)) {
+            if (const auto found = channels.find({track, channel}); found != channels.end())
+                found->second.notes.reset(data);
+        } else if (status == 11) {
+            static constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
+            if (const auto pedal = std::find(pedals.begin(), pedals.end(), data); pedal != pedals.end())
+                channels[{track, channel}].pedals.set(static_cast<std::size_t>(pedal - pedals.begin()), value >= 64);
+        }
+        return true;
+    }
+
+    void release(std::optional<std::int64_t> track = {}) {
+        for (auto it = channels.begin(); it != channels.end();) {
+            if (track && it->first.first != *track) {
+                ++it;
+                continue;
+            }
+            const auto channel = it->first.second << 16;
+            if (connection.send) {
+                static constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
+                for (std::size_t i = 0; i < pedals.size(); ++i)
+                    if (it->second.pedals.test(i))
+                        connection.send(0x20b00000u | channel | (pedals[i] << 8));
+                for (std::uint32_t note = 0; note < 128; ++note)
+                    if (it->second.notes.test(note))
+                        connection.send(0x20800000u | channel | (note << 8));
+            }
+            it = channels.erase(it);
+        }
+    }
+};
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, Writer write, NewInputTrack newInputTrack)
+    : read_(std::move(ports)), write_(std::move(write)), newInputTrack_(std::move(newInputTrack)),
+      session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
     // The ports are listed and opened through one session, the application's.
     ump::Endpoints::getInstance()->addListener(*this);
     refresh();
 }
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write)
-    : read_(std::move(ports)), write_(std::move(write)), fixed_(true), fixedPorts_(std::move(fixed)) {
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write,
+                           NewInputTrack newInputTrack, OpenOutput openOutput)
+    : read_(std::move(ports)), write_(std::move(write)), newInputTrack_(std::move(newInputTrack)),
+      fixed_(true), fixedPorts_(std::move(fixed)), fixedOutput_(std::move(openOutput)) {
     refresh();
 }
 MidiPortHost::~MidiPortHost() {
+    setOutputFeed(nullptr);
+    for (auto& output : outputs_) output->release();
+    outputs_.clear();
     if (!fixed_)
         ump::Endpoints::getInstance()->removeListener(*this);
     for (auto &input : inputs_)
@@ -81,7 +146,7 @@ void MidiPortHost::publish() {
         if (port == ports_.end())
             continue;
         sources.push_back({&input->ring, input->slot, port->switches.track, port->switches.remote, port->switches.mpe,
-                           input->serial});
+                           input->serial, engine::midiInputKey(port->id)});
     }
     if (feed_)
         feed_->publish(sources);
@@ -92,6 +157,101 @@ void MidiPortHost::setFeed(MidiInputFeed *feed) {
     feed_ = feed;
     publish();
 }
+void MidiPortHost::setOutputFeed(MidiOutputFeed* feed) {
+    if (feed == outputFeed_) return;
+    if (outputWorker_.joinable()) {
+        outputWorker_.request_stop();
+        outputWorker_.join();
+    }
+    outputFeed_ = feed;
+    if (feed) {
+        feed->reset();
+        outputWorker_ = std::jthread([this](std::stop_token stop) { runOutput(stop); });
+    }
+}
+
+bool MidiPortHost::refreshOutputs(std::vector<Port>& listed, const OpenOutput& open) {
+    std::lock_guard guard(outputMutex_);
+    bool changed = false;
+    const auto onePortWithKey = [&](std::uint64_t key) {
+        return std::count_if(listed.begin(), listed.end(), [key](const Port& port) {
+            return port.output && engine::midiPortKey(port.id) == key;
+        }) == 1;
+    };
+    std::erase_if(outputs_, [&](const auto& output) {
+        const auto found = std::find_if(listed.begin(), listed.end(),
+            [&](const Port& port) { return port.output && port.id == output->id; });
+        if (found != listed.end() && found->switches.track && onePortWithKey(output->key) &&
+            (!output->connection.alive || output->connection.alive())) return false;
+        output->release();
+        changed = true;
+        return true;
+    });
+    for (auto& port : listed) {
+        if (!port.output || !port.switches.track || !open) continue;
+        const auto key = engine::midiPortKey(port.id);
+        const auto existing = std::find_if(outputs_.begin(), outputs_.end(),
+            [key](const auto& output) { return output->key == key; });
+        if (existing != outputs_.end()) {
+            port.open = (*existing)->id == port.id;
+            continue;
+        }
+        if (!onePortWithKey(key)) continue;
+        auto connection = open(port);
+        if (!connection.send || (connection.alive && !connection.alive())) continue;
+        auto output = std::make_unique<Output>(Output{port.id, key, std::move(connection), {}});
+        outputs_.push_back(std::move(output));
+        port.open = true;
+        changed = true;
+    }
+    if (changed && outputFeed_) outputFeed_->reset();
+    return changed;
+}
+
+void MidiPortHost::runOutput(std::stop_token stop) {
+    using namespace std::chrono_literals;
+    std::vector<MidiOutputFeed::Packet> pending;
+    pending.reserve(4096);
+    auto revision = outputFeed_->revision();
+    while (!stop.stop_requested()) {
+        for (MidiOutputFeed::Packet packet; outputFeed_->pop(packet);) {
+            if (pending.size() == 4096) {
+                outputFeed_->reset();
+                break;
+            }
+            pending.push_back(packet);
+        }
+        const auto current = outputFeed_->revision();
+        if (current != revision) {
+            revision = current;
+            std::lock_guard guard(outputMutex_);
+            for (auto& output : outputs_) output->release();
+        }
+        std::erase_if(pending, [revision](const auto& packet) { return packet.epoch != revision; });
+        if (!pending.empty()) {
+            std::stable_sort(pending.begin(), pending.end(), [](const auto& a, const auto& b) {
+                return a.dueMs < b.dueMs;
+            });
+            const auto now = juce::Time::getMillisecondCounterHiRes();
+            const auto due = std::upper_bound(pending.begin(), pending.end(), now,
+                [](double time, const auto& packet) { return time < packet.dueMs; });
+            if (due != pending.begin()) {
+                std::lock_guard guard(outputMutex_);
+                for (auto packet = pending.begin(); packet != due; ++packet) {
+                    if (revision != outputFeed_->revision()) break;
+                    const auto port = std::find_if(outputs_.begin(), outputs_.end(),
+                        [key = packet->port](const auto& output) { return output->key == key; });
+                    if (port != outputs_.end() && (*port)->send(packet->track, packet->word))
+                        outputActivity_.fetch_add(1, std::memory_order_relaxed);
+                }
+                pending.erase(pending.begin(), due);
+            }
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    std::lock_guard guard(outputMutex_);
+    for (auto& output : outputs_) output->release();
+}
 void MidiPortHost::endpointsChanged() { refresh(); }
 // The record, brought up to date with the ports listed now (N61) when a writer takes it.
 settings::Value MidiPortHost::reconciled(const std::vector<Port> &listed) {
@@ -100,7 +260,10 @@ settings::Value MidiPortHost::reconciled(const std::vector<Port> &listed) {
     names.reserve(listed.size());
     for (const auto &p : listed)
         names.push_back({p.id, p.name});
-    if (auto healed = reconcileMidiPorts(record, names); healed && write_ && write_(*healed))
+    std::optional<bool> initialTrack;
+    if (write_ && newInputTrack_)
+        initialTrack = newInputTrack_();
+    if (auto healed = reconcileMidiPorts(record, names, initialTrack); healed && write_ && write_(*healed))
         record = std::move(*healed);
     return record;
 }
@@ -111,7 +274,8 @@ void MidiPortHost::refresh() {
         for (auto &p : listed)
             p.switches = midiPortSwitches(record, p.id);
         sortPorts(listed);
-        const bool changed = listed.size() != ports_.size() ||
+        const bool outputsChanged = refreshOutputs(listed, fixedOutput_);
+        const bool changed = outputsChanged || listed.size() != ports_.size() ||
                              !std::equal(listed.begin(), listed.end(), ports_.begin(), [](const Port &a, const Port &b) {
                                  return a.id == b.id && a.switches == b.switches;
                              });
@@ -122,7 +286,7 @@ void MidiPortHost::refresh() {
     }
     auto *endpoints = ump::Endpoints::getInstance();
     std::vector<Port> listed;
-    std::vector<ump::EndpointId> sources;
+    std::vector<ump::EndpointId> sources, destinations;
     for (const auto &id : endpoints->getEndpoints()) {
         const auto info = endpoints->getEndpoint(id);
         if (!info)
@@ -146,6 +310,7 @@ void MidiPortHost::refresh() {
             p.name = name;
             p.output = true;
             listed.push_back(std::move(p));
+            destinations.push_back(id);
         }
     }
     const auto record = reconciled(listed);
@@ -153,6 +318,7 @@ void MidiPortHost::refresh() {
         p.switches = midiPortSwitches(record, p.id);
     sortPorts(listed);
     bool changed = listed.size() != ports_.size();
+    bool changedInputConnections = false;
     // Close every input that is gone or switched off; open those switched on that are not open. A
     // closed input's ring stays until the feed has been told, so the audio thread never reads it freed.
     std::vector<std::unique_ptr<Input>> retired;
@@ -165,7 +331,7 @@ void MidiPortHost::refresh() {
             if (input->connection.isAlive())
                 input->connection.removeConsumer(*input);
             retired.push_back(std::move(input));
-            changed = true;
+            changed = changedInputConnections = true;
         }
     }
     for (auto &p : listed) {
@@ -196,8 +362,24 @@ void MidiPortHost::refresh() {
         input->connection.addConsumer(*input);
         *slot = std::move(input);
         p.open = true;
-        changed = true;
+        changed = changedInputConnections = true;
     }
+    const bool outputsChanged = refreshOutputs(listed, [this, &destinations](const Port& port) {
+        const auto endpoint = std::find_if(destinations.begin(), destinations.end(), [&](const auto& id) {
+            return "out:" + id.dst.toStdString() == port.id;
+        });
+        if (endpoint == destinations.end()) return OutputConnection{};
+        auto output = std::make_shared<ump::Output>(session_->connectOutput(*endpoint));
+        return OutputConnection{
+            [output](std::uint32_t word) {
+                const ump::Iterator begin(&word, 1);
+                auto end = begin;
+                ++end;
+                return output->send(begin, end);
+            },
+            [output] { return output->isAlive(); }};
+    });
+    changed = changed || outputsChanged;
     if (!changed)
         for (std::size_t i = 0; i < listed.size(); ++i)
             if (listed[i].id != ports_[i].id || listed[i].name != ports_[i].name || listed[i].open != ports_[i].open ||
@@ -205,10 +387,19 @@ void MidiPortHost::refresh() {
                 changed = true;
                 break;
             }
+    const auto inputChanged = [&](const std::vector<Port>& a, const std::vector<Port>& b) {
+        return std::any_of(a.begin(), a.end(), [&](const Port& port) {
+            if (!port.input) return false;
+            const auto previous = std::find_if(b.begin(), b.end(),
+                [&](const Port& item) { return item.input && item.id == port.id; });
+            return previous == b.end() || previous->open != port.open || previous->switches != port.switches;
+        });
+    };
+    const bool changedInputs = inputChanged(listed, ports_) || inputChanged(ports_, listed);
     ports_ = std::move(listed);
     publish();
     retired.clear();
-    if (changed && onInputsChanged)
+    if ((changedInputConnections || changedInputs) && onInputsChanged)
         onInputsChanged();
     if (changed && onChange)
         onChange();

@@ -11,19 +11,25 @@
 #include <thread>
 
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
-void* operator new(std::size_t size) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t size) {
     if(adi::audio::onAudioThread)++allocations;
     if(void* result=std::malloc(size?size:1))return result;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t size){return operator new(size);}
-void operator delete(void* pointer)noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t size){return operator new(size);}
+ADI_TEST_NOINLINE void operator delete(void* pointer)noexcept {
     if(pointer && adi::audio::onAudioThread)++frees;
     std::free(pointer);
 }
-void operator delete[](void* pointer)noexcept{operator delete(pointer);}
-void operator delete(void* pointer,std::size_t)noexcept{operator delete(pointer);}
-void operator delete[](void* pointer,std::size_t)noexcept{operator delete(pointer);}
+ADI_TEST_NOINLINE void operator delete[](void* pointer)noexcept{operator delete(pointer);}
+ADI_TEST_NOINLINE void operator delete(void* pointer,std::size_t)noexcept{operator delete(pointer);}
+ADI_TEST_NOINLINE void operator delete[](void* pointer,std::size_t)noexcept{operator delete(pointer);}
+#undef ADI_TEST_NOINLINE
 
 namespace {
 using namespace adi;

@@ -54,9 +54,18 @@ std::filesystem::path projectFolder(const Store&);
 std::filesystem::path projectFolder(const SQLite::Database&);
 std::string pathUtf8(const std::filesystem::path&);
 std::filesystem::path pathFromUtf8(const std::string&);
-// Resolution verifies the first existing candidate; a mismatch is fatal.
+// Resolve by content, trying the relative location first. A distinct original
+// location can recover a link when moving the project changes the relative base.
 std::filesystem::path resolveMedia(const std::filesystem::path& folder,
                                   const Payload& row, std::string& error);
+// An empty result without an error means no candidate exists or stop fired.
+std::filesystem::path resolveMedia(const std::filesystem::path& folder,
+                                  const std::filesystem::path& relative,
+                                  const std::filesystem::path& hint,
+                                  const std::string& originalName, const std::string& hash,
+                                  std::string& error, std::stop_token stop = {});
+// A Browser reveal uses the pool's existing file path without reading audio bytes.
+std::filesystem::path mediaPathForBrowser(const Store&, std::int64_t id, std::string& error);
 Payload mediaRow(SQLite::Database&, std::int64_t id);
 // Registry callbacks: captured payloads only, no filesystem access.
 bool importApply(OpContext&, const Payload&, std::string&);

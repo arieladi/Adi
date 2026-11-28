@@ -215,9 +215,11 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory
     if(!analysis){broker->shutdown();engineLease.reset();document->release();return;}
 
     {
-        ui::AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,
-                                  document->views(),document->sessionState(),name);
-        root.sharedAnalysis=broker; // The real Locate path must not force a UI-intent epoch.
+        // Keep the full root off the Windows Debug shell test thread's stack.
+        auto root=std::make_unique<ui::AdiRootComponent>(
+            document->view(),document->ops(),document->mailbox(),commands,
+            document->views(),document->sessionState(),name);
+        root->sharedAnalysis=broker; // The real Locate path must not force a UI-intent epoch.
         auto &transport=document->session().transport();
         transport.play(seek!=Seek::Parked);
         // Default tempo120 and PPQ divisible by3/4 represent8000/30000
@@ -251,7 +253,7 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory
             const auto current=document->view().current();
             const auto target=static_cast<std::int64_t>(current->tempo->ticksToSeconds(targetTick)*48000.);
             expect(target==(seek==Seek::Distant?30000:8000),"seek fixture's authored tick maps to its exact heard sample");
-            expect(root.locate(targetTick),"actual root Locate posts while the old callback is blocked");
+            expect(root->locate(targetTick),"actual root Locate posts while the old callback is blocked");
             gate->oldSignal.store(false,std::memory_order_release);
             blocked.finish();
             broker->pump();
@@ -294,7 +296,7 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory
             expect(suspend?after==targetCalls:after>targetCalls,
                    "the selected active/suspended graph tap path is actually exercised");
         }
-        analysis.reset();broker->shutdown();root.sharedAnalysis.reset();
+        analysis.reset();broker->shutdown();root->sharedAnalysis.reset();
     }
     engineLease.reset();document->session().collectScopeTaps();document->release();
 }

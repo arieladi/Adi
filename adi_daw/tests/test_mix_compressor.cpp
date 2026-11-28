@@ -20,7 +20,12 @@ int allocationsUntilFailure = -1;
 std::size_t allocations = 0, deallocations = 0;
 std::size_t prepareAllocations = 0;
 } // namespace
-void *operator new(std::size_t bytes) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t bytes) {
     if (inAudio)
         ++allocations;
     if (countPrepareAllocations)
@@ -36,15 +41,16 @@ void *operator new(std::size_t bytes) {
         return p;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t bytes) { return ::operator new(bytes); }
-void operator delete(void *p) noexcept {
+ADI_TEST_NOINLINE void *operator new[](std::size_t bytes) { return ::operator new(bytes); }
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept {
     if (inAudio && p)
         ++deallocations;
     std::free(p);
 }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 namespace c = adi::mix::compressor;

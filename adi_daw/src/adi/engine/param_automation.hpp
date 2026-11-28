@@ -32,8 +32,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -44,6 +46,15 @@ namespace adi::engine {
 /// ADR-0054's floor in samples: sessionRate / 500, at least 1.
 [[nodiscard]] std::int32_t automationInterval(double sampleRate) noexcept;
 
+/// Copied from a resolved host descriptor before publication. A stepped
+/// menu with an unknown count holds values without snapping to a lattice.
+struct DeviceParameterSteps {
+    bool stepped = false;
+    std::int32_t count = 0;
+};
+using DeviceAutomationSteps = std::function<DeviceParameterSteps(std::int64_t device, std::uint32_t parameter)>;
+using DeviceActivatorAvailable = std::function<bool(std::int64_t device)>;
+
 /// One device's lanes, emitted as ParamValue events addressed to its node.
 class DeviceAutomation final : public EventSource {
 public:
@@ -51,7 +62,11 @@ public:
         : transport_(transport), interval_(interval > 0 ? interval : 1) {}
 
     /// Message thread, before the graph that plays it is published.
-    void add(const AutomationLaneProgram& lane, std::uint32_t paramId);
+    void add(const AutomationLaneProgram& lane, std::uint32_t paramId, DeviceParameterSteps steps = {});
+    void addActivator(const AutomationLaneProgram& lane) noexcept { activator_ = &lane; }
+    bool selectBypassForBlock(bool manualBypass, std::int32_t arrival) noexcept override;
+    /// Audio observation for this binding. Empty until a graph renders it.
+    [[nodiscard]] std::optional<bool> playingEnabled() const noexcept;
 
     void emit(EventList& out, std::int32_t frames) noexcept override;
     void emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept override;
@@ -65,6 +80,7 @@ private:
     struct Lane {
         const AutomationLaneProgram* program = nullptr;
         std::uint32_t paramId = 0;
+        DeviceParameterSteps steps;
         double last = 0.0;       ///< audio thread
         bool sent = false;       ///< audio thread: nothing sent yet, so the first value goes (the chase)
     };
@@ -74,6 +90,9 @@ private:
     const Transport& transport_;
     std::int32_t interval_;
     std::vector<Lane> lanes_;
+    const AutomationLaneProgram* activator_ = nullptr;
+    bool bypassForBlock_ = false;
+    std::atomic<int> playingEnabled_{-1};
     std::atomic<std::uint64_t> dropped_{0};
 };
 
@@ -91,8 +110,11 @@ struct DeviceAutomationBinding {
 /// Bind a program's device lanes. A lane in `overridden` is known but not
 /// bound. Named, never dropped: a lane that is not normalized, a param_ref that
 /// is not a plug-in parameter id, and a second lane for one parameter.
+/// A resolver can describe matching native parameters on this owner call.
+/// Its result is copied into the binding and it is never used by audio.
 [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden,
-    const Transport& transport, double sampleRate);
+    const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {},
+    const DeviceActivatorAvailable& activatorAvailable = {});
 
 }  // namespace adi::engine

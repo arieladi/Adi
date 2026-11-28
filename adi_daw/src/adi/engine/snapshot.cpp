@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/freeze_groups.hpp"
 
 #include "adi/controller_lanes.hpp"
@@ -42,13 +43,32 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
            a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs && a.laneId==b.laneId &&
-           a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
+           a.muted == b.muted && a.gainDb == b.gainDb && a.color == b.color && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
+           a.contentOffsetTicks==b.contentOffsetTicks && a.loopEnabled==b.loopEnabled &&
+           a.loopStartTicks==b.loopStartTicks && a.loopLengthTicks==b.loopLengthTicks &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
            a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
-           a.controllers == b.controllers;
+           a.controllers == b.controllers && a.midiPreview == b.midiPreview;
+}
+
+MidiClipPreview readMidiBars(const SQLite::Column& blob) {
+    MidiClipPreview preview;
+    const auto data = std::span(static_cast<const std::byte*>(blob.getBlob()), static_cast<std::size_t>(blob.getBytes()));
+    const StreamReader<NoteRecord> stream(data, FourCC::Notes);
+    if (!stream.ok() || (stream.header().flags & ~StreamFlags::SortedByTime) != 0) return preview;
+    preview.bars.reserve(stream.count());
+    for (std::uint32_t i = 0; i < stream.count(); ++i) {
+        const auto note = stream.at(i);
+        if (!note || !detail::displayableNote(*note)) return {};
+        const auto key = static_cast<int>(note->key);
+        preview.bars.push_back({note->start_ticks, note->dur_ticks, key, (note->flags & NoteFlags::Muted) == 0});
+        preview.low = std::min(preview.low, key);
+        preview.high = std::max(preview.high, key);
+    }
+    return preview;
 }
 
 void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks) {
@@ -91,10 +111,11 @@ void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offset
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
-        a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef ||
+        a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef || a.audioOutput != b.audioOutput ||
+        a.midiOutput != b.midiOutput ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
-        a.clips != b.clips || a.takeClips != b.takeClips || // pointer identity: already shared
+        a.clips != b.clips || a.takeClips != b.takeClips || a.takeLanes != b.takeLanes || // pointer identity: already shared
         a.frozen != b.frozen || a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode)
         return false;
     return true;
@@ -347,7 +368,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // rebuilding a frame. Waveform data is read/built by media/peaks off-thread.
     std::map<std::int64_t,AudioClipSource> audioSources;
     try {
-        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
+        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,"
+                                  "a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,"
+                                  "m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing,m.orig_name,m.bit_depth "
+                                  "FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
         while(query.executeStep()) {
             AudioClipSource source;source.mediaId=query.getColumn(1).getInt64();source.sourceStartFrames=query.getColumn(2).getInt64();source.sourceLengthFrames=query.getColumn(3).getInt64();source.warpEnabled=query.getColumn(4).getInt()!=0;source.warpMode=query.getColumn(5).getString();
             if(!query.getColumn(6).isNull()) {
@@ -360,7 +384,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 if(!query.getColumn(13).isNull())media.sampleRate=query.getColumn(13).getInt64();
                 if(!query.getColumn(14).isNull())media.channels=query.getColumn(14).getInt64();
                 if(!query.getColumn(15).isNull())media.frames=query.getColumn(15).getInt64();
-                media.missing=query.getColumn(16).getInt()!=0;source.mediaInfo=std::move(media);
+                media.missing=query.getColumn(16).getInt()!=0;
+                media.originalName=query.getColumn(17).getString();
+                if(!query.getColumn(18).isNull())media.bitDepth=query.getColumn(18).getInt64();
+                source.mediaInfo=std::move(media);
             }
             audioSources.emplace(query.getColumn(0).getInt64(),std::move(source));
         }
@@ -370,11 +397,25 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     using ClipList = std::vector<std::shared_ptr<const ClipNode>>;
     struct ClipRows { ClipList main, takes; };
     std::map<std::int64_t, ClipRows> clipsByTrack;
+    std::map<std::int64_t, MidiClipPreview> midiContents;
+    try {
+        SQLite::Statement notes(db, "SELECT e.clip_id,e.data FROM event_streams e JOIN clips c ON c.id=e.clip_id "
+                                    "WHERE c.kind='midi' AND e.stream_kind='notes' AND e.channel IS NULL "
+                                    "AND e.controller IS NULL ORDER BY e.clip_id,e.id");
+        while (notes.executeStep()) {
+            const auto clip = notes.getColumn(0).getInt64();
+            if (!midiContents.contains(clip)) midiContents.emplace(clip, readMidiBars(notes.getColumn(1)));
+        }
+    } catch (const SQLite::Exception&) {
+        // A failed optional projection leaves clip bodies without note bars.
+        midiContents.clear();
+    }
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id "
+            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color, "
+            "kind,loop_enabled,loop_start_ticks,loop_len_ticks "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -387,6 +428,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.name = st.getColumn(6).getString();
             c.fadeInTicks=st.getColumn(7).getInt64();c.fadeOutTicks=st.getColumn(8).getInt64();
             c.fadeInCurve=st.getColumn(9).getInt64();c.fadeOutCurve=st.getColumn(10).getInt64();
+            c.contentOffsetTicks=st.getColumn(11).getInt64();
             if(const auto it=fadeShapes.find(c.id);it!=fadeShapes.end()) {
                 c.fadeInTension=it->second.in;c.fadeOutTension=it->second.out;
                 c.contentOffsetNs=it->second.offset;c.loopBeginNs=it->second.loopBegin;
@@ -400,6 +442,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.posNs=linear(13);
             c.lengthNs=linear(14);
             c.laneId=linear(15);
+            c.color=linear(16);
+            c.loopEnabled=st.getColumn(18).getInt()!=0;
+            c.loopStartTicks=st.getColumn(19).getInt64();
+            c.loopLengthTicks=linear(20);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;
@@ -409,13 +455,24 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                     c.lengthTicks=std::max(std::int64_t{0},end-c.posTicks);
                 }
             }
-            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64());
+            projectFadeHandles(c,*snap->tempo,c.contentOffsetTicks);
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 
             auto& rows = clipsByTrack[trackId];
             auto& destination = c.laneId ? rows.takes : rows.main;
             const auto prev = prevClips.find(c.id);
+            if (st.getColumn(17).getString() == "midi") {
+                MidiClipPreview preview;
+                if (const auto notes = midiContents.find(c.id); notes != midiContents.end()) preview = std::move(notes->second);
+                preview.startMarker = c.contentOffsetTicks;
+                if (c.loopEnabled && c.loopLengthTicks.value_or(0) > 0) {
+                    preview.loopStart = c.loopStartTicks;
+                    preview.loopLength = *c.loopLengthTicks;
+                }
+                const auto prior = prev != prevClips.end() ? prev->second->midiPreview : nullptr;
+                c.midiPreview = prior && *prior == preview ? prior : std::make_shared<const MidiClipPreview>(std::move(preview));
+            }
             if (prev != prevClips.end() && same(*prev->second, c))
                 destination.push_back(prev->second);
             else
@@ -454,6 +511,41 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception &) {
     }
+    std::map<std::int64_t, std::int64_t> audioOutputs;
+    try {
+        SQLite::Statement routes(db,
+            "SELECT src_id,dst_id FROM routing WHERE src_kind='track' AND dst_kind='track' "
+            "AND kind='main' AND enabled<>0 ORDER BY id");
+        while (routes.executeStep())
+            audioOutputs.try_emplace(routes.getColumn(0).getInt64(), routes.getColumn(1).getInt64());
+    } catch (const std::exception&) {
+    }
+
+    std::map<std::int64_t, std::vector<TakeLaneNode>> takeLanes;
+    try {
+        SQLite::Statement lanes(db, "SELECT track_id,id,name,muted FROM lanes WHERE kind='take' ORDER BY track_id,ord,id");
+        while (lanes.executeStep())
+            takeLanes[lanes.getColumn(0).getInt64()].push_back(
+                {lanes.getColumn(1).getInt64(), lanes.getColumn(2).getString(), lanes.getColumn(3).getInt() != 0});
+    } catch (const std::exception &) {
+        // A partially readable project can still show its main rows.
+    }
+
+    std::map<std::int64_t, rows::MidiOutput> midiOutputs;
+    try {
+        SQLite::Statement routes(db, "SELECT src_id,channel_map FROM routing WHERE src_kind='track' "
+                                    "AND dst_kind='hw_out' AND dst_id=0 AND kind='main' "
+                                    "AND enabled<>0 AND channel_map IS NOT NULL ORDER BY id");
+        while (routes.executeStep()) {
+            const auto data = routes.getColumn(1);
+            if (data.getBytes() == 0) continue;
+            auto route = rows::decodeMidiOutput({static_cast<const std::byte*>(data.getBlob()),
+                                                 static_cast<std::size_t>(data.getBytes())});
+            if (route) midiOutputs.try_emplace(routes.getColumn(0).getInt64(), std::move(*route));
+        }
+    } catch (const std::exception&) {
+    }
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -493,6 +585,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.monitorMode = st.getColumn(16).getInt64();
             if (!st.getColumn(17).isNull())
                 t.inputRef = st.getColumn(17).getString();
+            if (const auto output = audioOutputs.find(t.id); output != audioOutputs.end())
+                t.audioOutput = output->second;
+            if (const auto output = midiOutputs.find(t.id); output != midiOutputs.end())
+                t.midiOutput = output->second;
             if (groupRoots.contains(t.id))
                 t.freezeMode = "group";
             if (groupOwners.contains(t.id)) {
@@ -504,6 +600,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 t.clips = std::move(it->second.main);
                 t.takeClips = std::move(it->second.takes);
             }
+
+            if (auto found = takeLanes.find(t.id); found != takeLanes.end())
+                t.takeLanes = std::move(found->second);
 
             const auto prev = prevTracks.find(t.id);
             if (prev != prevTracks.end() && same(*prev->second, t))
@@ -610,7 +709,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // edits reuse its metadata and check only the small pool row and locator.
     std::map<std::pair<std::int64_t,std::int32_t>,std::shared_ptr<const SampleSlotNode>> previousSlots;
     for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
-    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
+    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid,s.format_hint FROM plugin_state s "
         "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
         "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' "
         "ORDER BY s.device_id,CAST(substr(s.stream_role,8) AS INTEGER),s.stream_role");
@@ -657,23 +756,36 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
             }
             if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
-            node.mediaId.reset();node.missing=false;
+            node.mediaId.reset();node.fileName.clear();node.missing=false;node.filePresent=false;
             if(!node.empty && node.problem.empty()) {
-                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
-                node.missing=true;
+                const bool embedded = slots.getColumn(4).getString() == device::kPresetSampleStateHint;
+                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing,orig_name FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
                 if(media.executeStep()) {
                     node.mediaId=media.getColumn(0).getInt64();
-                    if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.missing=false;
+                    node.fileName=media.getColumn(4).getString();
+                    if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.filePresent=true;
                     else if(media.getColumn(3).getInt()==0) {
                         std::error_code ec;bool present=false;
                         if(!media.getColumn(1).isNull()) {
                             const auto relative=media::pathFromUtf8(media.getColumn(1).getString());
                             if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
                         }
+                        if(!present && !node.fileName.empty()) {
+                            const auto name=media::pathFromUtf8(node.fileName).filename();
+                            if(!name.empty())present=std::filesystem::is_regular_file(media::projectFolder(store)/"audio"/name,ec);
+                        }
                         if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
-                        node.missing=!present;
+                        node.filePresent=present;
+                    }
+                    if (node.filePresent && node.fileName.empty()) {
+                        for (const int pathColumn : {1, 2}) {
+                            if (media.getColumn(pathColumn).isNull()) continue;
+                            node.fileName = media::pathUtf8(media::pathFromUtf8(media.getColumn(pathColumn).getString()).filename());
+                            if (!node.fileName.empty()) break;
+                        }
                     }
                 }
+                node.missing=!node.filePresent && !embedded;
             }
         }catch(const std::exception& exception){node.problem=exception.what();node.missing=true;}
         const auto old=previousSlots.find({node.deviceId,node.slot});
@@ -681,6 +793,38 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         else snap->sampleSlots.push_back(std::make_shared<const SampleSlotNode>(std::move(node)));
     }
     return snap;
+}
+
+std::shared_ptr<const Snapshot> SnapshotBuilder::withMidiClipNotes(const Store& store,
+        const std::shared_ptr<const Snapshot>& previous,std::int64_t clipId) {
+    if (!previous) return {};
+    for (std::size_t trackIndex = 0; trackIndex < previous->tracks.size(); ++trackIndex) {
+        const auto& track = previous->tracks[trackIndex];
+        for (const bool take : {false,true}) {
+            const auto& clips = take ? track->takeClips : track->clips;
+            const auto at = std::find_if(clips.begin(), clips.end(), [&](const auto& clip) { return clip->id == clipId; });
+            if (at == clips.end()) continue;
+            const auto& before = (*at)->midiPreview;
+            if (!before) return {};
+            SQLite::Statement notes(store.db(), "SELECT data FROM event_streams WHERE clip_id=? AND stream_kind='notes' "
+                                                "AND channel IS NULL AND controller IS NULL ORDER BY id LIMIT 1");
+            notes.bind(1, clipId);
+            auto preview = notes.executeStep() ? readMidiBars(notes.getColumn(0)) : MidiClipPreview{};
+            preview.startMarker = before->startMarker;
+            preview.loopStart = before->loopStart;
+            preview.loopLength = before->loopLength;
+            if (*before == preview) return previous;
+            auto refreshed = std::make_shared<Snapshot>(*previous);
+            auto targetTrack = std::make_shared<TrackNode>(*track);
+            auto targetClip = std::make_shared<ClipNode>(**at);
+            targetClip->midiPreview = std::make_shared<const MidiClipPreview>(std::move(preview));
+            auto& targetClips = take ? targetTrack->takeClips : targetTrack->clips;
+            targetClips[static_cast<std::size_t>(at - clips.begin())] = std::move(targetClip);
+            refreshed->tracks[trackIndex] = std::move(targetTrack);
+            return refreshed;
+        }
+    }
+    return {};
 }
 
 std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& b) {

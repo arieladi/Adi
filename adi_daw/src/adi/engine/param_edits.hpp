@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,10 @@ struct ParamEdit {
     double before = 0.0;
     double after = 0.0;
     bool implicit = false;
+};
+struct ParameterTouch {
+    std::int32_t index;
+    std::uint64_t sequence;
 };
 
 enum class ParamActivityKind : std::uint8_t { Begin, Value, End, QuietEnd, Absorbed, Echo, Ignored };
@@ -60,7 +65,7 @@ public:
     /// Owner only, before publishing a binding that supplies this raw fence.
     void retainFence(std::shared_ptr<gesture::detail::ProducerFence>);
     std::size_t drainLifecycle(std::int64_t nowMs, std::vector<ParamEdit>&,
-                               std::vector<ParamActivity>&, bool absorb = false);
+                               std::vector<ParamActivity>&, bool absorb = false, bool finishOpen = false);
     void seed(std::int64_t deviceId, std::int32_t paramIndex, double value);
     void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value,
                     std::int64_t nowMs);
@@ -70,6 +75,8 @@ public:
     void expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
                               double value, std::int64_t nowMs);
     void cancelEcho(std::int64_t deviceId, std::int32_t paramIndex);
+    /// Consumer: discard an already-drained gesture while retaining expected echoes.
+    void discardGesture(std::int64_t deviceId, std::int32_t paramIndex);
     /// Consumer: cancel already-drained gesture state. Queued producer events
     /// remain queued. ParamOps uses this for its synchronous UI capture only.
     void cancel(std::int64_t deviceId, std::int32_t paramIndex);
@@ -85,7 +92,21 @@ public:
     /// (ADR-0130). Updated by a drain; -1 before any touch. An echo of our own
     /// set is not a touch, and neither is a preset's broadcast absorbed into a
     /// snapshot (drainAbsorbing), unless it was inside an explicit gesture.
-    [[nodiscard]] std::int32_t lastTouched() const noexcept { return lastTouched_; }
+    [[nodiscard]] std::int32_t lastTouched() const noexcept {
+        return touches_.empty() ? -1 : touches_.back().index;
+    }
+    /// Owner-only sequence of the latest native touch, including repeat
+    /// touches of the same parameter. Zero means no current touch.
+    [[nodiscard]] std::uint64_t lastTouchSequence() const noexcept {
+        return touches_.empty() ? 0 : touches_.back().sequence;
+    }
+    /// Chronological native touches owned by this capture. Adjacent touches
+    /// of the same parameter keep their newest sequence. A drain or attachment
+    /// change can invalidate the span.
+    [[nodiscard]] std::span<const ParameterTouch> recentTouches() const noexcept { return touches_; }
+    /// A new instance can reuse a ring for outstanding capture ownership.
+    /// Its predecessor's events no longer supply the latest touch.
+    void clearLastTouch() noexcept;
     void setQuietMs(std::int64_t ms);
     void setEchoTtlMs(std::int64_t ms);
     void setEchoTolerance(double tol);
@@ -109,15 +130,21 @@ private:
     struct Parameter {
         struct Echo { double value = 0.0; std::int64_t armedMs = 0; };
         bool known = false, open = false, implicit = false, hasValue = false;
-        bool guarded = false;
+        bool guarded = false, tracked = false;
         bool promoteEarlierActivity = false; // scratch for an absorbing drain's reverse pass
         double last = 0.0, before = 0.0, after = 0.0, echo = 0.0;
         std::int64_t lastValueMs = 0, armedMs = 0;
         std::vector<Echo> echoes; // consumer only; never inspected by push
     };
     using Key = std::pair<std::int64_t, std::int32_t>;
+    struct Maintenance {
+        Key key;
+        Parameter* parameter;
+    };
+    void track(const Key&, Parameter&);
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);
-    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb, std::vector<ParamActivity>* activity = nullptr);
+    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb,
+                          std::vector<ParamActivity>* activity = nullptr, bool finishOpen = false);
     struct Slot {
         ParamEvent event;
         gesture::detail::ProducerFence* fence = nullptr;
@@ -130,8 +157,14 @@ private:
     // Only the producer writes these counters; no contended RMW or retry loop.
     std::atomic<std::int64_t> pushed_{0}, dropped_{0};
     std::map<Key, Parameter> parameters_;
+    // Map entries stay in place. Only armed echoes and open implicit gestures
+    // need clock-driven work. Keep key order for simultaneous completions.
+    std::vector<Maintenance> maintenance_;
+    bool maintenanceOrdered_ = true;
     std::int64_t quietMs_ = 150, echoTtlMs_ = 500;
-    std::int32_t lastTouched_ = -1;
+    std::vector<ParameterTouch> touches_;
+    std::uint64_t touchSequence_ = 0;
+    std::size_t priorAttachmentEvents_ = 0;
     double echoTolerance_ = 1e-6;
     mutable Stats stats_{};
 };

@@ -294,7 +294,10 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/interchange/smf.cpp
+    src/adi/interchange/midi_clip_file.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/aiff_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
@@ -346,6 +349,7 @@ add_library(adi_core STATIC
     src/adi/ops_catalog.cpp
     src/adi/note_flags_ops.cpp
     src/adi/device_copy.cpp
+    src/adi/device_presets.cpp
     src/adi/builtin_catalog.cpp
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
@@ -432,9 +436,12 @@ add_library(adi_core STATIC
     src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp
     src/adi/engine/audio_recording.cpp
+    src/adi/engine/recording_recovery_plan.cpp
+    src/adi/engine/recording_recovery_wave.cpp
     src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/cue_monitor.cpp
+    src/adi/engine/sample_preview.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/audio_memory.cpp
     src/adi/engine/summing.cpp
@@ -725,7 +732,7 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_control adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -861,6 +868,20 @@ add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
 # gives these suites their ADI_HOME and test_all.sh finds them.
 # ---------------------------------------------------------------------------
 add_library(adi_control STATIC
+    src/adi/control/agent_process.cpp
+    src/adi/control/agent_runtime.cpp
+    src/adi/control/agent_log.cpp
+    src/adi/control/browser_catalogue.cpp
+    src/adi/control/consent.cpp
+    src/adi/control/consent_file.cpp
+    src/adi/control/consent_scope.cpp
+    src/adi/control/jobs.cpp
+    src/adi/control/render_jobs.cpp
+    src/adi/control/stem_jobs.cpp
+    src/adi/control/session_discovery.cpp
+    src/adi/control/loopback_listener.cpp
+    src/adi/control/loopback_bridge.cpp
+    src/adi/control/live_project.cpp
     src/adi/control/jsonrpc.cpp
     src/adi/control/service.cpp
     src/adi/control/telemetry.cpp
@@ -870,8 +891,19 @@ add_library(adi_control STATIC
     src/adi/control/changeset_queue.cpp
     src/adi/control/methods.cpp
     src/adi/control/mcp.cpp
-    src/adi/control/stdio_server.cpp)
+    src/adi/control/stdio_server.cpp
+    src/juce/app_control.cpp)
+if(NOT EXISTS "${ADI_THIRD_PARTY}/cpp-httplib/httplib.h")
+    message(FATAL_ERROR "Run adi_daw/tools/fetch_external.sh --build-only for cpp-httplib")
+endif()
+target_include_directories(adi_control SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_control PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
 target_link_libraries(adi_control PUBLIC adi_changeset adi_core PRIVATE adi_warnings)
+if(WIN32)
+    target_link_libraries(adi_control PRIVATE bcrypt ws2_32)
+endif()
 
 add_executable(adi_mcp tools/adi-mcp/main.cpp)
 target_link_libraries(adi_mcp PRIVATE adi_control adi_settings adi_changeset adi_core adi_warnings)
@@ -881,10 +913,73 @@ add_executable(adi_rpc_permissions_tests tests/test_rpc_permissions.cpp)
 target_link_libraries(adi_rpc_permissions_tests PRIVATE adi_control adi_core adi_warnings)
 add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
 
+add_executable(adi_consent_tests tests/test_consent.cpp)
+target_link_libraries(adi_consent_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
+
+add_executable(adi_jobs_tests tests/test_jobs.cpp)
+target_link_libraries(adi_jobs_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_jobs_tests COMMAND adi_jobs_tests)
+
+add_executable(adi_agent_runtime_tests tests/test_agent_runtime.cpp)
+target_link_libraries(adi_agent_runtime_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_agent_runtime_tests COMMAND adi_agent_runtime_tests)
+
+option(ADI_AGENT_HELPER_TESTS "Run the agent tests that need the built Node helper" OFF)
+if(ADI_AGENT_HELPER_TESTS)
+    find_program(ADI_AGENT_NODE NAMES node REQUIRED)
+    set(ADI_AGENT_HELPER "${CMAKE_CURRENT_SOURCE_DIR}/agent/dist/main.js")
+    if(NOT EXISTS "${ADI_AGENT_HELPER}")
+        message(FATAL_ERROR "Build the agent helper first with 'npm ci' and 'npm run build' in adi_daw/agent")
+    endif()
+    add_test(NAME adi_agent_runtime_node_tests COMMAND adi_agent_runtime_tests
+        --node-helper "${ADI_AGENT_NODE}" "${ADI_AGENT_HELPER}")
+    add_executable(adi_agent_injection_tests tests/test_agent_injection.cpp)
+    target_link_libraries(adi_agent_injection_tests PRIVATE adi_control adi_warnings)
+    add_dependencies(adi_agent_injection_tests adi_tool)
+    add_test(NAME adi_agent_injection_tests COMMAND adi_agent_injection_tests
+        "${ADI_AGENT_NODE}" "${ADI_AGENT_HELPER}" $<TARGET_FILE:adi_tool>)
+endif()
+
+add_executable(adi_agent_log_tests tests/test_agent_log.cpp)
+target_link_libraries(adi_agent_log_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_agent_log_tests COMMAND adi_agent_log_tests)
+
+add_executable(adi_browser_catalogue_tests tests/test_browser_catalogue.cpp)
+target_link_libraries(adi_browser_catalogue_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_browser_catalogue_tests COMMAND adi_browser_catalogue_tests)
+
+add_executable(adi_tracked_render_queue_tests tests/test_tracked_render_queue.cpp)
+target_link_libraries(adi_tracked_render_queue_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_tracked_render_queue_tests COMMAND adi_tracked_render_queue_tests)
+
+add_executable(adi_loopback_listener_tests tests/test_loopback_listener.cpp)
+target_include_directories(adi_loopback_listener_tests SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_loopback_listener_tests PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
+target_link_libraries(adi_loopback_listener_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_loopback_listener_tests COMMAND adi_loopback_listener_tests)
+
+add_executable(adi_app_control_tests tests/test_app_control.cpp)
+target_include_directories(adi_app_control_tests SYSTEM PRIVATE "${ADI_THIRD_PARTY}/cpp-httplib")
+target_compile_definitions(adi_app_control_tests PRIVATE
+    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=245760
+    CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND=1)
+target_link_libraries(adi_app_control_tests PRIVATE adi_control adi_warnings)
+add_test(NAME adi_app_control_tests COMMAND adi_app_control_tests)
+
+add_executable(adi_loopback_bridge_tests tests/test_loopback_bridge.cpp)
+target_link_libraries(adi_loopback_bridge_tests PRIVATE adi_control adi_warnings)
+add_dependencies(adi_loopback_bridge_tests adi_mcp)
+target_compile_definitions(adi_loopback_bridge_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_test(NAME adi_loopback_bridge_tests COMMAND adi_loopback_bridge_tests)
+
 add_executable(adi_control_mcp_tests tests/test_control_mcp.cpp)
 target_link_libraries(adi_control_mcp_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
-add_dependencies(adi_control_mcp_tests adi_mcp)
-target_compile_definitions(adi_control_mcp_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_dependencies(adi_control_mcp_tests adi_mcp adi_tool)
+target_compile_definitions(adi_control_mcp_tests PRIVATE
+    ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>" ADI_TOOL_PATH="$<TARGET_FILE:adi_tool>")
 add_test(NAME adi_control_mcp_tests COMMAND adi_control_mcp_tests)
 
 # The read levels on a seeded project, called directly (AGT-02; R5.6, R5.11).
@@ -1093,6 +1188,10 @@ add_executable(adi_device_copy_tests tests/test_device_copy.cpp)
 target_link_libraries(adi_device_copy_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_copy_tests COMMAND adi_device_copy_tests)
 
+add_executable(adi_device_presets_tests tests/test_device_presets.cpp)
+target_link_libraries(adi_device_presets_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_presets_tests COMMAND adi_device_presets_tests)
+
 add_executable(adi_sample_slots_tests tests/test_sample_slots.cpp)
 target_link_libraries(adi_sample_slots_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_sample_slots_tests COMMAND adi_sample_slots_tests)
@@ -1135,6 +1234,13 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 add_executable(adi_cue_monitor_tests tests/test_cue_monitor.cpp)
 target_link_libraries(adi_cue_monitor_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_cue_monitor_tests COMMAND adi_cue_monitor_tests)
+
+add_executable(adi_sample_preview_tests tests/test_sample_preview.cpp)
+target_link_libraries(adi_sample_preview_tests PRIVATE adi_core adi_warnings Threads::Threads)
+target_compile_definitions(adi_sample_preview_tests PRIVATE
+    ADI_PREVIEW_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
+    ADI_PREVIEW_AAC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
+add_test(NAME adi_sample_preview_tests COMMAND adi_sample_preview_tests)
 
 add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
 target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
@@ -1462,6 +1568,9 @@ if(ADI_WITH_JUCE)
             "    bash adi_daw/tools/fetch_external.sh --with-juce")
     endif()
 
+    # WTS-02: send Debug assertions to the window suite's logger. JUCE object
+    # layouts depend on this flag, so all targets in a configuration must agree.
+    add_compile_definitions("$<$<CONFIG:Debug>:JUCE_LOG_ASSERTIONS=1>")
     add_subdirectory("${ADI_JUCE_DIR}" "${CMAKE_BINARY_DIR}/third_party/JUCE" EXCLUDE_FROM_ALL SYSTEM)
 
     target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
@@ -1868,6 +1977,10 @@ add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
 target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/library_query.cpp src/adi/ui/project_library.cpp)
+add_executable(adi_library_query_tests tests/test_library_query.cpp)
+target_link_libraries(adi_library_query_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_library_query_tests COMMAND adi_library_query_tests)
 add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
 target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)
@@ -1881,7 +1994,10 @@ add_executable(adi_library_tests tests/test_library.cpp)
 target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_library_tests COMMAND adi_library_tests)
 
-set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
+# RUN_SERIAL: the index worker lowers its own priority, which on Windows is
+# THREAD_MODE_BACKGROUND_BEGIN (CPU, I/O and memory). Beside 16 busy suites it
+# took 137 s instead of 2 s and passed, so a parallel ctest timed it out.
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 # ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
 # our suite count and leave the parent BUILD_TESTING value untouched.
@@ -2139,6 +2255,10 @@ add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 
+add_executable(adi_smf_tests tests/test_smf.cpp)
+target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
+
 
 
 # One file per device owns its DSP, built-in registration unit and tests.
@@ -2150,6 +2270,9 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+if(TARGET adi_app)
+    target_link_libraries(adi_app PRIVATE adi_control)
+endif()
 include(cmake/stereo_envelope_meter.cmake)
 include(cmake/triggered_scope.cmake)
 # WTS-01, win's weekly headless proof of the one usable session (ADR-0248 d2, d12). Off by default: it
@@ -2174,7 +2297,7 @@ target_compile_definitions(adi_aac_import_tests PRIVATE
 add_test(NAME adi_aac_import_tests COMMAND adi_aac_import_tests)
 
 add_executable(adi_separated_stems_tests tests/test_separated_stems.cpp)
-target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_warnings)
+target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_control adi_warnings)
 add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)

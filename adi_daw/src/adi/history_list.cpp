@@ -6,9 +6,8 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <limits>
-#include <map>
-#include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace adi {
 History::Timeline History::readTimeline() const {
@@ -26,24 +25,33 @@ History::Timeline History::readTimeline() const {
                 result.baseSeq = checkpoint.getColumn(0).getInt64();
             }
         }
-        const bool stored = history_detail::hasStoredRoots(db);
+        const auto expectedRoots = static_cast<std::size_t>(
+            db.execAndGet("SELECT count(*) FROM history_roots").getInt64());
+        const bool stored = expectedRoots != 0;
+        if (stored)
+            result.originSeq = history_detail::originRoot(db);
         struct Node {
             std::int64_t txn = 0;
             std::optional<std::int64_t> parent;
-            bool root = false;
+            std::optional<std::string> rootHash;
+            std::optional<std::int64_t> baseline;
         };
-        std::map<std::int64_t, Node> nodes;
-        std::map<std::int64_t, TimelineStep> steps;
-        std::map<std::optional<std::int64_t>, std::int64_t> newestChild;
+        std::unordered_map<std::int64_t, Node> nodes;
+        std::vector<std::int64_t> seqs;
+        std::unordered_map<std::int64_t, TimelineStep> steps;
+        std::unordered_map<std::optional<std::int64_t>, std::int64_t> newestChild;
         SQLite::Statement ops(
-            db, "SELECT seq,txn_id,parent_seq,ts_utc,label,actor,actor_detail,op_type,CASE WHEN "
-                "op_type='history.root' THEN payload END FROM ops "
-                "WHERE tags<>'ephemeral' ORDER BY seq");
+            db, "SELECT o.seq,o.txn_id,o.parent_seq,o.ts_utc,o.label,o.actor,o.actor_detail,o.op_type,"
+                "CASE WHEN r.seq IS NOT NULL THEN o.payload END,r.state_hash,"
+                "CASE WHEN r.seq IS NOT NULL THEN o.inverse IS NULL END "
+                "FROM ops o LEFT JOIN history_roots r ON r.seq=o.seq "
+                "WHERE o.tags<>'ephemeral' ORDER BY o.seq");
         while (ops.executeStep()) {
             const auto seq = ops.getColumn(0).getInt64(), txn = ops.getColumn(1).getInt64();
             std::optional<std::int64_t> parent;
             if (!ops.getColumn(2).isNull()) parent = ops.getColumn(2).getInt64();
-            const auto hash = history_detail::storedRootHash(db, seq);
+            std::optional<std::string> hash;
+            if (!ops.getColumn(9).isNull()) hash = ops.getColumn(9).getString();
             const bool root = ops.getColumn(7).getString() == "history.root";
             if (root != hash.has_value())
                 throw std::runtime_error("history baseline mapping mismatch");
@@ -51,12 +59,15 @@ History::Timeline History::readTimeline() const {
                 std::string error;
                 const auto col = ops.getColumn(8);
                 const auto *data = static_cast<const std::byte *>(col.getBlob());
+                if (parent || !data || (seq == result.baseSeq && !ops.getColumn(10).getInt()))
+                    throw std::runtime_error("invalid stored baseline metadata");
                 const auto payload =
                     decodeFromLog(std::vector<std::byte>(data, data + col.getBytes()), error);
-                if (parent || !payload || *payload != Payload{{"state_hash", *hash}})
+                if (!payload || *payload != Payload{{"state_hash", *hash}})
                     throw std::runtime_error("invalid stored baseline metadata");
             }
-            nodes[seq] = {txn, parent, root};
+            nodes.emplace(seq, Node{txn, parent, std::move(hash), {}});
+            seqs.push_back(seq);
             if (root)
                 continue;
             newestChild[parent] = seq; // ascending seq: exactly redo's highest child rule
@@ -71,27 +82,38 @@ History::Timeline History::readTimeline() const {
             ++entry.step.opCount; entry.step.lastSeq = seq;
         }
         std::size_t rootCount = 0;
-        for (const auto &[seq, node] : nodes) {
-            (void)seq;
-            if (node.root) {
+        // Validate every retained node once. Ordinary parents are older and
+        // already validated. Compaction can introduce newer stored roots,
+        // which have no parent and can be recognized from the joined rows.
+        for (const auto seq : seqs) {
+            auto& node = nodes.at(seq);
+            if (node.rootHash) {
                 ++rootCount;
                 if (steps.contains(node.txn))
                     throw std::runtime_error("stored baseline shares an edit transaction");
+                node.baseline = seq;
+            } else if (node.parent) {
+                const auto parent = nodes.find(*node.parent);
+                if (parent == nodes.end())
+                    throw std::runtime_error("history points to a missing edit op");
+                if (parent->second.rootHash)
+                    node.baseline = *node.parent;
+                else {
+                    if (*node.parent >= seq)
+                        throw std::runtime_error("history edit has a nonchronological parent");
+                    node.baseline = parent->second.baseline;
+                }
             }
-            if (node.parent && *node.parent >= seq) {
-                const auto found = nodes.find(*node.parent);
-                if (found == nodes.end() || !found->second.root)
-                    throw std::runtime_error("history edit has a nonchronological parent");
-            }
+            if (stored && !node.baseline)
+                throw std::runtime_error("history line has no stored baseline");
         }
-        if (rootCount != static_cast<std::size_t>(
-                             db.execAndGet("SELECT count(*) FROM history_roots").getInt64()))
+        if (rootCount != expectedRoots)
             throw std::runtime_error("stored baseline is absent from the history forest");
         if (result.baseSeq != 0) {
             const auto base = nodes.find(result.baseSeq);
             if (base == nodes.end()) throw std::runtime_error("history checkpoint points to a missing edit root");
             if (base->second.parent) throw std::runtime_error("history checkpoint root has a parent");
-            if (!stored && nodes.begin()->first != result.baseSeq)
+            if (!stored && seqs.front() != result.baseSeq)
                 throw std::runtime_error("history retains edit ops before its checkpoint root");
             if (!stored) {
                 const auto &root = steps.at(base->second.txn).step;
@@ -99,7 +121,7 @@ History::Timeline History::readTimeline() const {
                     root.lastSeq != result.baseSeq)
                     throw std::runtime_error(
                         "history checkpoint root shares a retained transaction");
-            } else if (!base->second.root)
+            } else if (!base->second.rootHash)
                 throw std::runtime_error("current checkpoint is not a stored baseline");
         }
         // Read directly, without the legacy convenience readers' empty-on-error
@@ -116,60 +138,37 @@ History::Timeline History::readTimeline() const {
                 if (result.currentBranchId) throw std::runtime_error("history has multiple current branches");
                 result.currentBranchId = branch.id; result.headSeq = branch.headSeq;
             }
-            if (branch.headSeq)
-                branch.storedStateHash = history_detail::storedRootHash(db, *branch.headSeq);
+            if (branch.headSeq) {
+                const auto node = nodes.find(*branch.headSeq);
+                if (node == nodes.end()) throw std::runtime_error("history points to a missing edit op");
+                branch.storedStateHash = node->second.rootHash;
+            }
             result.branches.push_back(std::move(branch));
         }
         if (!result.currentBranchId) throw std::runtime_error("history has no current branch");
-        auto chain = [&](std::optional<std::int64_t> tip) {
-            std::set<std::int64_t> visited;
+        auto transactions = [&](std::optional<std::int64_t> tip) {
+            if (!tip && stored) throw std::runtime_error("stored history has a null head");
+            std::unordered_map<std::int64_t, int> counts;
             while (tip) {
-                if (!visited.insert(*tip).second) throw std::runtime_error("history parent chain loops");
-                const auto found = nodes.find(*tip);
-                if (found == nodes.end()) throw std::runtime_error("history points to a missing edit op");
-                tip = found->second.parent;
+                const auto& node = nodes.at(*tip);
+                if (!node.rootHash) ++counts[node.txn];
+                tip = node.parent;
             }
-            if (stored) {
-                if (visited.empty())
-                    throw std::runtime_error("stored history has a null head");
-                bool foundRoot = false;
-                for (const auto seq : visited)
-                    foundRoot = foundRoot || nodes.at(seq).root;
-                if (!foundRoot)
-                    throw std::runtime_error("history line has no stored baseline");
-            }
-            return visited;
-        };
-        auto transactions = [&](const std::set<std::int64_t>& path) {
-            std::map<std::int64_t, int> counts;
-            for (const auto seq : path)
-                if (!nodes.at(seq).root)
-                    ++counts[nodes.at(seq).txn];
-            std::set<std::int64_t> ids;
-            for (const auto& [txn, count] : counts) {
+            for (const auto& [txn, count] : counts)
                 if (count != steps.at(txn).step.opCount)
                     throw std::runtime_error("history point splits an undo transaction");
-                ids.insert(txn);
-            }
-            return ids;
+            return counts;
         };
-        // Validate every retained chain, including disconnected metadata roots.
-        for (const auto &[seq, node] : nodes) {
-            (void)node;
-            (void)chain(seq);
-        }
-        if (stored && history_detail::rootForPoint(db, result.headSeq) != result.baseSeq)
+        if (stored && (!result.headSeq || nodes.at(*result.headSeq).baseline != result.baseSeq))
             throw std::runtime_error("checkpoint does not match the current line");
-        const auto applied = transactions(chain(result.headSeq));
+        const auto applied = transactions(result.headSeq);
         auto tip = result.headSeq;
-        std::set<std::int64_t> future;
         for (;;) {
             const auto child = newestChild.find(tip);
             if (child == newestChild.end()) break;
-            if (!future.insert(child->second).second) throw std::runtime_error("history redo chain loops");
             tip = child->second;
         }
-        const auto currentLine = transactions(chain(tip));
+        const auto currentLine = transactions(tip);
         for (auto& [txn, step] : steps) {
             step.applied = applied.contains(txn);
             step.onCurrentLine = currentLine.contains(txn);
@@ -177,8 +176,12 @@ History::Timeline History::readTimeline() const {
         for (const auto& branch : result.branches) {
             // The current branch head moves on undo. Include its redo line as
             // the menu does; other branches retain exactly their stored heads.
-            const auto branchSteps = branch.isCurrent ? currentLine : transactions(chain(branch.headSeq));
-            for (const auto txn : branchSteps) steps.at(txn).branchIds.push_back(branch.id);
+            const auto append = [&](const auto& branchSteps) {
+                for (const auto& entry : branchSteps)
+                    steps.at(entry.first).branchIds.push_back(branch.id);
+            };
+            if (branch.isCurrent) append(currentLine);
+            else append(transactions(branch.headSeq));
         }
         SQLite::Statement snapshotsQuery(db,
             "SELECT id,name,op_seq,branch_id,created_utc,auto FROM history_snapshots ORDER BY created_utc DESC,id DESC");
@@ -191,8 +194,8 @@ History::Timeline History::readTimeline() const {
             if (snapshot.opSeq) {
                 const auto found = nodes.find(*snapshot.opSeq);
                 if (found == nodes.end()) throw std::runtime_error("snapshot points to a missing edit op");
-                if (found->second.root) {
-                    snapshot.storedStateHash = history_detail::storedRootHash(db, *snapshot.opSeq);
+                if (found->second.rootHash) {
+                    snapshot.storedStateHash = found->second.rootHash;
                 } else {
                     auto &step = steps.at(found->second.txn);
                     if (step.step.lastSeq != *snapshot.opSeq)
@@ -205,6 +208,7 @@ History::Timeline History::readTimeline() const {
         // The base remains a structural node throughout ancestry and anchor
         // validation, but its forward edit is already in the checkpoint state.
         // Exact-base branches/snapshots stay in their metadata lists.
+        result.steps.reserve(steps.size());
         for (auto& [txn, step] : steps) {
             if (stored || result.baseSeq == 0 || step.step.lastSeq != result.baseSeq)
                 result.steps.push_back(std::move(step));

@@ -50,6 +50,10 @@
 
 namespace adi::device {
 
+/// The CLAP transport event a plug-in is handed for `clock` at `rate` (playing, recording, loop, tempo,
+/// position, bar and signature). Exposed for its test.
+[[nodiscard]] clap_event_transport_t clapTransportEvent(const engine::DeviceTransport& clock, double rate) noexcept;
+
 /// Which CLAP note expression carries an ADI dimension.
 ///
 /// Every one of these is a NAMED CLAP id rather than a convention, which is

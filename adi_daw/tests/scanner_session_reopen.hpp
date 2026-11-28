@@ -93,7 +93,10 @@ inline void projectHintFallback() {
         return session.stats().loaded==1 && session.stats().placeholders==0;
     };
     require(loads(*first,loader) && fs::exists(config.registry),"first project should create a registry through its VST3 hint");
-    require(!loads(*second,loader),"a missing module must remain a placeholder");
+    // SC-324: the second project names the same plug-in at a path this machine does not have; the one
+    // installed at the first path is it, found by name and class ID.
+    require(loads(*second,loader) && loader.stats().moved>=1,
+            "a project naming another path loads the same plug-in installed elsewhere");
     fs::create_directories(moduleB.parent_path());
     fs::copy(original,moduleB,fs::copy_options::recursive);
     require(loads(*second,loader),"a later installation should load after opening the second project");

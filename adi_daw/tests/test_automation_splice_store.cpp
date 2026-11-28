@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/audio/io_audit.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/automation_splice_store.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/digest.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/engine/automation.hpp"
@@ -293,6 +295,48 @@ void exactBoundaries(const std::filesystem::path &directory) {
     }
 }
 
+void stagedSplices(const std::filesystem::path &directory) {
+    auto store = project(directory / "staged.adi", 1);
+    auto &db = store->db();
+    const std::int64_t ms = 1000000;
+    stream(*store, std::vector{point(0, 0.1), point(300 * ms, 0.9)}, 1);
+    const auto before = rows(*store);
+    const edit::TimeMap time(db);
+    edit::RowEdits edits(db);
+    clip_edit::CopyIds ids(db);
+    const auto addedLane = ids.next("automation_lanes");
+    edits.set("automation_lanes", addedLane,
+              edit::defaultRow(db, "automation_lanes",
+                               {{"id", addedLane}, {"owner_kind", "track"}, {"owner_id", 1},
+                                {"time_base", 1}, {"param_ref", "pan"}}));
+    for (const auto lane : {std::int64_t{2}, addedLane}) {
+        stageEnvelopeSplice(*store, edits, ids, time, lane, 100 * ms, 200 * ms,
+                            std::vector{point(100 * ms, 0.7), point(200 * ms, 0.7)}, 48000);
+        stageEnvelopeSplice(*store, edits, ids, time, lane, 150 * ms, 250 * ms,
+                            std::vector{point(150 * ms, 0.3), point(250 * ms, 0.3)}, 48000);
+    }
+    check(detail::sameSqlValue(rows(*store), before), "staged splices do not write project rows");
+    OpRequest request;
+    request.opType = "arranger.splice";
+    request.payload = {{"id", 0}, {"changes", edits.changes()}};
+    const auto committed = OpJournal(*store).commit(request);
+    check(committed.ok && committed.seqs.size() == 1,
+          "overlapping splices on existing and new envelopes commit together");
+    if (!committed.ok)
+        return;
+    const auto after = rows(*store);
+    const auto knots = decoded(*store, 1);
+    const auto rendered = program(knots);
+    check(engine::valueAt(rendered, 125 * 48) == 0.7 &&
+              engine::valueAt(rendered, 175 * 48) == 0.3 &&
+              std::abs(engine::valueAt(rendered, 275 * 48) - (0.1 + 0.8 * 275.0 / 300)) < 3e-12,
+          "the later splice replaces the overlap and preserves both outside pieces");
+    check(db.execAndGet("SELECT count(*) FROM automation_data").getInt() == 2 &&
+              History(*store).undo().ok && detail::sameSqlValue(rows(*store), before) &&
+              History(*store).redo().ok && detail::sameSqlValue(rows(*store), after),
+          "the two staged lanes each have one data row and one exact Undo and Redo");
+}
+
 void guards(const std::filesystem::path &directory) {
     const std::vector<std::string> mutations{
         "UPDATE automation_lanes SET default_value=0.3 WHERE id=2",
@@ -499,6 +543,158 @@ void identities(const std::filesystem::path &directory) {
     check(History(*store).undo().ok && detail::sameSqlValue(rows(*store), before),
           "low-ID collision witness Undo restores every literal identity");
 }
+void simplifiedEnvelopes(const std::filesystem::path &directory) {
+    constexpr double rate = 48000.0;
+    constexpr double tolerance = 1e-5;
+    const auto ns = [](std::int64_t sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * 1e9 / rate));
+    };
+    for (const bool exterior : {false, true}) {
+        auto store = project(directory / (exterior ? "simplify-partial.adi" : "simplify-full.adi"), 1);
+        const std::int64_t begin = exterior ? 200 : 0;
+        const std::int64_t end = begin + 1000;
+        std::vector<NativeSpliceKnot> sampled;
+        if (exterior)
+            sampled.push_back(point(0, 0.125, 5, 7000));
+        const auto curve = static_cast<std::uint8_t>(exterior ? 3 : 2);
+        for (std::int64_t i = 0; i <= 1000; ++i) {
+            const auto value = engine::curveValue(0.2, 0.8, static_cast<double>(i) / 1000.0, curve, 0.625);
+            sampled.push_back(point(ns(begin + i), value, 1, static_cast<std::uint64_t>(100 + i)));
+        }
+        if (exterior) {
+            sampled.back().point.curve = 4;
+            sampled.push_back(point(ns(end + 200), 0.9, 1, 8000));
+        }
+        stream(*store, sampled, 1, 4, false, true);
+        const auto before = rows(*store);
+        const auto original = engine::compileAutomation(rows::readModel(*store), rate);
+        const auto *old = original->lane(2);
+        if (!old)
+            throw std::runtime_error("cannot compile the sampled exponential");
+        auto prepared = prepareSimplifyEnvelope(*store, 2, ns(exterior ? begin - 5 : begin),
+                                               ns(exterior ? end + 5 : end), rate, tolerance);
+        check(prepared.ok && prepared.requests.size() == 1 &&
+                  prepared.requests.front().label == "Simplify Envelope" &&
+                  detail::sameSqlValue(rows(*store), before),
+              "Simplify prepares one sealed edit over the sampled selection");
+        if (!prepared.ok || prepared.requests.empty() || !OpJournal(*store).commit(prepared.requests).ok)
+            throw std::runtime_error("the sampled exponential did not simplify: " + prepared.error);
+        const auto after = rows(*store);
+        const auto reduced = engine::compileAutomation(rows::readModel(*store), rate);
+        const auto *fit = reduced->lane(2);
+        if (!fit)
+            throw std::runtime_error("cannot compile the fitted envelope");
+        const auto count = exterior ? 4u : 2u;
+        const auto fitIndex = exterior ? 1u : 0u;
+        const auto retained = decoded(*store, 1);
+        check(fit->points.size() == count && retained.at(fitIndex).point.point_id == 100 &&
+                  retained.at(fitIndex + 1).point.point_id == 1100 &&
+                  retained.at(fitIndex).point.curve == curve,
+              "1,001 samples reduce to two original endpoint identities and the expected curve");
+        double maxError = 0.0, outsideError = 0.0;
+        for (std::int64_t sample = 0; sample <= end + 220; ++sample) {
+            const auto error = std::abs(engine::valueAt(*old, sample) - engine::valueAt(*fit, sample));
+            maxError = std::max(maxError, error);
+            if (sample < begin || sample >= end)
+                outsideError = std::max(outsideError, error);
+        }
+        check(maxError <= tolerance && outsideError < 1e-9,
+              "every playback sample stays within tolerance and the exterior curves stay exact");
+        History history(*store);
+        check(history.undo().ok && detail::sameSqlValue(rows(*store), before) &&
+                  history.redo().ok && detail::sameSqlValue(rows(*store), after),
+              "Simplify Undo and Redo restore all original and fitted stored bytes");
+        prepared = prepareSimplifyEnvelope(*store, 2, ns(exterior ? begin - 5 : begin),
+                                               ns(exterior ? end + 5 : end), rate, tolerance);
+        check(prepared.ok && prepared.requests.empty(), "the already reduced selection is a no-op");
+    }
+    auto joined = project(directory / "simplify-joined-curves.adi", 1);
+    std::vector<NativeSpliceKnot> joinedPoints;
+    for (std::int64_t i = 0; i <= 1000; ++i) {
+        const double value = i <= 500
+            ? 0.125 + static_cast<double>(i) / 1000.0
+            : engine::curveValue(0.625, 0.25, static_cast<double>(i - 500) / 500.0, 2, -0.375);
+        joinedPoints.push_back(point(ns(i), value, 1, static_cast<std::uint64_t>(i + 1)));
+    }
+    stream(*joined, joinedPoints, 1);
+    const auto joinedOriginal = engine::compileAutomation(rows::readModel(*joined), rate);
+    const auto joinedEdit = prepareSimplifyEnvelope(*joined, 2, 0, ns(1000), rate, tolerance);
+    if (!joinedEdit.ok || joinedEdit.requests.empty() || !OpJournal(*joined).commit(joinedEdit.requests).ok)
+        throw std::runtime_error("the joined curves did not simplify");
+    const auto joinedReduced = engine::compileAutomation(rows::readModel(*joined), rate);
+    const auto *beforeJoin = joinedOriginal->lane(2), *afterJoin = joinedReduced->lane(2);
+    if (!beforeJoin || !afterJoin)
+        throw std::runtime_error("cannot compile the joined curves");
+    double joinedError = 0;
+    for (std::int64_t i = 0; i <= 1000; ++i)
+        joinedError = std::max(joinedError,
+                               std::abs(engine::valueAt(*beforeJoin, i) - engine::valueAt(*afterJoin, i)));
+    const auto middle = decoded(*joined, 1);
+    check(afterJoin->points.size() == 3 && joinedError <= tolerance &&
+              middle.at(1).point.point_id == 501 && middle.at(1).point.curve == 3,
+          "a join between linear and exponential runs keeps its native pivot and bounded playback");
+
+    auto sparse = project(directory / "simplify-interior-bound.adi", 1);
+    std::vector<NativeSpliceKnot> source;
+    for (std::int64_t i = 0; i <= 10; ++i) {
+        source.push_back(point(ns(i * 100),
+                               engine::curveValue(0.2, 0.8, static_cast<double>(i) / 10.0, 2, 0.625),
+                               1, static_cast<std::uint64_t>(i + 1)));
+    }
+    stream(*sparse, source, 1);
+    const auto tooTight = prepareSimplifyEnvelope(*sparse, 2, 0, ns(1000), rate, tolerance);
+    check(tooTight.ok && tooTight.requests.empty(),
+          "matching all authored knots still refuses a fit that would change intervening samples");
+    auto held = project(directory / "simplify-hold.adi", 1);
+    for (auto &knot : source)
+        knot.point.curve = 0;
+    stream(*held, source, 1);
+    const auto hold = prepareSimplifyEnvelope(*held, 2, 0, ns(1000), rate, tolerance);
+    check(!hold.ok && hold.requests.empty(), "Simplify refuses a wholly Hold envelope");
+    sparse->db().exec("UPDATE automation_lanes SET value_domain='enum' WHERE id=2;");
+    const auto enums = prepareSimplifyEnvelope(*sparse, 2, 0, ns(1000), rate, tolerance);
+    check(!enums.ok && enums.requests.empty(), "Simplify refuses enum automation");
+}
+void simplifiedMixedHeldRuns(const std::filesystem::path &directory) {
+    constexpr double rate = 48000.0;
+    constexpr double tolerance = 1e-4;
+    const auto ns = [](std::int64_t sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * 1e9 / rate));
+    };
+    auto store = project(directory / "simplify-mixed-holds.adi", 1);
+    const auto knots = std::vector{
+        point(ns(0), 0.1, 1, 1), point(ns(10), 0.2, 0, 2),
+        point(ns(20), 0.200001, 0, 3), point(ns(30), 0.200002, 0, 4),
+        point(ns(40), 0.8, 0, 5), point(ns(50), 0.800001, 0, 6),
+        point(ns(60), 0.85, 5, 7), point(ns(100), 0.95, 1, 8)};
+    stream(*store, knots, 1, 4, false, true);
+    const auto snapshot = rows(*store);
+    const auto old = decoded(*store, 1);
+    const auto oldProgram = program(old);
+    const auto prepared = prepareSimplifyEnvelope(*store, 2, 0, ns(100), rate, tolerance);
+    check(prepared.ok && prepared.requests.size() == 1 &&
+              OpJournal(*store).commit(prepared.requests).ok,
+          "a numeric envelope can thin recorded pauses among linear and authored segments");
+    const auto reduced = decoded(*store, 1);
+    std::set<std::uint64_t> ids;
+    for (const auto &knot : reduced) {
+        const auto id = knot.point.point_id;
+        ids.insert(id);
+        check(knot.point.value == knots.at(static_cast<std::size_t>(id - 1)).point.value &&
+                  knot.point.curve == knots.at(static_cast<std::size_t>(id - 1)).point.curve,
+              "held neighbors and the authored curve retain their full values");
+    }
+    check(ids == std::set<std::uint64_t>{1, 2, 4, 5, 6, 7, 8},
+          "only a small interior held step is thinned; both ends of big jumps remain");
+    const auto newProgram = program(reduced);
+    double maximumError = 0;
+    for (std::int64_t sample = 0; sample <= 100; ++sample)
+        maximumError = std::max(maximumError,
+                                std::abs(engine::valueAt(oldProgram, sample) -
+                                         engine::valueAt(newProgram, sample)));
+    check(maximumError <= tolerance && History(*store).undo().ok && rows(*store) == snapshot,
+          "mixed held run playback is error-bounded and Undo is byte-exact");
+}
 void layouts(const std::filesystem::path &directory) {
     for (int variant = 0; variant < 6; ++variant) {
         auto store = project(directory / ("layout" + std::to_string(variant) + ".adi"));
@@ -534,17 +730,103 @@ void layouts(const std::filesystem::path &directory) {
               "future malformed or conflicting AAUT layout refuses unchanged");
     }
 }
+void rangeTransforms(const std::filesystem::path &directory) {
+    constexpr std::int64_t quarter=5765760;
+    constexpr double rate=48000;
+    const auto old=std::vector{point(0,0.15,5,1),point(2*quarter,0.55,5,2),
+                              point(7*quarter/2,0.8,1,3),point(6*quarter,0.25,1,4)};
+    auto store=project(directory/"range-transform.adi");
+    auto &db=store->db();
+    db.exec("INSERT INTO tempo_map(id,pos_ticks,bpm,curve) "
+            "VALUES(1,0,120,0),(20,5765760,60,0)");
+    stream(*store,old,0,4,false,true);
+    const auto before=rows(*store);
+    const auto original=decoded(*store,0);
+    const auto originalProgram=program(original);
+    const edit::TimeMap time(db);
+    const auto at=[&](std::int64_t tick) {
+        return static_cast<std::int64_t>(std::llround(time.seconds(tick)*rate));
+    };
+    const auto close=[](double a,double b){return std::abs(a-b)<1e-10;};
+    const auto value=[&](const auto &compiled,std::int64_t tick) {
+        return engine::valueAt(compiled,at(tick));
+    };
+
+    const edit::AutomationTransform expansion{quarter,3*quarter,quarter,4*quarter,{}};
+    const auto stretched=edit::prepareAutomationTransform(*store,2,expansion,rate,"Stretch Automation");
+    check(stretched.ok && stretched.requests.size()==1,"horizontal stretch prepares one sealed edit");
+    check(rows(*store)==before,"transform preparation leaves every row untouched");
+    if(!stretched.ok || stretched.requests.empty())return;
+    const auto committed=OpJournal(*store).commit(stretched.requests);
+    check(committed.ok,"sample-aware horizontal stretch commits");
+    if(!committed.ok)return;
+    const auto expanded=decoded(*store,0);
+    const auto expandedProgram=program(expanded);
+    const auto sourceHalf=(at(quarter)+at(2*quarter))/2;
+    const auto destinationHalf=(at(quarter)+at(5*quarter/2))/2;
+    check(close(engine::valueAt(expandedProgram,destinationHalf),
+                engine::valueAt(originalProgram,sourceHalf)),
+          "stretch preserves the clipped non-linear bend at the same sample phase");
+    check(close(value(expandedProgram,quarter),value(originalProgram,quarter)) &&
+          close(value(expandedProgram,5*quarter/2),0.55),
+          "stretch uses the actual tempo-cut boundary and remaps the interior knot proportionally");
+    check(close(engine::valueAt(expandedProgram,at(quarter)-1),engine::valueAt(originalProgram,at(quarter)-1)) &&
+          close(engine::valueAt(expandedProgram,at(4*quarter)+1),engine::valueAt(originalProgram,at(4*quarter)+1)) &&
+          expanded.front().point.point_id==1 && expanded.back().point.point_id==4 &&
+          std::none_of(expanded.begin(),expanded.end(),[](const auto &k){return k.point.point_id==3;}),
+          "stretch overwrites a crossed point while preserving sampled outside curves and surviving IDs");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old transform rows");
+
+    const edit::AutomationTransform skew{quarter,3*quarter,quarter,3*quarter,
+        edit::AutomationValueTransform{0.,1.,0.1,0.9,0.3,0.9}};
+    const auto skewed=edit::prepareAutomationTransform(*store,2,skew,rate,"Skew Automation");
+    check(skewed.ok && skewed.requests.size()==1,"corner skew prepares one edit on the original time span");
+    if(!skewed.ok || skewed.requests.empty())return;
+    const auto angled=OpJournal(*store).commit(skewed.requests);
+    check(angled.ok,"corner skew commits");
+    if(!angled.ok)return;
+    const auto transformed=decoded(*store,0);
+    const auto skewedProgram=program(transformed);
+    const auto originalStart=value(originalProgram,quarter);
+    const auto phase=(engine::valueAt(originalProgram,sourceHalf)-originalStart)/(0.55-originalStart);
+    const auto expectedHalf=std::lerp(0.1+0.8*originalStart,0.2+0.7*0.55,phase);
+    check(close(engine::valueAt(skewedProgram,sourceHalf),expectedHalf),
+          "skew keeps the normalized clipped bend between transformed knot values");
+    check(close(value(skewedProgram,quarter),0.1+0.8*value(originalProgram,quarter)) &&
+          close(value(skewedProgram,2*quarter),0.2+0.7*0.55) &&
+          close(engine::valueAt(skewedProgram,at(3*quarter)+1),engine::valueAt(originalProgram,at(3*quarter)+1)),
+          "skew changes values across the selection without moving the interior knot or changing the outside");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old skew rows");
+
+    const edit::AutomationTransform shrink{quarter,3*quarter,quarter,2*quarter,{}};
+    const auto compressed=edit::prepareAutomationTransform(*store,2,shrink,rate);
+    check(compressed.ok && !compressed.requests.empty(),"horizontal compression prepares");
+    if(!compressed.ok || compressed.requests.empty())return;
+    const auto compact=OpJournal(*store).commit(compressed.requests);
+    check(compact.ok,"horizontal compression commits");
+    if(!compact.ok)return;
+    const auto contracted=decoded(*store,0);
+    const auto contractedProgram=program(contracted);
+    check(close(value(contractedProgram,5*quarter/2),value(originalProgram,3*quarter)) &&
+          close(engine::valueAt(contractedProgram,at(3*quarter)+1),engine::valueAt(originalProgram,at(3*quarter)+1)),
+          "compression fills vacated time from the transformed endpoint and preserves the curve after the old span");
+    check(History(*store).undo().ok && rows(*store)==before,"one Undo restores complete old compression rows");
+}
 } // namespace
 int main() {
     try {
         adi::test::TempDirectory temp("automation", "splice-store");
         curves(temp.path());
         exactBoundaries(temp.path());
+        rangeTransforms(temp.path());
+        stagedSplices(temp.path());
         guards(temp.path());
         failuresAndAbsence(temp.path());
         layouts(temp.path());
         additionalAdmission(temp.path());
         identities(temp.path());
+        simplifiedEnvelopes(temp.path());
+        simplifiedMixedHeldRuns(temp.path());
     } catch (const std::exception &error) {
         ++failures;
         std::printf("EXCEPTION %s\n", error.what());

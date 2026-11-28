@@ -28,7 +28,12 @@ FILETIME changedTimes[3]{};
 unsigned changedCount=0;
 #endif
 }
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     if(n!=0 && n==stopAtSize.load() && readsUntilAction.fetch_sub(1)==1) {
         stopAtSize=0;
         if(pendingStop)pendingStop->request_stop();
@@ -39,11 +44,12 @@ void* operator new(std::size_t n) {
     if(void* p=std::malloc(n?n:1))return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n){return operator new(n);}
-void operator delete(void* p)noexcept{std::free(p);}
-void operator delete[](void* p)noexcept{operator delete(p);}
-void operator delete(void* p,std::size_t)noexcept{operator delete(p);}
-void operator delete[](void* p,std::size_t)noexcept{operator delete(p);}
+ADI_TEST_NOINLINE void* operator new[](std::size_t n){return operator new(n);}
+ADI_TEST_NOINLINE void operator delete(void* p)noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p)noexcept{operator delete(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t)noexcept{operator delete(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t)noexcept{operator delete(p);}
+#undef ADI_TEST_NOINLINE
 
 namespace {
 using namespace adi;using namespace adi::media;namespace fs=std::filesystem;

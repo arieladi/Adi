@@ -31,9 +31,11 @@
 #include "adi/return_send_tap.hpp"
 
 #include "adi/controller_data.hpp"
+#include "adi/midi_output_route.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -259,6 +261,7 @@ struct Routing {
     std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
     std::optional<IndividualSendTap> sendTap{};
     std::string keyTap = "post_mixer"; // routing_key_taps absent: ADR-0203 d3
+    std::optional<MidiOutput> midiOutput{};
 };
 
 // --- the whole readable project ---------------------------------------------
@@ -440,7 +443,12 @@ struct Model {
     /// projection silently missing a table is a diff that says something was
     /// deleted.
     std::vector<std::string> problems;
+    // Populated only on the live Session's playback copy of this model.
+    std::map<std::int64_t, std::int64_t> auditionedTakeLanes;
 };
+
+/// Read only one clip's note stream, with the same diagnostics as readModel.
+void readClipNotes(Model&, const Store&, std::int64_t clipId);
 
 /// Read a whole project. The only function in the adapter that touches SQLite.
 ///

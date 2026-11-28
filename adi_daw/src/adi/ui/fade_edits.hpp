@@ -3,6 +3,7 @@
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,12 +19,16 @@ inline bool isAudio(const engine::ClipNode &c) { return c.audio.has_value(); }
 // One clip's fades set, either side or both; a side left out keeps what it has.
 inline OpRequest setFades(std::int64_t clip, std::optional<std::int64_t> in, std::optional<std::int64_t> out,
                           const char *label, std::optional<double> inTension = std::nullopt,
-                          std::optional<double> outTension = std::nullopt) {
+                          std::optional<double> outTension = std::nullopt,
+                          std::optional<std::int64_t> inStart = std::nullopt,
+                          std::optional<std::int64_t> outStart = std::nullopt) {
     Payload payload = {{"id", clip}};
-    if (in || inTension) {
+    if (in || inTension || inStart) {
         Payload side = Payload::object();
         if (in)
             side["ticks"] = *in;
+        if (inStart)
+            side["startTicks"] = *inStart;
         if (inTension) {
             // A bent fade is the engine's Bezier curve (`curves.hpp`): the linear curve ignores tension.
             side["tension"] = *inTension;
@@ -31,10 +36,12 @@ inline OpRequest setFades(std::int64_t clip, std::optional<std::int64_t> in, std
         }
         payload["in"] = side;
     }
-    if (out || outTension) {
+    if (out || outTension || outStart) {
         Payload side = Payload::object();
         if (out)
             side["ticks"] = *out;
+        if (outStart)
+            side["startTicks"] = *outStart;
         if (outTension) {
             side["tension"] = *outTension;
             side["curve"] = kBentFadeCurve;
@@ -48,9 +55,39 @@ inline OpRequest setFades(std::int64_t clip, std::optional<std::int64_t> in, std
 }
 } // namespace fade_edits_detail
 // A fade's length kept inside its clip: never negative, never past the other fade.
-inline std::int64_t fadeLimit(const engine::ClipNode &c, bool in, std::int64_t ticks) {
-    const auto other = in ? c.fadeOutTicks : c.fadeInTicks;
-    return std::clamp<std::int64_t>(ticks, 0, std::max<std::int64_t>(0, c.lengthTicks - other));
+inline engine::ClipFadeHandles fadeHandles(const engine::ClipNode &c, bool in) noexcept {
+    const auto handles = in ? c.fadeInHandles : c.fadeOutHandles;
+    const auto peak = std::clamp(handles.peakTicks, std::int64_t{0}, std::max(c.lengthTicks, std::int64_t{0}));
+    return {std::clamp(handles.zeroTicks, std::int64_t{0}, peak), peak};
+}
+inline std::int64_t fadePeakLimit(const engine::ClipNode &c, bool in) noexcept {
+    auto limit = std::max<std::int64_t>(0, c.lengthTicks - fadeHandles(c, !in).peakTicks);
+    const auto begin = c.loopStartTicks, loop = c.loopLengthTicks.value_or(0);
+    const auto offset = c.contentOffsetTicks;
+    if (!c.loopEnabled || begin < 0 || loop <= 0 || offset < 0 ||
+        c.lengthTicks > std::numeric_limits<std::int64_t>::max() - offset)
+        return limit;
+    if (in) {
+        const auto distance = offset < begin ? begin - offset : loop - (offset - begin) % loop;
+        limit = std::min(limit, distance);
+    } else if (const auto end = offset + c.lengthTicks; end > begin) {
+        const auto distance = (end - begin - 1) % loop + 1;
+        limit = std::min(limit, distance);
+    }
+    return limit;
+}
+inline std::int64_t fadeLimit(const engine::ClipNode &c, bool in, std::int64_t ticks) noexcept {
+    return std::clamp(ticks, std::int64_t{0}, fadePeakLimit(c, in));
+}
+inline engine::ClipFadeHandles movedFadeHandle(const engine::ClipNode &c, bool in, bool start, std::int64_t ticks) noexcept {
+    auto value = fadeHandles(c, in);
+    if (start) {
+        value.zeroTicks = std::clamp(ticks, std::int64_t{0}, std::max<std::int64_t>(0, value.peakTicks - 1));
+    } else {
+        value.peakTicks = fadeLimit(c, in, ticks);
+        value.zeroTicks = std::min(value.zeroTicks, std::max<std::int64_t>(0, value.peakTicks - 1));
+    }
+    return value;
 }
 struct FadeEdit {
     std::vector<OpRequest> ops;
@@ -140,17 +177,21 @@ inline FadeEdit deleteFades(const SnapshotTracks &tracks, const std::vector<std:
 // One fade dragged by its handle (manual 6.8): the same length, or the same curve, on the dragged
 // clip and every other selected audio clip, each kept inside its clip. One batch.
 inline FadeEdit dragFades(const SnapshotTracks &tracks, const std::vector<std::int64_t> &clips, bool in,
-                          std::optional<std::int64_t> ticks, std::optional<double> tension) {
+                          std::optional<std::int64_t> ticks, std::optional<double> tension, bool start = false) {
     FadeEdit edit;
     for (const auto &t : tracks)
         if (t)
             for (const auto &c : t->clips)
                 if (c && fade_edits_detail::isAudio(*c) && std::find(clips.begin(), clips.end(), c->id) != clips.end()) {
-                    const auto length = ticks ? std::optional<std::int64_t>(fadeLimit(*c, in, *ticks)) : std::nullopt;
+                    const auto original = fadeHandles(*c, in);
+                    const auto next = ticks ? movedFadeHandle(*c, in, start, *ticks) : original;
+                    if (start && (next.peakTicks == 0 || next == original))
+                        continue;
+                    const auto peak = ticks || next.zeroTicks > 0 ? std::optional{next.peakTicks} : std::nullopt;
+                    const auto zero = start || next.zeroTicks > 0 ? std::optional{next.zeroTicks} : std::nullopt;
                     const char *label = tension ? "Change Fade Curve" : "Change Fade";
-                    edit.ops.push_back(in ? fade_edits_detail::setFades(c->id, length, std::nullopt, label, tension)
-                                          : fade_edits_detail::setFades(c->id, std::nullopt, length, label, std::nullopt,
-                                                                        tension));
+                    edit.ops.push_back(in ? fade_edits_detail::setFades(c->id, peak, std::nullopt, label, tension, {}, zero)
+                                          : fade_edits_detail::setFades(c->id, std::nullopt, peak, label, {}, tension, {}, zero));
                 }
     return edit;
 }

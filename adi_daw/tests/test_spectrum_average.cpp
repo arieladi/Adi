@@ -140,16 +140,22 @@ void lawsAndCheckedInput() {
 }
 void allocationAndFailure();
 }
-void *operator new(std::size_t size) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t size) {
     if (audit) { ++allocations; if (denyAllocation) throw std::bad_alloc(); }
     if (auto *p = std::malloc(size ? size : 1)) return p;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void *p) noexcept { if (audit && p) ++frees; std::free(p); }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void *operator new[](std::size_t size) { return ::operator new(size); }
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept { if (audit && p) ++frees; std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+#undef ADI_TEST_NOINLINE
 namespace {
 void allocationAndFailure() {
     Average average; const Average::Settings settings{3, 48000., 256, .3};

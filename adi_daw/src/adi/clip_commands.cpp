@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/clip_commands.hpp"
+#include "adi/audio/progressive_decode.hpp"
+#include "adi/audio/warp.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/automation_time_edit.hpp"
 #include "adi/automation_clipboard.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/note_stream_detail.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -13,6 +18,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <stdexcept>
 #include <set>
 
@@ -289,6 +296,130 @@ Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint po
     keepLeft(image,cut);keepRight(right,cut);
     return right;
 }
+using ClockRange=std::pair<std::int64_t,std::int64_t>;
+struct ReverseWindow {std::int64_t start,end;bool loop;};
+ReverseWindow reverseWindow(std::int64_t size,std::int64_t offset,std::int64_t span,
+                            std::optional<std::int64_t> end,std::optional<ClockRange> loop) {
+    if(offset<0 || span<=0)throw std::runtime_error("audio does not cover the selected range");
+    const auto endOfSelection=edit::addTime(offset,span);
+    if(loop) {
+        const auto [first,last]=*loop;
+        if(first<0 || last<=first || last>size)throw std::runtime_error("clip loop is outside its source");
+        if(offset<first) {
+            // The clip plays contiguous material until its first wrap. Reversed
+            // repeats followed by an outro need more than one clip window.
+            if(endOfSelection>last)throw std::runtime_error("Select either the intro or the repeating loop to reverse it.");
+            return {size-endOfSelection,size-offset,false};
+        }
+        const auto final=first+(endOfSelection-1-first)%(last-first);
+        const auto start=size-1-final;
+        // A split on a later repeat can store an unrolled Start beyond the
+        // file. Use the mirrored loop End when that Start cannot give an End.
+        const auto mirroredEnd=size-offset;
+        return {start,mirroredEnd>start?mirroredEnd:size-first,true};
+    }
+    const auto through=std::min({size,endOfSelection,end.value_or(size)});
+    if(through<=offset)throw std::runtime_error("audio does not cover the selected range");
+    return {size-through,size-offset,false};
+}
+void shiftFadeClocks(Payload& row,Payload& clocks,const char* in,const char* inEnd,const char* out,const char* outEnd,
+                     std::int64_t delta,std::int64_t start) {
+    for(const auto& pair:{std::pair{in,inEnd},std::pair{out,outEnd}}) {
+        if(clocks.at(pair.first).is_null())continue;
+        const auto begin=edit::addTime(detail::signedInteger(clocks.at(pair.first)),delta);
+        const auto end=edit::addTime(detail::signedInteger(clocks.at(pair.second)),delta);
+        if(begin<0) {
+            // A split can retain a fade-in that already finished before this
+            // piece began. It has no gain effect in the reversed placement.
+            if(pair.first==in && end<=start) {
+                clocks[pair.first]=nullptr;clocks[pair.second]=nullptr;
+                row["fade_in_ticks"]=0;
+                continue;
+            }
+            throw std::runtime_error("Reverse cannot retain this clip's fade clock");
+        }
+        clocks[pair.first]=begin;clocks[pair.second]=end;
+    }
+}
+std::int64_t sourceSampleRate(Store& store,std::int64_t id) {
+    SQLite::Statement row(store.db(),"SELECT sample_rate FROM media_files WHERE id=?");row.bind(1,id);
+    if(!row.executeStep())throw std::runtime_error("clip media is missing");
+    if(!row.getColumn(0).isNull() && row.getColumn(0).getInt64()>0)return row.getColumn(0).getInt64();
+    std::string error;
+    const auto path=media::resolveMedia(media::projectFolder(store),media::mediaRow(store.db(),id),error);
+    if(path.empty())throw std::runtime_error(error.empty()?"clip media is missing":error);
+    return audio::inspectPcm(path).sampleRate;
+}
+void reverseImage(Store& store,Payload& image,const edit::TimeMap& time,double rate) {
+    auto& row=image.at("row");
+    auto& children=image.at("children");
+    auto& sources=children.at("audio_clips");
+    if(row.at("kind")!="audio" || !row.at("alias_of").is_null() || sources.size()!=1)
+        throw std::runtime_error("Reverse needs attached, independent audio clips");
+    freezeAudio(store,image,time,rate);
+    auto& source=sources[0];
+    const auto frames=detail::signedInteger(source.at("src_len_frames"));
+    if(frames<=0)throw std::runtime_error("audio source window is empty");
+    const auto origin=originTicks(row,time);
+    const auto offsetTicks=detail::signedInteger(row.at("content_offset_ticks"));
+    auto& properties=children.at("clip_properties");
+    auto* end=properties.empty()?nullptr:&properties[0].at("end_marker_ticks");
+    const bool hasEnd=end && !end->is_null();
+    const auto loopTicks=detail::signedInteger(row.at("loop_start_ticks"));
+    const auto& loopLength=row.at("loop_len_ticks");
+    const bool looping=row.at("loop_enabled")!=0;
+    const bool hasLoop=!loopLength.is_null() && detail::signedInteger(loopLength)>0;
+    if(looping && !hasLoop)throw std::runtime_error("clip has an invalid loop");
+    if(source.at("warp_enabled")!=0) {
+        if(!source.at("warp_markers").is_binary())throw std::runtime_error("Reverse needs the clip's Warp map");
+        const auto& bytes=source.at("warp_markers").get_binary();
+        const auto markers=audio::readWarpMap(std::as_bytes(std::span(bytes)),static_cast<std::uint64_t>(frames));
+        if(!markers)throw std::runtime_error("Reverse needs a readable Warp map");
+        const auto size=markers.markers.back().tick;
+        const auto span=row.at("time_base")==0?detail::signedInteger(row.at("length_ticks")):
+            time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),detail::signedInteger(row.at("length_ns"))))-origin;
+        const auto lastLoop=hasLoop?edit::addTime(loopTicks,detail::signedInteger(loopLength)):0;
+        const auto window=reverseWindow(size,offsetTicks,span,hasEnd?std::optional{detail::signedInteger(*end)}:std::nullopt,
+            looping?std::optional{ClockRange{loopTicks,lastLoop}}:std::nullopt);
+        row["content_offset_ticks"]=window.start;
+        row["loop_enabled"]=window.loop?1:0;
+        if(hasEnd)*end=window.end;
+        if(hasLoop && loopTicks>=0 && lastLoop<=size)row["loop_start_ticks"]=size-lastLoop;
+        for(auto& clocks:children.at("clip_warp_fade_domains"))
+            shiftFadeClocks(row,clocks,"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks",
+                            window.start-offsetTicks,window.start);
+    } else {
+        auto& clocks=ensurePlayback(store,image);
+        const auto clockSample=[&](const char* column) {
+            return sample(static_cast<double>(detail::signedInteger(clocks.at(column)))*1e-9,rate);
+        };
+        const auto offset=clockSample("content_offset_ns");
+        const auto physicalEnd=clocks.at("source_end_ns").is_null()?std::nullopt:std::optional{clockSample("source_end_ns")};
+        const auto span=sample(endSeconds(row,time),rate)-sample(startSeconds(row,time),rate);
+        const auto sourceRate=sourceSampleRate(store,detail::signedInteger(source.at("media_id")));
+        if(sourceRate<=0)throw std::runtime_error("audio source sample rate is unavailable");
+        const auto size=sample(static_cast<double>(frames)/static_cast<double>(sourceRate),rate);
+        const auto authoredLoop=looping?std::optional{ClockRange{clockSample("loop_begin_ns"),clockSample("loop_end_ns")}}:std::nullopt;
+        const auto window=reverseWindow(size,offset,span,physicalEnd,authoredLoop);
+        const auto ticksAt=[&](std::int64_t at){return time.ticks(edit::addTime(time.nanos(origin),sampleNanos(at,rate)))-origin;};
+        const auto startNs=sampleNanos(window.start,rate);
+        shiftFadeClocks(row,clocks,"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns",
+                       startNs-detail::signedInteger(clocks.at("content_offset_ns")),startNs);
+        row["content_offset_ticks"]=ticksAt(window.start);
+        row["loop_enabled"]=window.loop?1:0;
+        clocks["content_offset_ns"]=startNs;
+        if(physicalEnd)clocks["source_end_ns"]=sampleNanos(window.end,rate);
+        if(hasEnd)*end=ticksAt(window.end);
+        if(authoredLoop) {
+            const auto [first,last]=*authoredLoop;
+            clocks["loop_begin_ns"]=sampleNanos(size-last,rate);
+            clocks["loop_end_ns"]=sampleNanos(size-first,rate);
+            row["loop_start_ticks"]=ticksAt(size-last);
+            row["loop_len_ticks"]=std::max<std::int64_t>(1,ticksAt(size-first)-ticksAt(size-last));
+        }
+    }
+    source["reverse"]=source.at("reverse")==0?1:0;
+}
 void validRange(const RangeSelection& range) {
     if(range.begin.base!=range.end.base || (range.begin.base!=0 && range.begin.base!=1) ||
        range.begin.value<0 || range.end.value<=range.begin.value || range.tracks.empty())
@@ -296,11 +427,17 @@ void validRange(const RangeSelection& range) {
     std::set<std::int64_t> tracks;
     for(const auto id:range.tracks)if(!tracks.insert(id).second)throw std::runtime_error("range has duplicate tracks");
 }
-enum class ClipLaneScope { MainLane, AllLanes };
+enum class ClipLaneScope { MainLane, AllLanes, OneTake };
 const char* clipRangeQuery(ClipLaneScope scope) {
-    return scope==ClipLaneScope::MainLane?
-        "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id":
-        "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+    switch (scope) {
+    case ClipLaneScope::MainLane:
+        return "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id";
+    case ClipLaneScope::OneTake:
+        return "SELECT id FROM clips WHERE track_id=? AND lane_id=? ORDER BY id";
+    case ClipLaneScope::AllLanes:
+        return "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+    }
+    throw std::logic_error("unknown clip lane scope");
 }
 void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelection& range,
                 const edit::TimeMap& time,double rate,ClipLaneScope scope) {
@@ -336,23 +473,130 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
 }
 void expectedHead(Store& store,PreparedEdit& result) {result.options.expectHead.emplace(OpJournal(store).headSeq());}
 }
+PreparedEdit prepareSetSource(Store& store,std::int64_t clipId,std::int64_t mediaId,
+                              std::int64_t frames,std::int64_t sampleRate,OpRequest capturedMedia) {
+    PreparedEdit result;
+    try {
+        if(mediaId<=0 || frames<=0 || sampleRate<=0 || sampleRate>768000)
+            throw std::runtime_error("replacement must be a readable audio file");
+        if(!capturedMedia.opType.empty() && ((capturedMedia.opType!="media.import" && capturedMedia.opType!="media.relink") ||
+                                           detail::signedInteger(capturedMedia.payload.at("id"))!=mediaId))
+            throw std::runtime_error("replacement media capture differs from its source");
+        Read read(store.db());expectedHead(store,result);
+        OpContext context{store,store.db()};
+        const auto clip=captureDeleted(context,clipId);
+        const auto& core=clip.at("row");
+        const auto& audio=clip.at("children").at("audio_clips");
+        if(core.at("kind")!="audio" || !core.at("alias_of").is_null() || audio.size()!=1)
+            throw std::runtime_error("choose one audio clip with its own sample");
+        auto source=audio[0];
+        const auto oldId=detail::signedInteger(source.at("media_id"));
+        if(mediaId!=oldId) {
+            const auto oldStart=detail::signedInteger(source.at("src_start_frames"));
+            const auto oldLength=detail::signedInteger(source.at("src_len_frames"));
+            if(oldStart<0 || oldLength<=0)
+                throw std::runtime_error("the original clip lacks a valid source window");
+            SQLite::Statement oldMedia(store.db(),"SELECT frames,sample_rate FROM media_files WHERE id=?");
+            oldMedia.bind(1,oldId);
+            if(!oldMedia.executeStep())throw std::runtime_error("the original clip has no media row");
+            const auto oldFrames=oldMedia.getColumn(0).getInt64(),oldRate=oldMedia.getColumn(1).getInt64();
+            bool sameDuration=false;
+            if(oldFrames>0 && oldRate>0) {
+                const auto oldDivisor=std::gcd(oldFrames,oldRate),newDivisor=std::gcd(frames,sampleRate);
+                sameDuration=oldFrames/oldDivisor==frames/newDivisor && oldRate/oldDivisor==sampleRate/newDivisor;
+            }
+            auto& stored=source.at("warp_markers");
+            if(!sameDuration || oldRate!=sampleRate) {
+                const auto rescale=[&](std::int64_t frame) {
+                    return std::llround(static_cast<long double>(frame)*static_cast<long double>(sampleRate)/
+                                        static_cast<long double>(oldRate));
+                };
+                const auto first=sameDuration?rescale(oldStart):0;
+                const auto count=sameDuration?rescale(edit::addTime(oldStart,oldLength))-first:frames;
+                source["src_start_frames"]=first;
+                source["src_len_frames"]=count;
+                if(source.at("warp_enabled")!=0 || (sameDuration && !stored.is_null())) {
+                    if(!stored.is_binary())throw std::runtime_error("Warp replacement needs a readable source map");
+                    const auto& bytes=stored.get_binary();
+                    const std::span raw(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size());
+                    auto map=audio::readWarpMap(raw,static_cast<std::uint64_t>(oldLength));
+                    if(!map || map.futureLayout)throw std::runtime_error("Warp replacement cannot rewrite this source map");
+                    if(sameDuration) {
+                        for(auto& marker:map.markers)marker.sourceFrame=rescale(marker.sourceFrame);
+                        map.markers.back().sourceFrame=count;
+                    } else {
+                        // Keep the clip's musical source span and replace the hand-aligned points with a fresh linear map.
+                        map.markers={{0,0},{count,map.markers.back().tick}};
+                    }
+                    const auto replacement=audio::writeWarpMap(map.markers,static_cast<std::uint64_t>(count));
+                    if(!replacement)throw std::runtime_error("replacement cannot carry a valid Warp map");
+                    const auto* begin=reinterpret_cast<const std::uint8_t*>(replacement.bytes.data());
+                    stored=Payload::binary(std::vector<std::uint8_t>(begin,begin+replacement.bytes.size()));
+                } else {
+                    stored=nullptr;
+                }
+            }
+            // A legacy Warp-off loop can wrap its offset or fall back to the
+            // start of the file. The retained Start must be playable for a one-shot.
+            if(source.at("warp_enabled")==0 && core.at("loop_enabled")==0) {
+                const auto rate=audio::pitchedSampleRate(static_cast<double>(sampleRate),source.at("transpose_semis").get<double>());
+                const auto& clocks=clip.at("children").at("clip_playback_details");
+                long double retainedStart;
+                if(!clocks.empty() && !clocks.front().at("content_offset_ns").is_null()) {
+                    retainedStart=static_cast<long double>(detail::signedInteger(clocks.front().at("content_offset_ns")))/1e9L;
+                } else {
+                    const edit::TimeMap time(store.db());
+                    retainedStart=time.durationSeconds(originTicks(core,time),detail::signedInteger(core.at("content_offset_ticks")));
+                }
+                const auto window=detail::signedInteger(source.at("src_len_frames"));
+                if(rate>0 && retainedStart>=static_cast<long double>(window)/rate)
+                    throw std::runtime_error("The replacement sample ends at or before the clip's Start at its current Pitch.");
+            }
+            source["media_id"]=mediaId;
+        }
+        if(!capturedMedia.opType.empty()) {
+            capturedMedia.label="Replace Clip Sample";
+            result.requests.push_back(std::move(capturedMedia));
+        }
+        edit::RowEdits rows(store.db());rows.set("audio_clips",clipId,std::move(source));
+        packet(store,result,"audioClip.setSource","Replace Clip Sample",clipId,rows);
+    } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
+}
 ClipCopy copyClip(Store& store,std::int64_t id,double referenceRate) {
+    return copyClip(store,id,edit_plan::Options{referenceRate,{}});
+}
+ClipCopy copyClip(Store& store,std::int64_t id,const edit_plan::Options& options) {
+    const auto referenceRate=options.referenceRate;
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
         result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
-        edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);result.ok=true;
+        edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);
+        const auto& row=result.image.at("row");
+        if(options.policy.automationFollowsClips && row.at("lane_id").is_null()) {
+            const auto base=static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first=detail::signedInteger(row.at(base==0?"pos_ticks":"pos_ns"));
+            const auto& length=row.at(base==0?"length_ticks":"length_ns");
+            if(!length.is_null() && detail::signedInteger(length)>0)
+                result.envelopes=edit::copyAutomationMaterial(store,time,detail::signedInteger(row.at("track_id")),
+                    {base,first},{base,edit::addTime(first,detail::signedInteger(length))},referenceRate);
+        }
+        result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
 ClipCut prepareCutClip(Store& store,std::int64_t id,double referenceRate) {
+    return prepareCutClip(store,id,edit_plan::Options{referenceRate,{}});
+}
+ClipCut prepareCutClip(Store& store,std::int64_t id,const edit_plan::Options& options) {
     ClipCut result;
     try {
-        Read read(store.db());expectedHead(store,result.edit);result.copy=copyClip(store,id,referenceRate);
+        Read read(store.db());result.copy=copyClip(store,id,options);
         if(!result.copy.ok)throw std::runtime_error(result.copy.error);
-        result.edit.sourceFile=result.copy.sourceFile;
-        OpRequest request;request.opType="clip.delete";request.payload={{"id",id}};request.label="Cut Clip";
-        request.targetKind="clip";request.targetId=id;result.edit.requests.push_back(std::move(request));result.edit.ok=true;
+        const std::array clips{id};
+        result.edit=edit_plan::prepareDelete(store,clips,options);
+        for(auto& request:result.edit.requests)request.label="Cut Clip";
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
@@ -381,6 +625,7 @@ PreparedEdit preparePaste(Store& store,const ClipCopy& copy,std::int64_t newId,s
         if(end==begin)end=edit::addTime(end,1);
         auto scope=edit_plan::materialScope(tracks,base==0?edit_plan::PlacementClock::Ticks:edit_plan::PlacementClock::Nanoseconds,{begin,end});
         edit_plan::detail::PlacementBatch batch;batch.incoming.push_back(std::move(image));batch.sourceTracks.push_back(sourceTrack);
+        if(!copy.envelopes.is_null())batch.envelopes.push_back({track,{base,first},{base,last},copy.envelopes});
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Clip");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -392,7 +637,7 @@ PreparedEdit prepareDuplicate(Store& store,std::int64_t sourceId,std::int64_t ne
     // Both reads share one snapshot; no second writer can change material
     // between capturing the copy and capturing the expected undo head.
     try {
-        Read read(store.db());auto copy=copyClip(store,sourceId,options.referenceRate);
+        Read read(store.db());auto copy=copyClip(store,sourceId,options);
         auto result=preparePaste(store,copy,newId,track,point,options);
         if(result.ok && !result.requests.empty())result.requests[0].label="Duplicate Clip";
         return result;
@@ -409,7 +654,7 @@ PreparedEdit prepareDuplicates(Store& store,std::span<const ClipPlacement> place
         std::set<std::int64_t> tracks;auto begin=std::numeric_limits<std::int64_t>::max();std::int64_t end=0;
         edit_plan::detail::PlacementBatch batch;
         for(const auto& place:places) {
-            const auto copy=copyClip(store,place.sourceId,options.referenceRate);
+            const auto copy=copyClip(store,place.sourceId,options);
             if(!copy.ok)throw std::runtime_error(copy.error);
             verifyMediaKeys(store,copy.image);
             auto image=cloneImage(copy.image,place.newId,ids);
@@ -424,6 +669,11 @@ PreparedEdit prepareDuplicates(Store& store,std::span<const ClipPlacement> place
             const auto sourceTrack=detail::signedInteger(copy.image.at("row").at("track_id"));
             tracks.insert(place.track);
             if(sourceTrack!=place.track && detail::captureRow(store.db(),"tracks","id",sourceTrack))tracks.insert(sourceTrack);
+            const auto& row=image.at("row");
+            const auto base=static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first=detail::signedInteger(row.at(base==0?"pos_ticks":"pos_ns"));
+            const auto last=edit::addTime(first,detail::signedInteger(row.at(base==0?"length_ticks":"length_ns")));
+            if(!copy.envelopes.is_null())batch.envelopes.push_back({place.track,{base,first},{base,last},copy.envelopes});
             batch.sourceTracks.push_back(sourceTrack);batch.incoming.push_back(std::move(image));
         }
         const std::vector<std::int64_t> literals(tracks.begin(),tracks.end());
@@ -503,7 +753,8 @@ PreparedSplits prepareSplits(Store& store,std::span<const ClipSplit> splits,doub
             try {
                 if(!seen.insert(split.clipId).second)throw std::runtime_error("clip appears twice in the split selection");
                 const auto firstId=ids->next("clips");
-                const auto secondId=split.second?std::optional{ids->next("clips")}:std::nullopt;
+                std::optional<std::int64_t> secondId;
+                if(split.second)secondId=ids->next("clips");
                 auto request=captureSplit(store,split,firstId,secondId,time,referenceRate,*ids);
                 result.edit.requests.push_back(std::move(request));
             } catch(const std::exception& exception){
@@ -528,8 +779,53 @@ PreparedSplits prepareSplits(Store& store,std::span<const ClipSplit> splits,doub
     } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
+PreparedEdit prepareReverse(Store& store,std::span<const std::int64_t> clipIds,
+    std::optional<std::pair<std::int64_t,std::int64_t>> range,double referenceRate) {
+    PreparedEdit result;
+    try {
+        validRate(referenceRate);
+        if(clipIds.empty() || (range && (range->first<0 || range->second<=range->first)))
+            throw std::runtime_error("Select audio clips or an audio time range to reverse");
+        Read read(store.db());expectedHead(store,result);
+        const edit::TimeMap time(store.db());edit::RowEdits plan(store.db());CopyIds ids(store.db());
+        OpContext context{store,store.db()};std::set<std::int64_t> seen;
+        for(const auto id:clipIds) {
+            if(!seen.insert(id).second)continue;
+            auto original=captureDeleted(context,id);
+            Payload* selected=&original;
+            std::optional<Payload> middle,tail;
+            if(range) {
+                const auto& row=original.at("row");
+                const int base=static_cast<int>(detail::signedInteger(row.at("time_base")));
+                const auto from=coordinate({0,range->first},base,time),to=coordinate({0,range->second},base,time);
+                const auto begin=detail::signedInteger(row.at(base==0?"pos_ticks":"pos_ns"));
+                const auto end=edit::addTime(begin,detail::signedInteger(row.at(base==0?"length_ticks":"length_ns")));
+                if(from>=end || to<=begin || from>=to)continue;
+                if(from>begin) {
+                    middle=splitImage(store,original,ids.next("clips"),{base,from},time,referenceRate,ids);
+                    selected=&*middle;
+                }
+                if(to<end)tail=splitImage(store,*selected,ids.next("clips"),{base,to},time,referenceRate,ids);
+            }
+            reverseImage(store,*selected,time,referenceRate);
+            plan.set("clips",id,original.at("row"));
+            retainDetails(plan,original);
+            if(middle)createImage(plan,*middle);
+            else {
+                plan.set("audio_clips",id,original.at("children").at("audio_clips")[0]);
+                const auto& properties=original.at("children").at("clip_properties");
+                if(!properties.empty())plan.set("clip_properties",id,properties[0]);
+            }
+            if(tail)createImage(plan,*tail);
+        }
+        packet(store,result,"arranger.splice","Reverse Clip(s)",clipIds.front(),plan);
+        if(result.requests.empty()) {result.ok=false;result.error="No audio covers the selected range";}
+    } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
+}
 namespace {
-PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,std::optional<std::int64_t> exactNanos) {
+PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,
+                              std::optional<std::int64_t> exactNanos,bool keepMeterAtStart=false) {
     PreparedEdit result;
     try {
         validRate(referenceRate);
@@ -567,7 +863,9 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
             points.bind(1,atTicks);
             while(points.executeStep()) {
                 const auto id=points.getColumn(0).getInt64();auto point=*plan.current(table,id);
-                point["pos_ticks"]=edit::addTime(detail::signedInteger(point.at("pos_ticks")),ticks);plan.set(table,id,point);
+                const auto position=detail::signedInteger(point.at("pos_ticks"));
+                if(keepMeterAtStart && position==atTicks && std::string_view(table)=="time_signature_map")continue;
+                point["pos_ticks"]=edit::addTime(position,ticks);plan.set(table,id,point);
             }
         }
         SQLite::Statement markers(db,"SELECT id FROM markers ORDER BY id");
@@ -617,6 +915,9 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
 } // namespace
 PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate) {
     return prepareInsertion(store,atTicks,ticks,referenceRate,std::nullopt);
+}
+PreparedEdit prepareCompleteFragmentaryBar(Store& store,std::int64_t atTicks,std::int64_t missingTicks,double referenceRate) {
+    return prepareInsertion(store,atTicks,missingTicks,referenceRate,std::nullopt,true);
 }
 
 PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
@@ -752,38 +1053,89 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 }
 
 namespace {
-RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope) {
-    RangeCopy result;result.selection=selection;
+RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
+                        std::optional<std::int64_t> lane={},std::span<const std::int64_t> selectedClips={},
+                        bool copyClipEnvelopes=false,bool rejectLinked=false) {
+    RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
             SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
+            if (lane)
+                clips.bind(2, *lane);
             while(clips.executeStep()) {
-                const auto id=clips.getColumn(0).getInt64();const auto root=*edit::row(store.db(),"clips",id);
+                const auto id=clips.getColumn(0).getInt64();
+                if(!result.clearsRange && std::find(selectedClips.begin(),selectedClips.end(),id)==selectedClips.end())
+                    continue;
+                const auto root=*edit::row(store.db(),"clips",id);
                 const int base=static_cast<int>(detail::signedInteger(root.at("time_base")));
                 const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
                 const auto begin=coordinate(selection.begin,base,time),end=coordinate(selection.end,base,time);
                 const auto first=detail::signedInteger(root.at(position));
-                if(first>=end)continue;
+                if(result.clearsRange && first>=end)continue;
                 if(root.at(length).is_null())throw std::runtime_error("copy range needs finite clip extents");
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
-                if(last<=begin || first>=end)continue;
-                auto image=captureDeleted(context,id);captureMediaKeys(store,image);
+                if(result.clearsRange && last<=begin)continue;
+                auto image=captureDeleted(context,id);
+                if(rejectLinked && (!root.at("alias_of").is_null() || !image.at("alias_links").empty()))
+                    throw std::runtime_error("Moving a time selection with linked clips is not supported.");
+                captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
-                if(first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
-                if(last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
+                if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
+                if(result.clearsRange && last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
                 image["row"][position]=detail::signedInteger(image.at("row").at(position))-begin;
+                if(copyClipEnvelopes)
+                    result.clipEnvelopes.push_back(edit::copyAutomationMaterial(store,time,selection.tracks[track],
+                        {base,first},{base,last},referenceRate));
                 image["trackIndex"]=track;result.images.push_back(std::move(image));
             }
         }
+        if(!result.clearsRange && result.images.size()!=selectedClips.size())
+            throw std::runtime_error("A selected clip is no longer in the Arrangement.");
         result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+void captureRangeEnvelopes(Store& store,RangeCopy& copy,const edit::TimeMap& time,double referenceRate) {
+    for(const auto track:copy.selection.tracks)
+        copy.envelopes.push_back(edit::copyAutomationMaterial(store,time,track,
+            copy.selection.begin,copy.selection.end,referenceRate));
+}
 } // namespace
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
-    return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
+    return copyRange(store,selection,edit_plan::Options{referenceRate,{}});
+}
+RangeCopy copyRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
+    RangeCopy result;
+    try {
+        Read read(store.db());
+        result=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane);
+        if(result.ok && options.policy.automationFollowsClips) {
+            const edit::TimeMap time(store.db());
+            captureRangeEnvelopes(store,result,time,options.referenceRate);
+        }
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+RangeCopy copySelectedClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
+                            const edit_plan::Options& options) {
+    if(clips.empty()) {
+        RangeCopy result;result.error="Select clips to copy.";return result;
+    }
+    return copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{},clips,
+                         options.policy.automationFollowsClips);
+}
+RangeCut prepareCutClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
+                         const edit_plan::Options& options) {
+    RangeCut result;
+    try {
+        Read read(store.db());result.copy=copySelectedClips(store,selection,clips,options);
+        if(!result.copy.ok)throw std::runtime_error(result.copy.error);
+        result.edit=edit_plan::prepareDelete(store,clips,options);
+        for(auto& request:result.edit.requests)request.label="Cut Clips";
+    } catch(const std::exception& exception){result.edit.error=exception.what();}
+    return result;
 }
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return prepareCutRange(store,selection,edit_plan::Options{referenceRate,{}});
@@ -791,7 +1143,7 @@ RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double ref
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     RangeCut result;
     try {
-        Read read(store.db());result.copy=copyRange(store,selection,options.referenceRate);
+        Read read(store.db());result.copy=copyRange(store,selection,options);
         if(!result.copy.ok)throw std::runtime_error(result.copy.error);
         result.edit=prepareDeleteRange(store,selection,options);
         for(auto& request:result.edit.requests)request.label="Cut Material";
@@ -808,9 +1160,219 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,con
         const auto clock=selection.begin.base==0?edit_plan::PlacementClock::Ticks:edit_plan::PlacementClock::Nanoseconds;
         const auto scope=edit_plan::materialScope(selection.tracks,clock,{selection.begin.value,selection.end.value});
         edit_plan::detail::PlacementBatch batch;
-        for(const auto& lane:scope.targets)batch.clear.push_back({lane,scope.bounds});
+        for(const auto& lane:scope.targets) {
+            batch.clear.push_back({lane,scope.bounds});
+            if(options.policy.automationFollowsClips)
+                batch.envelopes.push_back({lane.track,selection.begin,selection.end,Payload::array()});
+        }
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Delete Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+MidiConsolidation prepareMidiConsolidation(Store& store, const RangeSelection& selection,
+    std::span<const std::int64_t> picked, const edit_plan::Options& options) {
+    MidiConsolidation result;
+    try {
+        validRange(selection);
+        constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
+        if (selection.tracks.size() != 1 || selection.begin.base != 0 || selection.end.value > tickLimit)
+            throw std::runtime_error("Consolidate currently needs a musical time range on one MIDI track.");
+        const auto trackId = selection.tracks.front();
+        auto& db = store.db();
+        Read read(db);
+        SQLite::Statement track(db, "SELECT kind FROM tracks WHERE id=?");
+        track.bind(1, trackId);
+        if (!track.executeStep() || (track.getColumn(0).getString() != "midi" &&
+                                     track.getColumn(0).getString() != "instrument"))
+            throw std::runtime_error("Consolidate currently supports MIDI tracks only.");
+        CopyIds ids(db);
+        const auto output = ids.next("clips");
+        struct PositionedNote {
+            notes::Record record;
+            notes::NoteValues values;
+        };
+        struct CapturedClip {
+            std::vector<PositionedNote> notes;
+            Payload expression;
+        };
+        std::vector<CapturedClip> sources;
+        std::set<std::uint64_t> reservedNoteIds;
+        std::string name;
+        OpContext context{store,db};
+        edit::TimeMap time(db);
+        SQLite::Statement clips(db, "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY pos_ticks,id");
+        clips.bind(1, trackId);
+        while (clips.executeStep()) {
+            const auto id = clips.getColumn(0).getInt64();
+            const auto row = *edit::row(db, "clips", id);
+            const int base = static_cast<int>(detail::signedInteger(row.at("time_base")));
+            const auto first = detail::signedInteger(row.at(base == 0 ? "pos_ticks" : "pos_ns"));
+            const auto end = coordinate(selection.end, base, time);
+            if (first >= end)
+                continue;
+            const auto length = detail::signedInteger(row.at(base == 0 ? "length_ticks" : "length_ns"));
+            const auto last = edit::addTime(first, length);
+            const auto begin = coordinate(selection.begin, base, time);
+            if (last <= begin)
+                continue;
+            if (!picked.empty() && std::find(picked.begin(), picked.end(), id) == picked.end())
+                throw std::runtime_error("Consolidate would cover an unselected clip.");
+            if (base != 0 || length <= 0 || first < begin || last > end || row.at("kind") != "midi")
+                throw std::runtime_error("Consolidate currently needs whole MIDI clips on the musical timeline.");
+            const auto offset = detail::signedInteger(row.at("content_offset_ticks"));
+            if (offset < -tickLimit || offset > tickLimit)
+                throw std::runtime_error("MIDI clip source offset is outside the supported timeline.");
+            const auto finish = edit::addTime(offset, length);
+            if (detail::signedInteger(row.at("loop_enabled")) != 0) {
+                const auto loopStart = detail::signedInteger(row.at("loop_start_ticks"));
+                const auto& loopLength = row.at("loop_len_ticks");
+                if (loopLength.is_null() || loopStart < 0 || loopStart > offset ||
+                    finish > edit::addTime(loopStart, detail::signedInteger(loopLength)))
+                    throw std::runtime_error("Consolidate cannot yet assign note IDs to repeated MIDI notes.");
+            }
+            auto image = captureDeleted(context, id);
+            auto& sourceChildren = image.at("children");
+            if (detail::signedInteger(row.at("muted")) != 0 || !row.at("alias_of").is_null() ||
+                !image.at("alias_links").empty() || !sourceChildren.at("automation_data").empty() ||
+                !sourceChildren.at("automation_segment_ranges").empty() || !sourceChildren.at("audio_clips").empty() ||
+                !sourceChildren.at("clip_properties").empty() || !sourceChildren.at("clip_playback_details").empty() ||
+                !sourceChildren.at("clip_warp_fade_domains").empty())
+                throw std::runtime_error("Consolidate cannot yet combine muted, linked or specially configured clips.");
+            if (sources.empty())
+                name = row.at("name").get<std::string>();
+            auto& captured = sources.emplace_back();
+            const auto& streams = sourceChildren.at("event_streams");
+            if (streams.size() > 1 || (streams.size() == 1 && (streams[0].at("stream_kind") != "notes" ||
+                !streams[0].at("channel").is_null() || !streams[0].at("controller").is_null())))
+                throw std::runtime_error("Consolidate cannot yet merge MIDI controller or other event streams.");
+            std::set<std::uint64_t> sourceIds;
+            if (!streams.empty()) {
+                const auto& raw = streams[0].at("data").get_binary();
+                std::string error;
+                auto source = notes::detail::decodeNotes(std::as_bytes(std::span(raw.data(), raw.size())), error);
+                if (!source)
+                    throw std::runtime_error(error);
+                if (notes::detail::streamVersion(*source) != 1 || !source->trailer.empty() ||
+                    notes::detail::recordStride(*source) != notes::detail::notePrefixBytes)
+                    throw std::runtime_error("Consolidate cannot merge extended MIDI note streams without losing data.");
+                captured.notes.reserve(source->records.size());
+                for (auto& record : source->records) {
+                    auto note = notes::values(record, error);
+                    if (!note)
+                        throw std::runtime_error(error);
+                    if (note->start < offset || note->start >= finish || note->duration > finish - note->start)
+                        throw std::runtime_error("Consolidate cannot yet trim notes at a source boundary.");
+                    sourceIds.insert(note->id);
+                    reservedNoteIds.insert(note->id);
+                    note->start = (first - begin) + (note->start - offset);
+                    captured.notes.push_back({std::move(record), *note});
+                }
+            }
+            for (const auto& expression : sourceChildren.at("note_expression"))
+                if (!sourceIds.contains(notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")))))
+                    throw std::runtime_error("Consolidate found expression without its source note.");
+            captured.expression = std::move(sourceChildren.at("note_expression"));
+        }
+        if (sources.size() < 2 || (!picked.empty() && sources.size() != picked.size()))
+            throw std::runtime_error("Select at least two whole MIDI clips on the same track.");
+
+        auto children = Payload::object();
+        auto expressions = Payload::array();
+        notes::Diff noteDiff;
+        // Reserve every source ID before assigning any replacement. A note in
+        // a later clip keeps its ID even if it is an early allocation candidate.
+        std::set<std::uint64_t> seenNoteIds;
+        std::uint64_t nextNoteId = 1;
+        for (auto& source : sources) {
+            std::map<std::uint64_t, std::uint64_t> remapped;
+            for (auto& note : source.notes) {
+                if (!seenNoteIds.insert(note.values.id).second) {
+                    while (!reservedNoteIds.insert(nextNoteId).second) {
+                        if (nextNoteId == std::numeric_limits<std::uint64_t>::max())
+                            throw std::runtime_error("Consolidate ran out of MIDI note IDs.");
+                        ++nextNoteId;
+                    }
+                    remapped.emplace(note.values.id, nextNoteId);
+                    note.values.id = nextNoteId;
+                }
+                std::string error;
+                auto placed = notes::withValues(note.record, note.values, error);
+                if (!placed)
+                    throw std::runtime_error(error);
+                noteDiff.added.push_back(std::move(*placed));
+            }
+            for (auto& expression : source.expression) {
+                const auto original = notes::detail::expressionNoteId(detail::signedInteger(expression.at("note_id")));
+                if (const auto found = remapped.find(original); found != remapped.end())
+                    expression["note_id"] = notes::detail::expressionSqlId(found->second);
+                expression["id"] = ids.next("note_expression");
+                expression["clip_id"] = output;
+                expressions.push_back(std::move(expression));
+            }
+        }
+        if (!expressions.empty())
+            children["note_expression"] = std::move(expressions);
+        if (!noteDiff.added.empty()) {
+            const auto combined = notes::detail::planRecords(notes::detail::emptyNotes(), noteDiff);
+            if (!combined.ok || !combined.changed)
+                throw std::runtime_error(combined.error);
+            std::vector<std::uint8_t> bytes;
+            bytes.reserve(combined.bytes.size());
+            for (const auto byte : combined.bytes)
+                bytes.push_back(std::to_integer<std::uint8_t>(byte));
+            children["event_streams"] = Payload::array({edit::defaultRow(db, "event_streams", {
+                {"id",ids.next("event_streams")},{"clip_id",output},{"stream_kind","notes"},
+                {"data",Payload::binary(std::move(bytes))},
+            })});
+        }
+        const auto begin = selection.begin.value, end = selection.end.value;
+        auto row = edit::defaultRow(db, "clips", {{"id",output},{"track_id",trackId},{"kind","midi"},
+            {"name",name.empty() ? std::string("Consolidated MIDI") : std::move(name)},
+            {"time_base",0},{"pos_ticks",begin},{"length_ticks",end-begin}});
+        edit_plan::detail::PlacementBatch batch;
+        batch.incoming.push_back({{"id",output},{"row",std::move(row)},{"children",std::move(children)},
+                                  {"alias_links",Payload::array()}});
+        const auto scope = edit_plan::materialScope(selection.tracks, edit_plan::PlacementClock::Ticks, {begin,end});
+        result.edit = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), options, ids, "Consolidate");
+        if (result.edit.ok)
+            result.clip = output;
+    } catch (const std::exception& error) {
+        result.edit.error = error.what();
+    }
+    return result;
+}
+PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoint begin,TimePoint end,
+                                         const edit_plan::Options& options,std::int64_t lastIncomingId) {
+    PreparedEdit result;
+    try {
+        if(options.policy.deleteOverlaps && begin.value!=end.value) {
+            const RangeSelection range{{track},begin,end};
+            validRange(range);
+            Read read(store.db());
+            const edit::TimeMap time(store.db());
+            const auto first=coordinate(begin,1,time),last=coordinate(end,1,time);
+            SQLite::Statement clips(store.db(),
+                "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
+                "FROM clips WHERE track_id=? AND lane_id IS NULL");
+            clips.bind(1,track);
+            while(clips.executeStep()) {
+                const auto base=clips.getColumn(0).getInt();
+                const auto start=clips.getColumn(1).getInt64();
+                const auto physical=[&](std::int64_t value){
+                    return base==1?static_cast<long double>(value):std::round(static_cast<long double>(time.seconds(value))*1e9L);
+                };
+                if(physical(start)>=static_cast<long double>(last))continue;
+                const auto length=clips.getColumn(2);
+                if(length.isNull() || (length.getInt64()>0 &&
+                    physical(edit::addTime(start,length.getInt64()))>static_cast<long double>(first))) {
+                    // Only an actual overlap invokes the planner. Other
+                    // imports keep their usual policy and admission path.
+                    return prepareDeleteRange(store,range,options,lastIncomingId);
+                }
+            }
+        }
+        result.ok=true;
+    } catch(const std::exception& error) {result.error=error.what();}
     return result;
 }
 PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
@@ -819,6 +1381,7 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     PreparedEdit result;
     try {
         if(!copy.ok)throw std::runtime_error(copy.error);
+        if(!copy.clearsRange)throw std::runtime_error("Paste Time requires a time selection, not picked clips");
         validRange(copy.selection);validRate(referenceRate);Read read(store.db());expectedHead(store,result);
         if(copy.sourceFile!=filename(store))throw std::runtime_error("range clipboard belongs to a different project");
         if(tracks.size()!=copy.selection.tracks.size())throw std::runtime_error("paste needs one destination for each copied track");
@@ -858,8 +1421,9 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
-PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
-                                TimePoint at,const edit_plan::Options& options) {
+namespace {
+PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                   TimePoint at,const edit_plan::Options& options,bool move) {
     PreparedEdit result;
     try {
         if(!copy.ok)throw std::runtime_error(copy.error);
@@ -870,21 +1434,35 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
         const auto base=copy.selection.begin.base;
         const auto begin=coordinate(at,base,time),end=edit::addTime(begin,copy.selection.end.value-copy.selection.begin.value);
         RangeSelection destination{tracks,{base,begin},{base,end}};validRange(destination);
-        std::set<std::int64_t> scopeTracks(tracks.begin(),tracks.end());
-        for(const auto track:copy.selection.tracks)if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
-        const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
+        std::set<std::int64_t> scopeTracks;
+        edit_plan::detail::PlacementBatch batch;
+        if(copy.clearsRange) {
+            scopeTracks.insert(tracks.begin(),tracks.end());
+            batch.sourceTracks=copy.selection.tracks;
+        }
         const auto beginNs=coordinate({base,begin},1,time),endNs=coordinate({base,end},1,time);
         const auto sourceBeginNs=coordinate(copy.selection.begin,1,time),sourceEndNs=coordinate(copy.selection.end,1,time);
         if(endNs<=beginNs || sourceEndNs<=sourceBeginNs)throw std::runtime_error("range paste span collapses in physical time");
-        // This adapter constructs its literal scope. A linear image retains
-        // its physical duration when pasted into a faster musical selection;
-        // admit and clear that entire image as well as the clipboard's gaps.
-        auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,
-            {std::min(beginNs,sourceBeginNs),std::max(endNs,sourceEndNs)});
-        edit_plan::detail::PlacementBatch batch;batch.sourceTracks=copy.selection.tracks;
-        for(const auto track:tracks)batch.clear.push_back({{track,std::nullopt},{beginNs,endNs}});
+        // A linear image can extend past the musical range at a faster tempo.
+        // Admit each complete image. Only a time selection clears the gaps.
+        auto scopeBegin=std::min(beginNs,sourceBeginNs),scopeEnd=std::max(endNs,sourceEndNs);
+        // Clear source envelopes before placing destinations, which may overlap them.
+        if(move)
+            for(const auto track:copy.selection.tracks) {
+                batch.clear.push_back({{track,std::nullopt},{sourceBeginNs,sourceEndNs}});
+                if(options.policy.automationFollowsClips)
+                    batch.envelopes.push_back({track,copy.selection.begin,copy.selection.end,Payload::array()});
+            }
+        if(copy.clearsRange) {
+            for(std::size_t index=0;index<tracks.size();++index) {
+                batch.clear.push_back({{tracks[index],std::nullopt},{beginNs,endNs}});
+                if(index<copy.envelopes.size())
+                    batch.envelopes.push_back({tracks[index],{base,begin},{base,end},copy.envelopes[index]});
+            }
+        }
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
-        for(const auto& original:copy.images) {
+        for(std::size_t imageIndex=0;imageIndex<copy.images.size();++imageIndex) {
+            const auto& original=copy.images[imageIndex];
             verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
             const auto index=original.at("trackIndex").get<std::size_t>();
             if(index>=tracks.size())throw std::runtime_error("clipboard track offset is invalid");
@@ -893,17 +1471,76 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
             row[position]=edit::addTime(coordinate(at,native,time),detail::signedInteger(row.at(position)));
             const auto first=detail::signedInteger(row.at(position));
             const auto last=edit::addTime(first,detail::signedInteger(row.at(native==0?"length_ticks":"length_ns")));
-            scope.bounds.begin=std::min(scope.bounds.begin,coordinate({native,first},1,time));
-            scope.bounds.end=std::max(scope.bounds.end,coordinate({native,last},1,time));
+            scopeBegin=std::min(scopeBegin,coordinate({native,first},1,time));
+            scopeEnd=std::max(scopeEnd,coordinate({native,last},1,time));
+            if(!copy.clearsRange) {
+                scopeTracks.insert(tracks[index]);
+                batch.sourceTracks.push_back(copy.selection.tracks[index]);
+                if(imageIndex<copy.clipEnvelopes.size())
+                    batch.envelopes.push_back({tracks[index],{native,first},{native,last},copy.clipEnvelopes[imageIndex]});
+            }
             row["track_id"]=tracks[index];row["lane_id"]=nullptr;batch.incoming.push_back(std::move(image));
         }
-        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Material");
+        for(const auto track:batch.sourceTracks)
+            if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
+        const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
+        const auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,{scopeBegin,scopeEnd});
+        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,move?"Move Material":"Paste Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+} // namespace
+PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                TimePoint at,const edit_plan::Options& options) {
+    return prepareRangePlacement(store,copy,tracks,at,options,false);
+}
+PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimePoint at,const edit_plan::Options& options) {
+    PreparedEdit result;
+    try {
+        validRange(selection);validRate(options.referenceRate);Read read(store.db());
+        const edit::TimeMap time(store.db());
+        if(coordinate(at,selection.begin.base,time)!=selection.begin.value) {
+            auto copy=copyRangeImpl(store,selection,options.referenceRate,ClipLaneScope::MainLane,{}, {},
+                                    false,/*rejectLinked=*/true);
+            if(!copy.ok)throw std::runtime_error(copy.error);
+            if(!copy.images.empty()) {
+                if(options.policy.automationFollowsClips)
+                    captureRangeEnvelopes(store,copy,time,options.referenceRate);
+                return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
+            }
+        }
+        result.sourceFile=filename(store);result.ok=true;
+    } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
+}
+PreparedEdit prepareTakeToMain(Store& store, std::int64_t track, std::int64_t lane,
+                                   TimePoint begin, TimePoint end, double referenceRate) {
+    try {
+        Read read(store.db());
+        const auto row = edit::row(store.db(), "lanes", lane);
+        if (!row || row->at("kind") != "take" || row->at("track_id") != track)
+            throw std::runtime_error("the take lane is no longer on this track");
+        const RangeSelection selection{{track}, begin, end};
+        const auto copy = copyRangeImpl(store, selection, referenceRate, ClipLaneScope::OneTake, lane);
+        if (!copy.ok)
+            throw std::runtime_error(copy.error);
+        if (copy.images.empty())
+            throw std::runtime_error("the selected take range has no clips");
+        edit_plan::Options options{referenceRate, {}};
+        options.policy.automationFollowsClips = false;
+        auto prepared = preparePasteRange(store, copy, selection.tracks, begin, options);
+        for (auto& request : prepared.requests)
+            request.label = "Copy Take to Main Lane";
+        return prepared;
+    } catch (const std::exception& error) {
+        PreparedEdit refused;
+        refused.error = error.what();
+        return refused;
+    }
+}
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     try {
-        Read read(store.db());const auto copy=copyRange(store,selection,options.referenceRate);
+        Read read(store.db());const auto copy=copyRange(store,selection,options);
         auto result=preparePasteRange(store,copy,selection.tracks,selection.end,options);
         if(result.ok && !result.requests.empty())result.requests[0].label="Duplicate Material";
         return result;
@@ -912,7 +1549,7 @@ PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,double referenceRate,bool insertTime) {
     if(!insertTime)return prepareDuplicateRange(store,selection,edit_plan::Options{referenceRate,{}});
     try {
-        Read read(store.db());const auto copy=copyRange(store,selection,referenceRate);
+        Read read(store.db());const auto copy=copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
         auto result=preparePasteRange(store,copy,selection.tracks,selection.end,referenceRate,insertTime);
         if(result.ok && !result.requests.empty())result.requests[0].label=insertTime?"Duplicate Time":"Duplicate Material";
         return result;

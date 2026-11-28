@@ -75,7 +75,16 @@ MixOutputMeter::MixOutputMeter() {
     scaleBox.setTitle("Meter scale");
     scaleBox.addItemList({"dBFS", "K-12", "K-14", "K-20"}, 1);
     scaleBox.setSelectedId(1, juce::dontSendNotification);
-    scaleBox.onChange = [this] { repaint(plot_); };
+    scaleBox.onChange = [this] {
+        const bool kScale = offsetDb() > 0.;
+        weightingBox.setEnabled(!kScale);
+        if (kScale != profile_.kScale) {
+            profile_.kScale = kScale;
+            resetProfile();
+        } else {
+            repaint(plot_);
+        }
+    };
     weightingBox.setTitle("Meter weighting");
     weightingBox.addItemList({"Flat", "A", "C", "K"}, 1);
     weightingBox.setSelectedId(1, juce::dontSendNotification);
@@ -84,7 +93,7 @@ MixOutputMeter::MixOutputMeter() {
         const auto index = static_cast<unsigned>(weightingBox.getSelectedId() - 1);
         if (const auto next = index < weights.size() ? weights[index] : Weighting::Standard; next != profile_.weighting) {
             profile_.weighting = next;
-            resetProfile();
+            if (!profile_.kScale) resetProfile();
             if (engine::isFilterListen(listening_)) chooseAudition(filterAudition(next));
         }
     };
@@ -274,8 +283,6 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
     text(g, area.removeFromTop(look::mixMeterTitleHeight), "Main output", look::text);
     g.setFont(look::font(look::fontTiny));
     stereoRail(g, area.removeFromTop(look::mixMeterRailHeight), "Balance", "L", "R", r ? std::optional(r->balance) : std::nullopt);
-    stereoRail(g, area.removeFromTop(look::mixMeterRailHeight), "Correlation", "-1", "+1",
-               r ? std::optional(r->signCoincidence) : std::nullopt);
     const auto values = [&](const char *label, double a, double b) {
         auto line = area.removeFromTop(look::mixMeterReadingHeight);
         text(g, line, label, look::textDim);
@@ -283,8 +290,16 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
         text(g, line, r ? number(b) : "-", look::text, juce::Justification::centredRight);
     };
     const auto offset = offsetDb();
-    values("Peak", r ? db(r->maximumPeak[0]) + offset : 0., r ? db(r->maximumPeak[1]) + offset : 0.);
     const bool linked = profile_.linkedDynamic;
+    if (linked) {
+        auto line = area.removeFromTop(look::mixMeterReadingHeight);
+        text(g, line, "RMS", look::textDim);
+        text(g, line, r ? number(db(r->linkedSineReferencedRms) + offset) : "-", look::text,
+             juce::Justification::centredRight);
+    } else {
+        values("RMS", r ? db(r->sineReferencedRms[0]) + offset : 0., r ? db(r->sineReferencedRms[1]) + offset : 0.);
+    }
+    values("Peak", r ? db(r->maximumPeak[0]) + offset : 0., r ? db(r->maximumPeak[1]) + offset : 0.);
     if (linked) {
         auto line = area.removeFromTop(look::mixMeterReadingHeight);
         text(g, line, "Dynamic", look::textDim);
@@ -293,7 +308,21 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
     } else {
         values("Dynamic", r ? r->dynamicDb[0] : 0., r ? r->dynamicDb[1] : 0.);
     }
-    values("RMS", r ? db(r->sineReferencedRms[0]) + offset : 0., r ? db(r->sineReferencedRms[1]) + offset : 0.);
+    if (area.getHeight() >= 2 * look::mixMeterReadingHeight + look::mixMeterRailHeight + look::mixMeterMinimumBarHeight) {
+        auto clips = area.removeFromTop(look::mixMeterReadingHeight);
+        text(g, clips, "Clips L/R", look::textDim);
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            const auto count = r ? r->clipCount[channel] : 0;
+            text(g, clips, r ? juce::String(static_cast<juce::uint64>(count)) : "-",
+                 count > 0 ? look::record : look::text,
+                 channel == 0 ? juce::Justification::centredLeft : juce::Justification::centredRight);
+        }
+        auto crest = area.removeFromTop(look::mixMeterReadingHeight);
+        text(g, crest, "Crest", look::textDim, juce::Justification::centredLeft);
+        text(g, crest, r ? number(r->maxCrestFactorDb) + " dB" : "-", look::text, juce::Justification::centredRight);
+    }
+    stereoRail(g, area.removeFromBottom(look::mixMeterRailHeight), "Correlation", "-1", "+1",
+               r ? std::optional(r->signCoincidence) : std::nullopt);
     if (area.getHeight() < look::mixMeterMinimumBarHeight)
         return;
     if (main_ && area.getHeight() >= look::mixMeterLoudnessMinimumHeight) {
@@ -315,13 +344,19 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
     const int barWidth = std::clamp(area.getWidth() / 12, look::border, look::mixMeterMaxBarWidth);
     const int gap = std::max(juce::roundToInt(look::radiusThumb), area.getWidth() / 40);
     const int labelHeight = juce::roundToInt(look::fontSmall);
-    for (int tick = 0; tick >= -48; tick -= height > look::mixMeterDenseScaleHeight ? 3 : 6) {
-        const auto y = yDb(tick);
-        const auto label = juce::String(tick + static_cast<int>(offset));
+    const auto scaleTick = [&](int value) {
+        const auto y = yDb(value - offset);
+        const auto label = juce::String(value);
         text(g, {area.getX(), y - labelHeight / 2, left - area.getX() - heavyLine, labelHeight}, label, look::textDim,
              juce::Justification::centredRight);
         text(g, {right + heavyLine, y - labelHeight / 2, area.getRight() - right - heavyLine, labelHeight}, label, look::textDim,
              juce::Justification::centredLeft);
+    };
+    const int topDb = static_cast<int>(offset);
+    const int tickStep = height > look::mixMeterDenseScaleHeight ? 3 : 6;
+    scaleTick(topDb);
+    for (int tick = (topDb / tickStep) * tickStep; tick >= topDb - 48; tick -= tickStep) {
+        if (tick != topDb && (tick == 0 || yDb(tick - offset) - top >= labelHeight)) scaleTick(tick);
     }
     const int amber = yDb(-9.), red = yDb(-3.);
     if (linked) {
@@ -371,6 +406,15 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
         if (r->rmsHold[ch] > 0) {
             g.setColour(look::accent);
             g.fillRect(x - hairline, yDb(db(r->rmsHold[ch])), barWidth + 2 * hairline, hairline);
+        }
+        if (r->sineReferencedRms[ch] > 0.) {
+            g.setColour(look::record);
+            g.fillRect(x + hairline, std::clamp(rmsY - hairline, top, top + height - heavyLine),
+                       barWidth - 2 * hairline, heavyLine);
+        }
+        if (r->clipCount[ch] > 0) {
+            g.setColour(look::record);
+            g.fillRect(x, top, barWidth, 3);
         }
     }
     if (!r)

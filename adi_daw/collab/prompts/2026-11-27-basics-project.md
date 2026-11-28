@@ -4,8 +4,8 @@ Read `collab/prompts/2026-11-27-basics-howto.md` first. Your report is `collab/b
 `basics/project-log`.
 
 **Your part:** the project and its files, Settings and the Browser. You may run on Linux: the core and
-the window's headless suites build and run there (the window suites under a virtual display, as
-`ui.yml` does). A deliberate difference from Live that is ruled, not a fault: ADI has no Save step, every
+the window's headless suites build and run there (the window suites with no display at all, as
+`ui.yml` runs them: see the howto). A deliberate difference from Live that is ruled, not a fault: ADI has no Save step, every
 edit is already in the file, and Ctrl+S takes a named snapshot.
 
 ## Queue, in this order

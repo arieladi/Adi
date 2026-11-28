@@ -14,14 +14,19 @@
 //   * the wire is strict and bounded before it is parsed, and a peer's
 //     response is never answered, whatever its id.
 
+#include "adi/control/consent_file.hpp"
+#include "adi/control/agent_stop.hpp"
 #include "adi/control/jsonrpc.hpp"
 #include "adi/control/service.hpp"
+#include "adi/control/session_discovery.hpp"
 #include "adi/control/stdio_server.hpp"
+#include "temp_directory.hpp"
 
 #include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <sstream>
@@ -29,6 +34,11 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace adi::control;
 
@@ -569,6 +579,110 @@ void testLines() {
     check(readBoundedLine(bound, line, 8, tooLong) && line == "end" && !tooLong, "and the next line is whole");
 }
 
+void testSessionDiscovery() {
+    section("CTL-05: session token, private discovery, and cleanup");
+    namespace fs = std::filesystem;
+    adi::test::TempDirectory temp("rpc", "discovery");
+    const auto file = temp.path() / "control" / "session.json";
+    const auto token = makeSessionToken();
+    const auto rotated = makeSessionToken();
+    check(token.size() == 64 && rotated.size() == 64 && token != rotated &&
+              token.find_first_not_of("0123456789abcdef") == std::string::npos,
+          "show-only can generate independent 256-bit tokens");
+    check(!fs::exists(file) && !readSessionDiscovery(file), "show-only leaves no discovery file");
+
+    SessionDiscoveryFile first(file);
+    SessionDiscoveryFile second(file);
+    check(!first.publish({0, token}) && !first.publish({41188, "invalid"}), "invalid discovery is refused");
+    const bool published = first.publish({41188, token});
+    check(published, "the listener can publish its private record");
+    if (!published) return;
+    auto found = readSessionDiscovery(file);
+    check(found && found->port == 41188 && found->token == token,
+          "discovery reads the active listener's exact port and token");
+#if !defined(_WIN32)
+    check(fs::status(file.parent_path()).permissions() == fs::perms::owner_all &&
+              fs::status(file).permissions() == (fs::perms::owner_read | fs::perms::owner_write),
+          "the discovery directory and token are owner-only at creation");
+#endif
+    check(!second.publish({41189, rotated}), "another instance cannot replace the live record");
+    second.reset();
+    found = readSessionDiscovery(file);
+    check(found && found->token == token, "another instance stopping cannot remove the live record");
+
+    check(first.publish({41188, rotated}), "the publisher can rotate its live token");
+    found = readSessionDiscovery(file);
+    check(found && found->token == rotated, "discovery shows the rotated token");
+    first.reset();
+    check(!fs::exists(file) && !readSessionDiscovery(file), "the publisher removes its record on stop");
+    check(second.publish({41189, token}), "another instance can publish after stop");
+
+    const auto bytes = detail::readConsentFile(file, 512);
+    check(bytes && !bytes->empty(), "the active record's bytes are available to its owner");
+    if (!bytes || bytes->empty()) return;
+    const auto duplicate = std::string("{\"port\":41190,") + bytes->substr(1);
+    check(detail::writeConsentFile(file, duplicate), "plant an ambiguous record under the private directory");
+    check(!readSessionDiscovery(file), "duplicate fields fail closed");
+    second.reset();
+    check(fs::exists(file), "a stopping publisher leaves an externally replaced record alone");
+    const auto stage = file.parent_path() / "session.json.stage-123-4";
+    const auto unrelated = file.parent_path() / "session.json.stage-not-a-transaction";
+    check(detail::writeConsentFile(stage, *bytes) && detail::writeConsentFile(unrelated, *bytes),
+          "plant one abandoned stage and one unrelated file");
+    check(!readSessionDiscovery(file) && !fs::exists(file) && !fs::exists(stage) && fs::exists(unrelated),
+          "a discovery read sweeps only abandoned publication files");
+
+#if !defined(_WIN32)
+    const auto child = ::fork();
+    if (child == 0) {
+        SessionDiscoveryFile crashed(file);
+        ::_exit(crashed.publish({41189, token}) ? 0 : 1);
+    }
+    int status = 0;
+    check(child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a child publishes and exits without running the owner's destructor");
+    check(fs::exists(file) && !readSessionDiscovery(file) && !fs::exists(file),
+          "another process sweeps a record abandoned by a crash");
+#endif
+}
+
+void testTransportStopEpoch() {
+    section("ADR-0259: a frame retains its admission epoch across transport queues");
+    AgentWriteGate gate;
+    GrantTable grants;
+    const Principal caller{"agent", "test agent"};
+    grants.grant(caller.credential, Tier::Apply);
+    Service service(inlineExecutor(), grants);
+    int writes = 0;
+    MethodSpec method;
+    method.name = "edit";
+    method.minTier = Tier::Propose;
+    method.readOnly = false;
+    method.agentWrites = &gate;
+    method.run = [&](CallContext&, const Json&) { return Outcome::ok(++writes); };
+    service.add(std::move(method));
+    RequestMeta before;
+    before.receivedAgentEpoch = gate.generation();
+    gate.stop();
+    RequestMeta during;
+    during.receivedAgentEpoch = gate.generation();
+    gate.rearm();
+    const auto submit = [&](const RequestMeta& meta) {
+        Outcome result;
+        service.call(caller, "edit", Json::object(), meta,
+                     [&](Outcome out) { result = std::move(out); });
+        return result;
+    };
+    const auto old = submit(before);
+    const auto stopped = submit(during);
+    check(old.error && old.error->code == errc::AgentStopped && stopped.error &&
+              stopped.error->code == errc::AgentStopped && writes == 0,
+          "frames received before or during Stop cannot write after re-arm");
+    RequestMeta fresh;
+    fresh.receivedAgentEpoch = gate.generation();
+    check(!submit(fresh).error && writes == 1, "the new epoch admits new work");
+}
+
 int runAll() {
     testGrantsComeFirst();
     testTiers();
@@ -579,6 +693,8 @@ int runAll() {
     testAudit();
     testScreen();
     testSecureEquals();
+    testSessionDiscovery();
+    testTransportStopEpoch();
     testRegistration();
     testMeta();
     testWire();

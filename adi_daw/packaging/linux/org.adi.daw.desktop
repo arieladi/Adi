@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ADI
+Comment=Digital audio workstation
+Exec=ADI %f
+Icon=org.adi.daw
+Terminal=false
+Categories=AudioVideo;Audio;AudioVideoEditing;
+MimeType=application/x-adi-project;

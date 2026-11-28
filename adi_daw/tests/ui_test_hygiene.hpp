@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // WTS-02's test hygiene for the window's JUCE suites (PLAN WTS-02; ADR-0180 d8):
-// - AssertionWatch: JUCE's assertions, logged (JUCE_LOG_ASSERTIONS, on the test targets only: never on
-//   ADI.exe, where it would keep jassert live), are counted, so a run that trips one fails.
+// - AssertionWatch: Debug builds log JUCE assertions. The suite counts them and fails on unexpected
+//   assertions. The application, shell library and test targets share the JUCE assertion configuration.
 // - noDialogs: on Windows, the C runtime reports to stderr and never opens a dialog box (an assert, an
 //   abort or a crash would otherwise wait on a click no headless run gives).
 #pragma once

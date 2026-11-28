@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/edit_plan.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/freeze_groups.hpp"
@@ -9,6 +10,7 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -104,37 +106,15 @@ void validateScope(Store& store,const EditScope& scope,const Options& options) {
         }
     }
 }
-bool relevantAutomation(Store& store,std::int64_t track) {
-    // Authored lane existence is significant, even without a stream or any
-    // interior points. UNION terminates malformed recursive rack cycles.
-    SQLite::Statement query(store.db(),
-        "WITH RECURSIVE owned_devices(id) AS ("
-        "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=? "
-        "UNION SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
-        "JOIN owned_devices p ON p.id=c.parent_device_id) "
-        "SELECT 1 FROM automation_lanes a WHERE (a.owner_kind='track' AND a.owner_id=?) "
-        "OR (a.owner_kind='device' AND a.owner_id IN (SELECT id FROM owned_devices)) "
-        "OR (a.owner_kind='routing' AND a.owner_id IN "
-        "(SELECT id FROM routing WHERE src_kind='track' AND src_id=? AND kind='send')) LIMIT 1");
-    query.bind(1,track);query.bind(2,track);query.bind(3,track);return query.executeStep();
-}
-void admitTracks(Store& store,const std::set<std::int64_t>& tracks,const std::set<std::int64_t>& mainTracks,
-                 const EditScope& scope,const EditPolicy& policy) {
+void admitTracks(Store& store,const std::set<std::int64_t>& tracks) {
     const auto groups=freeze::groups(store.db());
     for(const auto id:tracks) {
         SQLite::Statement track(store.db(),"SELECT frozen FROM tracks WHERE id=?");track.bind(1,id);
-        if(!track.executeStep()) {
-            if(policy.automationFollowsClips)throw std::runtime_error("copied source automation owner is no longer available; AU-05 needs captured envelopes");
-            continue; // Literal destination targets were already validated.
-        }
+        if(!track.executeStep())continue; // A clipboard owns its source even after deletion.
         if(track.getColumn(0).getInt()!=0)throw std::runtime_error("frozen placement requires TM-FC-04 policy");
         for(const auto& [root,members]:groups) {
             if(root==id || std::any_of(members.begin(),members.end(),[&](const auto& member){return member.id==id;}))
                 throw std::runtime_error("frozen-group placement requires TM-FC-04 policy");
-        }
-        if(policy.automationFollowsClips && mainTracks.contains(id) && relevantAutomation(store,id)) {
-            if(!has(scope.domains,Domains::Automation))throw std::runtime_error("unlocked placement must explicitly include automation in its scope");
-            throw std::runtime_error("unlocked source/destination automation placement requires AU-05 guarded replacement");
         }
     }
 }
@@ -219,11 +199,7 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
         }
         std::map<std::int64_t,Payload> images,incoming;
         std::set<std::int64_t> affected(batch.sourceTracks.begin(),batch.sourceTracks.end());
-        auto mainAffected=affected;
-        const auto touch=[&](const PlacementLane& lane) {
-            affected.insert(lane.track);
-            if(!lane.lane)mainAffected.insert(lane.track);
-        };
+        const auto touch=[&](const PlacementLane& lane) {affected.insert(lane.track);};
         for(auto& image:batch.incoming) {
             const auto id=integer(image.at("id"));const auto lane=laneOf(image);
             input.incoming.push_back({id,lane,interval(image,1,time)});touch(lane);
@@ -255,7 +231,7 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
             const auto found=images.find(id);
             if(found!=images.end())touch(laneOf(found->second));
         }
-        admitTracks(store,affected,mainAffected,scope,options.policy);
+        admitTracks(store,affected);
         const auto resolved=resolvePlacement(input);
         if(!resolved.ok)throw std::runtime_error(toString(resolved.error));
         // Capture/freeze only changed survivors, and only once per original.
@@ -312,6 +288,31 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
             } else clip_edit::createImage(rows,image);
             effect.after.push_back(state(image,base,time));description.effects.push_back(std::move(effect));
         }
+        if(options.policy.automationFollowsClips && has(scope.domains,Domains::Automation)) {
+            // Read all move sources from the original snapshot, then clear
+            // their spans before placing any destination, including overlapping moves.
+            const auto none=Payload::array();
+            if(batch.incomingKind==EffectKind::Moved) {
+                for(const auto& placed:resolved.incoming) {
+                    const auto& source=images.at(placed.id);
+                    const auto from=laneOf(source);
+                    const auto sourceSpan=nativeSpan(source);
+                    const auto& destination=incoming.at(placed.id);
+                    const auto destinationSpan=nativeSpan(destination);
+                    if(from.lane || placed.lane.lane || sourceSpan.begin==sourceSpan.end ||
+                       (from==placed.lane && sourceSpan==destinationSpan))continue;
+                    const auto clock=nativeBase(source);
+                    const clip_edit::TimePoint first{clock,sourceSpan.begin},last{clock,sourceSpan.end};
+                    auto copied=edit::copyAutomationMaterial(store,time,from.track,first,last,options.referenceRate);
+                    edit::placeAutomationMaterial(store,rows,ids,time,from.track,first,last,none,options.referenceRate);
+                    batch.envelopes.push_back({placed.lane.track,{clock,destinationSpan.begin},
+                                               {clock,destinationSpan.end},std::move(copied)});
+                }
+            }
+            for(const auto& envelope:batch.envelopes)
+                edit::placeAutomationMaterial(store,rows,ids,time,envelope.track,envelope.begin,
+                                               envelope.end,envelope.envelopes,options.referenceRate);
+        }
         const auto changes=rows.changes();std::string error;
         if(!changes.empty() && !edit::validateRows(context,{{"changes",changes}},error))throw std::runtime_error(error);
         if(!changes.empty()) {
@@ -323,25 +324,51 @@ clip_edit::PreparedEdit detail::prepareCaptured(Store& store,const EditScope& sc
     return result;
 }
 
-clip_edit::PreparedEdit prepareMove(Store& store,const EditScope& scope,std::span<const Move> moves,const Options& options) {
+namespace {
+clip_edit::PreparedEdit prepareMoves(Store& store,const EditScope* scope,std::span<const Move> moves,const Options& options) {
     try {
-        Read read(store.db());validateScope(store,scope,options);edit::TimeMap time(store.db());
+        Read read(store.db());
+        if(scope)validateScope(store,*scope,options);
+        edit::TimeMap time(store.db());
         OpContext context{store,store.db()};clip_edit::CopyIds ids(store.db());detail::PlacementBatch batch;
         batch.incomingKind=EffectKind::Moved;
+        EditScope inferred;inferred.clock=PlacementClock::Nanoseconds;
+        inferred.bounds.begin=std::numeric_limits<std::int64_t>::max();
+        std::set<PlacementLane> lanes;
         for(const auto& move:moves) {
             auto image=clip_edit::captureImage(context,move.id);const auto native=nativeBase(image);
-            if(move.position.base!=clockBase(scope.clock))throw std::runtime_error("move position must use the declared operation clock");
+            if(scope && move.position.base!=clockBase(scope->clock))
+                throw std::runtime_error("move position must use the declared operation clock");
             const auto destination=convert(move.position.value,move.position.base,native,time);
             const auto before=nativeSpan(image);const auto source=laneOf(image);
             if((source.lane || move.to.lane) && source!=move.to)
                 throw std::runtime_error("change or detach the take lane explicitly before moving it");
+            if(!scope) {
+                lanes.insert(source);lanes.insert(move.to);
+                const auto count=before.end-before.begin;
+                inferred.bounds.begin=std::min(inferred.bounds.begin,convert(std::min(before.begin,destination),native,1,time));
+                inferred.bounds.end=std::max(inferred.bounds.end,convert(std::max(before.end,edit::addTime(destination,count)),native,1,time));
+            }
             if(source!=move.to || destination!=before.begin)detail::freezeImage(store,image,time,options.referenceRate);
             image["row"][native==0?"pos_ticks":"pos_ns"]=destination;image["row"]["track_id"]=move.to.track;
             image["row"]["lane_id"]=move.to.lane?Payload(*move.to.lane):Payload(nullptr);
             batch.relocated.push_back(move.id);batch.incoming.push_back(std::move(image));
         }
-        return detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Move Material");
+        if(!scope) {
+            inferred.targets.assign(lanes.begin(),lanes.end());
+            if(inferred.bounds.end==inferred.bounds.begin)inferred.bounds.end=edit::addTime(inferred.bounds.end,1);
+            scope=&inferred;
+        }
+        return detail::prepareCaptured(store,*scope,std::move(batch),options,ids,"Move Material");
     } catch(const std::exception& error) {clip_edit::PreparedEdit result;result.error=error.what();return result;}
+}
+} // namespace
+
+clip_edit::PreparedEdit prepareMove(Store& store,const EditScope& scope,std::span<const Move> moves,const Options& options) {
+    return prepareMoves(store,&scope,moves,options);
+}
+clip_edit::PreparedEdit prepareMove(Store& store,std::span<const Move> moves,const Options& options) {
+    return prepareMoves(store,nullptr,moves,options);
 }
 clip_edit::PreparedEdit prepareResizeEnd(Store& store,const EditScope& scope,ResizeEnd resize,const Options& options) {
     try {
@@ -389,7 +416,8 @@ clip_edit::PreparedEdit prepareDelete(Store& store,const EditScope& scope,std::s
         edit::TimeMap time(store.db());
         OpContext context{store,store.db()};
         const PlacementSpan bounds{convert(scope.bounds.begin,base,1,time),convert(scope.bounds.end,base,1,time)};
-        std::set<std::int64_t> seen,tracks,mainTracks;
+        std::set<std::int64_t> seen,tracks;
+        edit::RowEdits rows(store.db());clip_edit::CopyIds ids(store.db());
         Description description;description.scope=scope;description.policy=options.policy;
         result.sourceFile=filename(store);
         result.options.expectHead.emplace(OpJournal(store).headSeq());
@@ -402,13 +430,24 @@ clip_edit::PreparedEdit prepareDelete(Store& store,const EditScope& scope,std::s
                span.begin<bounds.begin || span.end>bounds.end)
                 throw std::runtime_error("delete clip lies outside the literal scope");
             tracks.insert(lane.track);
-            if(!lane.lane)mainTracks.insert(lane.track);
+            if(!lane.lane && options.policy.automationFollowsClips && has(scope.domains,Domains::Automation)) {
+                const auto native=nativeBase(image);
+                const auto extent=nativeSpan(image);
+                edit::placeAutomationMaterial(store,rows,ids,time,lane.track,
+                    {native,extent.begin},{native,extent.end},Payload::array(),options.referenceRate);
+            }
             OpRequest request;request.opType="clip.delete";request.payload={{"id",id}};
             request.label="Delete Material";request.targetKind="clip";request.targetId=id;
             result.requests.push_back(std::move(request));
             description.effects.push_back({EffectKind::Removed,state(image,base,time),{}});
         }
-        admitTracks(store,tracks,mainTracks,scope,options.policy);
+        admitTracks(store,tracks);
+        const auto changes=rows.changes();
+        if(!changes.empty()) {
+            OpRequest request;request.opType="arranger.splice";request.payload={{"id",0},{"changes",changes}};
+            request.label="Delete Material";request.targetKind="clip";
+            result.requests.push_back(std::move(request));
+        }
         result.ok=true;
         bindDescription(result,std::move(description));
     } catch(const std::exception& error) {
@@ -417,6 +456,26 @@ clip_edit::PreparedEdit prepareDelete(Store& store,const EditScope& scope,std::s
     }
     return result;
 }
+clip_edit::PreparedEdit prepareDelete(Store& store,std::span<const std::int64_t> clips,const Options& options) {
+    if(clips.empty()){clip_edit::PreparedEdit result;result.error="no clips to delete";return result;}
+    try {
+        Read read(store.db());edit::TimeMap time(store.db());OpContext context{store,store.db()};
+        EditScope scope;scope.clock=PlacementClock::Nanoseconds;
+        scope.bounds.begin=std::numeric_limits<std::int64_t>::max();
+        std::set<PlacementLane> lanes;
+        for(const auto id:clips) {
+            const auto image=clip_edit::captureImage(context,id);
+            const auto span=interval(image,1,time);
+            scope.bounds.begin=std::min(scope.bounds.begin,span.begin);
+            scope.bounds.end=std::max(scope.bounds.end,span.end);
+            lanes.insert(laneOf(image));
+        }
+        if(scope.bounds.end==scope.bounds.begin)scope.bounds.end=edit::addTime(scope.bounds.end,1);
+        scope.targets.assign(lanes.begin(),lanes.end());
+        return prepareDelete(store,scope,clips,options);
+    } catch(const std::exception& error) {clip_edit::PreparedEdit result;result.error=error.what();return result;}
+}
+
 Description describe(const clip_edit::PreparedEdit& prepared) {
     Description result;
     if(!prepared.ok){result.error=prepared.error;return result;}

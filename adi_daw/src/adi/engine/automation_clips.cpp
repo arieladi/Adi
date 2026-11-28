@@ -160,7 +160,7 @@ void changesFor(const ClipEnvelope& e,const AutomationClock& clock,std::vector<s
     }
 }
 } // namespace
-std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::int64_t sample) noexcept {
+std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::int64_t sample,bool held) noexcept {
     if(!lane.clipClock || lane.clipRegions.empty())return {};
     const auto& regions=lane.clipRegions;
     auto r=std::upper_bound(regions.begin(),regions.end(),sample,[](auto at,const auto& v){return at<v.begin;});
@@ -174,7 +174,7 @@ std::optional<double> clipEnvelopeValue(const AutomationLaneProgram& lane,std::i
     if(p==points.begin())return p->value;
     if(p==points.end())return points.back().value;
     const auto& a=*(p-1);const auto& b=*p;
-    if(!wrap && pointSample(a,e,*lane.clipClock,cycle)==sample)return a.value;
+    if(held || (!wrap && pointSample(a,e,*lane.clipClock,cycle)==sample))return a.value;
     const auto x=static_cast<double>((time-static_cast<long double>(a.time))/
         (static_cast<long double>(b.time)-static_cast<long double>(a.time)));
     return curveValue(a.value,b.value,x,a.curve,a.tension);

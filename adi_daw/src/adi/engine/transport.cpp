@@ -17,21 +17,22 @@ void Transport::loop(std::int64_t begin, std::int64_t end, bool enabled) noexcep
     firstWrap_ = -1;
     retimedLeadInWrap_ = -1;
     begin_ = std::max<std::int64_t>(0, begin); end_ = end;
-    looping_ = enabled && end_ > begin_;
+    loopEnabled_ = enabled && end_ > begin_;
 }
 void Transport::retimeLoop(std::int64_t begin, std::int64_t end, bool enabled) noexcept {
+    const bool wasLooping = playing_ && looping();
     begin_ = std::max<std::int64_t>(0, begin);
     end_ = end;
-    looping_ = enabled && end_ > begin_;
+    loopEnabled_ = enabled && end_ > begin_;
     const bool approachingNewWrap = retimedLeadInWrap_ > streamed_;
-    if (looping_ && position_ >= end_) {
+    if (wasLooping && loopEnabled_ && position_ >= end_) {
         // A shortened loop can fold an already-rendered region. Its first
         // crossing lies at the new End, before the current folded phase.
         const auto crossing = streamed_ - std::min(streamed_, position_ - end_);
         if (firstWrap_ < 0) firstWrap_ = crossing;
         if (approachingNewWrap) retimedLeadInWrap_ = crossing;
         position_ = begin_ + (position_ - begin_) % (end_ - begin_);
-    } else if (looping_ && (approachingNewWrap || (firstWrap_ >= 0 && position_ < begin_))) {
+    } else if (looping() && (approachingNewWrap || (firstWrap_ >= 0 && position_ < begin_))) {
         // Moving Begin ahead leaves a linear run through the new window.
         // Crossing Begin alone must not turn delayed lead-in into a lap.
         retimedLeadInWrap_ = streamed_ + std::min(end_ - position_,
@@ -51,7 +52,7 @@ std::int64_t Transport::sampleBehind(std::int64_t behind) const noexcept {
         return sampleAt(-behind);
     const auto current = sampleAt(0);
     const auto first = retimedLeadInWrap_ >= 0 ? retimedLeadInWrap_ : firstWrap_;
-    if (!looping_ || first < 0 || first > streamed_ || current < begin_)
+    if (!looping() || first < 0 || first > streamed_ || current < begin_)
         return current - behind;
 
     const auto sinceFirstWrap = streamed_ - first;
@@ -63,26 +64,21 @@ std::int64_t Transport::sampleBehind(std::int64_t behind) const noexcept {
     return begin_ + (phase >= back ? phase - back : length - (back - phase));
 }
 std::int32_t Transport::inputContiguousFrames(std::int64_t sample, std::int32_t count) const noexcept {
-    if (!playing_ || !looping_ || sample < end_ - count)
+    if (!playing_ || !looping() || sample < end_ - count)
         return count;
     return static_cast<std::int32_t>(end_ - sample);
 }
 std::int64_t Transport::sampleAt(std::int64_t offset) const noexcept {
     offset = std::max<std::int64_t>(0, offset);
-    if (looping_) {
-        const auto length = end_ - begin_;
-        if (position_ >= end_) {
-            const auto a = (position_ - begin_) % length, b = offset % length;
-            return begin_ + (a >= length-b ? a-(length-b) : a+b);
-        }
+    if (looping()) {
         const auto until = end_ - position_;
-        if (offset >= until) return begin_ + (offset - until) % length;
+        if (offset >= until) return begin_ + (offset - until) % (end_ - begin_);
     }
     return position_ + std::min(offset, std::numeric_limits<std::int64_t>::max() - position_);
 }
 std::int64_t Transport::contiguousFrames(std::int64_t offset, std::int64_t count) const noexcept {
     count = std::max<std::int64_t>(0, count);
-    return looping_ ? std::min(count, end_ - sampleAt(offset)) : count;
+    return looping() ? std::min(count, end_ - sampleAt(offset)) : count;
 }
 void Transport::countIn(std::int64_t frames) noexcept {
     countInTotal_ = countInLeft_ = std::max<std::int64_t>(0, frames);
@@ -106,10 +102,8 @@ void Transport::advance(std::int32_t frames) noexcept {
         ++revision_;
     }
     if (playing_ && frames > 0) {
-        if (looping_ && firstWrap_ < 0) {
-            // A locate beyond the loop may fold at the first callback. Count
-            // the next crossing from that audible phase as the first wrap.
-            const auto toWrap = end_ - sampleAt(0);
+        if (looping() && firstWrap_ < 0) {
+            const auto toWrap = end_ - position_;
             if (frames >= toWrap)
                 firstWrap_ = streamed_ + std::min(toWrap,
                                                 std::numeric_limits<std::int64_t>::max() - streamed_);

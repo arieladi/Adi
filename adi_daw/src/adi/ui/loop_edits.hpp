@@ -32,6 +32,23 @@ inline LoopEdit setMetronome(const TransportSettings &t, bool on) {
         edit.ops.push_back(track_edits_detail::op("transport.setMetronome", {{"on", on}}, "Metronome"));
     return edit;
 }
+inline LoopEdit setMetronomeOptions(Payload changes) {
+    LoopEdit edit;
+    edit.ops.push_back(track_edits_detail::op("transport.setMetronomeOptions", std::move(changes), "Metronome Options"));
+    return edit;
+}
+inline LoopEdit setCountIn(const TransportSettings &t, int bars) {
+    LoopEdit edit;
+    if (t.countInBars != bars)
+        edit.ops.push_back(track_edits_detail::op("transport.setCountIn", {{"bars", bars}}, "Count-In"));
+    return edit;
+}
+inline LoopEdit setPunch(const TransportSettings &t, bool in, bool out) {
+    LoopEdit edit;
+    if (t.punchIn != in || t.punchOut != out)
+        edit.ops.push_back(track_edits_detail::op("transport.setPunch", {{"in", in}, {"out", out}}, "Punch"));
+    return edit;
+}
 // The loop on or off over `range`. A brace never starts before the start nor ends at or before its
 // own start.
 inline LoopEdit setLoop(const TransportSettings &t, bool on, LoopRange range) {

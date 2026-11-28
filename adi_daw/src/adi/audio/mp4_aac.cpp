@@ -41,7 +41,9 @@ void put(Bytes &b, std::uint64_t v, unsigned n) {
         b.push_back(static_cast<std::uint8_t>(v >> ((i - 1) * 8)));
 }
 void zeros(Bytes &b, std::size_t n) {
-    b.resize(b.size() + n, 0);
+    b.reserve(b.size() + n);
+    for (std::size_t i = 0; i < n; ++i)
+        b.push_back(0);
 }
 void append(Bytes &b, View v) {
     b.insert(b.end(), v.begin(), v.end());

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/bounce_commands.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/freeze_commands.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/store.hpp"
+#include "adi/track_recording.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cmath>
 #include <limits>
@@ -25,6 +29,60 @@ bool exists(SQLite::Database &db, const char *table, std::int64_t id) {
     q.bind(1, id);
     return q.executeStep();
 }
+// track.create's captured image supports mixer fields without separate ops,
+// including pan law and VCA membership. Read track defaults from the schema.
+Payload bouncedTrackContents(SQLite::Database &db, const Payload &track, Payload mixer,
+                             std::optional<Payload> splitPan) {
+    const auto id = track.at("id").get<std::int64_t>();
+    SQLite::Statement table(db, "SELECT sql FROM sqlite_master WHERE type='table' AND name='tracks'");
+    if (!table.executeStep())
+        throw std::runtime_error("bounce cannot read the track schema");
+    SQLite::Database defaults(":memory:", SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    defaults.exec("PRAGMA foreign_keys=OFF");
+    defaults.exec(table.getColumn(0).getString());
+    detail::restoreRow(defaults, "tracks", {{"id", id}, {"kind", "audio"}, {"name", track.at("name")},
+        {"parent_id", track.at("parent")}, {"index_in_parent", track.at("index")},
+        {"monitor_mode", kNewAudioTrackMonitorMode}});
+    const auto root = detail::captureRow(defaults, "tracks", "id", id);
+    if (!root)
+        throw std::runtime_error("bounce cannot capture the new track");
+    auto rows = Payload::array();
+    // The undo image's canonical order is table name, then key.
+    if (splitPan) {
+        (*splitPan)["track_id"] = id;
+        rows.push_back({{"table", "mixer_pan_settings"}, {"key", {{"track_id", id}}},
+                        {"before", std::move(*splitPan)}, {"after", nullptr}});
+    }
+    mixer["track_id"] = id;
+    mixer["input_gain_db"] = 0.; // The wet render contains the source's input gain.
+    rows.push_back({{"table", "mixer_strip"}, {"key", {{"track_id", id}}},
+                    {"before", std::move(mixer)}, {"after", nullptr}});
+    rows.push_back({{"table", "tracks"}, {"key", {{"id", id}}}, {"before", *root}, {"after", nullptr}});
+    return {{"version", 1}, {"root", id}, {"rows", std::move(rows)}};
+}
+void copySends(SQLite::Database &db, std::vector<OpRequest> &prefix, const TrackBounceOptions &options) {
+    RowIds ids(db);
+    if (options.routingId > 0)
+        ids.reserve("routing", options.routingId);
+    SQLite::Statement sends(db, "SELECT * FROM routing WHERE src_kind='track' AND src_id=? AND kind='send' ORDER BY ord,id");
+    sends.bind(1, options.sourceTrack);
+    while (sends.executeStep()) {
+        auto row = detail::captureQueryRow(sends);
+        const auto original = row.at("id").get<std::int64_t>();
+        const auto id = ids.next("routing");
+        auto tap = detail::captureRow(db, "routing_send_taps", "routing_id", original);
+        row["id"] = id;
+        row["src_id"] = options.newTrack;
+        Payload route{{"id", id}, {"srcKind", "track"}, {"src", options.newTrack},
+                      {"dstKind", row.at("dst_kind")}, {"dst", row.at("dst_id")}, {"kind", "send"},
+                      {"row", std::move(row)}};
+        if (tap) {
+            (*tap)["routing_id"] = id;
+            route["sendTapRow"] = std::move(*tap);
+        }
+        add(prefix, "routing.connect", std::move(route));
+    }
+}
 } // namespace
 bool TrackBounce::ready() const noexcept {
     return data_ && !data_->committed && data_->material.edit.ok && error_.empty();
@@ -45,7 +103,7 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
             options.job.endSample > (std::int64_t{1} << 50))
             throw std::invalid_argument("invalid Bounce to New Track render range/rate");
         std::optional<std::int64_t> head;
-        std::vector<OpRequest> prefix;
+        std::vector<OpRequest> prefix, silence;
         std::string name;
         {
             SQLite::Transaction capture(store.db(), SQLite::TransactionBehavior::DEFERRED);
@@ -60,7 +118,8 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                 (source.getColumn(0).getString() != "audio" && source.getColumn(0).getString() != "midi" &&
                  source.getColumn(0).getString() != "instrument" &&
                  source.getColumn(0).getString() != "group") ||
-                source.getColumn(5).getInt() != 0 || source.getColumn(6).getInt() != 0)
+                source.getColumn(5).getInt() != 0 ||
+                (!options.copyMixerSettings && source.getColumn(6).getInt() != 0))
                 throw std::runtime_error(
                     "bounce source is missing, locked, frozen or not a regular track/group");
             name = options.name.empty() ? source.getColumn(1).getString() + " (Bounce)" : options.name;
@@ -84,12 +143,16 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                 add(prefix, "track.reorder",
                     {{"id", siblings.getColumn(0).getInt64()}, {"index", previous + 1}});
             }
-            add(prefix, "track.create",
-                {{"id", options.newTrack},
-                 {"kind", "audio"},
-                 {"name", name},
-                 {"parent", parent},
-                 {"index", index}});
+            Payload track{{"id", options.newTrack}, {"kind", "audio"}, {"name", name},
+                          {"parent", parent}, {"index", index}};
+            if (options.copyMixerSettings) {
+                auto mixer = detail::captureRow(store.db(), "mixer_strip", "track_id", options.sourceTrack);
+                if (mixer) {
+                    auto splitPan = detail::captureRow(store.db(), "mixer_pan_settings", "track_id", options.sourceTrack);
+                    track["contents"] = bouncedTrackContents(store.db(), track, std::move(*mixer), std::move(splitPan));
+                }
+            }
+            add(prefix, "track.create", std::move(track));
             if (!source.getColumn(4).isNull()) {
                 const auto color = source.getColumn(4).getInt64();
                 if (color < 0 || color > 69)
@@ -113,11 +176,39 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                 if (route.executeStep())
                     throw std::runtime_error("bounce source has multiple explicit Main destinations");
             }
+            if (options.copyMixerSettings)
+                copySends(store.db(), prefix, options);
+            if (options.muteOriginal) {
+                // Frozen and group output is not the sum of clips on the root track.
+                if (!options.copyMixerSettings || source.getColumn(0).getString() == "group" || source.getColumn(6).getInt() != 0) {
+                    add(silence, "track.setMute", {{"id", options.sourceTrack}, {"muted", true}});
+                } else {
+                    const auto begin = edit::nanosFromSeconds(static_cast<double>(options.job.beginSample) / rate);
+                    const auto end = edit::nanosFromSeconds(static_cast<double>(options.job.endSample) / rate);
+                    edit::TimeMap time(store.db());
+                    SQLite::Statement clips(store.db(), "SELECT id,time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
+                                                       "WHERE track_id=? AND lane_id IS NULL AND muted=0 ORDER BY id");
+                    clips.bind(1, options.sourceTrack);
+                    while (clips.executeStep()) {
+                        const bool absolute = clips.getColumn(1).getInt() != 0;
+                        const auto at = clips.getColumn(absolute ? 4 : 2).getInt64();
+                        const auto last = edit::addTime(at, clips.getColumn(absolute ? 5 : 3).getInt64());
+                        const auto clipBegin = absolute ? at : time.nanos(at);
+                        const auto clipEnd = absolute ? last : time.nanos(last);
+                        if (clipBegin >= end || clipEnd <= begin)
+                            continue;
+                        if (clipBegin < begin || clipEnd > end)
+                            throw std::runtime_error("To mute the source after bouncing, include its whole overlapping clips.");
+                        add(silence, "clip.setMute", {{"id", clips.getColumn(0).getInt64()}, {"muted", true}});
+                    }
+                }
+            }
             capture.commit();
         }
         BounceOptions bounce;
         bounce.job = options.job;
-        bounce.job.source = {options.sourceTrack, engine::OfflineTap::PostFader};
+        bounce.job.source = {options.sourceTrack,
+                             options.copyMixerSettings ? engine::OfflineTap::PreFader : engine::OfflineTap::PostFader};
         bounce.job.regionId.reset();
         bounce.destination.track = options.newTrack;
         bounce.destination.clipId = options.clipId;
@@ -136,8 +227,7 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
         auto &requests = data->material.edit.requests;
         requests.insert(requests.begin(), prefix.begin(), prefix.end());
         add(requests, "clip.setName", {{"id", options.clipId}, {"name", name}});
-        if (options.muteOriginal)
-            add(requests, "track.setMute", {{"id", options.sourceTrack}, {"muted", true}});
+        requests.insert(requests.end(), silence.begin(), silence.end());
         for (auto &op : requests)
             op.label = "Bounce to New Track";
         result.data_ = std::move(data);
@@ -161,7 +251,7 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
         if (std::llround(static_cast<double>(endNs) * rate / 1e9) != options.job.endSample)
             throw std::runtime_error("Bounce in Place range cannot preserve its final sample");
         std::optional<std::int64_t> head;
-        std::vector<OpRequest> parked;
+        std::vector<OpRequest> conversion, devicesAfterBounce;
         std::string name;
         {
             SQLite::Transaction capture(store.db(), SQLite::TransactionBehavior::DEFERRED);
@@ -178,6 +268,11 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
                 throw std::runtime_error(
                     "Bounce in Place source is missing, locked, frozen or not a regular track");
             name = options.name.empty() ? track.getColumn(1).getString() + " (Bounce)" : options.name;
+            if (options.replaceDevices && track.getColumn(0).getString() != "audio") {
+                auto edits = freeze::audioTrackConversion(store, options.sourceTrack);
+                for (auto &request : edits)
+                    conversion.push_back(std::move(request));
+            }
             SQLite::Statement incoming(store.db(), "SELECT 1 FROM routing WHERE dst_kind='track' AND "
                                                    "dst_id=? AND kind IN ('main','send') LIMIT 1");
             incoming.bind(1, options.sourceTrack);
@@ -204,18 +299,22 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
                         "range-bounce producer for material edits");
             }
             SQLite::Statement devices(store.db(),
-                                      "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
-                                      "WHERE c.track_id=? AND d.enabled<>0 ORDER BY c.ord,c.id,d.ord,d.id");
+                                      "SELECT d.id,d.enabled FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                      "WHERE c.track_id=? ORDER BY c.ord,c.id,d.ord,d.id");
             devices.bind(1, options.sourceTrack);
-            while (devices.executeStep())
-                add(parked, "device.setEnabled",
-                    {{"id", devices.getColumn(0).getInt64()}, {"enabled", false}});
+            while (devices.executeStep()) {
+                const auto id = devices.getColumn(0).getInt64();
+                if (options.replaceDevices)
+                    add(devicesAfterBounce, "device.remove", {{"id", id}});
+                else if (devices.getColumn(1).getInt() != 0)
+                    add(devicesAfterBounce, "device.setEnabled", {{"id", id}, {"enabled", false}});
+            }
             SQLite::Statement gain(store.db(), "SELECT input_gain_db FROM mixer_strip WHERE track_id=?");
             gain.bind(1, options.sourceTrack);
             if (gain.executeStep() && gain.getColumn(0).getDouble() != 0)
-                add(parked, "mixer.setInputGain", {{"id", options.sourceTrack}, {"db", 0.0}});
+                add(devicesAfterBounce, "mixer.setInputGain", {{"id", options.sourceTrack}, {"db", 0.0}});
             if (track.getColumn(4).getInt() != 0)
-                add(parked, "track.setArm", {{"id", options.sourceTrack}, {"armed", false}});
+                add(devicesAfterBounce, "track.setArm", {{"id", options.sourceTrack}, {"armed", false}});
             capture.commit();
         }
         BounceOptions bounce;
@@ -235,7 +334,8 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
         if (!data->material.edit.options.expectHead || *data->material.edit.options.expectHead != head)
             throw std::runtime_error("project changed before in-place capture");
         auto &requests = data->material.edit.requests;
-        requests.insert(requests.end(), parked.begin(), parked.end());
+        requests.insert(requests.begin(), conversion.begin(), conversion.end());
+        requests.insert(requests.end(), devicesAfterBounce.begin(), devicesAfterBounce.end());
         add(requests, "clip.setName", {{"id", options.clipId}, {"name", name}});
         for (auto &op : requests)
             op.label = "Bounce in Place";

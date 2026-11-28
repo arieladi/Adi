@@ -19,5 +19,9 @@ struct PreparedSampleAssignment {
     std::int32_t slot,const std::filesystem::path&,double engineRate,std::int64_t importedUtc,
     audio::DecodeCache* =nullptr);
 [[nodiscard]] PreparedSampleAssignment prepareSampleClear(Store&,std::int64_t device,std::int32_t slot);
+// Prepare OneShot and its first sample together for a drop on a MIDI track.
+[[nodiscard]] PreparedSampleAssignment prepareSampleInstrument(Store&, std::int64_t track,
+    const std::filesystem::path&, double engineRate, std::int64_t importedUtc,
+    audio::DecodeCache* = nullptr, std::int64_t retainedDeviceId = 0);
 [[nodiscard]] CommitResult commitSampleAssignment(Store&,const PreparedSampleAssignment&,Actor=Actor::User);
 }
