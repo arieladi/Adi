@@ -330,6 +330,71 @@ void unwarpedTempoChanges() {
         atTempo(60, "tempo redo restores the exact unwarped endpoint");
     }
 }
+
+void unwarpedBezierTempoEdit() {
+    constexpr int samples = 600;
+    constexpr std::int64_t start = 2 * textproj::kPPQ;
+    // Integrate 90 * (1 + s^2) BPM with x = 2s - s^2 on the
+    // three-quarter +1-tension ramp. These are the nearest tick and device samples.
+    constexpr std::int64_t flatLength = 120120, rampLength = 111828;
+    constexpr std::int64_t flatFrame = 57600, rampFrame = 60466;
+    Fixture f(48000,2,800);
+    f.add(1,0,samples,0,800);
+    auto& db = f.store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,100),(23063040,180)");
+    {
+        SQLite::Statement clip(db,"UPDATE clips SET time_base=0,pos_ticks=?,length_ticks=?,"
+                                  "pos_ns=NULL,length_ns=NULL WHERE id=1");
+        clip.bind(1,start);
+        clip.bind(2,flatLength);
+        clip.exec();
+    }
+    f.store.reset();
+    StoreError error{};
+    f.store = Store::open(f.dir.path() / "session.adi",error);
+    if (!f.store) throw std::runtime_error("reopen the trimmed Warp-off clip");
+    f.load(1024);
+    const auto verify = [&](std::int64_t frame, std::int64_t length, const char* label) {
+        const auto snap = SnapshotBuilder::fromStore(*f.store);
+        const auto& clip = *snap->findTrack(1)->clips.front();
+        f.session.transport().locate(frame - 1);
+        const auto pcm = f.render(1024);
+        bool exact = clip.posTicks == start && clip.lengthTicks == length;
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            for (std::size_t i = 0; i < 1024; ++i) {
+                const auto expected = i > 0 && i <= samples ? f.media[(i-1)*2+channel] : 0.f;
+                exact = exact && pcm[channel*1024+i] == expected;
+            }
+        }
+        if (!exact) std::printf("trimmed Warp-off at %lld frames: ticks %lld, expected %lld\n",
+                                static_cast<long long>(frame),static_cast<long long>(clip.lengthTicks),
+                                static_cast<long long>(length));
+        check(exact,label);
+    };
+    verify(flatFrame,flatLength,"the reopened trimmed clip plays 600 exact stereo samples before the edit");
+    OpRequest insert;
+    insert.opType = "project.insertTempoEvent";
+    insert.payload = {{"pos",textproj::kPPQ},{"bpm",90},{"curve",2},{"tension",1.}};
+    if (!OpJournal(*f.store).commit(insert).ok || !f.session.refresh(*f.store))
+        throw std::runtime_error("insert a Bézier tempo point before the raw clip");
+    verify(rampFrame,rampLength,"an inserted Bézier tempo preserves the trim on the integrated sample clock");
+    History history(*f.store);
+    if (!history.undo().ok || !f.session.refresh(*f.store)) throw std::runtime_error("undo the tempo insert");
+    verify(flatFrame,flatLength,"Undo restores the exact pre-ramp rows and stereo PCM");
+    if (!history.redo().ok || !f.session.refresh(*f.store)) throw std::runtime_error("redo the tempo insert");
+    verify(rampFrame,rampLength,"Redo restores the exact integrated ramp rows and stereo PCM");
+    OpRequest remove;
+    remove.opType = "project.removeTempoEvent";
+    remove.payload = {{"pos",textproj::kPPQ}};
+    if (!OpJournal(*f.store).commit(remove).ok || !f.session.refresh(*f.store))
+        throw std::runtime_error("remove the saved Bézier tempo point");
+    verify(flatFrame,flatLength,"a removed Bézier tempo uses the stored tension to recover all 600 samples");
+    if (!history.undo().ok || !f.session.refresh(*f.store)) throw std::runtime_error("undo the tempo removal");
+    verify(rampFrame,rampLength,"Undo restores the saved Bézier tension and exact raw trim");
+    if (!history.redo().ok || !f.session.refresh(*f.store)) throw std::runtime_error("redo the tempo removal");
+    verify(flatFrame,flatLength,"Redo restores the exact flat-clock rows and stereo PCM");
+}
+
 void reversedSource() {
     constexpr int start=73, source=37, length=21001, block=317;
     const auto addReversed = [](Fixture& fixture) {
@@ -2064,6 +2129,7 @@ int main(int argc,char** argv) {
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
+        if(only=="all" || only=="unwarped-bezier-tempo")unwarpedBezierTempoEdit();
         if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();reverseSelectedRepeats();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();

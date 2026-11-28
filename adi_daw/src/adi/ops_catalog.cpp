@@ -50,6 +50,7 @@
 #include "adi/tuning_ops.hpp"
 #include "adi/history_roots.hpp"
 #include "adi/take_lane_ops.hpp"
+#include "adi/engine/warp_arrangement_clock.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -753,23 +754,26 @@ Payload captureUnwarpedTempoLengths(SQLite::Database& db, const Payload& p, bool
     Payload lengths = Payload::array();
     if (!clips.executeStep()) return lengths;
 
-    engine::TempoMap before, after;
+    engine::TempoMap oldTempo, newTempo;
     const auto position = detail::signedInteger(p.at("pos"));
-    SQLite::Statement points(db, "SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    SQLite::Statement points(db, "SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
     while (points.executeStep()) {
         const engine::TempoEvent event{points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
-                                       points.getColumn(2).getInt()};
-        before.events.push_back(event);
-        if (event.posTicks != position) after.events.push_back(event);
+                                       points.getColumn(2).getInt(),points.getColumn(3).getDouble()};
+        oldTempo.events.push_back(event);
+        if (event.posTicks != position) newTempo.events.push_back(event);
     }
     if (insert) {
-        const auto at = std::ranges::lower_bound(after.events, position, {}, &engine::TempoEvent::posTicks);
-        after.events.insert(at, engine::TempoEvent{position, p.at("bpm").get<double>(), p.value("curve", 0)});
+        const auto at = std::ranges::lower_bound(newTempo.events, position, {}, &engine::TempoEvent::posTicks);
+        newTempo.events.insert(at, engine::TempoEvent{position, p.at("bpm").get<double>(),
+                                                     p.value("curve", 0), p.value("tension", 0.0)});
     }
-    for (auto* map : {&before, &after})
+    for (auto* map : {&oldTempo, &newTempo})
         if (map->events.empty() || map->events.front().posTicks > 0)
             map->events.insert(map->events.begin(), {0,120,0});
 
+    // The journal projects seconds and whole ticks independently of device rate.
+    const engine::WarpArrangementClock before(oldTempo, 1.0), after(newTempo, 1.0);
     do {
         const auto start = clips.getColumn(1).getInt64();
         const auto oldLength = clips.getColumn(2).getInt64();
