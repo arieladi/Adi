@@ -95,11 +95,14 @@ NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot,
     const auto& restart = *cue.repeat;
     const auto end = position.frame + frames;
     const auto first = block.sampleAtTick(block.clock,restart.tick);
-    if (first <= position.frame || first >= end) return wraps;
+    if (first <= position.frame) return wraps;
 
     const auto looping = slot.loopEndTick > slot.loopStartTick;
     const auto sourceEnd = looping ? slot.loopEndTick : slot.endTick;
     if (restart.sourceTick < 0 || restart.sourceTick >= sourceEnd) return wraps;
+    // A later reset leaves this callback playing the inherited placement,
+    // including ordinary wraps. Its saved Start still uses native read-ahead.
+    if (first >= end) return scheduled ? nativeCueWraps(block,slot,position,frames) : wraps;
     if (scheduled) {
         if (position.anchorTick < 0 || position.anchorSourceTick < 0 || position.anchorSourceTick >= sourceEnd)
             return wraps;
