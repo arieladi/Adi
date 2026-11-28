@@ -2023,6 +2023,9 @@ juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
             if (safe)
                 safe->root.groupTracks(true, track);
         });
+    // The track's remarks (RE-01): add one, or edit, resolve or delete those it holds.
+    if (track != 0)
+        root.addRemarkItems(menu, "track", track);
     // Live's colour chooser at the menu's foot (Live 12 manual 2.3.2); on a group, the command that
     // gives what it holds its colour (manual 18.3).
     menu.addSeparator();
@@ -2159,6 +2162,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             if (clips) {
                 addActive(Command::Split);
                 addActive(Command::RenameTrack);
+                // The clip's remarks (RE-01).
+                root.addRemarkItems(menu, "clip", geometry.selection.clip);
                 if (const auto snapshot = root.current(); snapshot && root.locateClipMedia) {
                     const auto clipId = sel.clip;
                     for (const auto &track : snapshot->tracks) {

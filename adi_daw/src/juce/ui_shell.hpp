@@ -645,6 +645,17 @@ class AdiRootComponent final : public juce::Component,
     void addAutomationDeleteItem(juce::PopupMenu &, const AutomationTarget &);
     void addTrackAutomationDeleteItem(juce::PopupMenu &, std::int64_t track);
     void addDeviceAutomationDeleteItem(juce::PopupMenu &, std::int64_t device);
+    // Remarks (RE-01): `kind` #`target` (a parameter's when `param` is given). The menu items: Add Remark... and,
+    // for each remark there, Edit, Resolve or Reopen, and Delete. Each action is one undo step; a refusal is said.
+    void addRemarkItems(juce::PopupMenu &menu, const std::string &kind, std::int64_t target,
+                        std::optional<std::string> param = std::nullopt);
+    bool addRemark(const std::string &kind, std::int64_t target, std::optional<std::string> param, const std::string &text);
+    bool editRemark(std::int64_t id, const std::string &text);
+    bool resolveRemark(std::int64_t id, bool resolved);
+    bool removeRemark(std::int64_t id);
+    // The text prompt Add Remark and Edit open; `answer` gets the text, nothing when cancelled. Tests set it.
+    std::function<void(const std::string &title, const std::string &initial, std::function<void(std::string)> answer)>
+        askText;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
     // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
