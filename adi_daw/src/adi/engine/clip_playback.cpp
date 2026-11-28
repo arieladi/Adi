@@ -1723,7 +1723,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
         try {
             const bool usePins = clip->kind == "audio" && !warped;
             const bool physicalSource = usePins && clip->timeBase == 1 && clip->contentOffsetNs && clip->sourceEndNs &&
-                *clip->contentOffsetNs >= 0 && !slot.legato && slot.mode != LaunchMode::Repeat;
+                *clip->contentOffsetNs >= 0 && !slot.legato;
             const bool physicalLoop = physicalSource && clip->loopEnabled && clip->loopBeginNs && clip->loopEndNs &&
                 *clip->loopBeginNs >= 0 && *clip->loopEndNs <= *clip->sourceEndNs &&
                 *clip->loopEndNs > std::max(*clip->loopBeginNs,*clip->contentOffsetNs) &&

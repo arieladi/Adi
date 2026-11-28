@@ -980,6 +980,78 @@ void laterFollowKeepsEarlierLegatoForecast() {
             "prefetching the earlier Legato phase keeps callback work allocation and I/O free");
 }
 
+void pinnedRepeatUsesItsLaunchClock() {
+    for (const bool ram : {true,false}) {
+        for (const auto variant : {0,1,2}) {
+            const bool loop = variant == 1;
+            const bool explicitGrid = variant == 2;
+            test::TempDirectory folder{"session_pinned_repeat",ram ? "ram" : "paged"};
+            auto store = sceneProject(folder.path());
+            auto& db = store->db();
+            SQLite::Statement tempo(db,"INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1),(?,140,0)");
+            tempo.bind(1,lastBeat * quarter);
+            tempo.exec();
+            db.exec("INSERT INTO session_state(key,value) VALUES('transport.launchQuantization','0')");
+            addClip(*store,folder.path(),101,10,2,false,5400);
+            pinUnwarpedOneShot(*store,50000000,loop ? 400000000 : 200000000);
+            if (loop) {
+                db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880;"
+                        "UPDATE clip_playback_details SET loop_begin_ns=100000000,loop_end_ns=350000000");
+            }
+            SQLite::Statement controls(db,"UPDATE clip_launch SET launch_mode=3,launch_quant=?,ram_mode=?");
+            controls.bind(1,explicitGrid ? 12 : 0); // explicit sixteenth, otherwise Global None
+            controls.bind(2,ram ? 1 : 0);
+            controls.exec();
+
+            Session session;
+            session.graph().setFadeFrames(0);
+            if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+            const auto press = [&](bool release) {
+                OpRequest gesture;
+                gesture.opType = "session.launchClip";
+                gesture.payload = {{"track",1},{"scene",10},{"clip",101},
+                                   {"incarnation",session.launchIncarnation()},{"release",release}};
+                require(OpJournal(*store).commit(gesture).ok,"send a persisted Repeat gesture");
+            };
+            const auto physical = static_cast<std::int64_t>(loop ? 14400 : 9600);
+            const std::array<std::int64_t,3> starts{0,explicitGrid ? frameAtBeat(.25) : physical,
+                explicitGrid ? frameAtBeat(.5) : 2 * physical};
+            const auto through = starts.back() + physical + (loop ? 12601 : blockFrames);
+            std::vector<float> pcm(static_cast<std::size_t>(through));
+            Playback playback{session,pcm};
+            playback.paged = !ram;
+            press(false);
+            playback.through(starts.back() + 1);
+            press(true);
+            playback.through(through);
+            std::printf("Pinned Repeat %s %s: starts %lld/%lld/%lld, pulse %.6f, transitions %zu\n",
+                        ram ? "RAM" : "paged",loop ? "loop" : explicitGrid ? "grid" : "one-shot",
+                        static_cast<long long>(playback.edges[0].sample),static_cast<long long>(playback.edges[1].sample),
+                        static_cast<long long>(playback.edges[2].sample),static_cast<double>(pcm[3000]),playback.count);
+            for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
+            for (std::size_t i = 0; i < starts.size(); ++i) {
+                require(playback.edges[i].newClip == 101 && playback.edges[i].sample == starts[i] &&
+                        playback.edges[i].sourceTick == quarter / 10 &&
+                        std::abs(pcm[static_cast<std::size_t>(starts[i] + 3000)] - .55f) < 1e-6f,
+                        "held Repeat starts at the selected timer and restarts from the pinned source Start");
+            }
+            if (loop) {
+                const auto wrap = starts.back() + physical;
+                require(playback.count == 3 && trackState(session).completedLoops == 2 &&
+                        std::abs(pcm[static_cast<std::size_t>(wrap + 600)] - .55f) < 1e-6f &&
+                        std::abs(pcm[static_cast<std::size_t>(wrap + 12600)] - .55f) < 1e-6f,
+                        "release cancels retriggers and resumes the ordinary pinned Loop Begin");
+            } else {
+                require(playback.count == 4 && playback.edges[3].newClip == 0 &&
+                        playback.edges[3].sample == starts.back() + physical,
+                        "release cancels retriggers and leaves the final physical one-shot to finish");
+            }
+            require(session.problems().empty() && callbackAllocations == 0 && audio::callbackFileIo == 0,
+                    "pinned Repeat runs on the ramp without callback allocation or I/O");
+        }
+    }
+}
+
 void residentModeRamp(const char* mode, std::int64_t tolerance) {
     test::TempDirectory folder{"session_native_warp", mode};
     auto store = sceneProject(folder.path());
@@ -1052,6 +1124,7 @@ int main() {
         coldPagedOneShotOnAuthoredRamp();
         physicalOneShotToWarpLegato();
         physicalOneShotRetainedByTempoScene();
+        pinnedRepeatUsesItsLaunchClock();
         persistedPhysicalLoopTempo();
         physicalLoopFollowUsesTargetGrid();
         physicalFollowKeepsCoincidentGridSample();

@@ -535,13 +535,15 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
         if (pending.repeat) {
-            const auto next = pending.grid == LaunchQuantization::None && repeatWithoutQuantizationRestartsAtClipEnd
+            const bool repeatAtSourceEnd = pending.grid == LaunchQuantization::None && repeatWithoutQuantizationRestartsAtClipEnd;
+            const auto next = repeatAtSourceEnd
                 ? add(tick,sourceEnd(*target) - position)
                 : launch_quantize::nextGridTick(add(tick,1),pending.grid,block.meters).value_or(lastTick);
             if (next > tick) {
                 track.repeat = pending;
                 track.repeat->tick = next;
                 track.repeat->earliestSample = block.sample + offset + 1;
+                track.repeat->physicalLaps = repeatAtSourceEnd && target->physicalFrames > 0 ? 1 : 0;
             }
         }
     }
@@ -605,7 +607,8 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
         bool editRegion = false;
         const bool prepared = track.dueScene && track.dueScene->prepared;
         const auto usesPhysicalLaps = [slot](const Pending& pending) noexcept {
-            return slot && slot->physicalLoopEndFrame && pending.physicalLaps > 0;
+            return slot && pending.physicalLaps > 0 &&
+                (slot->physicalLoopEndFrame || (pending.repeat && slot->physicalFrames > 0));
         };
         for (auto* candidate : {prepared ? &track.dueScene : &track.back, &track.user, &track.gateStop,
                                 prepared ? &track.back : &track.dueScene, &track.follow, &track.repeat}) {
@@ -990,7 +993,7 @@ std::optional<std::int64_t> Launcher::queuedLegatoSourceTick(const Track& track,
     const auto& run = track.run;
     if (!target.legato || target.clip == run.clip || !occupied(current) || pending.tick == lastTick) return {};
     const auto physicalSample = [&](const Pending& event) {
-        if (event.physicalLaps > 0 && current->physicalLoopEndFrame) {
+        if (event.physicalLaps > 0 && (current->physicalLoopEndFrame || (event.repeat && current->physicalFrames > 0))) {
             const auto lap = physicalLap(current,run.completedLoops != 0);
             const auto first = std::max<std::int64_t>(0,lap.length() - (run.frames - run.pcmAnchorFrame));
             const auto period = physicalLap(current,true).length();
