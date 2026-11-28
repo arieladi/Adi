@@ -1,4 +1,4 @@
-Integrating basics/integrate-4. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
+Integrating basics/integrate-4 at `122e51289bb22d078c34dd2559c1d00f20f1563f`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
@@ -9,6 +9,9 @@ Started from `land/basics-1128c` at `16064c0a6d8e3f435ed5cb9626e09d2b73f042cd` w
 | Ready source tip | Integration merge | Composition and checks |
 |---|---|---|
 | `basics/test-chain-2` `b8943be0b99f10b773178719540ac5e76585062f` | `c07b8e6e409e1f03cbd2e945b3b30e590475cf95` | Merged first and pushed for the director. Resolved three conflicts in the shell header and window fixtures. Kept stopped locators and opening-state history with Quantize, explicit Split scope, source-length trim tests, and the hover and Info View checks. Shared Spectrum uses a single software renderer with words masked in compared pictures. Passed six validators, strict shell and spectrum syntax, and all 500 focused no-display spectrum checks. |
+| `basics/test-chain-2` documentation at `9ba133e10245f9ab6e4d89c9c0295ebbac3aa04e` | `9c7ed102b2abd4e44c55d172ac05a5ef463bc4e2` | Kept the subsequent director and sanity-check notes. The director retest tree at `c07b8e6e4` built `adi_app` and passed the full Shell and Shared Spectrum suites without `DISPLAY`. The original Windows marker and loop-fixture fixes were already in the base. |
+| `seats/stretcher-session-integration` `44ce984ec7cbf7e9f7c4914eb63ff7a500859975` | `cfa05777d5b2887596dd902ffe1c783a99e05bf4` | Took the companion named in the Stretcher log, including its Apple fix. Resolved the op catalogue and Store conflicts by keeping the director’s command includes beside the launch ops, and keeping project UUID creation before essential-extension diagnostics. All six validators passed. |
+| `seats/session-chain` `539b3c501f4db09667b439d2ea96373da1348e96` via `wincheck/seats/session-chain` `302bc8d76492f9bc864df0608a488fb549517b7b` | `122e51289bb22d078c34dd2559c1d00f20f1563f` | Resolved 20 conflicts across scene clocks, streaming and resident audio, launches, MIDI, slot recording and fixtures. Kept both clock-bank preparations, phase-carrying sources, queued region and source operations, capture identities, recovery and both sets of tests. Includes the Windows `rangeEnd` fix and the existing libc++ fixes. Six validators and strict syntax checks passed. Focused runtime tests are running. |
 
 ## Integrate-3
 
