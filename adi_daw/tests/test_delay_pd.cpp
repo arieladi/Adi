@@ -179,7 +179,7 @@ void run() {
     }
     io.transport = nullptr;
 
-    for (int id = 1; id <= 27; ++id)
+    for (int id = 1; id <= 30; ++id)   // 28 to 30: Duck (DEV-33)
         check(engine.sendParameter(id, 0), "every declared control accepts a host update");
     block();
     const auto console = engine.consoleLines();

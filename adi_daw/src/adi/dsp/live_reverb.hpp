@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/ducker.hpp"
 #include <array>
 #include <cstddef>
 #include <vector>
@@ -38,6 +39,11 @@ class LiveReverb {
         Reflect,
         Diffuse,
         Mix,
+        // DEV-33 (ADR-0254 d6): ADI's addition, after Live's parameters, so a
+        // Live preset's ids do not move. Echo's ducker; off by default.
+        DuckOn,
+        DuckThreshold,
+        DuckRelease,
         Count
     };
     struct Range {
@@ -54,7 +60,8 @@ class LiveReverb {
         {0, 1, 1},       {0, 4, 0.02},       {0.01, 8, 0.02}, {0, 250, 2.5},
         {0, 2, 1},       {10, 400, 100},     {0.1, 20, 1.2},  {0, 1, 0},
         {0, 1, 1},       {0, 1, 1},          {0, 120, 100},   {0, 2, 2},
-        {-60, 6, 0},     {-60, 6, 0},        {0, 100, 55}};   // Dry/Wet: Live's default 55 %
+        {-60, 6, 0},     {-60, 6, 0},        {0, 100, 55},    // Dry/Wet: Live's default 55 %
+        {0, 1, 0},       {-80, 0, -24},      {1, 5000, 200}}; // Duck: Echo's ranges and defaults
     LiveReverb();
     void prepare(double);
     void set(Param, double) noexcept;
@@ -71,6 +78,7 @@ class LiveReverb {
     std::array<double, Count> p_{};
     std::size_t write_ = 0;
     double rate_ = 48000, size_ = 1, spin_ = 0, chorus_ = 0, low_ = 0, high_ = 0;
+    Ducker duck_;
     bool started_ = false;
     double read(const std::vector<float> &, double) const noexcept;
 };

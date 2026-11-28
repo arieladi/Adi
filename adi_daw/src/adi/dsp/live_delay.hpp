@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/ducker.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,11 @@ class LiveDelay {
         Mix,
         HiQuality,
         EqualLoudness,
+        // DEV-33 (ADR-0254 d6): ADI's addition, after the parameters above, so
+        // a Live preset's ids do not move. Echo's ducker; off by default.
+        DuckOn,
+        DuckThreshold,
+        DuckRelease,
         Count
     };
     struct Range {
@@ -49,7 +55,8 @@ class LiveDelay {
         {-33, 33, 0},       {-33, 33, 0},    {0, 1, 1},   {0, 95, 50},  {0, 1, 0},  {0, 1, 1},
         {50, 18000, 1000},  {0.5, 9, 8},     {0, 100, 0}, {0, 100, 0},  {0, 5, 0},  {0.01, 40, 0.5},
         {25, 100000, 1000}, {0.0625, 16, 1}, {0, 6, 1},   {0, 100, 50}, {0, 2, 0},  {0, 1, 0},
-        {0, 100, 50},       {0, 1, 0},       {0, 1, 1}};
+        {0, 100, 50},       {0, 1, 0},       {0, 1, 1},
+        {0, 1, 0},          {-80, 0, -24},   {1, 5000, 200}};   // Duck: Echo's ranges and defaults
     LiveDelay();
     void prepare(double sampleRate);
     void set(Param, double) noexcept;
@@ -66,6 +73,7 @@ class LiveDelay {
     std::array<double, Count> p_{};
     double rate_ = 48000, bpm_ = 120, phase_ = 0, from_ = 0, to_ = 0;
     std::uint32_t random_ = 0x12345678u;
+    Ducker duck_;
     std::size_t write_ = 0;
     bool started_ = false;
     double read(const Lane &, double) const noexcept;

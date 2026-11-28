@@ -257,9 +257,80 @@ void liveDefaultControls() {
         check(std::abs(R::ranges[e.p].initial - e.value) < 1e-5 * std::max(1.0, std::abs(e.value)),
               (std::string("Live default: ") + e.name).c_str());
 }
+// DEV-33 (ADR-0254 d6): Echo's Duck inside Reverb. Off by default, and off is
+// the device as it was; on, the wet follows Echo's law on the device's input.
+std::vector<double> echoLaw(const std::vector<float> &x, double thresholdDb, double releaseMs) {
+    // Echo's ducker, written out: the target is threshold / level above the
+    // threshold, taken at once; below, the gain returns at the release.
+    const double threshold = std::pow(10., thresholdDb / 20), release = std::exp(-1000 / (48000 * releaseMs));
+    std::vector<double> g(x.size());
+    double gain = 1;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double level = std::abs(static_cast<double>(x[i]));
+        const double target = level > threshold ? threshold / std::max(level, 1e-12) : 1;
+        gain = target < gain ? target : 1 - (1 - gain) * release;
+        g[i] = gain;
+    }
+    return g;
+}
+void duck() {
+    static_assert(R::DuckOn == R::Mix + 1 && R::DuckRelease + 1 == R::Count,
+                  "Duck: its ids come after Live's");
+    check(R::ranges[R::DuckOn].initial == 0, "Duck: off by default");
+    // 0.5 s of a -6 dBFS tone, then 1 s of silence.
+    std::vector<float> x(72000, 0.f);
+    for (std::size_t i = 0; i < 24000; ++i)
+        x[i] = static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 440 * static_cast<double>(i) / 48000));
+    // Off nulls: Live's default Reverb untouched, and one whose Duck was set and switched off.
+    R plain, touched;
+    plain.prepare(48000);
+    touched.prepare(48000);
+    touched.set(R::DuckThreshold, -50);
+    touched.set(R::DuckRelease, 30);
+    touched.set(R::DuckOn, 1);
+    touched.set(R::DuckOn, 0);
+    check(render(plain, x) == render(touched, x), "Duck: off is the device as it was, bit for bit");
+    // A threshold the input never crosses leaves the gain at exactly 1.
+    R high;
+    high.set(R::DuckOn, 1);
+    high.set(R::DuckThreshold, 0);
+    high.prepare(48000);
+    plain.prepare(48000);
+    check(render(plain, x) == render(high, x), "Duck: an input below the threshold changes nothing");
+    // The law: all wet, the ducked output is the plain wet times Echo's gain.
+    R wet, ducked;
+    for (auto *r : {&wet, &ducked}) {
+        r->set(R::Mix, 100);
+        r->prepare(48000);
+    }
+    ducked.set(R::DuckOn, 1);
+    ducked.set(R::DuckThreshold, -30);
+    ducked.set(R::DuckRelease, 200);
+    const auto a = render(wet, x), b = render(ducked, x);
+    const auto g = echoLaw(x, -30, 200);
+    double worst = 0, during = 0, duringPlain = 0, late = 0, latePlain = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        worst = std::max(worst, std::abs(static_cast<double>(b[i]) - a[i] * g[i]) /
+                                    (std::abs(static_cast<double>(a[i])) + 1e-9));
+        const double bb = static_cast<double>(b[i]) * b[i], aa = static_cast<double>(a[i]) * a[i];
+        if (i >= 4800 && i < 24000) {
+            during += bb;
+            duringPlain += aa;
+        }
+        if (i >= 60000) {
+            late += bb;
+            latePlain += aa;
+        }
+    }
+    std::printf("Duck: worst relative deviation from Echo's law %.3g\n", worst);
+    check(worst < 1e-5, "Duck: the wet follows Echo's law on the device's own input");
+    check(during < duringPlain * 0.05, "Duck: a loud input steps the tail back");
+    check(latePlain > 0 && late > latePlain * 0.9, "Duck: the tail returns once the input is quiet");
+}
 int main() {
     liveDefault();
     liveDefaultControls();
+    duck();
     decay();
     controls();
     freezeAndFilters();

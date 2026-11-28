@@ -150,7 +150,7 @@ void run() {
           "real wet reverb produces sound rather than bypass or silence");
     std::printf("METRIC LibPd Reverb peak %.9f far %.12f\n", peak, floor);
     wav(audio);
-    for (int id = 1; id <= 31; ++id)
+    for (int id = 1; id <= 34; ++id)   // 32 to 34: Duck (DEV-33)
         check(engine.sendParameter(id, 0), "every declared control accepts a host update");
     block();
     const auto console = engine.consoleLines();

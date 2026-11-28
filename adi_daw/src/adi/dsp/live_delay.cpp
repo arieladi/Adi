@@ -40,6 +40,7 @@ void LiveDelay::prepare(double sr) {
     started_ = false;
     phase_ = from_ = to_ = 0;
     random_ = 0x12345678u;
+    duck_.reset();
 }
 void LiveDelay::set(Param key, double v) noexcept {
     if (key < 0 || key >= Count || !std::isfinite(v))
@@ -100,8 +101,16 @@ void LiveDelay::process(const float *inL, const float *inR, float *outL, float *
         hz /= 1.5;
     if (rateMode == 5)
         hz *= 4;
+    const bool duckOn = p[DuckOn] >= 0.5;
+    const double duckThreshold = Ducker::threshold(p[DuckThreshold]),
+                 duckRelease = Ducker::release(p[DuckRelease], rate_);
     for (std::size_t i = 0; i < n; ++i) {
         const std::array<double, 2> input{inL[i], inR[i]};
+        // DEV-33: the ducker follows the device's own input whether or not
+        // Duck is on, as Echo's does; only the wet heard is lowered, never
+        // what feeds back into the line.
+        const double duck = duck_.step(std::max(std::abs(input[0]), std::abs(input[1])),
+                                       duckThreshold, duckRelease);
         phase_ += hz / rate_;
         if (phase_ >= 1) {
             phase_ -= std::floor(phase_);
@@ -191,10 +200,12 @@ void LiveDelay::process(const float *inL, const float *inR, float *outL, float *
             }
             lane.ring[write_] = static_cast<float>(std::abs(value) < 1e-30 ? 0 : value);
             const double mix = p[Mix] / 100;
+            // Duck off leaves the wet as it was, bit for bit (DEV-33).
+            const double heard = duckOn ? wet[c] * duck : wet[c];
             const float result = static_cast<float>(
                 p[EqualLoudness] >= 0.5 ? input[c] * std::cos(mix * std::numbers::pi / 2) +
-                                              wet[c] * std::sin(mix * std::numbers::pi / 2)
-                                        : input[c] * (1 - mix) + wet[c] * mix);
+                                              heard * std::sin(mix * std::numbers::pi / 2)
+                                        : input[c] * (1 - mix) + heard * mix);
             if (c == 0)
                 outL[i] = result;
             else

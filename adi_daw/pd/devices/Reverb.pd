@@ -67,6 +67,12 @@
 #X obj 20 240 r \$0-query_latency;
 #X msg 20 275 latency;
 #X obj 20 310 s \$0-report_latency;
+#X obj 1320 100 adi.param \$0 32 0 1 0 - int DuckOn;
+#X msg 1320 135 p 31 \$1;
+#X obj 1320 180 adi.param \$0 33 -80 0 -24 dB lin DuckThreshold;
+#X msg 1320 215 p 32 \$1;
+#X obj 1320 260 adi.param \$0 34 1 5000 200 ms log DuckRelease;
+#X msg 1320 295 p 33 \$1;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 1 0 2 0;
@@ -136,3 +142,9 @@
 #X connect 65 0 66 0;
 #X connect 66 0 1 0;
 #X connect 1 2 67 0;
+#X connect 68 0 69 0;
+#X connect 69 0 1 0;
+#X connect 70 0 71 0;
+#X connect 71 0 1 0;
+#X connect 72 0 73 0;
+#X connect 73 0 1 0;

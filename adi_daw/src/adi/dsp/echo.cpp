@@ -28,7 +28,7 @@ void Echo::prepare(double sr) {
     write_ = 0;
     started_ = false;
     phase_ = wobble_ = env_ = gate_ = 0;
-    duck_ = 1;
+    duck_.reset();
     constexpr std::array<double, 4> ms{17, 23, 31, 43};
     for (std::size_t c = 0; c < 2; ++c) {
         auto &l = lanes_[c];
@@ -141,9 +141,9 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                  mix = p_[Mix] / 100, reverb = p_[Reverb] / 100,
                  fb = p_[Feedback] / 100 * (p_[Invert] >= .5 ? -1 : 1);
     const double gateThreshold = std::pow(10., p_[GateThreshold] / 20),
-                 duckThreshold = std::pow(10., p_[DuckThreshold] / 20),
+                 duckThreshold = Ducker::threshold(p_[DuckThreshold]),
                  gateRelease = std::exp(-1000 / (rate_ * p_[GateRelease])),
-                 duckRelease = std::exp(-1000 / (rate_ * p_[DuckRelease]));
+                 duckRelease = Ducker::release(p_[DuckRelease], rate_);
     const double lfoHz = p_[LfoSync] >= .5 ? bpm_ / (60 * p_[LfoBeats]) : p_[LfoRate];
     for (std::size_t c = 0; c < 2; ++c) {
         auto &l = lanes_[c];
@@ -172,9 +172,7 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
         if (gate_ < 1e-30) {
             gate_ = 0;
         }
-        const double duckTarget =
-            level > duckThreshold ? duckThreshold / std::max(level, 1e-12) : 1;
-        duck_ = duckTarget < duck_ ? duckTarget : 1 - (1 - duck_) * duckRelease;
+        const double duck = duck_.step(level, duckThreshold, duckRelease);
         std::array<double, 2> input = dry;
         if (p_[GateOn] >= .5)
             for (auto &v : input)
@@ -290,7 +288,7 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
         wet = {mid + side, mid - side};
         const double dw = p_[EqualLoudness] >= .5 ? std::cos(mix * pi / 2) : 1 - mix,
                      ww = p_[EqualLoudness] >= .5 ? std::sin(mix * pi / 2) : mix,
-                     d = p_[DuckOn] >= .5 ? duck_ : 1;
+                     d = p_[DuckOn] >= .5 ? duck : 1;
         ol[i] = static_cast<float>(output * (dry[0] * dw + wet[0] * ww * d));
         orr[i] = static_cast<float>(output * (dry[1] * dw + wet[1] * ww * d));
         write_ = (write_ + 1) % lanes_[0].ring.size();

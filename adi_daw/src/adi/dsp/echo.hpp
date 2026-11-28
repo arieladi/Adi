@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/ducker.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -80,7 +81,8 @@ class Echo {
                                  0, 35,  0,   0, 100, 0,   12000, 0,   0,   0,   0.5, 4, 180,
                                  0, 0,   0,   0, 0,   -40, 100,   0,   -24, 200, 0,   0, 0,
                                  0, 0,   0,   1, 0,   1,   1.5,   100, 0,   50,  0};
-    double rate_ = 48000, bpm_ = 120, phase_ = 0, wobble_ = 0, env_ = 0, gate_ = 0, duck_ = 1;
+    double rate_ = 48000, bpm_ = 120, phase_ = 0, wobble_ = 0, env_ = 0, gate_ = 0;
+    Ducker duck_;   ///< DEV-33: the kernel Reverb and Delay share
     std::size_t write_ = 0;
     bool started_ = false;
     double delay(std::size_t) const noexcept;

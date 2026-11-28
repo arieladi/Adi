@@ -262,6 +262,86 @@ void liveDefault() {
     std::printf("Live default: six tones within %.3f dB and %.2f degrees\n", worstDb, worstDeg);
     check(worstDb < 0.35 && worstDeg < 2.0, "Live default: six tones within 0.35 dB and 2 degrees");
 }
+// DEV-33 (ADR-0254 d6): Echo's Duck inside Delay. Off by default, and off is
+// the device as it was; on, the wet heard follows Echo's law on the device's
+// own input, and what feeds back into the line is not ducked.
+std::vector<float> burst() {
+    // 0.5 s of a -6 dBFS tone, then 1 s of silence.
+    std::vector<float> x(72000, 0.f);
+    for (std::size_t i = 0; i < 24000; ++i)
+        x[i] = static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 440 * static_cast<double>(i) / 48000));
+    return x;
+}
+std::vector<double> echoLaw(const std::vector<float> &x, double thresholdDb, double releaseMs) {
+    // Echo's ducker, written out: the target is threshold / level above the
+    // threshold, taken at once; below, the gain returns at the release.
+    const double threshold = std::pow(10., thresholdDb / 20), release = std::exp(-1000 / (48000 * releaseMs));
+    std::vector<double> g(x.size());
+    double gain = 1;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double level = std::abs(static_cast<double>(x[i]));
+        const double target = level > threshold ? threshold / std::max(level, 1e-12) : 1;
+        gain = target < gain ? target : 1 - (1 - gain) * release;
+        g[i] = gain;
+    }
+    return g;
+}
+void duck() {
+    check(D::ranges[D::DuckOn].initial == 0, "Duck: off by default");
+    static_assert(D::DuckOn == D::EqualLoudness + 1 && D::DuckRelease + 1 == D::Count,
+                  "Duck: its ids come after the device's own");
+    const auto x = burst();
+    // Off nulls: an untouched Delay, and one whose Duck was set and switched off.
+    D plain, touched;
+    for (auto *d : {&plain, &touched}) {
+        d->set(D::Feedback, 60);
+        d->prepare(48000);
+    }
+    touched.set(D::DuckThreshold, -50);
+    touched.set(D::DuckRelease, 30);
+    touched.set(D::DuckOn, 1);
+    touched.set(D::DuckOn, 0);
+    check(render(plain, x) == render(touched, x), "Duck: off is the device as it was, bit for bit");
+    // A threshold the input never crosses leaves the gain at exactly 1.
+    D high;
+    high.set(D::Feedback, 60);
+    high.set(D::DuckOn, 1);
+    high.set(D::DuckThreshold, 0);
+    high.prepare(48000);
+    plain.prepare(48000);
+    check(render(plain, x) == render(high, x), "Duck: an input below the threshold changes nothing");
+    // The law: with the dry at zero, the ducked output is the plain wet times
+    // Echo's gain, sample for sample, and the line's feedback is untouched
+    // (a ducked line would give a quieter tail long after the gain recovered).
+    D dry, ducked;
+    for (auto *d : {&dry, &ducked}) {
+        clean(*d);
+        d->set(D::LeftMs, 100);
+        d->set(D::RightMs, 100);
+        d->set(D::Feedback, 70);
+        d->prepare(48000);
+    }
+    ducked.set(D::DuckOn, 1);
+    ducked.set(D::DuckThreshold, -30);
+    ducked.set(D::DuckRelease, 200);
+    const auto a = render(dry, x), b = render(ducked, x);
+    const auto g = echoLaw(x, -30, 200);
+    double worst = 0, during = 0, duringPlain = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        worst = std::max(worst, std::abs(static_cast<double>(b[i]) - a[i] * g[i]) /
+                                    (std::abs(static_cast<double>(a[i])) + 1e-9));
+        if (i >= 9600 && i < 24000) {
+            during += static_cast<double>(b[i]) * b[i];
+            duringPlain += static_cast<double>(a[i]) * a[i];
+        }
+    }
+    std::printf("Duck: worst relative deviation from Echo's law %.3g\n", worst);
+    check(worst < 1e-5, "Duck: the wet follows Echo's law on the device's own input");
+    check(during < duringPlain * 0.05, "Duck: a loud input steps the echoes back");
+    check(g.back() > 0.99 && std::abs(static_cast<double>(b[71999]) - a[71999]) <=
+                                 0.011 * std::abs(static_cast<double>(a[71999])) + 1e-9,
+          "Duck: the tail returns once the input is quiet, its feedback intact");
+}
 } // namespace
 int main() {
     timing();
@@ -269,6 +349,7 @@ int main() {
     transitions();
     partition();
     liveDefault();
+    duck();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

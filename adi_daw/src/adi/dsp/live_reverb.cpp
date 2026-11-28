@@ -50,6 +50,7 @@ void LiveReverb::prepare(double sr) {
     write_ = 0;
     size_ = p_[Size] / 100;
     spin_ = chorus_ = low_ = high_ = 0;
+    duck_.reset();
     started_ = false;
 }
 void LiveReverb::set(Param key, double v) noexcept {
@@ -80,8 +81,15 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
                      1 - std::exp(-2 * pi * std::min(p[HighShelfFreq], rate_ * 0.45) / rate_);
     const double reflectGain = std::pow(10., p[Reflect] / 20),
                  diffuseGain = std::pow(10., p[Diffuse] / 20);
+    const bool duckOn = p[DuckOn] >= 0.5;
+    const double duckThreshold = Ducker::threshold(p[DuckThreshold]),
+                 duckRelease = Ducker::release(p[DuckRelease], rate_);
     for (std::size_t frame = 0; frame < n; ++frame) {
         const double inputL = inL[frame], inputR = inR[frame];
+        // DEV-33: the ducker follows the device's own input whether or not
+        // Duck is on, as Echo's does, so switching it on finds a settled gain.
+        const double duck =
+            duck_.step(std::max(std::abs(inputL), std::abs(inputR)), duckThreshold, duckRelease);
         double input = 0.5 * (inputL + inputR);
         low_ = clean(low_ + (input - low_) * lowCoefficient);
         if (p[LowCutOn] >= 0.5)
@@ -182,7 +190,9 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
         // law would give 0.6708). Exact at both ends.
         const double mix = p[Mix] / 100;
         const double dry = mix <= 0 ? 1 : mix >= 1 ? 0 : std::cos(mix * std::numbers::pi / 2);
-        const double wet = mix <= 0 ? 0 : mix >= 1 ? 1 : std::sin(mix * std::numbers::pi / 2);
+        // Duck off leaves the wet weight as it was, bit for bit (DEV-33).
+        const double wetLaw = mix <= 0 ? 0 : mix >= 1 ? 1 : std::sin(mix * std::numbers::pi / 2);
+        const double wet = duckOn ? wetLaw * duck : wetLaw;
         outL[frame] = static_cast<float>(inputL * dry + l * wet);
         outR[frame] = static_cast<float>(inputR * dry + r * wet);
         write_ = (write_ + 1) % predelay_.size();
