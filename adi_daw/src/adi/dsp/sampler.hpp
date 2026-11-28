@@ -23,6 +23,9 @@ class Sampler final : public DeviceInstance {
         int release = 0;
         double releaseLoop = 0;    ///< where the release loop starts
         double releaseFade = 0;    ///< its crossfade, as crossfade is the sustain loop's
+        /// Live's Detune of each loop, in cents (-50 to 50): the pitch a voice
+        /// plays at inside the sustain loop, and inside the release loop.
+        double loopDetune = 0, releaseDetune = 0;
         std::vector<float> samples;
     };
     Sampler();
@@ -100,7 +103,7 @@ class Sampler final : public DeviceInstance {
     static void applyZone(OneShot &, const Zone &) noexcept;
     // The Sampler's own parameters, after the 23 it hands to every layer.
     static constexpr std::size_t kSelect = 23, kReverse = 24, kLoopFadePower = 25, kRoundRobin = 26,
-                                 kRoundRobinMode = 27;
+                                 kRoundRobinMode = 27, kInterpolation = 28, kSnap = 29;
     /// The parameters a state of the first version held (SC-483 added to them).
     static constexpr std::size_t kFirstParams = 24;
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,

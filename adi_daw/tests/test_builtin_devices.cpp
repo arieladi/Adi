@@ -953,7 +953,7 @@ void samplerSession() {
     check(!device::makeNativePdDevice(builtinDeclarations(device::samplerUid),0,2) &&
           !device::makeNativePdDevice(builtinDeclarations(device::samplerUid),2,2),"no Pd canvas path can become the Sampler");
     auto instance=load("org.adidaw.builtin.sampler");
-    check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==28,"it consumes notes and has its 28 parameters");
+    check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==30,"it consumes notes and has its 30 parameters");
     const auto roles=instance->stateRoles();
     check(roles.size()==34 && roles.front()=="state" && roles[1]=="sample:1" && roles[32]=="sample:32" && roles.back()==device::samplerZonesRole,
           "32 sample roles beside its state, and its zone table (SC-483)");

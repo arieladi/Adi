@@ -529,6 +529,109 @@ void slotLoops() {
         check(d->publishSlotZones(looped()), "and the plain looped table is taken");
     }
 }
+// SC-483: the rest of one sample: each loop's own Detune, Interpolation and Snap.
+void slotQuality() {
+    using S = device::Sampler;
+    using Table = std::array<S::Zone, S::kSlots>;
+    const auto about = [](float value, double expected) {
+        return std::abs(static_cast<double>(value) - expected) < 1e-6;
+    };
+    const auto off = [](int frame) { return engine::Event{frame, engine::EventType::NoteOff, 0, 60, 1, 0, 0}; };
+    const auto play = [&](const Table &table, std::span<const engine::Event> events, int count,
+                          const device::OneShot::PreparedSample *sample, const std::function<void(S &)> &setUp) {
+        const auto d = plainSlots();
+        set(*d, "release", 1000);
+        setUp(*d);
+        check(d->publishSlotZones(table), "the table publishes");
+        return renderSlots(*d, count, events, [&](int, SlotArray &slots) { slots[2] = {sample, 1}; });
+    };
+    const auto plain = [](S &) {};
+    {
+        // A ramp with its sustain loop on frames 2048 to 4096: a frame names
+        // the position it was read at.
+        std::vector<float> ramp(8192);
+        for (std::size_t i = 0; i < ramp.size(); ++i) {
+            ramp[i] = static_cast<float>(i) / 8192.f;
+        }
+        const auto sample = device::OneShot::prepareSample(ramp, 1, 48000);
+        Table table{};
+        table[2].loop = true;
+        table[2].loopStart = .25;
+        table[2].loopEnd = .5;
+        table[2].loopDetune = 50;
+        const auto held = std::array{on(0, 60)};
+        const auto out = play(table, held, 4096, sample.get(), plain);
+        const double up = std::exp2(.5 / 12);
+        check(out[1000] == 1000.f / 8192 && out[2047] == 2047.f / 8192 && about(out[3000], (2048 + 952 * up) / 8192),
+              "loop Detune: the attack plays at the sample's pitch, the sustain loop 50 cents higher");
+        table[2].loopDetune = 0;
+        table[2].release = 2;
+        table[2].releaseLoop = .75;
+        table[2].releaseDetune = -50;
+        // Held, the voice is at 2952 when it is let go at 5000; it plays on and
+        // enters the release loop (from 6144) at frame 8192.
+        const auto letGo = std::array{on(0, 60), off(5000)};
+        const auto tail = play(table, letGo, 9216, sample.get(), plain);
+        const auto released = [](int frame) { return 1 - static_cast<double>(frame - 5000 + 1) / 48000; };
+        check(about(tail[4500], 2452. / 8192) && about(tail[8000], 5952. / 8192 * released(8000)) &&
+                  about(tail[9000], (6144 + 808 * std::exp2(-.5 / 12)) / 8192 * released(9000)),
+              "release-loop Detune: the release loop alone plays 50 cents lower");
+        // The two detunes are zone fields: saved, loaded, refused past 50 cents.
+        table[2].loopDetune = 25;
+        const auto d = plainSlots();
+        check(d->publishSlotZones(table), "a table with both detunes publishes");
+        const auto copy = plainSlots();
+        check(copy->loadSlotZones(d->saveSlotZones()) && copy->slotZones()[2].loopDetune == 25 &&
+                  copy->slotZones()[2].releaseDetune == -50,
+              "both loop detunes come back from the saved table");
+        table[2].loopDetune = 60;
+        check(!d->publishSlotZones(table), "a loop detune past 50 cents is refused");
+        table[2].loopDetune = 0;
+        table[2].releaseDetune = -51;
+        check(!d->publishSlotZones(table), "a release-loop detune past 50 cents is refused");
+    }
+    {
+        // Interpolation: a parabola read at half speed (C2 on a root of C3),
+        // so every other frame falls halfway between two of the sample's.
+        std::vector<float> parabola(1024);
+        for (std::size_t i = 0; i < parabola.size(); ++i) {
+            parabola[i] = static_cast<float>(i * i) / 65536.f;
+        }
+        const auto sample = device::OneShot::prepareSample(parabola, 1, 48000);
+        const auto note = std::array{on(0, 48)};
+        const auto at = [&](double quality) {
+            return play(Table{}, note, 512, sample.get(), [&](S &d) { set(d, "interpolation", quality); });
+        };
+        const auto none = at(0), normal = at(1), good = at(2);
+        check(normal == play(Table{}, note, 512, sample.get(), plain), "Interpolation Normal is the Sampler's sound before it");
+        check(none[400] == 40000.f / 65536 && normal[400] == 40000.f / 65536 && good[400] == 40000.f / 65536,
+              "on a frame of the sample, every quality reads that frame");
+        check(none[401] == 40000.f / 65536, "None: between two frames it holds the one below");
+        check(about(normal[401], 40200.5 / 65536) && !about(normal[401], 40200.25 / 65536),
+              "Normal: a straight line between the frames, above the curve");
+        check(about(good[401], 40200.25 / 65536), "Good: the four-point cubic lands on the curve itself");
+    }
+    {
+        // Snap: a sample whose sign turns every 100 frames, its level naming
+        // its frame (frame i carries (i + 1) / 16384).
+        std::vector<float> turns(8192);
+        for (std::size_t i = 0; i < turns.size(); ++i) {
+            turns[i] = static_cast<float>(i + 1) / 16384.f * ((i / 100) % 2 ? -1.f : 1.f);
+        }
+        const auto sample = device::OneShot::prepareSample(turns, 1, 48000);
+        Table table{};
+        table[2].start = table[2].loopStart = .25;  // frame 2048
+        table[2].loop = true;
+        table[2].loopEnd = .5;                      // frame 4096
+        const auto held = std::array{on(0, 60)};
+        const auto loose = play(table, held, 2048, sample.get(), plain);
+        const auto snapped = play(table, held, 2048, sample.get(), [](S &d) { set(d, "snap", 1); });
+        check(loose[10] == 2059.f / 16384 && loose[2000] == 4049.f / 16384, "Snap off: the points are where the zone puts them");
+        check(snapped[10] == -2111.f / 16384, "Snap on: the start moves to the next zero crossing, frame 2100");
+        check(snapped[1999] == 4100.f / 16384 && snapped[2000] == -2101.f / 16384,
+              "Snap on: the loop's end moves to frame 4100 and the loop starts again at frame 2100");
+    }
+}
 // SC-483, Round Robin: with it on, one of the layers a note matches plays it.
 // Three slots hold three steady levels, so a frame names the layer that played.
 void slotRoundRobin() {
@@ -606,18 +709,22 @@ void slotRoundRobin() {
 void declarations() {
     const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
     device::Sampler d(device::Sampler::slotBacked);
-    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 28 &&
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 30 &&
               static_cast<int>(parsed.params.size()) == d.paramCount(),
-          "the Sampler's declarations parse: 28 parameters");
+          "the Sampler's declarations parse: 30 parameters");
     // SC-483: ids are fixed. The 24 of 28 November keep their places; what was
     // added since follows them.
-    check(parsed.params.size() == 28 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
+    check(parsed.params.size() == 30 && parsed.params[0].name == "Volume" && parsed.params[23].name == "Sample select" &&
               parsed.params[24].name == "Reverse" && parsed.params[24].def == 0 && parsed.params[25].def == 1,
           "Volume is still 1 and Sample select 24; Reverse is 25, off; the loop fades' law 26, constant power");
-    check(parsed.params.size() == 28 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
+    check(parsed.params.size() == 30 && parsed.params[26].name == "Round robin" && parsed.params[26].def == 0 &&
               parsed.params[27].items == std::vector<std::string>{"Forward", "Backward", "Random", "Other"} &&
               parsed.params[27].def == 0,
           "Round Robin is 27, off; its mode 28: Forward, Backward, Random, Other");
+    check(parsed.params.size() == 30 && parsed.params[28].name == "Interpolation" &&
+              parsed.params[28].items == std::vector<std::string>{"None", "Normal", "Good"} && parsed.params[28].def == 1 &&
+              parsed.params[29].name == "Snap" && parsed.params[29].def == 0,
+          "Interpolation is 29, Normal; Snap 30, off");
     bool same = true;
     for (std::size_t i = 0; i < parsed.params.size(); ++i) {
         const auto &decl = parsed.params[i];
@@ -652,6 +759,7 @@ int main(int argc, char **argv) {
     slotMode();
     slotZoneState();
     slotLoops();
+    slotQuality();
     slotRoundRobin();
     midiControllers();
     declarations();

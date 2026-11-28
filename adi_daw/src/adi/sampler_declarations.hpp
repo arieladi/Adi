@@ -10,7 +10,7 @@ namespace adi::device {
 // is the matching line of pd/devices/OneShot.pd (test_sampler checks they
 // agree). Ids are fixed: a new parameter takes the next id, and its default is
 // the sound the Sampler had without it, because a project saved before it
-// existed opens with that default (SC-483: 25 to 28).
+// existed opens with that default (SC-483: 25 to 30).
 // Slot N is a zone over every key and velocity until its zone table says otherwise.
 inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0 600 900 12;
 #X obj 20 20 adi.param \$0 1 -36 36 -12 dB lin Volume;
@@ -41,6 +41,8 @@ inline constexpr std::string_view samplerDeclarations = R"ADI_DECL(#N canvas 0 0
 #X obj 20 520 adi.param \$0 26 0 1 1 - int Loop_fade:_constant_power;
 #X obj 20 540 adi.param \$0 27 0 1 0 - int Round_robin;
 #X obj 20 560 adi.param \$0 28 0 3 0 - menu Round_robin_mode Forward Backward Random Other;
+#X obj 20 580 adi.param \$0 29 0 2 1 - menu Interpolation None Normal Good;
+#X obj 20 600 adi.param \$0 30 0 1 0 - int Snap;
 #X obj 300 20 adi.sample \$0 1 Sample_1;
 #X obj 300 40 adi.sample \$0 2 Sample_2;
 #X obj 300 60 adi.sample \$0 3 Sample_3;

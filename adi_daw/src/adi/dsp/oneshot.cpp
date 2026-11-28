@@ -316,16 +316,31 @@ double OneShot::Filter::run(double x, double g, double r, double d, int type) no
     const double high = x - r * v1 - v2;
     return type == 0 ? v2 : type == 1 ? high : type == 2 ? v1 : high + v2;
 }
-double OneShot::read(const Sample &s, double position, int channel) const noexcept {
+double OneShot::cubic(const Sample &s, std::size_t a, std::size_t ch, double t) noexcept {
+    // Catmull-Rom through the frames a - 1 .. a + 2, the edges repeated: it
+    // passes through every frame and draws any quadratic exactly.
+    const std::size_t last = s.frames() - 1, stride = static_cast<std::size_t>(s.channels);
+    const double before = s.data[(a > 0 ? a - 1 : 0) * stride + ch], x0 = s.data[a * stride + ch],
+                 x1 = s.data[std::min(a + 1, last) * stride + ch],
+                 x2 = s.data[std::min(a + 2, last) * stride + ch];
+    const double c1 = .5 * (x1 - before), c2 = before - 2.5 * x0 + 2 * x1 - .5 * x2,
+                 c3 = .5 * (x2 - before) + 1.5 * (x0 - x1);
+    return ((c3 * t + c2) * t + c1) * t + x0;
+}
+double OneShot::read(const Sample &s, double position, int channel, int quality) const noexcept {
     position = std::clamp(position, 0., static_cast<double>(s.frames() - 1));
     const auto a = static_cast<std::size_t>(position);
     const auto b = std::min(a + 1, s.frames() - 1);
     const auto ch = static_cast<std::size_t>(std::min(channel, s.channels - 1)),
                stride = static_cast<std::size_t>(s.channels);
     const double x = s.data[a * stride + ch];
+    if (quality == 0)
+        return x;
+    if (quality == 2)
+        return cubic(s, a, ch, position - static_cast<double>(a));
     return x + (s.data[b * stride + ch] - x) * (position - static_cast<double>(a));
 }
-void OneShot::readBoth(const Sample &s, double position, double *x) const noexcept {
+void OneShot::readBoth(const Sample &s, double position, double *x, int quality) const noexcept {
     // read() for channels 0 and 1 at one position: the same arithmetic, the
     // position's clamp and index taken once.
     position = std::clamp(position, 0., static_cast<double>(s.frames() - 1));
@@ -336,7 +351,12 @@ void OneShot::readBoth(const Sample &s, double position, double *x) const noexce
     for (int c = 0; c < 2; ++c) {
         const auto ch = static_cast<std::size_t>(std::min(c, s.channels - 1));
         const double y = s.data[a * stride + ch];
-        x[c] = y + (s.data[b * stride + ch] - y) * t;
+        if (quality == 0)
+            x[c] = y;
+        else if (quality == 2)
+            x[c] = cubic(s, a, ch, t);
+        else
+            x[c] = y + (s.data[b * stride + ch] - y) * t;
     }
 }
 void OneShot::queueNoteGain(double gain, bool reverse) noexcept {
@@ -431,13 +451,13 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.begin = begin;
     v.end = end;
     v.loop = v.end - (v.end - v.begin) * p[LoopLength] / 100.;
+    const auto snap = [&](double x) {
+        auto it = std::lower_bound(s.zeros.begin(), s.zeros.end(), static_cast<std::size_t>(x));
+        if (it == s.zeros.end())
+            return x;
+        return static_cast<double>(*it);
+    };
     if (p[Snap] > 0) {
-        auto snap = [&](double x) {
-            auto it = std::lower_bound(s.zeros.begin(), s.zeros.end(), static_cast<std::size_t>(x));
-            if (it == s.zeros.end())
-                return x;
-            return static_cast<double>(*it);
-        };
         v.begin = snap(v.begin);
         v.loop = snap(v.loop);
         v.end = std::min(frames, snap(v.end));
@@ -450,6 +470,13 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     if (travel_.loopEnd >= 0)
         v.loopEnd = std::clamp(frames * travel_.loopEnd, v.loop + 1, v.end);
     v.releaseLoop = std::clamp(frames * travel_.releaseLoop, v.begin, v.end - 1);
+    if (p[Snap] > 0) {
+        // The Sampler's own loop points snap as the others do (a fresh Travel
+        // has none: its loop ends at the snapped end).
+        if (travel_.loopEnd >= 0)
+            v.loopEnd = std::clamp(snap(v.loopEnd), v.loop + 1, v.end);
+        v.releaseLoop = std::clamp(snap(v.releaseLoop), v.begin, v.end - 1);
+    }
     if (reverse) {
         // Played from the end: position p reads the frame begin + end - 1 - p,
         // and the sustain loop is the same stretch of the sample, entered
@@ -709,8 +736,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         }
                     }
                     const auto &midi = midiChannels_[v.channel];
+                    // SC-483: a loop's own Detune, while the voice is inside
+                    // that loop (a fresh Travel adds 0, which changes no pitch).
+                    const double loopCents = (sustainLoop || tailLoop) && v.position >= from
+                                                 ? (sustainLoop ? travel.loopCents : travel.releaseCents)
+                                                 : 0.;
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
-                                         p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation;
+                                         p[Detune] / 100. + v.tuning + midi.bend + lfo * p[LfoPitch] * midi.modulation +
+                                         loopCents / 100.;
                     // exp2 only when the pitch moves (an LFO, an expression):
                     // the same pitch gives the same increment, bit for bit.
                     if (!(pitch == v.pitchSeen)) {
@@ -734,14 +767,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                         d = 1 + g * (g + r);
                     }
                     double both[2];
-                    readBoth(*s, v.reversed ? v.mirror - v.position : v.position, both);
+                    readBoth(*s, v.reversed ? v.mirror - v.position : v.position, both, travel.interpolation);
                     for (int c = 0; c < 2; ++c) {
                         double x = both[c];
                         if (fade > 0 && v.position > to - fade) {
                             const auto t = (v.position - (to - fade)) / fade;
                             const double entering = from + v.position - (to - fade);
                             const double other =
-                                read(*s, v.reversed ? v.mirror - entering : entering, c);
+                                read(*s, v.reversed ? v.mirror - entering : entering, c, travel.interpolation);
                             x = travel.linearFade
                                     ? x * (1 - t) + other * t
                                     : x * std::cos(t * pi * .5) + other * std::sin(t * pi * .5);

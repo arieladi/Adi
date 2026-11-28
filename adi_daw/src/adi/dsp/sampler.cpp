@@ -28,7 +28,9 @@ nlohmann::json zoneJson(const Sampler::Zone &z) {
             {"pingPong", z.pingPong},
             {"release", z.release},
             {"releaseLoop", z.releaseLoop},
-            {"releaseFade", z.releaseFade}};
+            {"releaseFade", z.releaseFade},
+            {"loopDetune", z.loopDetune},
+            {"releaseDetune", z.releaseDetune}};
 }
 // The other way. A field the object lacks keeps the value z came with; a field
 // of the wrong type throws, which the caller turns into a refusal.
@@ -57,6 +59,8 @@ void zoneFrom(const nlohmann::json &a, Sampler::Zone &z) {
     z.release = a.value("release", z.release);
     z.releaseLoop = a.value("releaseLoop", z.releaseLoop);
     z.releaseFade = a.value("releaseFade", z.releaseFade);
+    z.loopDetune = a.value("loopDetune", z.loopDetune);
+    z.releaseDetune = a.value("releaseDetune", z.releaseDetune);
 }
 } // namespace
 Sampler::Sampler() {
@@ -115,18 +119,26 @@ void Sampler::initialise() {
     toggle("loop_fade_power", "Loop fade: constant power", 1);
     // Live's Round Robin: off, the layers a note matches all play it, as before.
     toggle("round_robin", "Round Robin", 0);
-    ParamDescriptor mode;
-    mode.id = "round_robin_mode";
-    mode.name = "Round Robin mode";
-    mode.hasRealRange = true;
-    mode.minReal = 0;
-    mode.maxReal = 3;
-    mode.domain = ParamDomain::Enum;
-    mode.shape = ParamShape::Menu;
-    mode.stepCount = 4;
-    mode.defaultValue = ParamValue::withReal(0, 0);
-    params_.push_back(mode);
-    destinations_.push_back(OneShot::Count);
+    const auto menu = [this](const char *id, const char *name, int items, double def) {
+        ParamDescriptor p;
+        p.id = id;
+        p.name = name;
+        p.hasRealRange = true;
+        p.minReal = 0;
+        p.maxReal = items - 1;
+        p.domain = ParamDomain::Enum;
+        p.shape = ParamShape::Menu;
+        p.stepCount = items;
+        p.defaultValue = ParamValue::withReal(def / (items - 1), def);
+        params_.push_back(p);
+        destinations_.push_back(OneShot::Count);
+    };
+    menu("round_robin_mode", "Round Robin mode", 4, 0);
+    // Live's Interpolation: None, Normal, Good. Normal, ADI's straight line
+    // between frames, is the sound every Sampler had before it.
+    menu("interpolation", "Interpolation", 3, 1);
+    // Live's Snap: the start, end and loop points move to the next zero crossing.
+    toggle("snap", "Snap", 0);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
 }
@@ -178,9 +190,11 @@ bool Sampler::valid(const Zone &z) noexcept {
             r.fadeLow < 0 || r.fadeHigh < 0 || r.fadeLow + r.fadeHigh > r.high - r.low)
             return false;
     for (double v : {z.start, z.end, z.loopStart, z.crossfade, z.gainDb, z.pan, z.detune, z.loopEnd,
-                     z.releaseLoop, z.releaseFade})
+                     z.releaseLoop, z.releaseFade, z.loopDetune, z.releaseDetune})
         if (!std::isfinite(v))
             return false;
+    if (std::abs(z.loopDetune) > 50 || std::abs(z.releaseDetune) > 50)
+        return false;
     // SC-483: a sustain loop ends inside the zone, after it starts; a release
     // loop starts inside the zone.
     if (!(z.loopEnd < 0 || (z.loopEnd > z.loopStart && z.loopEnd <= z.end)) || z.release < 0 ||
@@ -468,7 +482,12 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
     travel.releaseLoop = z.releaseLoop;
     travel.releaseFade = z.releaseFade;
     travel.linearFade = initial[kLoopFadePower] + modulation_[kLoopFadePower] < .5;
+    travel.loopCents = z.loopDetune;
+    travel.releaseCents = z.releaseDetune;
+    travel.interpolation = std::clamp(
+        static_cast<int>(real(params_[kInterpolation], initial[kInterpolation] + modulation_[kInterpolation])), 0, 2);
     engine.setTravel(travel);
+    engine.setRealAt(OneShot::Snap, initial[kSnap] + modulation_[kSnap] >= .5 ? 1 : 0);
     bool notes = false;  // a note-on this layer takes this block
     std::size_t noteOn = 0;  // which note-on of the call, as chooseLayers counted them
     for (const auto &input : io.events) {

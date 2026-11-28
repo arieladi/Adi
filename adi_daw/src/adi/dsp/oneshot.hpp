@@ -97,6 +97,12 @@ class OneShot final : public DeviceInstance {
         double releaseLoop = 0; ///< where the release loop starts
         double releaseFade = 0; ///< its crossfade, 0..1 of half its length, as Fade is the sustain loop's
         bool linearFade = false; ///< loop crossfades are linear instead of constant-power
+        /// Live's loop Detune: cents a voice plays at while it is inside the
+        /// sustain loop, and inside the release loop after note-off.
+        double loopCents = 0, releaseCents = 0;
+        /// How a transposed sample is read between its frames: 0 the nearest
+        /// frame below, 1 a straight line (OneShot's own), 2 a four-point cubic.
+        int interpolation = 1;
     };
     /// Audio thread, before process() (as setRootKey).
     void setTravel(const Travel &travel) noexcept { travel_ = travel; }
@@ -197,8 +203,10 @@ class OneShot final : public DeviceInstance {
                       double &end) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
     void releaseVoice(Voice &, const std::array<double, Count> &) noexcept;
-    double read(const Sample &, double, int) const noexcept;
-    void readBoth(const Sample &, double position, double *x) const noexcept;
+    double read(const Sample &, double, int, int quality = 1) const noexcept;
+    void readBoth(const Sample &, double position, double *x, int quality = 1) const noexcept;
+    /// SC-483: a four-point cubic (Catmull-Rom) between frames a and a + 1.
+    static double cubic(const Sample &, std::size_t a, std::size_t channel, double t) noexcept;
     void processSample(const engine::NodeIo&, const Sample*, std::uint64_t,
                        bool borrowed) noexcept;
     std::array<ParamDescriptor, Count> params_;
