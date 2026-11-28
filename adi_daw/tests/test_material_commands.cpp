@@ -177,7 +177,7 @@ void dropReplacesCovered() {
     auto earlier = p.options();
     earlier.clipId = 5;
     earlier.mediaId = 6;
-    const auto seeded = clip_edit::prepareImportAudio(*p.store, earlier, 48000);
+    auto seeded = clip_edit::prepareImportAudio(*p.store, earlier, 48000);
     if (!seeded.edit.ok || !clip_edit::commitMaterial(*p.store, seeded).ok) {
         check(false, "SC-35: seed the clip the drop covers");
         return;
@@ -194,7 +194,7 @@ void dropReplacesCovered() {
     dropped.arrangementPlacement = edit_plan::EditPolicy{};
     const auto before = digestProject(*p.store).text;
     const auto head = History(*p.store).head();
-    const auto prepared = clip_edit::prepareImportAudio(*p.store, dropped, 48000);
+    auto prepared = clip_edit::prepareImportAudio(*p.store, dropped, 48000);
     const auto landed = prepared.edit.ok ? clip_edit::commitMaterial(*p.store, prepared) : CommitResult{};
     check(prepared.edit.ok && landed.ok, ("SC-35: the drop over a clip commits: " + prepared.edit.error + landed.error).c_str());
     if (!landed.ok)
