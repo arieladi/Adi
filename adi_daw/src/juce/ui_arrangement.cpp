@@ -7774,7 +7774,9 @@ std::pair<const engine::TrackNode *, juce::Rectangle<int>> ArrangementCanvas::dr
 }
 std::int64_t ArrangementCanvas::audioDropTick(int x) const {
     const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
-    if (!view.snaps(juce::ModifierKeys::currentModifiers))
+    // While files are dropped, Ctrl/Cmd means "each on a track of its own". On macOS the same key
+    // also leaves the grid, so here it is taken out: a drop on separate tracks still lands on the grid.
+    if (!view.snaps(juce::ModifierKeys::currentModifiers.withoutFlags(juce::ModifierKeys::commandModifier)))
         return raw;
     const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
     return raw - down <= up - raw ? down : up;
@@ -7861,9 +7863,10 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     juce::StringArray audio;
     std::vector<std::pair<std::string, std::string>> midi;
     for (const auto &path : files) {
-        const auto file = juce::File::createFileWithoutCheckingPath(path);
+        // The name through std::filesystem, as for audio: a path written with forward slashes would
+        // otherwise name the clip with the whole path on Windows.
         if (isMidiFileDrop(path))
-            midi.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
+            midi.emplace_back(path.toStdString(), media::pathUtf8(media::pathFromUtf8(path.toStdString()).stem()));
         else
             audio.add(path);
     }
