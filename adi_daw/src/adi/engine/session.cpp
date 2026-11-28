@@ -2822,9 +2822,7 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     info.playing = transport.playing();
     info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
-    auto ticks = tempoClock.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
-    const auto* next = nextDeviceClockChange(info.timelineSample);
-    if (next != deviceClockChanges.data()) ticks = std::max(ticks,(next - 1)->second);
+    const auto ticks = scheduledTickAt(info.timelineSample);
     info.bpm = tempoClock.bpmAt(ticks);
     constexpr auto ppq = textproj::kPPQ; // SPEC 4.2; exact as Pd float
     constexpr auto whole = textproj::kWhole;
@@ -2895,6 +2893,12 @@ const std::pair<std::int64_t, std::int64_t>* Session::TimingView::nextDeviceCloc
     const auto* changes = deviceClockChanges.data();
     return std::upper_bound(changes, changes + deviceClockChanges.size(), sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
+}
+
+std::int64_t Session::TimingView::scheduledTickAt(std::int64_t sample) const noexcept {
+    const auto tick = tempoClock.secondsToTicks(static_cast<double>(sample) / sampleRate);
+    const auto* next = nextDeviceClockChange(sample);
+    return next == deviceClockChanges.data() ? tick : std::max(tick,(next - 1)->second);
 }
 
 DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
@@ -3139,6 +3143,11 @@ double Session::RenderBlock::bpmAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing ? timing->tempoClock.bpmAt(tick) : 0;
 }
+double Session::RenderBlock::scheduledBpm() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->tempoClock.bpmAt(timing->scheduledTickAt(session_.transport_.sampleAt(0))) : 0;
+}
+
 bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool recording) noexcept {
     const auto *timing = dynamic_cast<const TimingView *>(graph_.transportState());
     if (!timing || insertMarkerTick < 0)

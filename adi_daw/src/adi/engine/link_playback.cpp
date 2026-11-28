@@ -83,7 +83,9 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
     } else if(lastGeneration_!=block.generation()) {
         performedBeat_+=block.beatAtSample(transport.sampleAt(0))-endBeat_;
     }
-    if(block.externalTempoBpm() && std::abs(block.bpmAtTick(block.tick())-*block.externalTempoBpm())>1e-8) {
+    const auto selected = block.externalTempoBpm();
+    const double clockDifference = selected ? std::abs(block.scheduledBpm()-*selected) : 0.;
+    if(selected && clockDifference>1e-8) {
         if(transport.looping())repairTick_=block.loopBeginTick().value_or(block.tickAtSample(transport.loopBegin()));
         else if(!repairTick_)repairTick_=block.tick();
     }
@@ -154,9 +156,7 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
         if(std::abs(result.phaseErrorFrames)>2)
             target=std::clamp(frame.tempo*(1+std::clamp(result.phaseErrorFrames/(2*rate),-.005,.005)),20.0,999.0);
     }
-    const bool clockReady=block.externalTempoBpm() &&
-        std::abs(*block.externalTempoBpm()-target)<1e-8 &&
-        std::abs(block.bpmAtTick(block.tick())-*block.externalTempoBpm())<1e-8 &&
+    const bool clockReady=selected && clockDifference<1e-8 && std::abs(*selected-target)<1e-8 &&
         (!repairTick_ || std::abs(block.bpmAtTick(*repairTick_)-target)<1e-8) &&
         (!pendingStart_ || block.constantExternalTempo());
     if(!clockReady)request(target,pendingStart_);

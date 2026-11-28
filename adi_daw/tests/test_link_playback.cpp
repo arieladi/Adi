@@ -96,12 +96,15 @@ struct Instrument final : device::DeviceInstance {
     std::size_t count = 0;
     std::uint64_t active = 0;
     TransportInfo last{};
+    DeviceTransport exact{};
+    bool positionDevice = false;
     unsigned stateLoads = 0;
     std::int32_t delayFrames = 0;
     std::array<double, 256> delay{};
     std::size_t delayAt = 0;
     const device::DeviceIdentity& identity() const noexcept override { return identity_; }
     bool loaded() const noexcept override { return true; }
+    bool wantsDeviceTransport() const noexcept override { return positionDevice; }
     bool processesDouble() const noexcept override { return true; }
     EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
     std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
@@ -111,6 +114,7 @@ struct Instrument final : device::DeviceInstance {
     }
     void process(const NodeIo& io) noexcept override {
         if (io.transport) last = *io.transport;
+        if (io.deviceTransport) exact = *io.deviceTransport;
         for (const auto& event : io.events)
             if ((event.type == EventType::NoteOn || event.type == EventType::NoteOff) && count < events.size())
                 events[count++] = event;
@@ -150,6 +154,7 @@ struct Content {
     std::optional<std::pair<std::int64_t, std::int64_t>> loop;
     bool warpLandmarks = false;
     std::string_view warpMode = "re-pitch";
+    bool fractional = false;
 };
 
 void addLandmark(std::vector<float>& pcm, std::size_t channel, std::size_t position) {
@@ -199,6 +204,10 @@ struct Project {
                 "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode) VALUES"
                 "(7,1,48000,1,'re-pitch');"
                 "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(7,0,1000000000)");
+        if (content.fractional)
+            db.exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) "
+                    "VALUES(0,127,2,1),(23063040,167,0,0);"
+                    "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(5765760,3,8)");
         if (content.warpLandmarks) {
             std::vector<float> dry(96000, 0);
             for (const auto at : {10000u, 22000u, 34000u}) addLandmark(dry, 1, at);
@@ -233,15 +242,17 @@ struct Project {
         SQLite::Statement setWarp(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=7");
         setWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size())); setWarp.exec();
         NoteRecord note{};
-        note.start_ticks = 0; note.dur_ticks = ppq; note.note_id = 42;
+        note.start_ticks = content.fractional ? ppq : 0; note.dur_ticks = content.fractional ? ppq/1000 : ppq; note.note_id = 42;
         note.key = 60; note.channel = 1; note.vel_on = 100; note.vel_off = 40; note.probability = 10000;
         if (!store->putEventStream(8, "notes", writeStream<NoteRecord>(FourCC::Notes, std::array{note})))
             throw std::runtime_error("write Link playback notes");
         session.graph().setFadeFrames(0);
         session.graph().setLatencyHeadroom(0);
         SessionSpec spec{2, rate, blockSize}; spec.precision = precision; spec.externalTempoBpm = external;
-        if (!session.load(*store, [this](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
-            auto value = std::make_unique<Instrument>(); instrument = value.get(); ++instances; return value;
+        if (!session.load(*store, [this, position=content.fractional](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+            auto value = std::make_unique<Instrument>();
+            value->positionDevice=position;
+            instrument = value.get(); ++instances; return value;
         }, spec)) throw std::runtime_error(session.error());
         if (!session.problems().empty()) throw std::runtime_error(session.problems().front());
         prime();
@@ -1062,6 +1073,156 @@ void backwardSeekRepair() {
     }
 }
 
+void fractionalPerformedRepair() {
+    constexpr auto endTick=ppq + ppq/400;
+    constexpr auto initialTick=ppq + ppq/2000;
+    constexpr auto rounded=22636;
+    constexpr auto newTempo=143.;
+    constexpr auto oldTempo=129.;
+    // Independent quadrature of the quadratic Bézier x/y parameterization.
+    constexpr long double qStart=127, qEnd=167;
+    const auto sourceSample = [&](std::int64_t tick) {
+        constexpr int slices=2048;
+        const auto x=static_cast<long double>(tick)/(4*ppq);
+        const auto h=x/slices;
+        long double sum=0;
+        for(int i=0;i<=slices;++i) {
+            const auto param=1-std::sqrt(1-h*i);
+            const auto bpm=qStart+(qEnd-qStart)*param*param;
+            const int weight=i==0 || i==slices ? 1 : (i%2 ? 4 : 2);
+            sum+=weight/bpm;
+        }
+        return sum*h/3*240*rate;
+    };
+    const auto cut=sourceSample(ppq);
+    check(cut>rounded && cut<rounded+.5L,"the performed cut genuinely rounds down between physical frames");
+    Content content;
+    content.fractional=true;
+    content.loop=std::pair{ppq,endTick};
+    Project project(Precision::Float64,std::nullopt,content);
+    auto link=participant();
+    LinkPlayback playback(project.session,*link);
+    Buffer buffer(Precision::Float64);
+    check(playback.setLaunchTick(ppq),"the Link launch cue names the same authored musical boundary");
+    {
+        const auto block=project.session.beginRender();
+        check(block.sampleAtTick(ppq)==rounded && block.tickAtSample(rounded)<ppq &&
+              block.sampleAtTick(ppq/2)==std::llround(sourceSample(ppq/2)),
+              "authored launch projection follows the Bézier while raw inverse stays earlier");
+    }
+    check(project.session.setExternalTempoAt(*project.store,oldTempo,initialTick),
+          "seed a real 129 BPM segment after the future loop repair boundary");
+    std::int64_t oldEnd=0, oldBegin=0;
+    double beforeBeat=0, deltaFirst=0, deltaLap=0;
+    {
+        const auto block=project.session.beginRender();
+        oldBegin=block.sampleAtTick(ppq);
+        oldEnd=block.sampleAtTick(endTick);
+        beforeBeat=block.beatAtSample(oldEnd-1);
+        deltaFirst=block.beatAtSample(oldEnd)-beforeBeat;
+        deltaLap=block.beatAtSample(oldEnd)-block.beatAtSample(oldBegin);
+        check(oldBegin==rounded && oldEnd>oldBegin && oldEnd-oldBegin<=blockSize,
+              "saved loop is small enough to land exactly at the down-rounded seam");
+    }
+    if(oldBegin!=rounded || oldEnd<=oldBegin || oldEnd-oldBegin>blockSize) return;
+    project.session.transport().locate(oldEnd-1);
+    project.session.transport().play();
+    project.prime();
+    auto frame=captured(22000000,true,oldTempo);
+    frame.beat=beforeBeat;
+    buffer.io.frames=1;
+    Audit audit;
+    const auto wraps=render(playback,buffer,frame);
+    check(wraps.valid && !wraps.waiting && project.session.transport().position()==rounded,
+          "a captured 129 BPM Link callback wraps naturally to the authored loop sample");
+    frame.audibleMicros+=microsForFrames(1);
+    frame.beat+=deltaFirst;
+    frame.tempo=newTempo;
+    buffer.io.frames=static_cast<std::int32_t>(oldEnd-oldBegin);
+    const auto change=render(playback,buffer,frame);
+    check(change.valid && change.waiting && change.preparation && !change.preparation.reset &&
+          change.preparation.boundaryTick==ppq && change.preparation.tempo==newTempo &&
+          project.session.transport().position()==rounded,
+          "the old prefix legitimately asks Link to prepare 143 BPM at the musical loop beginning");
+    if(!change.preparation) return;
+    if(!playback.prepare(*project.store,change.preparation,frame.audibleMicros)) {
+        check(false,"owner prepares the live Link update");
+        std::printf("Owner failure: %s\n",project.session.error().c_str());
+        return;
+    }
+    const auto before=sourceSample(ppq-9137);
+    std::int64_t raw=0;
+    {
+        const auto block=project.session.beginRender();
+        raw=block.tickAtSample(rounded);
+        check(block.externalTempoBpm()==newTempo && raw<ppq && block.tick()==raw && block.bpmAtTick(raw)<newTempo &&
+              block.bpmAtTick(ppq)==newTempo && block.sampleAtTick(ppq)==rounded &&
+              block.sampleAtTick(ppq-9137)==std::llround(before) &&
+              block.sampleAtTick(2*ppq)==std::llround(cut+rate*60/newTempo),
+              "the private overlay keeps the authored Bézier and raw inverse, with launch projection on the same rounded note seam");
+    }
+    frame.audibleMicros+=microsForFrames(oldEnd-oldBegin);
+    frame.beat+=deltaLap;
+    buffer.io.frames=1;
+    const auto beforeNotes=project.instrument->ons();
+    const auto repaired=render(playback,buffer,frame);
+    const auto* device=project.instrument;
+    std::printf("Link %.9Lf -> %d, raw %lld vs cut %lld, first packet %llu, next packet %llu, waiting %d, "
+                "launch/device/note sample %lld/%lld/%lld, device bpm %.3f, note ons %zu to %zu, phase %.6f\n",
+                cut,rounded,static_cast<long long>(raw),static_cast<long long>(ppq),
+                static_cast<unsigned long long>(change.preparation.serial),
+                static_cast<unsigned long long>(repaired.preparation.serial),repaired.waiting,
+                static_cast<long long>(oldBegin),
+                static_cast<long long>(device->exact.sample),static_cast<long long>(device->last.timelineSample),
+                device->exact.bpm,beforeNotes,device->ons(),repaired.phaseErrorFrames);
+    check(repaired.valid && !repaired.waiting && !repaired.preparation,
+          "a rounded-down sample with the adopted 143 BPM clock does not ask Link to repair again");
+    check(device->exact.sample==rounded && device->exact.bpm==newTempo && device->exact.quarterNotes>=1 &&
+          device->last.timelineSample==rounded && device->last.bpm==newTempo &&
+          device->exact.numerator==3 && device->exact.denominator==8 &&
+          device->ons()==beforeNotes+1 && device->count>0 &&
+          device->events[device->count-1].frame==0 && buffer.sample(0,0)!=0 && buffer.sample(1,0)==.125,
+          "real device BPM, meter and MIDI note land at the same launch-projected sample");
+    // The immediately adopted packet can suppress duplicate requests for
+    // 250 ms. An interior callback settles its pending token. The next
+    // natural wrap exposes whether Link actually considers the seam ready.
+    std::int64_t newEnd=0;
+    double oneBeat=0, finishBeat=0;
+    {
+        const auto block=project.session.beginRender();
+        newEnd=block.sampleAtTick(endTick);
+        oneBeat=block.beatAtSample(rounded+1)-block.beatAtSample(rounded);
+        finishBeat=block.beatAtSample(newEnd)-block.beatAtSample(rounded+1);
+    }
+    if(newEnd<=rounded+1 || newEnd-rounded>blockSize) {
+        check(false,"the performed loop keeps one short callback per natural lap");
+        return;
+    }
+    frame.audibleMicros+=microsForFrames(1);
+    frame.beat+=oneBeat;
+    buffer.io.frames=static_cast<std::int32_t>(newEnd-rounded-1);
+    const auto interior=render(playback,buffer,frame);
+    check(interior.valid && !interior.waiting && !interior.preparation &&
+          project.session.transport().position()==rounded,
+          "the interior Link callback settles pending state and reaches the exact new loop head");
+    frame.audibleMicros+=microsForFrames(newEnd-rounded-1);
+    frame.beat+=finishBeat;
+    buffer.io.frames=1;
+    const auto repeated=render(playback,buffer,frame);
+    std::printf("Second natural wrap: graph already 143, sample %lld, new repair serial %llu, "
+                "boundary %lld, waiting %d, phase %.6f\n",
+                static_cast<long long>(device->exact.sample),
+                static_cast<unsigned long long>(repeated.preparation.serial),
+                static_cast<long long>(repeated.preparation.boundaryTick),repeated.waiting,
+                repeated.phaseErrorFrames);
+    check(repeated.valid && std::abs(repeated.phaseErrorFrames)<1e-8 && !repeated.waiting && !repeated.preparation,
+          "an already published fractional seam needs no Link repair on the next natural wrap");
+    check(audit.clean() && project.instances==1 && project.sqlOnCallback==0 && project.unchanged() &&
+          project.store->db().execAndGet("SELECT count(*) FROM tempo_map").getInt()==2 &&
+          project.store->db().execAndGet("SELECT bpm FROM tempo_map WHERE pos_ticks=0").getDouble()==127,
+          "both realtime slices and private map adoption preserve the device, persisted tempo and journal");
+}
+
 void peers() {
     Project project(Precision::Float32);
     auto local = participant(), remote = participant();
@@ -1125,7 +1286,7 @@ int main(int argc, char** argv) {
         pendingLaunchUpdates(); restartClearsPerformedHistory(); cancelPendingIntent();
         captureTimeAdmission(); slowOwnerAndLoops(); repeatedLocalPlay(); localPlayCancelsPendingPeerStop();
         distantLaunchReadiness();
-        performedHistoryLoopRepair(); backwardSeekRepair();
+        performedHistoryLoopRepair(); backwardSeekRepair(); fractionalPerformedRepair();
         if (argc == 2 && std::string_view(argv[1]) == "--peers") peers();
     } catch (const std::exception& error) {
         ++failures; std::printf("EXCEPTION: %s\n", error.what());
