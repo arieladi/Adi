@@ -385,6 +385,14 @@ std::vector<float> wave(const fs::path& path) {
 }
 void freezeDuringExport() {
     Fixture f; f.effect();
+    {
+        // Freeze verifies each source file against its recorded hash; the export does not need it.
+        const auto hash = media::blake3File(f.dir.path()/"audio.wav");
+        if (!hash) throw std::runtime_error("fixture media hash");
+        SQLite::Statement update(f.store->db(), "UPDATE media_files SET hash_blake3=? WHERE id=1");
+        update.bind(1, hash.hex);
+        update.exec();
+    }
     FreezeCaptureSpec spec;
     spec.tracks = {1};
     spec.endSample = 24000;
