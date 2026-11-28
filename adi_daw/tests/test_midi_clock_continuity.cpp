@@ -3,6 +3,7 @@
 #include "adi/blob.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/midi_clips.hpp"
+#include "adi/engine/note_identity.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -469,6 +470,11 @@ void fanoutReleases(Precision width) {
         while(f.clock<duration+700)f.render();
         while(reference.clock<duration+700)reference.render();
         bool exact=true,equal=true;
+        const auto actualId = f.instruments[0]->heard[0].event.noteId;
+        const auto expectedId = reference.instruments[0]->heard[0].event.noteId;
+        check(eventSourcePrefix(actualId) != 0 && eventSourcePrefix(expectedId) != 0 &&
+              eventSourcePrefix(actualId) != eventSourcePrefix(expectedId),
+              "independent no-rebuild reference and candidate sessions own distinct note prefixes");
         for(std::size_t branch=0;branch<2;++branch) {
             const auto& actual=*f.instruments[branch];const auto& expected=*reference.instruments[branch];
             exact=exact && actual.events(EventType::NoteOn)==1 && actual.events(EventType::NoteOff)==1 && silent(actual);
@@ -476,9 +482,11 @@ void fanoutReleases(Precision width) {
             for(std::size_t i=0;i<actual.count;++i) {
                 const auto& event=actual.heard[i];
                 exact=exact && event.sample==static_cast<std::int64_t>(branch)*512+
-                    (event.event.type==EventType::NoteOff?duration:0);
+                    (event.event.type==EventType::NoteOff?duration:0) && event.event.noteId==actualId;
                 if(i<expected.count)equal=equal && event.sample==expected.heard[i].sample &&
-                    event.event.type==expected.heard[i].event.type && event.event.noteId==expected.heard[i].event.noteId;
+                    event.event.type==expected.heard[i].event.type &&
+                    expected.heard[i].event.noteId==expectedId &&
+                    static_cast<std::uint32_t>(event.event.noteId)==static_cast<std::uint32_t>(expectedId);
             }
         }
         check(exact,"each actual fan-out consumer receives exactly one on and off at its own compensated arrival, including short notes");

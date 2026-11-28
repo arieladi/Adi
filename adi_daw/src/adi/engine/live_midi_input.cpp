@@ -134,12 +134,12 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
     auto voice = std::find_if(state.active.begin(), state.active.end(),
                                [&](const Voices::Voice& v) { return v.sourceId == event.noteId; });
     if (event.type == EventType::NoteOn) {
-        if (voice != state.active.end() || voiceSerial_ == kLiveNoteIdPrefix - 1) return;
+        if (voice != state.active.end() || voiceSerial_ == std::numeric_limits<std::uint32_t>::max()) return;
         voice = std::find_if(state.active.begin(), state.active.end(),
                              [](const Voices::Voice& v) { return v.sourceId == 0; });
         if (voice == state.active.end()) return;
         auto off = event;
-        off.noteId = kLiveNoteIdPrefix | ++voiceSerial_;
+        off.noteId = eventIdentity(prefix_, ++voiceSerial_);
         off.type = EventType::NoteOff;
         off.value = 0;
         *voice = {event.noteId, off, false, true, playDelay(route, clock, transport, event.frame)};
@@ -444,10 +444,10 @@ void LiveMidiInput::renderPreview(const GraphHost::RenderBlock& block, std::int3
         }
         if (target->voice->off.noteId)
             break; // do not overtake an old release to the same device
-        if (voiceSerial_ == kLiveNoteIdPrefix - 1)
+        if (voiceSerial_ == std::numeric_limits<std::uint32_t>::max())
             continue;
         Event note{static_cast<std::int32_t>(cursor - first), EventType::NoteOn, 0,
-                   static_cast<std::uint16_t>(command.key), kLiveNoteIdPrefix | (voiceSerial_ + 1), 0,
+                   static_cast<std::uint16_t>(command.key), eventIdentity(prefix_, voiceSerial_ + 1), 0,
                    static_cast<double>(command.velocity) / 127.0};
         if (!block.pushInputEvent(target->slot, note))
             break;

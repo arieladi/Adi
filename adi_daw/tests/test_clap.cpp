@@ -135,7 +135,7 @@ void testEventListCarriesNoteIdAndDouble() {
     const auto* h0 = list.at(0);
     check(h0 != nullptr && h0->type == CLAP_EVENT_NOTE_ON, "the first is a note on");
     const auto* n = reinterpret_cast<const clap_event_note_t*>(h0);
-    check(n->note_id == 7, "carrying a REAL note id, not -1");
+    check(n->note_id > 0, "carrying an assigned native note ID");
     check(n->key == 60, "the key");
     // Channel 0, NOT the controller's channel 2 (ADR-0099). This check used
     // to require 1 -- "zero-based as CLAP wants it" -- which pinned the
@@ -148,7 +148,7 @@ void testEventListCarriesNoteIdAndDouble() {
     const auto* h1 = list.at(1);
     check(h1 != nullptr && h1->type == CLAP_EVENT_NOTE_EXPRESSION, "the second is expression");
     const auto* x = reinterpret_cast<const clap_event_note_expression_t*>(h1);
-    check(x->note_id == 7, "anchored to the same note");
+    check(x->note_id == n->note_id, "anchored to the same note");
     check(x->expression_id == CLAP_NOTE_EXPRESSION_TUNING, "as TUNING");
     check(x->value == 12.0,
           "and the value passes through UNCHANGED -- one octave is 12.0 "
@@ -159,10 +159,9 @@ void testEventListCarriesNoteIdAndDouble() {
     static_assert(std::is_same_v<decltype(clap_event_note_expression_t::value), double>,
                   "CLAP note expression value must be a double -- ADR-0054");
 
-    // These voices previously both narrowed to 3 in a plug-in, despite
-    // carrying distinct 64-bit IDs in the graph.
-    const auto clip = (std::uint64_t{1} << 32) | 1;
-    const auto live = engine::kLiveNoteIdPrefix | 1;
+    // These source identities previously both folded to 9.
+    const auto clip = engine::eventIdentity(1, 5);
+    const auto live = engine::eventIdentity(2, 1);
     list.clear();
     check(list.add(noteOn(clip, 60, 0.75)) && list.add(noteOn(live, 60, 0.75)) &&
           list.add(expr(live, ExpressionDim::Pitch, 0.25)), "overlapping live and clip voices translate together");
@@ -186,6 +185,58 @@ void testEventListCarriesNoteIdAndDouble() {
     check(balance && balance->expression_id==CLAP_NOTE_EXPRESSION_PAN && balance->value==0.25,
           "CLAP pan converts signed AEXP to the SDK's left-to-right range");
 }
+
+#if defined(ADI_NOTE_IDENTITY_CLAP)
+void testNativeNoteIdentity() {
+    section("DEV-17 -- an owned native CLAP receives separate voice IDs and ends one");
+    test::TempDirectory scratch("clap_note_identity", "native");
+    const auto bundle = scratch.path() / "note-identity.clap";
+#if defined(__APPLE__)
+    const auto binary = bundle / "Contents" / "MacOS" / "note-identity";
+    std::filesystem::create_directories(binary.parent_path());
+#else
+    const auto& binary = bundle;
+#endif
+    std::filesystem::copy_file(ADI_NOTE_IDENTITY_CLAP, binary);
+    const auto path = bundle.u8string();
+    ClapPluginRef ref;
+    ref.bundlePath.assign(path.begin(), path.end());
+    ref.id = "org.adi.catalogue.runtime";
+    std::string error;
+    ClapHost host;
+    auto plugin = host.makeDevice(ref, 48000.0, 64, error);
+    check(plugin->loaded() && error.empty(), "load the private CLAP module: " + error);
+    if (!plugin->loaded()) return;
+
+    std::array<float, 64> zero{}, left{}, right{};
+    const float* input[]{zero.data(), zero.data()};
+    float* output[]{left.data(), right.data()};
+    engine::NodeIo io;
+    io.in = input;
+    io.out = output;
+    io.frames = 64;
+    io.channels = 2;
+    io.sampleRate = 48000.0;
+    const auto clip = engine::eventIdentity(1, 5);
+    const auto live = engine::eventIdentity(2, 1);
+    const auto ending = engine::eventIdentity(2, 2);
+    const std::array on{noteOn(clip, 60, 0.75, 1), noteOn(live, 60, 0.75, 2),
+                        noteOn(ending, 61, 0.75, 3)};
+    io.events = {on.data(), static_cast<std::int32_t>(on.size())};
+    plugin->process(io);
+    const auto liveId = left[2];
+    check(left[1] > 0 && liveId > 0 && left[1] != liveId, "the real SDK received distinct IDs for the colliding graph inputs");
+    check(left[3] > 0 && right[3] == 1.0f, "the fixture returned a native NOTE_END to the host");
+
+    std::array expressions{expr(live, ExpressionDim::Pitch, 12.0),
+                           expr(ending, ExpressionDim::Pitch, 12.0)};
+    expressions[0].frame = 4;
+    expressions[1].frame = 5;
+    io.events = {expressions.data(), static_cast<std::int32_t>(expressions.size())};
+    plugin->process(io);
+    check(right[4] == liveId && right[5] == 0.0f, "NOTE_END retires only its exact addressed expression");
+}
+#endif
 
 void testModulationIsItsOwnEvent() {
     section("ADR-0046/0052 -- CLAP carries modulation natively");
@@ -815,10 +866,14 @@ void testTheRealProcessCall() {
     // by the time the plugin saw them.
     ClapEventList probe;
     probe.reserve(4);
+    check(probe.add(noteOn(11, 60, 0.75)), "the precision probe owns the addressed voice");
+    probe.clear();
     probe.add(expr(11, ExpressionDim::Pitch, bendA));
     probe.add(expr(11, ExpressionDim::Pitch, 12.0));
     const auto* e0 = reinterpret_cast<const clap_event_note_expression_t*>(probe.at(0));
     const auto* e1 = reinterpret_cast<const clap_event_note_expression_t*>(probe.at(1));
+    check(e0 && e1, "both precise values reach the SDK event list");
+    if (!e0 || !e1) return;
     check(e0->value != e1->value,
           "one 14-bit LSB apart is still two distinct doubles at the plugin");
     check(std::abs(e0->value - e1->value - 96.0 / 16384.0) < 1e-12,
@@ -1123,6 +1178,7 @@ void testMpePlusReachesThePluginThroughTheGraph() {
     // that ignores blockOffset or segment-relative time is exercised.
     const std::int32_t period = 96;
     std::vector<double> sent;
+    check(g.pushInputEvent(n, noteOn(42, 60, 0.75)), "the expression stream addresses a held note");
     for (std::int32_t fr = 0; fr + period <= 4096; fr += period) {
         engine::Event e;
         e.type = engine::EventType::NoteExpression;
@@ -1208,7 +1264,6 @@ void testTheSegmentBoundItself() {
     engine::Event e;
     e.type = engine::EventType::NoteExpression;
     e.dim = static_cast<std::uint16_t>(ExpressionDim::Pressure);
-    e.noteId = 1;
     e.value = 0.5;
 
     // Segment [256, 256+128). Three events: before it, inside it, after it.
@@ -1479,6 +1534,9 @@ void testDialectEncodings() {
     // The CLAP dialect takes the PLAIN value -- semitones -- and the key.
     ClapEventList c;
     c.reserve(8);
+    check(c.add(noteOn(9, 60, 0.75)), "the pitch expression has an admitted native voice");
+    const auto native = reinterpret_cast<const clap_event_note_t*>(c.at(0))->note_id;
+    c.clear();
     engine::MpeOut e;
     e.kind = K::Expression; e.noteId = 9; e.key = 60;
     e.dim = static_cast<std::uint16_t>(ExpressionDim::Pitch);
@@ -1488,7 +1546,7 @@ void testDialectEncodings() {
     const auto* ex = reinterpret_cast<const clap_event_note_expression_t*>(c.at(0));
     check(ex != nullptr && ex->value == 12.0,
           "carries 12 semitones exactly -- the engine's value, not VST3's 0.55");
-    check(ex != nullptr && ex->key == 60 && ex->note_id == 9 && ex->channel == 0,
+    check(ex != nullptr && ex->key == 60 && ex->note_id == native && ex->channel == 0,
           "addressed by note id AND by the note's key, on channel 0");
 }
 
@@ -1594,7 +1652,7 @@ void testDialectsThroughTheDevice() {
         d.pushEvent(bend);
         d.process(io);
         check(f.seenMidi.empty(), "no MIDI");
-        check(f.seenNotes.size() == 1 && f.seenNotes[0].channel == 0 && f.seenNotes[0].note_id == 11,
+        check(f.seenNotes.size() == 1 && f.seenNotes[0].channel == 0 && f.seenNotes[0].note_id > 0,
               "the note on channel 0 with its id");
         check(f.seenExprs.size() == 1 && f.seenExprs[0].key == 60 && f.seenExprs[0].value == 12.0,
               "its bend carries the note's key and 12 semitones exactly");
@@ -4004,6 +4062,9 @@ int main() {
     testEveryDimensionHasANamedClapId();
     testTuningNeedsNoConversion();
     testEventListCarriesNoteIdAndDouble();
+#if defined(ADI_NOTE_IDENTITY_CLAP)
+    testNativeNoteIdentity();
+#endif
     testModulationIsItsOwnEvent();
     testOverflowIsCountedNotSilent();
     testTheCallbackStructIsUsable();

@@ -6,6 +6,7 @@
 #include "adi/engine/midi_memory.hpp"
 #include "adi/engine/midi_monitoring.hpp"
 #include "adi/engine/play_quantize.hpp"
+#include "adi/engine/note_identity.hpp"
 
 #include <array>
 #include <cstddef>
@@ -119,7 +120,8 @@ private:
     std::atomic<std::uint64_t> historyRevision_{0};
     std::uint64_t renderedEpoch_ = 1;
     std::uint64_t generation_ = 0;
-    std::uint64_t voiceSerial_ = 0;
+    const std::uint32_t prefix_ = allocateEventSourcePrefix();
+    std::uint32_t voiceSerial_ = 0;
 
     struct PreviewCommand {
         const Node* node = nullptr; // null is a release request

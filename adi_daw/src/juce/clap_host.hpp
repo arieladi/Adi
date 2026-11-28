@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include "adi/engine/note_identity.hpp"
+
 #include "adi/plugin_scanner.hpp"
 #include "adi/blob.hpp"          // ExpressionDim
 #include "adi/engine/mpe_output.hpp"
@@ -150,6 +152,7 @@ class ClapEventList {
 public:
     void reserve(std::int32_t n);
     void clear() noexcept { events_.clear(); }
+    void noteEnded(std::int32_t wire) noexcept { noteIds_.noteEnd(wire); }
 
     [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
 
@@ -218,6 +221,7 @@ private:
     };
 
     std::vector<Slot> events_;
+    engine::PluginNoteIds noteIds_;
     std::int32_t cap_ = 0;
     std::int64_t dropped_ = 0;
     std::int64_t outOfRange_ = 0;

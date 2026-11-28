@@ -329,6 +329,13 @@ public:
     }
     [[nodiscard]] virtual std::int32_t segmentQuantum() const noexcept { return 1; }
 
+    /// Optional MIDI transform phase. A device with a nonzero per-instance
+    /// prefix owns only the notes generated under that prefix.
+    [[nodiscard]] virtual std::uint32_t transformSourcePrefix() const noexcept { return 0; }
+    virtual void transformEvents(engine::EventSpan, engine::EventList&, const engine::EventTransformContext&) noexcept {}
+    virtual void releaseGenerated(engine::EventList&, std::int32_t) noexcept {}
+    virtual void acknowledgeGenerated(const engine::Event&, bool) noexcept {}
+
     /// A counter that increases every time this device reports that its
     /// latency moved. ADR-0082's coalescer polls it; ADR-0066 says the
     /// report must do nothing else.
@@ -680,6 +687,19 @@ public:
     [[nodiscard]] std::int64_t tailSamplesAfterBypass(bool bypass) const noexcept override;
     void didSuspendAfterBypass(bool bypass) noexcept override;
     [[nodiscard]] std::int32_t segmentQuantum() const noexcept override { return inst_->segmentQuantum(); }
+    [[nodiscard]] bool transformsEvents() const noexcept override { return noteSourcePrefix() != 0; }
+    [[nodiscard]] std::uint32_t noteSourcePrefix() const noexcept override { return inst_->transformSourcePrefix(); }
+    void transformEvents(engine::EventSpan input, engine::EventList& output,
+                         const engine::EventTransformContext& context) noexcept override {
+        inst_->transformEvents(input, output, context);
+    }
+    void releaseGenerated(engine::EventList& output, std::int32_t frame) noexcept override {
+        inst_->releaseGenerated(output, frame);
+    }
+    void noteOnDelivered(const engine::Event& event) noexcept override { generated(event, true); }
+    void noteOnRejected(const engine::Event& event) noexcept override { generated(event, false); }
+    void noteOffDelivered(const engine::Event& event) noexcept override { generated(event, true); }
+    void noteOffRejected(const engine::Event& event) noexcept override { generated(event, false); }
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {
@@ -709,6 +729,10 @@ public:
     [[nodiscard]] DeviceInstance& instance() const noexcept { return *inst_; }
 
 private:
+    void generated(const engine::Event& event, bool delivered) noexcept {
+        const auto prefix = static_cast<std::uint32_t>(event.noteId >> 32);
+        if (prefix && prefix == noteSourcePrefix()) inst_->acknowledgeGenerated(event, delivered);
+    }
     DeviceInstance* inst_ = nullptr;
     engine::Precision handed_ = engine::Precision::Float32;
     std::atomic<bool> always_{false};

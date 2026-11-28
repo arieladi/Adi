@@ -168,7 +168,12 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
             slot.param.header.flags = 0;
             slot.param.param_id  = static_cast<clap_id>(in.paramId);
             slot.param.cookie    = nullptr;
-            slot.param.note_id   = engine::pluginNoteId(in.noteId);
+            slot.param.note_id = -1;
+            if (in.noteId) {
+                const auto wire = noteIds_.lookup(in.noteId);
+                if (!wire) return false;
+                slot.param.note_id = *wire;
+            }
             slot.param.port_index = -1;
             slot.param.channel    = -1;
             slot.param.key        = -1;
@@ -225,6 +230,15 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
 
     Slot slot{};
     if (dialect == ClapDialect::Clap) {
+        std::int32_t wire = -1;
+        if (o.noteId && (o.kind == K::NoteOn || o.kind == K::NoteOff || o.kind == K::Expression)) {
+            const auto mapped = o.kind == K::NoteOn ? noteIds_.assign(o.noteId) : noteIds_.lookup(o.noteId);
+            if (!mapped) {
+                if (o.kind == K::NoteOn) ++dropped_;
+                return false;
+            }
+            wire = *mapped;
+        }
         switch (o.kind) {
             case K::NoteOn:
             case K::NoteOff:
@@ -236,7 +250,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                     o.kind == K::NoteOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
                 slot.note.header.flags    = 0;
                 // A REAL note id, not -1: CLAP anchors note expression to it.
-                slot.note.note_id    = engine::pluginNoteId(o.noteId);
+                slot.note.note_id    = wire;
                 slot.note.port_index = 0;
                 slot.note.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 slot.note.key        = o.key;
@@ -252,7 +266,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                 slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
                 slot.expr.header.flags    = 0;
                 slot.expr.expression_id   = id;
-                slot.expr.note_id    = engine::pluginNoteId(o.noteId);
+                slot.expr.note_id    = wire;
                 slot.expr.port_index = 0;
                 slot.expr.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 // The note's own key when the route is tracking it, -1 (any)
@@ -320,6 +334,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
         slot.midi.data[2] = b2;
     }
     events_.push_back(slot);
+    if (dialect == ClapDialect::Clap && o.kind == K::NoteOff) noteIds_.release(o.noteId);
     return true;
 }
 
@@ -1299,12 +1314,15 @@ bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_head
     // as output events of `process`: a gesture bracket and the values inside
     // it. They go into the device's ring (ADR-0110 d4: a lock-free queue to
     // the message thread, where the op is made; ADR-0124) and nowhere else.
-    // Note ends and anything else are still accepted and dropped. Returning
+    // Output NOTE_END retires its exact native voice identity. Returning
     // false would tell the plugin we are broken.
     if (list == nullptr || h == nullptr || h->space_id != CLAP_CORE_EVENT_SPACE_ID) return true;
     auto* self = static_cast<ClapDevice*>(list->ctx);
     if (self == nullptr) return true;
-    if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) {
+    if (h->type == CLAP_EVENT_NOTE_END && h->size >= sizeof(clap_event_note_t)) {
+        const auto* note = reinterpret_cast<const clap_event_note_t*>(h);
+        if (note->port_index == 0) self->events_.noteEnded(note->note_id);
+    } else if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) {
         const auto* g = reinterpret_cast<const clap_event_param_gesture_t*>(h);
         const std::int32_t i = self->indexOfParam(g->param_id);
         if (i >= 0)

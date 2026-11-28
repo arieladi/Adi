@@ -1888,6 +1888,8 @@ if(ADI_WITH_JUCE)
         add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
         target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
         add_test(NAME adi_clap_readiness_tests COMMAND adi_play_render_tests --scanner-readiness)
+        add_dependencies(adi_clap_tests adi_catalogue_clap_fixture)
+        target_compile_definitions(adi_clap_tests PRIVATE ADI_NOTE_IDENTITY_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
     endif()
 
     target_link_libraries(adi_audio_probe PRIVATE
@@ -2183,11 +2185,16 @@ add_test(NAME adi_progressive_decode_tests COMMAND adi_progressive_decode_tests)
 # ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
 target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
 target_sources(adi_core PRIVATE src/adi/engine/midi_controllers.cpp)
+target_sources(adi_core PRIVATE src/adi/engine/note_identity.cpp)
 target_sources(adi_core PRIVATE src/adi/engine/midi_memory.cpp)
 target_sources(adi_core PRIVATE src/adi/midi_capture.cpp)
 add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
+
+add_executable(adi_note_identity_tests tests/test_note_identity.cpp)
+target_link_libraries(adi_note_identity_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_identity_tests COMMAND adi_note_identity_tests)
 
 # ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)

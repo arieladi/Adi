@@ -128,6 +128,16 @@ struct TransportInfo {
                                                std::int64_t sample) noexcept = nullptr;
 };
 
+/// A contiguous range of the original callback before audio segmentation.
+/// Input and output event frames are relative to the whole callback.
+struct EventTransformContext {
+    std::int32_t blockOffset = 0;
+    std::int32_t frames = 0;
+    std::int64_t timelineSample = 0;
+    bool playing = true;
+    bool bypassed = false;
+};
+
 /// What a node is handed for one SEGMENT of one block.
 struct NodeIo {
     /// Summed inputs. Null when the node has none — an instrument or a clip
@@ -305,6 +315,13 @@ public:
     /// Prepared source events, once per block BEFORE forwarding/splitting.
     /// Audio-thread contract: bounded, allocation-free, no I/O. Defaults empty.
     virtual void sourceEvents(EventList&, std::int32_t) noexcept {}
+    /// Owner-prepared event transforms run after this slot gathers its inputs.
+    /// In bypass the transform advances its clock and the graph forwards input.
+    virtual bool transformsEvents() const noexcept { return false; }
+    virtual void transformEvents(EventSpan, EventList&, const EventTransformContext&) noexcept {}
+    /// Append releases for generated active notes. Keep ownership when the
+    /// fixed destination cannot admit a release.
+    virtual void releaseGenerated(EventList&, std::int32_t) noexcept {}
     /// After processing, a note-off reached a consuming node or graph output.
     /// Sources retain ownership until this acknowledgement, across PDC queues.
     /// Sources retaining queued events are acknowledged after every accepted
@@ -317,6 +334,7 @@ public:
     /// sounding voice from an on still waiting in a retired graph's PDC queue.
     virtual void noteOnDelivered(const Event&) noexcept {}
     virtual void noteOnRejected(const Event&) noexcept {}
+    virtual std::uint32_t noteSourcePrefix() const noexcept { return 0; }
     // Explicit opt-in to retaining queued source events across graph swaps.
     // Graph prepares reachable source lists on the owner; these audio hooks
     // validate immutable authorship/shared ownership without allocating.
@@ -1235,7 +1253,7 @@ public:
     std::int32_t adoptBypassHistory(const Graph& old) noexcept;
     /// Transfer accepted queued events to the same retained target/arrival,
     /// preserving their remaining delay before the old publication is retired.
-    std::int32_t adoptEventHistory(const Graph& old) noexcept;
+    std::int32_t adoptEventHistory(Graph& old) noexcept;
 
 private:
     void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
@@ -1319,6 +1337,13 @@ private:
         std::vector<Event> eventStore;
         std::int32_t segmentQuantum = 1;
         EventList events;
+        std::vector<Event> transformInputStore;
+        std::vector<Event> transformOutputStore;
+        EventList transformInput;
+        EventList transformOutput;
+        std::vector<NodeId> transformReleaseRoutes;
+        bool transformBypassed = false;
+        bool transformReleasePending = false;
         // Forwarding precedes event sorting, so these parallel origins can be
         // carried through further delayed hops without changing Event's ABI.
         std::vector<Node*> eventOrigins;
@@ -1424,7 +1449,9 @@ private:
     /// by. Doing it up front is what keeps a forwarded event on a segment
     /// boundary -- forwarding as nodes run would put it in a segment chosen
     /// before it existed.
-    void forwardEvents(std::int32_t frames) noexcept;
+    void forwardEvents(std::int32_t frames, const TransportInfo*) noexcept;
+    void transformEvents(Slot&, std::int32_t frames, const TransportInfo*, bool discontinuity) noexcept;
+    void discardGeneratedAttacks(std::uint32_t prefix, std::int32_t frame) noexcept;
 
     /// ADR-0042's split points, computed from a per-frame mark rather than
     /// while walking slots. See the comment at the call.
@@ -1432,8 +1459,14 @@ private:
 
     std::vector<Slot> slots_;
     std::vector<std::pair<Node*,NodeId>> eventNodes_;
-    std::vector<std::pair<std::uint32_t, Node *>> controllerSources_;
+    std::vector<std::pair<std::uint32_t, Node *>> eventSources_;
+    std::vector<NodeId> transformSlots_;
+    std::vector<NodeId> releaseFrontier_;
+    std::vector<std::uint8_t> releaseVisited_;
+    void releaseDepartingTransforms(Graph& old) noexcept;
+    [[nodiscard]] Node* eventSource(std::uint32_t prefix) const noexcept;
     void acknowledgeController(const Event &, bool delivered) noexcept;
+    void acknowledgeNote(const Event&, bool delivered, bool waiting = false) noexcept;
     [[nodiscard]] bool hasPendingNoteOff(std::uint64_t noteId) const noexcept;
 
     /// Public diagnostic mirrors of the audio-applied plan. Callback processing
@@ -1463,6 +1496,10 @@ private:
     /// delay that crosses any number of block boundaries needs no bookkeeping
     /// beyond one subtraction.
     std::int64_t now_ = 0;
+    bool transformClockKnown_ = false;
+    bool transformWasPlaying_ = false;
+    std::uint64_t transformClockRevision_ = 0;
+    std::int64_t lastTransformSample_ = 0;
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     bool delayCompensation_ = true;

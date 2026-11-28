@@ -197,7 +197,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.channel = chan1;
                 // Minted here and never derived from the channel afterwards.
                 // ADR-0054: the channel is transport, the id is identity.
-                e.noteId  = nextNoteId_++;
+                e.noteId  = eventIdentity(notePrefix_, nextNoteId_++);
                 e.dim     = key;               // the key, for a note event
                 e.value   = cc7ToUnit(vel);    // velocity as a DOUBLE, 0..1
                 ++notesStarted_;

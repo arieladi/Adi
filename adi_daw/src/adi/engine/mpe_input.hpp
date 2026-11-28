@@ -33,6 +33,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/engine/events.hpp"
+#include "adi/engine/note_identity.hpp"
 
 #include <array>
 #include <cstddef>
@@ -145,7 +146,8 @@ private:
     MpeZone zone_{};
     std::array<ChannelState, 16> chans_{};
     std::int32_t  frame_ = 0;
-    std::uint64_t nextNoteId_ = 1;   ///< 0 means "unassigned" (events.hpp)
+    const std::uint32_t notePrefix_ = allocateEventSourcePrefix();
+    std::uint32_t nextNoteId_ = 1;   ///< 0 means the serial range is exhausted.
     std::int64_t  notesStarted_ = 0;
     std::int64_t  rejected_ = 0;
     std::uint64_t droppedStarts_ = 0, unsupported_ = 0;

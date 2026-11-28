@@ -43,6 +43,15 @@ bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
     e.ppqPosition = 0.0;
     e.flags = SV::Event::kIsLive;
     const auto chan = static_cast<Steinberg::int16>(in.channel & 0x0F);
+    Steinberg::int32 wire = -1;
+    if (in.noteId && in.kind != K::Control) {
+        const auto mapped = in.kind == K::NoteOn ? noteIds_.assign(in.noteId) : noteIds_.lookup(in.noteId);
+        if (!mapped) {
+            if (in.kind == K::NoteOn) ++dropped_;
+            return false;
+        }
+        wire = *mapped;
+    }
 
     switch (in.kind) {
         case K::NoteOn:
@@ -55,7 +64,7 @@ bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
             // THE LINE JUCE HARDCODES TO -1. Without a real id here, VST3 has
             // nothing to anchor note expression to, and every per-note value
             // becomes a channel-wide one.
-            e.noteOn.noteId   = toVst3NoteId(in.noteId);
+            e.noteOn.noteId   = wire;
             break;
 
         case K::NoteOff:
@@ -64,13 +73,13 @@ bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
             e.noteOff.pitch    = in.key;
             e.noteOff.velocity = static_cast<float>(in.value);
             e.noteOff.tuning   = 0.0f;
-            e.noteOff.noteId   = toVst3NoteId(in.noteId);
+            e.noteOff.noteId   = wire;
             break;
 
         case K::Expression:
             e.type = SV::Event::kNoteExpressionValueEvent;
             e.noteExpressionValue.typeId = static_cast<SV::NoteExpressionTypeID>(in.exprType);
-            e.noteExpressionValue.noteId = toVst3NoteId(in.noteId);
+            e.noteExpressionValue.noteId = wire;
             // A double, all the way to the plugin. This is the last hop of
             // ADR-0054 and the one JUCE never reaches at all.
             e.noteExpressionValue.value = in.value;
@@ -81,7 +90,7 @@ bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
             e.polyPressure.channel  = chan;
             e.polyPressure.pitch    = in.key;
             e.polyPressure.pressure = static_cast<float>(in.value);
-            e.polyPressure.noteId   = toVst3NoteId(in.noteId);
+            e.polyPressure.noteId   = wire;
             break;
 
         case K::Control:
@@ -101,6 +110,7 @@ bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
     }
 
     events_.push_back(e);
+    if (in.kind == K::NoteOff) noteIds_.release(in.noteId);
     return true;
 }
 

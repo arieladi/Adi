@@ -1935,8 +1935,8 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     if (const auto* ne = find("ADI Test NoteExpr")) {
         check(octave(render(*ne, RouteChoice::MpeMidi, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
-        const auto clip = (std::uint64_t{1} << 32) | 1;
-        const auto live = adi::engine::kLiveNoteIdPrefix | 1;
+        const auto clip = adi::engine::eventIdentity(1, 5);
+        const auto live = adi::engine::eventIdentity(2, 1);
         const auto audio = render(*ne, RouteChoice::NoteExpression,
                                   {note(clip, 60, 2), note(live, 60, 2), bend(live, 12.0, 2)},
                                   {off(live, 60, 0)});
@@ -2118,14 +2118,15 @@ int main(int argc, char** argv) {
         list.getEvent(0, e);
         // THE LINE JUCE HARDCODES TO -1. Without it VST3 has nothing to
         // anchor note expression to and every per-note value goes channel-wide.
-        check(e.noteOn.noteId == 7, "the note on carries a REAL note id, not -1");
+        const auto voiceId = e.noteOn.noteId;
+        check(voiceId > 0, "the note on carries an assigned native note ID");
         check(e.type == Steinberg::Vst::Event::kNoteOnEvent, "and is a note-on event");
 
         list.getEvent(1, e);
         check(e.type == Steinberg::Vst::Event::kNoteExpressionValueEvent,
               "the expression is a kNoteExpressionValueEvent -- the type JUCE "
               "never constructs");
-        check(e.noteExpressionValue.noteId == 7, "anchored to the same note");
+        check(e.noteExpressionValue.noteId == voiceId, "anchored to the same note");
         check(e.noteExpressionValue.typeId == Steinberg::Vst::kTuningTypeID,
               "pitch is VST3's Tuning");
         const double expect = 12.0 / 240.0 + 0.5;
@@ -2210,7 +2211,6 @@ int main(int argc, char** argv) {
         adi::engine::Event e;
         e.type = adi::engine::EventType::NoteExpression;
         e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch);
-        e.noteId = 3;
         e.value = 12.0;
 
         // Segment [256, 256+128). Event::frame is BLOCK-relative and
@@ -2261,6 +2261,7 @@ int main(int argc, char** argv) {
         check(list.add(on), "a note from member channel 5 is translated");
         SV::Event e{};
         list.getEvent(0, e);
+        const auto plainVoice = e.noteOn.noteId;
         check(e.type == SV::Event::kNoteOnEvent && e.noteOn.channel == 0,
               "and goes to the plugin on channel 0 -- the controller's channel is transport");
 
@@ -2293,7 +2294,7 @@ int main(int argc, char** argv) {
         check(list.addOut(poly), "poly pressure is an event");
         list.getEvent(2, e);
         check(e.type == SV::Event::kPolyPressureEvent && e.polyPressure.pitch == 64 &&
-                  e.polyPressure.noteId == 9 && e.polyPressure.pressure == 0.25f,
+                  e.polyPressure.noteId == plainVoice && e.polyPressure.pressure == 0.25f,
               "a kPolyPressureEvent on the note's key and id");
 
         // The router through the real structs: a note from channel 2 on the
@@ -2310,7 +2311,7 @@ int main(int argc, char** argv) {
         check(mpe.getEventCount() == 7, "MCM (3) + channel reset (3) + the note, saw " +
                                             std::to_string(mpe.getEventCount()));
         mpe.getEvent(6, e);
-        check(e.type == SV::Event::kNoteOnEvent && e.noteOn.channel == 1 && e.noteOn.noteId == 9,
+        check(e.type == SV::Event::kNoteOnEvent && e.noteOn.channel == 1 && e.noteOn.noteId > 0,
               "the note is on member channel 1, with its id");
 
         // The parameter queue is bounded now (ADR-0010).

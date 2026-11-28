@@ -2,6 +2,7 @@
 
 #include "adi/engine/graph.hpp"
 #include "adi/blob.hpp"
+#include "adi/engine/note_identity.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/render_workers.hpp"
 #include "adi/engine/transport.hpp"
@@ -1101,19 +1102,24 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
-    controllerSources_.clear();
-    controllerSources_.reserve(slots_.size());
+    eventSources_.clear();
+    eventSources_.reserve(slots_.size());
     for (const auto &slot : slots_)
         if (slot.node) {
-            const auto prefix = slot.node->controllerSourcePrefix();
-            if (prefix)
-                controllerSources_.push_back({prefix, slot.node});
+            const auto controller = slot.node->controllerSourcePrefix();
+            const auto note = slot.node->noteSourcePrefix();
+            if (slot.node->transformsEvents() && note == 0) {
+                error_ = "an event transform needs an owner-assigned note source prefix";
+                return;
+            }
+            if (controller) eventSources_.push_back({controller, slot.node});
+            if (note && note != controller) eventSources_.push_back({note, slot.node});
         }
-    std::sort(controllerSources_.begin(), controllerSources_.end(),
+    std::sort(eventSources_.begin(), eventSources_.end(),
               [](const auto &left, const auto &right) { return left.first < right.first; });
-    for (std::size_t i = 1; i < controllerSources_.size(); ++i)
-        if (controllerSources_[i - 1].first == controllerSources_[i].first) {
-            error_ = "duplicate controller source prefix";
+    for (std::size_t i = 1; i < eventSources_.size(); ++i)
+        if (eventSources_[i - 1].first == eventSources_[i].first) {
+            error_ = "duplicate event source prefix";
             return;
         }
 
@@ -1156,6 +1162,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     bypassNodes_.clear();
     eventNodes_.clear();
+    transformSlots_.clear();
     for (auto& s : slots_) {
         if(s.node)eventNodes_.emplace_back(s.node,static_cast<NodeId>(&s-slots_.data()));
         // A persistent device can be rebound while this graph is rendering.
@@ -1190,6 +1197,16 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.eventStore.assign(static_cast<std::size_t>(eventCapacity_), Event{});
         s.events = EventList(s.eventStore.data(), eventCapacity_);
         s.eventOrigins.assign(static_cast<std::size_t>(eventCapacity_),nullptr);
+        s.transformReleaseRoutes.clear();
+        s.transformBypassed = false;
+        s.transformReleasePending = false;
+        if (s.node && s.node->transformsEvents()) {
+            transformSlots_.push_back(static_cast<NodeId>(&s - slots_.data()));
+            s.transformInputStore.resize(static_cast<std::size_t>(eventCapacity_));
+            s.transformOutputStore.resize(static_cast<std::size_t>(eventCapacity_));
+            s.transformInput = EventList(s.transformInputStore.data(), eventCapacity_);
+            s.transformOutput = EventList(s.transformOutputStore.data(), eventCapacity_);
+        }
         // Same capacity as the live list. A deferred event is one that WOULD
         // have been in the list if its delay had been shorter, so the two
         // share one budget rather than one being an afterthought.
@@ -1241,7 +1258,8 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
             if(source.node && source.node->eventFlow()==EventFlow::Through)
                 slot.pendingSources.insert(slot.pendingSources.end(),source.pendingSources.begin(),source.pendingSources.end());
         }
-        if(slot.node && slot.node->retainsQueuedSourceEvents())slot.pendingSources.push_back(slot.node);
+        if (slot.node && (slot.node->retainsQueuedSourceEvents() || slot.node->transformsEvents()))
+            slot.pendingSources.push_back(slot.node);
         std::sort(slot.pendingSources.begin(),slot.pendingSources.end(),std::less<Node*>{});
         slot.pendingSources.erase(std::unique(slot.pendingSources.begin(),slot.pendingSources.end()),slot.pendingSources.end());
     }
@@ -1254,6 +1272,30 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
             auto& upstream=slots_[static_cast<std::size_t>(input)];
             if(upstream.node && upstream.node->eventFlow()==EventFlow::Through)
                 upstream.deliversNoteStream=true;
+        }
+    }
+    if (!transformSlots_.empty()) {
+        releaseFrontier_.reserve(slots_.size());
+        releaseVisited_.resize(slots_.size());
+        // Stop at the first transform or consumer on each downstream path.
+        // Its generated notes have a separate owner and are released separately.
+        std::vector<std::uint8_t> through(slots_.size());
+        for (const auto origin : transformSlots_) {
+            std::fill(through.begin(), through.end(), 0);
+            auto& source = slots_[static_cast<std::size_t>(origin)];
+            if (source.node->eventFlow() != EventFlow::Through) continue;
+            through[static_cast<std::size_t>(origin)] = 1;
+            for (const auto id : order_) {
+                if (id == origin) continue;
+                const auto& slot = slots_[static_cast<std::size_t>(id)];
+                if (!slot.node || !std::ranges::any_of(slot.inputs, [&](NodeId input) {
+                        return through[static_cast<std::size_t>(input)] != 0;
+                    })) continue;
+                if (slot.node->transformsEvents() || id == output_ || slot.node->eventFlow() == EventFlow::Consume)
+                    source.transformReleaseRoutes.push_back(id);
+                else if (slot.node->eventFlow() == EventFlow::Through)
+                    through[static_cast<std::size_t>(id)] = 1;
+            }
         }
     }
 
@@ -1358,8 +1400,65 @@ std::int32_t Graph::adoptBypassHistory(const Graph& old) noexcept {
     return carried;
 }
 
-std::int32_t Graph::adoptEventHistory(const Graph& old) noexcept {
+void Graph::releaseDepartingTransforms(Graph& old) noexcept {
+    for (const auto sourceId : old.transformSlots_) {
+        auto& source = old.slots_[static_cast<std::size_t>(sourceId)];
+        const auto prefix = source.node->noteSourcePrefix();
+        if (eventSource(prefix) == source.node) continue;
+
+        auto& releases = source.transformOutput;
+        releases.clear();
+        source.node->releaseGenerated(releases, 0);
+        // A generator may already have issued the off even though a
+        // downstream delay still holds it. Keep it when the owner leaves.
+        for (const auto& slot : old.slots_) {
+            for (std::int32_t i = 0; i < slot.pendingCount; ++i) {
+                const auto& pending = slot.pending[static_cast<std::size_t>(i)].e;
+                if (pending.type != EventType::NoteOff || eventSourcePrefix(pending.noteId) != prefix)
+                    continue;
+                if (std::any_of(releases.begin(), releases.end(), [&](const Event& release) {
+                        return release.type == EventType::NoteOff && release.noteId == pending.noteId;
+                    })) continue;
+                auto off = pending;
+                off.frame = 0;
+                releases.push(off);
+            }
+        }
+        if (releases.empty()) continue;
+        auto& frontier = old.releaseFrontier_;
+        auto& visited = old.releaseVisited_;
+        frontier.clear();
+        std::fill(visited.begin(), visited.end(), 0);
+        const auto enqueue = [&](const std::vector<NodeId>& destinations) {
+            for (const auto id : destinations) {
+                auto& seen = visited[static_cast<std::size_t>(id)];
+                if (seen) continue;
+                seen = 1;
+                frontier.push_back(id);
+            }
+        };
+        enqueue(source.transformReleaseRoutes);
+        for (std::size_t i = 0; i < frontier.size(); ++i) {
+            const auto& previous = old.slots_[static_cast<std::size_t>(frontier[i])];
+            const auto destination = std::lower_bound(eventNodes_.begin(), eventNodes_.end(), previous.node,
+                [](const auto& pair, Node* node) { return std::less<Node*>{}(pair.first, node); });
+            if (destination == eventNodes_.end() || destination->first != previous.node) {
+                enqueue(previous.transformReleaseRoutes);
+                continue;
+            }
+            auto& slot = slots_[static_cast<std::size_t>(destination->second)];
+            for (const auto& off : releases) slot.events.push(off);
+        }
+    }
+}
+
+std::int32_t Graph::adoptEventHistory(Graph& old) noexcept {
+    releaseDepartingTransforms(old);
     if(sampleRate_!=old.sampleRate_)return 0;
+    transformClockKnown_ = old.transformClockKnown_;
+    transformWasPlaying_ = old.transformWasPlaying_;
+    transformClockRevision_ = old.transformClockRevision_;
+    lastTransformSample_ = old.lastTransformSample_;
     std::size_t i=0,j=0;
     std::int32_t carried=0;
     while(i<eventNodes_.size() && j<old.eventNodes_.size()) {
@@ -1372,25 +1471,35 @@ std::int32_t Graph::adoptEventHistory(const Graph& old) noexcept {
         if(nextI==i+1 && nextJ==j+1) {
             auto& dst=slots_[static_cast<std::size_t>(a.second)];
             const auto& src=old.slots_[static_cast<std::size_t>(b.second)];
+            dst.transformBypassed = src.transformBypassed;
+            dst.transformReleasePending = src.transformReleasePending;
             const auto arrival=pdcActiveArrival_[static_cast<std::size_t>(a.second)];
             const auto oldArrival=old.pdcActiveArrival_[static_cast<std::size_t>(b.second)];
-            if(arrival==oldArrival)for(std::int32_t n=0;n<src.pendingCount;++n) {
+            for(std::int32_t n=0;n<src.pendingCount;++n) {
                 if(static_cast<std::size_t>(dst.pendingCount)>=dst.pending.size())break;
                 const auto& pending=src.pending[static_cast<std::size_t>(n)];
                 const auto remaining=pending.due-old.now_;
                 if(remaining<0 || remaining>std::numeric_limits<std::int64_t>::max()-now_)continue;
                 Node* owner=nullptr;
+                bool transformOwner = false;
+                const auto prefix = eventSourcePrefix(pending.e.noteId);
                 for(std::size_t source=0;source<dst.pendingSources.size();++source) {
                     auto* candidate=dst.pendingSources[source];
-                    if(candidate->canRetainPendingEvent(pending.e)) {
-                        // Ambiguous identities cannot transfer another source's event.
-                        if(owner){owner=nullptr;break;}
-                        owner=candidate;
-                    }
+                    const bool stableTransform = prefix && candidate->transformsEvents() &&
+                        candidate->noteSourcePrefix() == prefix && old.eventSource(prefix) == candidate;
+                    const bool accepts = stableTransform ? (arrival == oldArrival || pending.e.type == EventType::NoteOff)
+                                                         : (arrival == oldArrival && candidate->canRetainPendingEvent(pending.e));
+                    if (!accepts) continue;
+                    // Ambiguous identities cannot transfer another source's event.
+                    if(owner){owner=nullptr;break;}
+                    owner = candidate;
+                    transformOwner = stableTransform;
                 }
                 if(!owner)continue;
-                dst.pending[static_cast<std::size_t>(dst.pendingCount++)]={now_+remaining,pending.e,owner};
-                owner->pendingEventRetained(pending.e);++carried;
+                dst.pending[static_cast<std::size_t>(dst.pendingCount++)] =
+                    {now_ + remaining, pending.e, transformOwner ? nullptr : owner};
+                if (!transformOwner) owner->pendingEventRetained(pending.e);
+                ++carried;
             }
         }
         i=nextI;j=nextJ;
@@ -1637,18 +1746,38 @@ bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vect
     return true;
 }
 
-void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
-    const auto prefix = static_cast<std::uint32_t>(event.noteId >> 32);
-    if (!prefix)
-        return;
-    const auto found = std::lower_bound(controllerSources_.begin(), controllerSources_.end(), prefix,
+Node* Graph::eventSource(std::uint32_t prefix) const noexcept {
+    const auto found = std::lower_bound(eventSources_.begin(), eventSources_.end(), prefix,
                                         [](const auto &item, std::uint32_t key) { return item.first < key; });
-    if (found == controllerSources_.end() || found->first != prefix)
-        return;
-    if (delivered)
-        found->second->controllerDelivered(event);
-    else
-        found->second->controllerRejected(event);
+    return found != eventSources_.end() && found->first == prefix ? found->second : nullptr;
+}
+
+void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
+    if (auto* source = eventSource(eventSourcePrefix(event.noteId))) {
+        if (delivered) source->controllerDelivered(event);
+        else source->controllerRejected(event);
+    }
+}
+
+void Graph::acknowledgeNote(const Event& event, bool delivered, bool waiting) noexcept {
+    const auto acknowledge = [&](Node& source) {
+        if (event.type == EventType::NoteOff) {
+            if (!delivered) source.noteOffRejected(event);
+            else if (!waiting || !(source.retainsQueuedSourceEvents() || source.transformsEvents()))
+                source.noteOffDelivered(event);
+        } else {
+            if (delivered) source.noteOnDelivered(event);
+            else source.noteOnRejected(event);
+        }
+    };
+    const auto prefix = eventSourcePrefix(event.noteId);
+    if (prefix) {
+        if (auto* source = eventSource(prefix)) acknowledge(*source);
+    } else {
+        for (auto& slot : slots_) {
+            if (slot.node) acknowledge(*slot.node);
+        }
+    }
 }
 bool Graph::hasPendingNoteOff(std::uint64_t noteId) const noexcept {
     for(std::size_t i=0;i<slots_.size();++i) {
@@ -1661,19 +1790,105 @@ bool Graph::hasPendingNoteOff(std::uint64_t noteId) const noexcept {
     }
     return false;
 }
-void Graph::forwardEvents(std::int32_t frames) noexcept {
+void Graph::discardGeneratedAttacks(std::uint32_t prefix, std::int32_t frame) noexcept {
+    for (auto& slot : slots_) {
+        std::int32_t kept = 0;
+        for (std::int32_t i = 0; i < slot.pendingCount; ++i) {
+            const auto& pending = slot.pending[static_cast<std::size_t>(i)];
+            if (pending.due >= now_ + frame && eventSourcePrefix(pending.e.noteId) == prefix &&
+                (pending.e.type == EventType::NoteOn || pending.e.type == EventType::NoteExpression))
+                continue;
+            slot.pending[static_cast<std::size_t>(kept++)] = pending;
+        }
+        slot.pendingCount = kept;
+    }
+}
+
+void Graph::transformEvents(Slot& slot, std::int32_t frames, const TransportInfo* info,
+                            bool discontinuity) noexcept {
+    auto& input = slot.transformInput;
+    auto& output = slot.transformOutput;
+    input.clear();
+    output.clear();
+    const bool bypassed = slot.hasBypass && slot.node->bypassed();
+    bool discardedAttacks = false;
+    const auto release = [&](std::int32_t frame) {
+        if (!discardedAttacks) {
+            discardGeneratedAttacks(slot.node->noteSourcePrefix(), frame);
+            discardedAttacks = true;
+        }
+        const auto dropped = output.dropped();
+        slot.node->releaseGenerated(output, frame);
+        slot.transformReleasePending = output.dropped() != dropped;
+    };
+    if (slot.transformReleasePending || discontinuity || (bypassed && !slot.transformBypassed))
+        release(0);
+    slot.transformBypassed = bypassed;
+    for (const auto& event : slot.events) {
+        if (isNoteStream(event.type)) input.push(event);
+        else output.push(event);
+    }
+    input.sortByFrame();
+    const auto* clock = info && info->playing ? info->deviceClock : nullptr;
+    auto* first = input.begin();
+    std::int32_t offset = 0;
+    while (offset < frames) {
+        const auto count = clock ? static_cast<std::int32_t>(clock->contiguousFrames(offset, frames - offset))
+                                 : frames - offset;
+        const auto finish = offset + count;
+        auto* next = first;
+        while (next != input.end() && next->frame < finish) ++next;
+        if (offset != 0) release(offset);
+        const auto timeline = clock ? clock->sampleAt(offset) : info ? info->timelineSample : now_ + offset;
+        const EventSpan events{first, static_cast<std::int32_t>(next - first)};
+        const EventTransformContext context{offset, count, timeline, !info || info->playing, bypassed};
+        if (bypassed) {
+            EventList discarded;
+            slot.node->transformEvents(events, discarded, context);
+            for (const auto& event : events) output.push(event);
+        } else {
+            slot.node->transformEvents(events, output, context);
+        }
+        first = next;
+        offset = finish;
+    }
+    stats_.eventsDropped += slot.events.dropped() + output.dropped();
+    slot.events.resetDropped();
+    output.resetDropped();
+    const bool retained = std::any_of(slot.eventOrigins.begin(), slot.eventOrigins.begin() + slot.events.size(),
+                                     [](const auto* source) { return source != nullptr; });
+    std::fill_n(slot.eventOrigins.data(), output.size(), nullptr);
+    if (retained) {
+        for (auto* event = output.begin(); event != output.end(); ++event) {
+            auto* source = eventSource(eventSourcePrefix(event->noteId));
+            if (source && source != slot.node && source->canRetainPendingEvent(*event))
+                slot.eventOrigins[static_cast<std::size_t>(event - output.begin())] = source;
+        }
+    }
+    std::swap(slot.events, output);
+}
+
+void Graph::forwardEvents(std::int32_t frames, const TransportInfo* info) noexcept {
     auto rejected = [&](const Event &e) {
         if (e.type == EventType::Controller)
             acknowledgeController(e, false);
-        if (e.type == EventType::NoteOff)
-            for (std::size_t i=0;i<slots_.size();++i)
-                if (slots_[i].node)
-                    slots_[i].node->noteOffRejected(e);
-        if (e.type == EventType::NoteOn)
-            for(std::size_t i=0;i<slots_.size();++i)
-                if(slots_[i].node)slots_[i].node->noteOnRejected(e);
+        if (e.type == EventType::NoteOn || e.type == EventType::NoteOff)
+            acknowledgeNote(e, false);
     };
     const std::int64_t end = now_ + frames;
+    bool discontinuity = false;
+    if (!transformSlots_.empty() && info) {
+        const auto* clock = info->deviceClock;
+        const auto first = clock ? clock->sampleAt(0) : info->timelineSample;
+        discontinuity = transformClockKnown_ && (info->transportRevision != transformClockRevision_ ||
+            (transformWasPlaying_ && (!info->playing || first <= lastTransformSample_)));
+        transformClockKnown_ = true;
+        transformWasPlaying_ = info->playing;
+        transformClockRevision_ = info->transportRevision;
+        const auto high = std::numeric_limits<std::int64_t>::max();
+        lastTransformSample_ = clock ? clock->sampleAt(frames - 1) :
+            std::min(first, high - (frames - 1)) + (frames - 1);
+    }
 
     // TOPOLOGICAL ORDER, which is the whole of the correctness argument: when a
     // slot is reached, every slot feeding it has already received everything it
@@ -1760,6 +1975,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
                 }
             }
         }
+        if (!s.transformInputStore.empty()) transformEvents(s, frames, info, discontinuity);
     }
 }
 
@@ -1813,7 +2029,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                                    s.processingNs);
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
-    const bool bypass = s.bypassForBlock;
+    // A transforming node keeps the bypass it sampled for its transform (DEV-18).
+    const bool bypass = s.transformInputStore.empty() ? s.bypassForBlock : (s.hasBypass && s.transformBypassed);
     ScopeTap* const inputTap = s.node->inputTap();
     ScopeTap* const outputTap = s.node->outputTap();
     const bool advancing = transport != nullptr && transport->playing;
@@ -2339,7 +2556,7 @@ void Graph::processWithExcludedTracks(const AudioIo& io, std::span<const std::in
             source->emitAtInput(s.events, frames, s.node->wantsDeviceTransport() ? arrival : 0);
         if(!s.events.empty())std::fill_n(s.eventOrigins.data(),s.events.size(),nullptr);
     }
-    forwardEvents(frames);
+    forwardEvents(frames, io.transport);
 
     // --- segment boundaries (ADR-0042) -------------------------------------
     //
@@ -2379,15 +2596,10 @@ void Graph::processWithExcludedTracks(const AudioIo& io, std::span<const std::in
                 // Forwarding through every hop and worker processing have
                 // finished. Even a short note's future on/off pair is now in
                 // these queues; its first consumer cannot retire the owner.
-                const bool waiting=hasPendingNoteOff(e.noteId);
-                for (std::size_t source=0;source<slots_.size();++source)
-                    if (slots_[source].node &&
-                        (!waiting || !slots_[source].node->retainsQueuedSourceEvents()))
-                        slots_[source].node->noteOffDelivered(e);
+                acknowledgeNote(e, true, hasPendingNoteOff(e.noteId));
             }
-            if(e.type==EventType::NoteOn)
-                for(std::size_t source=0;source<slots_.size();++source)
-                    if(slots_[source].node)slots_[source].node->noteOnDelivered(e);
+            if (e.type == EventType::NoteOn)
+                acknowledgeNote(e, true);
         }
     }
     for (auto& s : slots_) {

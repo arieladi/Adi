@@ -45,6 +45,28 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* plugin,const clap_proc
         if(!input || !output)return CLAP_PROCESS_ERROR;
         for(std::uint32_t frame=0;frame<block->frames_count;++frame)output[frame]=input[frame]*gain;
     }
+    // The note identity test reads the actual SDK voice IDs from the output.
+    if (const auto* events = block->in_events) {
+        for (std::uint32_t i = 0; i < events->size(events); ++i) {
+            const auto* event = events->get(events, i);
+            if (!event || event->space_id != CLAP_CORE_EVENT_SPACE_ID || event->time >= block->frames_count)
+                continue;
+            if (event->type == CLAP_EVENT_NOTE_ON && event->size >= sizeof(clap_event_note_t)) {
+                const auto* note = reinterpret_cast<const clap_event_note_t*>(event);
+                block->audio_outputs[0].data32[0][event->time] = static_cast<float>(note->note_id);
+                if (note->key == 61 && block->out_events) {
+                    auto ended = *note;
+                    ended.header.type = CLAP_EVENT_NOTE_END;
+                    if (block->out_events->try_push(block->out_events, &ended.header))
+                        block->audio_outputs[0].data32[1][event->time] = 1.0f;
+                }
+            } else if (event->type == CLAP_EVENT_NOTE_EXPRESSION &&
+                       event->size >= sizeof(clap_event_note_expression_t)) {
+                const auto* expression = reinterpret_cast<const clap_event_note_expression_t*>(event);
+                block->audio_outputs[0].data32[1][event->time] = static_cast<float>(expression->note_id);
+            }
+        }
+    }
     block->audio_outputs[0].constant_mask=0;
     counters[2].fetch_add(1,std::memory_order_relaxed);counters[3].fetch_add(block->frames_count,std::memory_order_relaxed);
     return CLAP_PROCESS_CONTINUE;
