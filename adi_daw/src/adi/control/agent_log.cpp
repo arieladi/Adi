@@ -55,7 +55,13 @@ bool valid(const AgentLogEvent& event) {
 std::shared_ptr<detail::PrivateFileLock> lockFile(const std::filesystem::path& file, bool create) {
     // The first writer can be establishing the schema, and another ADI
     // process can be appending here. Retry only a known busy native lock.
-    const auto until = std::chrono::steady_clock::now() + 1s;
+    // The lock is polled, so a writer releasing and retaking it in a loop
+    // wins almost every race; a waiter then waits out the others' whole
+    // runs. Each append is a fresh connection and a FULL-sync commit, which
+    // on a busy Windows disk is tens of milliseconds: three processes of
+    // eight appends overran a one-second budget there and dropped entries.
+    // The budget bounds a stuck holder, not the normal queue behind writers.
+    const auto until = std::chrono::steady_clock::now() + 10s;
     for (;;) {
         auto tried = detail::lockPrivateFile(file, create);
         if (tried.lock || !tried.busy) return std::move(tried.lock);
