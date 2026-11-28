@@ -154,12 +154,14 @@ inline std::optional<FocusLagPreview> measure(std::size_t radius, std::span<doub
     return selectPeak(std::span(scores).first(candidates), radius, support);
 }
 
+// The wide store is a plain owning pointer: an empty MSVC Debug vector already
+// allocates its iterator proxy, and the ordinary-rate path must allocate nothing.
 template <class Sample, std::size_t Capacity>
-std::span<Sample> captureStorage(std::array<Sample, Capacity> &local, std::vector<Sample> &wide,
+std::span<Sample> captureStorage(std::array<Sample, Capacity> &local, std::unique_ptr<Sample[]> &wide,
                                  std::size_t count) {
     if (count <= Capacity) return std::span(local).first(count);
-    wide.resize(count);
-    return wide;
+    wide = std::make_unique<Sample[]>(count);
+    return {wide.get(), count};
 }
 } // namespace focus_lag_detail
 
@@ -216,7 +218,7 @@ focusFindLag(const FocusLagRequest &request, const SharedAnalysis::Result &main,
     const auto count = captureFrames(radius);
     const std::array inputs{&main, &target};
     std::array<double, 2 * frames> localMid;
-    std::vector<double> wideMid;
+    std::unique_ptr<double[]> wideMid;
     auto mid = captureStorage(localMid, wideMid, 2 * count);
     for (std::size_t side = 0; side < inputs.size(); ++side) {
         const auto &source = *inputs[side];
@@ -246,8 +248,8 @@ focusFindLagOnTaps(const FocusLagRequest &request,
     const auto count = captureFrames(radius);
     std::array<double, 2 * frames> localMid;
     std::array<float, 2 * frames> localStereo;
-    std::vector<double> wideMid;
-    std::vector<float> wideStereo;
+    std::unique_ptr<double[]> wideMid;
+    std::unique_ptr<float[]> wideStereo;
     auto mid = captureStorage(localMid, wideMid, 2 * count);
     const auto stereo = captureStorage(localStereo, wideStereo, 2 * count);
     const auto left = stereo.first(count), right = stereo.last(count);
