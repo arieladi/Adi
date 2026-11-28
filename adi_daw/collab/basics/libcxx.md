@@ -6,6 +6,14 @@ Dependencies were verified using `adi_daw/tools/fetch_external.sh --build-only`.
 
 ## Results
 
+### 28 November 2026, 19:43 IST — seats/stretcher-chain `de70b52a0f1a3bcc9b3f0a3ef1e9a152d57f6cb1`
+
+Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. The full `ctest -LE performance` run passed 294 of 295 suites, including Link Playback. `adi_transport_info_tests` repeated the 12 rounded tempo and meter boundary assertions from `fb59db44`. The continuous inverse oracle at `adi_daw/tests/test_transport_info.cpp:145` still disagrees with the exact rounded event sample. The newer source tip `c99b1ac1` updates the fixture.
+
+JUCE Debug built and linked libc++ and libc++abi. All three offscreen window suites passed.
+
+The exact `link_playback.cpp`, `session.cpp` and `test_link_playback.cpp` passed strict Clang 20 Apple Silicon syntax checks using macOS 26.1 SDK headers and CMake’s Darwin Link definition. The test flags excluded the Linux-only wrapper.
+
 ### 28 November 2026, 19:26 IST — seats/stretcher-chain `fb59db44206426a837b24782688bc5c1b2bf404f`
 
 Headless Debug built with Clang 20, libc++, Pd and the strict warning flags. The full `ctest -LE performance` run passed 294 of 295 suites. `adi_transport_info_tests` repeated all 12 assertion failures on an isolated rerun.
