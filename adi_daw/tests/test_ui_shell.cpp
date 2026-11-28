@@ -11292,9 +11292,15 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     // With the middle note gone, the first lasts until the last begins.
     ed.select({2});
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "the middle note deleted");
+    root.frame();
+    check(!ed.timeSelection() && panel.details()->notes.size() == 2, "SC-236: two notes left and no time selected");
     click(panel.toolBox(Tool::Legato));
-    check(note(1).durationTicks == 2 * beat && note(3).durationTicks == 2 * bar - 2 * beat && undoIs("Legato", 2),
-          "Legato makes the first note last until the next begins, and the last reach the clip's end");
+    {
+        const auto said = "Legato makes the first note last until the next begins, and the last reach the clip's end: " +
+                          std::to_string(note(1).durationTicks) + " and " + std::to_string(note(3).durationTicks) + ", " +
+                          submitter.nextUndo()->label + " of " + std::to_string(submitter.nextUndo()->opCount);
+        check(note(1).durationTicks == 2 * beat && note(3).durationTicks == 2 * bar - 2 * beat && undoIs("Legato", 2), said.c_str());
+    }
 
     // Transpose: dragged, it reads the semitones while held and moves the notes when let go; typed too.
     const auto semitones = panel.fieldBox(Field::Transpose);
