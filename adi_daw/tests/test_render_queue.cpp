@@ -385,6 +385,12 @@ void missingSources() {
     check(matches(read(missingPlugin,866),137) && f.noStage(),
           "an unavailable audio effect with automation is bypassed as it is during playback");
 
+    f.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) "
+                       "VALUES(2,'device',1,'enabled',1,'enum');");
+    const auto pendingActivator = renderWav(f.job("missing-plugin-activator"), {});
+    check(matches(read(pendingActivator,866),137) && f.noStage(),
+          "a saved Activator lane waits for an unavailable local effect during export");
+
     auto stem=f.job("missing-file-stem"); stem.source.trackId=2;
     const auto samples=read(renderWav(stem,{}),866);
     check(!samples.empty() && std::all_of(samples.begin(),samples.end(),[](float value){return value==0;}),

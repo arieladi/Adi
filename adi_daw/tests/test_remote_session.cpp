@@ -140,6 +140,72 @@ std::vector<float> samples(const render::Result& result) {
     return output;
 }
 
+int testRemoteAutomation() {
+    struct Delivery {
+        std::size_t manual = 0;
+        std::size_t automated = 0;
+    } delivery;
+    struct Processor final : device::RemoteProcessor {
+        explicit Processor(Delivery& counts) : counts_(counts) {}
+        bool prepare(double, std::int32_t, std::int32_t, bool, std::int32_t& latency, std::string&) override {
+            latency = 0;
+            return true;
+        }
+        bool readParameters(std::vector<device::RemoteParameter>& output, StateDeadline, std::string&) override {
+            device::RemoteParameter manual;
+            manual.selector = 7;
+            manual.descriptor.id = "7";
+            manual.descriptor.automatable = false;
+            manual.descriptor.configurable = true;
+            device::RemoteParameter automated;
+            automated.selector = 8;
+            automated.descriptor.id = "8";
+            auto missing = manual;
+            missing.selector = 9;
+            missing.descriptor.id = "9";
+            missing.descriptor.missing = true;
+            output = {std::move(manual), std::move(automated), std::move(missing)};
+            return true;
+        }
+        bool exchange(const device::RemoteBlock& input, std::span<float> output, std::string& error) override {
+            for (const auto& event : input.events) {
+                if (event.type != engine::EventType::ParamValue) continue;
+                if (event.paramId == 7 || event.paramId == 9) {
+                    ++counts_.manual;
+                    error = "manual-only automation reached remote audio";
+                    return false;
+                }
+                if (event.paramId == 8) ++counts_.automated;
+            }
+            std::ranges::copy(input.audio, output.begin());
+            return true;
+        }
+        Delivery& counts_;
+    };
+
+    Project project;
+    project.store->db().exec("UPDATE devices SET remote_host_id=7 WHERE id=1;"
+        "UPDATE plugin_refs SET format='vst3',uid='00112233445566778899AABBCCDDEEFF' WHERE id=1;"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain,default_value) VALUES"
+        "(1,'device',1,'7',1,'normalized',0.25),(2,'device',1,'8',1,'normalized',0.75),"
+        "(3,'device',1,'9',1,'normalized',0.5);");
+    const engine::DeviceLoader remote = [&](const engine::DeviceRequest& request, std::string&) {
+        auto instance = std::make_unique<device::RemoteDevice>(
+            device::DeviceIdentity{request.ref->format, request.ref->uid, fixtureName, {}, {}}, request.channels,
+            std::make_unique<Processor>(delivery));
+        instance->setOffline(request.offline);
+        instance->prepare(request.sampleRate, request.maxFrames);
+        return instance;
+    };
+    const auto result = render::renderWav(project.job("automation.wav"), engine::withRemoteDevices({}, remote));
+    const auto audio = samples(result);
+    require(std::ranges::any_of(audio, [](float sample) { return sample != 0.0f; }) &&
+            delivery.manual == 0 && delivery.automated > 0 &&
+            project.store->db().execAndGet("SELECT COUNT(*) FROM automation_lanes").getInt() == 3,
+            "remote playback must deliver the automatable lane and preserve all authored lanes");
+    return 0;
+}
+
 int testRender(const std::string& path, std::uint16_t port, bool expectDisconnect) {
     Project project;
     device::ClapHost host;
@@ -266,6 +332,7 @@ int testRender(const std::string& path, std::uint16_t port, bool expectDisconnec
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "automation") return testRemoteAutomation();
         if (argc == 3 && std::string_view(argv[1]) == "host") return hostFixture(argv[2]);
         require(argc == 4, "missing fixture paths or port");
         const std::string_view mode(argv[1]);

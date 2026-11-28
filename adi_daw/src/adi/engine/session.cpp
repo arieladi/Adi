@@ -1382,19 +1382,26 @@ std::shared_ptr<DeviceAutomationBinding> Session::bindResolvedDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& suspended,
     const rows::Model& model) {
     return bindDeviceAutomation(std::move(program), suspended, transport_, spec_.sampleRate,
-        [&](std::int64_t id, std::uint32_t parameter) -> DeviceParameterSteps {
+        [&](std::int64_t id, std::uint32_t parameter) -> std::optional<DeviceParameterSteps> {
             const auto* instance = resolvedAutomationDevice(id, model);
-            if (!instance) return {};
+            if (!instance) return DeviceParameterSteps{};
             const auto native = entryFor(id)->resolvedFormat == "clap" ? device::ClapDevice::paramIdToText(parameter)
                                                                      : std::to_string(parameter);
             const auto* descriptor = instance->findParam(native);
-            if (!descriptor || descriptor->missing || !descriptor->automatable)
-                return {};
+            if (!descriptor) return DeviceParameterSteps{};
+            if (!descriptor->automatable) return std::nullopt;
+            if (descriptor->missing) return DeviceParameterSteps{};
             if (descriptor->shape == device::ParamShape::Switch)
-                return {true, 2};
+                return DeviceParameterSteps{true, 2};
             const bool stepped = descriptor->shape == device::ParamShape::Menu || descriptor->stepCount > 1;
-            return {stepped, descriptor->stepCount};
-        }, [&](std::int64_t id) { return resolvedAutomationDevice(id, model, true) != nullptr; });
+            return DeviceParameterSteps{stepped, descriptor->stepCount};
+        }, [&](std::int64_t id) {
+            const auto* entry = entryFor(id);
+            if (entry && entry->placeholder && !entry->retired && !entry->parked)
+                return DeviceActivatorTarget::WaitingForPlugin;
+            return resolvedAutomationDevice(id, model, true) ? DeviceActivatorTarget::Available
+                                                              : DeviceActivatorTarget::Unsupported;
+        });
 }
 
 bool Session::rebuild() {
@@ -1595,7 +1602,10 @@ std::vector<std::string> Session::collectProblems(bool includeUnavailable) {
         append(stripAutomation_->program->problems());
         append(stripAutomation_->problems);
     }
-    if (deviceAutomation_) append(deviceAutomation_->problems);
+    if (deviceAutomation_) {
+        append(deviceAutomation_->problems);
+        if (includeUnavailable) append(deviceAutomation_->waitingForPlugins);
+    }
     append(deviceSourceProblems_);
     if (includeUnavailable) append(placeholderAutomationProblems_);
     append(graph_.problems());

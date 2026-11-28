@@ -120,7 +120,7 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
                                                               const std::set<std::int64_t>& overridden,
                                                               const Transport& transport, double sampleRate,
                                                               const DeviceAutomationSteps& steps,
-                                                              const DeviceActivatorAvailable& activatorAvailable) {
+                                                              const DeviceActivatorResolver& activatorTarget) {
     auto out = std::make_shared<DeviceAutomationBinding>();
     out->program = std::move(program);
     if (!out->program) return out;
@@ -155,14 +155,26 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
         }
         out->laneFor[key] = lane.laneId;
         if (overridden.count(lane.laneId)) continue;   // ADR-0162: known, not bound
-        if (activator && (!activatorAvailable || !activatorAvailable(lane.ownerId))) {
-            out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
-            continue;
+        DeviceParameterSteps laneSteps;
+        if (activator) {
+            const auto target = activatorTarget ? activatorTarget(lane.ownerId) : DeviceActivatorTarget::Unsupported;
+            if (target == DeviceActivatorTarget::WaitingForPlugin) {
+                out->waitingForPlugins.push_back(who + ": Device Activator waits for the plug-in");
+                continue;
+            }
+            if (target == DeviceActivatorTarget::Unsupported) {
+                out->problems.push_back(who + ": Device Activator is available for loaded audio effects");
+                continue;
+            }
+        } else if (steps) {
+            const auto resolved = steps(lane.ownerId, paramId);
+            if (!resolved) continue;
+            laneSteps = *resolved;
         }
         auto& device = out->byDevice[lane.ownerId];
         if (!device) device = std::make_unique<DeviceAutomation>(transport, interval);
         if (activator) device->addActivator(lane);
-        else device->add(lane, paramId, steps ? steps(lane.ownerId, paramId) : DeviceParameterSteps{});
+        else device->add(lane, paramId, laneSteps);
     }
     return out;
 }

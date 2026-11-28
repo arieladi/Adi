@@ -13,6 +13,7 @@ from audiogridder_fixture import Fixture
 
 def main():
     executable, plugin = sys.argv[1:]
+    subprocess.run([executable, "automation"], check=True, timeout=15)
     with tempfile.TemporaryDirectory(prefix="adi-remote-session-") as directory:
         copy = Path(directory) / Path(plugin).name
         binary = copy

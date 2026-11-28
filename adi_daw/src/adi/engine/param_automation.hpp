@@ -52,8 +52,10 @@ struct DeviceParameterSteps {
     bool stepped = false;
     std::int32_t count = 0;
 };
-using DeviceAutomationSteps = std::function<DeviceParameterSteps(std::int64_t device, std::uint32_t parameter)>;
-using DeviceActivatorAvailable = std::function<bool(std::int64_t device)>;
+using DeviceAutomationSteps = std::function<std::optional<DeviceParameterSteps>(
+    std::int64_t device, std::uint32_t parameter)>;
+enum class DeviceActivatorTarget { Available, WaitingForPlugin, Unsupported };
+using DeviceActivatorResolver = std::function<DeviceActivatorTarget(std::int64_t device)>;
 
 /// One device's lanes, emitted as ParamValue events addressed to its node.
 class DeviceAutomation final : public EventSource {
@@ -105,16 +107,17 @@ struct DeviceAutomationBinding {
     /// a change to that parameter would override (ADR-0162).
     std::map<std::pair<std::int64_t, std::string>, std::int64_t> laneFor;
     std::vector<std::string> problems;
+    std::vector<std::string> waitingForPlugins;
 };
 
 /// Bind a program's device lanes. A lane in `overridden` is known but not
 /// bound. Named, never dropped: a lane that is not normalized, a param_ref that
 /// is not a plug-in parameter id, and a second lane for one parameter.
-/// A resolver can describe matching native parameters on this owner call.
-/// Its result is copied into the binding and it is never used by audio.
+/// Resolvers run only on the owner. An empty parameter result keeps a lane
+/// without sending its events. A placeholder Activator waits for its plug-in.
 [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden,
     const Transport& transport, double sampleRate, const DeviceAutomationSteps& steps = {},
-    const DeviceActivatorAvailable& activatorAvailable = {});
+    const DeviceActivatorResolver& activatorTarget = {});
 
 }  // namespace adi::engine
