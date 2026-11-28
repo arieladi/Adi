@@ -1883,7 +1883,11 @@ static std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchBank(const C
         if (clip == original.rows.slotClips.end()) continue; // the persisted reader has already validated this
         const auto audioRow = std::ranges::find(original.rows.audioClips, *cell.clipId, &rows::AudioClip::clipId);
         const bool warped = audioRow != original.rows.audioClips.end() && audioRow->warpEnabled;
-        const auto mode = warped && useNativeWarp ? nativeLaunchWarpMode(*audioRow) : std::nullopt;
+        const auto nativeMode = warped ? nativeLaunchWarpMode(*audioRow) : std::nullopt;
+        // Arrangement streams Re-Pitch. Use the same interpolation at a steady
+        // Session tempo so an authored Warp capture replays the performed PCM.
+        const auto mode = nativeMode && !fixedProjection && (useNativeWarp || *nativeMode == audio::WarpMode::RePitch)
+            ? nativeMode : std::nullopt;
         const auto& slotClock = mode ? nativeReferenceClock : fixedClock;
         const auto setting = data.settings(clip->id).value_or(launch::ClipLaunchSettings{});
         slot.clip = clip->id;
