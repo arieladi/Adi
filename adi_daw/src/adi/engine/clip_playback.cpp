@@ -179,6 +179,10 @@ struct Clip {
     // worker must not even temporarily claim a page until rendering releases
     // or supersedes it. No callback allocation or shared ownership operation.
     std::array<Page*,slots> admitted{};
+    // Established before a private Session source publishes. The worker
+    // reads only requests, so replacing callback requests with this set keeps
+    // every reachable phase available without adding cache slots.
+    std::optional<std::array<std::int64_t,slots>> retainedPages;
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
@@ -263,7 +267,19 @@ struct Clip {
         if(lookAhead)horizon(pageFrames*2);
         return out;
     }
-    void request(const std::array<std::int64_t,slots>& w) noexcept {
+    void retainUnrolledPages(std::int64_t firstFrame) noexcept {
+        const auto frames = std::min(end,length);
+        if (start != 0 || offset != 0 || loopLength != 0 || firstFrame < 0 || firstFrame >= frames) return;
+        const auto firstPage = firstFrame / pageFrames;
+        const auto lastPage = (frames - 1) / pageFrames;
+        if (lastPage - firstPage >= static_cast<std::int64_t>(slots)) return;
+        auto& retained = retainedPages.emplace();
+        retained.fill(-1);
+        for (auto page = firstPage; page <= lastPage; ++page)
+            retained[static_cast<std::size_t>(page - firstPage)] = page;
+    }
+    void request(const std::array<std::int64_t,slots>& requestedPages) noexcept {
+        const auto& w = retainedPages ? *retainedPages : requestedPages;
         // The same horizon lasts across many callbacks. Keep an in-flight
         // worker snapshot valid until the single producer changes its pages.
         if(std::equal(w.begin(),w.end(),requests.begin(),[](auto page,const auto& requested) {
@@ -1193,7 +1209,7 @@ std::shared_ptr<const LaunchAudioProject> prepareStoredLaunchProject(const ClipP
                     if (extent <= 0) throw std::runtime_error("Session clip source is shorter than one frame");
                     appendLaunchSource(*pagedProject, original, *clip, clip->id, end);
                     paged.push_back({clip->id, clip->id, frame(slot.startTick),
-                        frame(slot.loopStartTick), frame(slot.loopEndTick)});
+                        frame(slot.loopStartTick), frame(slot.loopEndTick), slot.legato});
                     pagedExtents.push_back(static_cast<std::uint64_t>(extent));
                 }
             }
@@ -1414,7 +1430,11 @@ bool ClipPlayback::primeAt(const Transport& snapshot,const Transport& alternate,
     return primeTargets(snapshot,&alternate,timeout,waitForPendingWarp);
 }
 bool ClipPlayback::primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
-                                std::chrono::milliseconds timeout) {
+                                std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame) {
+    if (audio::onAudioThread || timeout.count() < 0) return false;
+    if (retainFromFrame)
+        for (auto& clip : impl_->clips)
+            if (clip->track == track) clip->retainUnrolledPages(*retainFromFrame);
     return primeTargets(first, &loop, timeout, true, {}, track);
 }
 bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout,
@@ -1427,6 +1447,10 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     const bool synchronous=impl_->synchronousReads;
     const auto selected = [track](const Clip& clip) { return !track || clip.track == *track; };
     auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
+        if (clip.retainedPages) {
+            pages = *clip.retainedPages;
+            return true;
+        }
         pages=clip.wanted(target,impl_->maxFrames,!synchronous);
         if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames,!synchronous)) {
             if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;

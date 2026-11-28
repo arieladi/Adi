@@ -42,7 +42,9 @@ bool LaunchPagedAudio::prime(std::chrono::milliseconds timeout) {
         first.play();
         loop.locate(looping ? source.loopBeginFrame : source.firstFrame);
         loop.play();
-        if (pages_.primeTrackAt(source.sourceTrack, first, loop, timeout)) return false;
+        const auto earliest = looping ? std::min(source.firstFrame,source.loopBeginFrame) : source.firstFrame;
+        if (pages_.primeTrackAt(source.sourceTrack, first, loop, timeout,
+            source.legato ? std::optional{earliest} : std::nullopt)) return false;
         problems_.push_back("Session clips#" + std::to_string(source.clip) + ": page preparation did not fill the start and loop windows");
         return true;
     });

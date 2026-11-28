@@ -98,8 +98,10 @@ public:
                  bool waitForPendingWarp = true);
     /// Owner, before publishing a private paged source bank. Admit just this
     /// private track's initial/loop window without replacing other requests.
+    /// An unrolled Legato source can retain its whole reachable range if it
+    /// fits the existing page slots, starting at retainFromFrame.
     bool primeTrackAt(std::int64_t track, const Transport& first, const Transport& loop,
-                      std::chrono::milliseconds timeout);
+                      std::chrono::milliseconds timeout, std::optional<std::int64_t> retainFromFrame = {});
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }

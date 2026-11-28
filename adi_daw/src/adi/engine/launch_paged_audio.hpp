@@ -13,6 +13,7 @@ namespace adi::engine {
 struct LaunchPagedSource {
     std::int64_t clip = 0, sourceTrack = 0;
     std::int64_t firstFrame = 0, loopBeginFrame = 0, loopEndFrame = 0;
+    bool legato = false;
 };
 
 /// One paged player for a published collection of unrolled slot sources. A
