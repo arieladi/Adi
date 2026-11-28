@@ -3476,6 +3476,78 @@ void takeIsWholeWhileTheOwnerWorks(const std::filesystem::path &dir) {
           "SC-447: Redo brings the same take back, its audio still whole on disk");
     doc->release();
 }
+// A block the device core refuses (a driver that hands over more frames than it granted) is input the
+// take never received. The stream clock has to show those frames went by, so the take stops there
+// and says so. Before, the clock stood still and the take went on with a piece cut out of it.
+void refusedDeviceBlockEndsTheTake(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "refused-block.adi", true, {}, error);
+    check(doc != nullptr, "refused block: a project to record into");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    check(set("track.setArm", {{"id", 4}, {"armed", true}}) && set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) &&
+              doc->synchronise(),
+          "refused block: arm the audio track");
+    constexpr int granted = 256, kept = 4 * granted;
+    device::DeviceCore driver;
+    check(driver.open(*doc, 48000, granted, granted).opened, "refused block: the device opens at 256 frames");
+    const bool started = doc->startRecording(0, 1, false);
+    check(started, "refused block: start the take");
+    if (!started) {
+        driver.close();
+        return;
+    }
+    std::array<float, 2 * granted> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    int fed = 0;
+    const auto callback = [&](int frames) {
+        for (int i = 0; i < frames; ++i)
+            input[static_cast<std::size_t>(i)] = static_cast<float>(fed + i) / 8192.f;
+        driver.process(outputs, 2, inputs, 1, frames, engine::OutputChannelMap{3});
+        fed += frames;
+    };
+    for (int block = 0; block < 4; ++block)
+        callback(granted);
+    callback(2 * granted);
+    check(driver.oversizeRefusals() == 1 && driver.streamTime() == kept + 2 * granted,
+          "refused block: the refusal is counted and the stream clock shows its frames went by");
+    for (int block = 0; block < 4; ++block)
+        callback(granted);
+    doc->stopRecording();
+    callback(granted);
+    driver.close();
+    check(doc->settleRecording(), "refused block: settle the take");
+    const auto landed = doc->takeLanded();
+    if (landed)
+        std::printf("refused block: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == 1 &&
+              landed->message.find("Kept the audio recorded before the interruption") != std::string::npos,
+          "refused block: the take keeps what came before the gap and says it was interrupted");
+    if (!landed || landed->clips.size() != 1)
+        return;
+    SQLite::Statement take(doc->store().db(),
+                           "SELECT m.rel_path FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                           "JOIN media_files m ON m.id=a.media_id WHERE c.id=?");
+    take.bind(1, landed->clips.front());
+    if (!take.executeStep()) {
+        check(false, "refused block: the take has a file");
+        return;
+    }
+    audio::WavReader saved(media::projectFolder(doc->store()) / media::pathFromUtf8(take.getColumn(0).getString()));
+    std::vector<float> audio(static_cast<std::size_t>(saved.frames()));
+    bool exact = saved.channels() == 1 && saved.frames() == static_cast<std::uint64_t>(kept) &&
+                 saved.read(audio.data(), static_cast<std::uint32_t>(audio.size())) == audio.size();
+    for (std::size_t i = 0; exact && i < audio.size(); ++i)
+        exact = audio[i] == static_cast<float>(i) / 8192.f;
+    check(exact, "refused block: the take holds the input up to the gap and nothing from after it");
+}
 void mixedRecordingLatency(const std::filesystem::path &dir) {
     constexpr int rate = 48000, frames = 64, reportedSamples = 32;
     constexpr const char *setting = "audio.driverErrorCompensationMs";
@@ -6090,6 +6162,8 @@ int main(int argc, char **argv) {
         recordWithDeviceLatency(songStartLatencyDir.path(), 0);
         test::TempDirectory wholeTakeDir("ui_document", "whole-take");
         takeIsWholeWhileTheOwnerWorks(wholeTakeDir.path());
+        test::TempDirectory refusedBlockDir("ui_document", "refused-block");
+        refusedDeviceBlockEndsTheTake(refusedBlockDir.path());
         test::TempDirectory mixedLatencyDir("ui_document", "mixed-latency");
         mixedRecordingLatency(mixedLatencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
