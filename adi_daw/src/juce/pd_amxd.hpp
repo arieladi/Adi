@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The `.amxd` translator, steps 1 and 2 -- DEV-16 (ADR-0203 d8: an addition at P2).
+// The `.amxd` translator, steps 1 to 10 -- DEV-16 (ADR-0203 d8: an addition at P2).
 //
 // A Max for Live device file is a small chunked container -- `ampf` with the
 // device kind, `meta`, then `ptch` holding the Max patcher as JSON -- and the
@@ -21,8 +21,59 @@
 //     division through [i] after, so [+ 1] fed 2.7 gives 3 as in Max.
 //   * SUBPATCHERS. [p name] becomes [pd name]; an inlet carries a signal
 //     ([inlet~]) when the parent feeds it one, an outlet when it is fed one.
-// Refused, for later steps: [cycle~]'s phase inlet (an offset in Max, a reset
-// in Pd), [line~], float modulo, bpatchers, MIDI devices and instruments; and
+//   * [line~] (step 3). Max chains a list of (target, ms) pairs; Pd's
+//     [vline~] takes one segment and reads a third number as a delay. So a
+//     [pd max-line~] walks the pairs and schedules each with the delay
+//     accumulated so far. Step 7: a time in the right inlet carries the next
+//     lone number and then reverts to 0; the right outlet bangs when the
+//     whole list has played (a [delay] that each new input reschedules); an
+//     argument is the initial value.
+//   * Step 4, where Pd has no box of the same name or the same contract:
+//     [prepend]/[append] (a list then [list trim], so the first word is the
+//     selector as in Max), [!- n] as (-x) + n, [gate n] as a prefix and a
+//     [route], [selector~ n] as one [*~] per input summed, [slide~] as its
+//     own recursion in [fexpr~], and [biquad~], whose a0 a1 a2 b1 b2 (with
+//     the feedback SUBTRACTED) become Pd's fb1 fb2 ff1 ff2 ff3 (ADDED): a
+//     coefficient list is reordered and its b's negated on the way in.
+//     live.text (toggle mode), live.menu and live.tab are parameters too.
+//   * Max's [%] is an INTEGER modulo whatever it is given (step 8): [% 2.5]
+//     takes 2 as its divisor and truncates what it is fed, as [+ 1] does.
+//   * [cycle~]'S PHASE INLET (step 6) offsets the phase in Max and resets it
+//     in Pd's [osc~]: such a [cycle~] is [phasor~] -> [+~] -> [cos~].
+//   * Step 9, from an audit of the table against Max's reference pages: a
+//     bare [/~] divides by 1; a bare [t] has two int outlets; [gate] and
+//     [selector~] clamp a choice past their count; a bang into [gate]
+//     reports the open outlet; [loadbang] and live.thisdevice take a bang;
+//     plugin~/plugout~'s channel arguments do not route; a message box's
+//     "---" names are the device's, and its right inlet sets it; number
+//     boxes keep their minimum, maximum and float format; and the fan-out
+//     order follows the destination INLET's x, so one outlet into both
+//     inlets of a box feeds the right one first. Refused: quoted symbols in
+//     messages, a signal into [phasor~]'s right inlet (hard sync), unstable
+//     biquad~ arguments, live.* Steps and their outlets past the first.
+//   * Step 10, the audit's messages: an int operator's left inlet takes a
+//     list (both operands) and "set"; int division by 0 divides by 1;
+//     [i]/[f] take "set"; [prepend]/[append] take "set" and turn a bang
+//     into the word "bang"; [cycle~]/[phasor~] take "reset"; biquad~ takes
+//     "clear"; [pack] takes a list and a bang with its int slots truncated
+//     on the way out; a message box keeps its $ arguments for a later bang.
+//     Not made explicit, and said so: Pd's [t s] turns a number into the
+//     symbol "float" where Max's gives "", and a selector message into
+//     [t i]/[t f] gives Max 0 and Pd an error; a float division by 0 gives
+//     Pd 0 (Max: -2^31, by its reference; reading 14). Refused: slide~'s
+//     reset.
+//   * BPATCHERS (step 5). One whose patcher is embedded becomes a [pd name]
+//     as a [p] does; Max replaces #1 to #9 in its boxes by its arguments and
+//     #0 by a name unique to the instance, and so does the translation (#0
+//     as $0-bp-<its path>, so two instances never share a send). Its [p]s
+//     take the same arguments; a bpatcher inside it takes its own. A # with
+//     no argument is refused rather than guessed, as is a bpatcher naming a
+//     patcher file outside the device.
+// Refused, for later steps: a biquad~ whose coefficients change at run time
+// while its smoothing is on (Max's default; how it smooths is not yet read),
+// signal-rate
+// biquad~ coefficients and slide~ times, live.text's button mode, bpatchers
+// of a file outside the device, MIDI devices and instruments; and
 // not read at all: frozen devices (`mx@c`) and Live's own encrypted devices
 // (`ciph`).
 //
