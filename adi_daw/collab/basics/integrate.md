@@ -1,4 +1,4 @@
-Integrating basics/integrate-4 at `3eec511c5964b4e43b251e887477691d376bd72b`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
+Integrating basics/integrate-4 at `b629045be7463a43a23982a086d9377d8b7b79e6`. Director retest head `c07b8e6e409e1f03cbd2e945b3b30e590475cf95`.
 
 # Basics integration
 
@@ -20,8 +20,10 @@ Started from `land/basics-1128c` at `16064c0a6d8e3f435ed5cb9626e09d2b73f042cd` w
 | `basics/speed-chain` `88ea54180913236a20767c6433f64f1da4b17d1a` | `498368fad4ec4caa4500c569cd28b50c3d436432` | Resolved two conflicts. The shared Arrangement and Session playback resolver uses Speed’s verified digest for relocated media. Retained the Device import and moved-media cache fixtures together. Focused Clang 14 syntax passed. |
 | `win/adr-0267` `f3879fcca2655a784b089ff986ad861792d473f1` | `0e38a07f8e5f35e5714a0359dc247b0e35460fa3` | Clean merge. Included ADR-0267 and ADR-0268. |
 | `win/devices-sheet-1` `b65fb0bac200689a9464168932e6e8731517ef4c` | `3eec511c5964b4e43b251e887477691d376bd72b` | Clean merge. Added the HTML and PNG versions of sheets 5–8. The prior sheets already on the landing stack remain. |
+| `basics/test-chain-2` follow-up `13eb88b8c2a6ac1f8d1d56a63a228da77b53bfd5` | `987c99227352f84c387ab22e500519df3f7793bd` | Clean merge. Added the tested double-click track creation below the lanes and the opt-in Loop switch behavior for selected time. [Director test log](https://github.com/arieladi/Adi/blob/8741d7759/adi_daw/collab/basics/test.md) |
+| Tested `seats/stretcher-session-integration` follow-up `d968a7ff4c31a045d066a78d30576d6aa4b5019d` | `b629045be7463a43a23982a086d9377d8b7b79e6` | Clean merge. Active physical Legato loops keep their saved source window and timing across No Stop scenes. The owner passed all 312 headless suites at this tip. Four subsequent companion commits still awaited their full gate at the cutoff. [Stretcher log](https://github.com/arieladi/Adi/blob/5b0bfb9b214899bb0b11e1d00049d1041c557366/adi_daw/collab/seats/stretcher.md) |
 
-At the Session checkpoint, Slot Commit, Arrangement Isolation, Performance Capture, R3 Worker and Overlay Delay passed. Persisted Launch, Performance Graph, Scene Clock and Warp Integration exposed regressions at the shared media-bank boundaries. `e54505f9` separates native one-shot validation from pinned physical handovers. Additional fixes are in progress. The assembled head passed all six validators and the landing-check tests. The full JUCE build is running, with the two C++ Node helper checks enabled. The JavaScript helper passed all 15 tests on the CI Node version.
+At the Session checkpoint, Slot Commit, Arrangement Isolation, Performance Capture, R3 Worker and Overlay Delay passed. Persisted Launch, Performance Graph, Scene Clock and Warp Integration exposed regressions at the shared media-bank boundaries. `e54505f9` separates native one-shot validation from pinned physical handovers. `f845be1f` prepares fixed source projections for retained tempo periods. The delayed scene now keeps its sample-192000 clock switch and produces the expected −0.25 PCM. `bb4691a98` matches steady Re-Pitch across Session and Arrangement. The captured Warp fixture went from 839 differing samples to exact PCM. The four original failing fixtures passed scoped verification with their assertions intact. The full JUCE build and CTest gate are running on the combined head, with both C++ Node helper checks enabled. All six validators and the landing-check tests passed. The JavaScript helper passed all 15 tests on the CI Node version.
 
 ## Integrate-3
 
