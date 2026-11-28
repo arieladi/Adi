@@ -27,7 +27,55 @@ director has written that the desk is free.
 | SC-391 | `basics/device-chain` 7f883d11, 543beae7 | A download cut short plays as far as it goes, and a WAV whose size fields a crashed recorder left at zero reads to the end of its data. | `test_decode` (truncated FLAC plays; the crashed recorder's 4800 frames); refusals checked with a FLAC holding no audio | pushed |
 | SC-428 | `basics/device-chain` 72cd6bda | A plug-in window reopens wholly on a screen that exists: moved, never resized, onto the monitor it stands on most. | `test_ui_window_state` whollyOnScreen | pushed |
 | SC-454 | `basics/device-chain` b8a53399b (fix 6fdfceb68) | The 21 catalogued built-ins show their declared controls directly. EQ Eight’s 87 controls and ADI-Shaper’s 418 used to hit the hosted Configure limit. | Linux Debug with JUCE, Pd and warnings as errors. `env -u DISPLAY ctest -LE performance` passed 295/295, including the shell, document and both WTS-01 acceptance tests. | ready for Win’s landing stack |
-| SC-455 | `basics/device-log`, review below | Live 12 control inventory for eleven devices and comparison with Win’s first drawing. | Ableton panel images, manual and release notes compared with sheet 1 at `f834e6d40`. | blocked on the director’s sheet agreement |
+| SC-455 | `basics/device-log`, review below | Live 12 control inventory for eleven devices and comparison with Win’s first drawing. | Ableton panel images, manual and release notes compared with sheet 1 at `f834e6d40`. | reference review done, sheets agreed in ADR-0267 |
+| SC-485 | `basics/device-chain` 98e8123bb, a79f592d6 | The full folded strip unfolds on a double-click. The activator, expansion arrow and rotated name fit in the strip. | The software peer exercises the title, lower rail, arrow, and activator, including a runtime replacement during a pending click. | ready for Win’s landing stack |
+| SC-484 | `basics/device-chain` 8dd2b84d6 | Chord Comb explains Color, Saw and Square in Info View. Color Cab shows worker progress and the cost of each selectable Size. | Shell tests cover hover and the build indicator. The document test proves Undo and Redo for a sample replacement, Size and Chord Comb State on the live built-ins. | ready for Win’s landing stack |
+
+Both rows were tested on the merged chain at `c1baac830`, which includes main at `629a48341`.
+Linux Debug with JUCE, Pd and warnings as errors built `adi_app` and `adi_play`.
+`env -u DISPLAY ctest -LE performance --parallel 4` passed 306/306, including the shell,
+document, both WTS-01 acceptance tests and the Linux Node helper tests. All six validators
+and 15 Node package tests passed.
+
+## SC-485 folded devices
+
+The folded strip was 22 pixels wide and clipped the expansion arrow. Its double-click handler
+recognized the top 17 pixels. The strip is now 32 pixels wide and fits the rotated name between
+the title controls and any playback problem marker. The full strip handles double-clicks. A
+folded activator uses JUCE’s double-click interval for a mouse single-click, so a double-click
+there unfolds the device without writing an activator change. Keyboard activation is immediate.
+This row touches the window seat’s Device View and shell test.
+
+## SC-484 Chord Comb and Color Cab
+
+Info View describes how Chord Comb’s Color darkens its ringing and makes high harmonics fade
+sooner. Saw rings on every harmonic and Square on the odd ones. The descriptions are attached
+to the actual knob and switch.
+
+Color Cab’s prior path used a fixed 256-tap filter and prepared it synchronously from the window.
+The Size control now writes the chosen tap count into the sample state. Sample drops, sample
+Hot-Swap and Size changes prepare the new colour on a worker. The card shows “Building new
+colour…” during preparation. The old kernel plays until the prepared state lands and the
+existing 20 ms crossfade begins. The opener defaults to 256 taps. Sample replacement, clearing
+and sample-rate changes carry the selected Size forward.
+
+This row touches the window seat’s Device View, application and project document, the
+built-in sample host, and the engine seat’s sample slots and snapshot.
+
+The Size choices display their steady-state convolution work relative to 64 taps. Each tap
+adds one multiply-and-add per channel per sample. A crossfade briefly evaluates both kernels.
+
+| Size (taps) | Relative FIR work | CPU time per stereo block in the DSP probe |
+|---:|---:|---:|
+| 64 | 1× | 24.83 µs |
+| 128 | 2× | 56.55 µs |
+| 256 | 4× | 117.15 µs |
+| 512 | 8× | 251.99 µs |
+| 1024 | 16× | 495.78 µs |
+
+The probe used 48 kHz, 256-frame blocks, a settled kernel and optimized GCC on one x86-64 thread.
+The figures are the median of seven runs and isolate the convolution DSP. The UI uses the
+portable tap ratios. The layout reference is ADR-0267 d9 and Win’s eighth sheet. [ADR-0267](https://github.com/arieladi/Adi/blob/f3879fcca2655a784b089ff986ad861792d473f1/adi_daw/docs/DECISIONS.md#L21097) · [Sheet 8](https://github.com/arieladi/Adi/blob/b65fb0bac200689a9464168932e6e8731517ef4c/adi_daw/collab/window/design/proposals/devices-8.png)
 
 ## SC-454 device-panel findings
 
@@ -126,10 +174,10 @@ to sheet 2. [Win’s first sheet at `f834e6d40`](https://github.com/arieladi/Adi
 - **Windows sheet 1.** The footer assigns Redux to the second sheet.
 
 ## For the director
-- **SC-455.** Win recorded that you liked EQ Eight and Utility in sheet 1 and kept the Multiband
+- **SC-455, first sheet review.** Win recorded that you liked EQ Eight and Utility in sheet 1 and kept the Multiband
   Dynamics crossover strip. In Live, the High and Low crossover fields sit next to their bands,
   and the central graph edits threshold and ratio. Carry those graph edits into the drawing with
-  the crossover strip. ADR-0243 d1 puts the implementation of the look after sheet agreement.
+  the crossover strip. ADR-0267 records the subsequent sheet agreement.
 - The landing check ran at the chain's head (every item in it), not once per item: a full build here is
   several hours at 2 jobs, and the items touch none of the JUCE modules that take that time.
 - **Waiting for the ADI studio PC to enter the project** (the director, 27 November): SC-378's desk
