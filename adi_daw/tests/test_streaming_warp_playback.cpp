@@ -470,6 +470,7 @@ std::vector<StereoFrame> exportWav(const std::filesystem::path& project, std::si
 void preparedFallbackNotice() {
     Project project("complex");
     project.tempo(0, 4 * quarter, 300);
+    project.store->db().exec("INSERT INTO mixer_strip(track_id) VALUES(1)");
     constexpr std::string_view notice = "clips#7: tempo changes need a new prepared Warp render";
     {
         Session session;
@@ -486,6 +487,14 @@ void preparedFallbackNotice() {
         check(playback == exported && std::any_of(playback.begin(), playback.end(),
               [](const auto& frame) { return std::abs(frame.left) > 0.25f; }),
               "the fallback is audible and exports the same prepared PCM");
+        GainStageOptions options;
+        options.endSample = static_cast<std::int64_t>(frames);
+        const auto gain = session.autoGainStage(*project.store, options);
+        if (!gain.commit.ok) std::printf("prepared Warp gain stage: %s\n", gain.commit.error.c_str());
+        else if (gain.tracks.size() == 1)
+            std::printf("prepared Warp gain-stage RMS %.6f dBFS\n", gain.tracks.front().measuredDb);
+        check(gain.commit.ok && gain.tracks.size() == 1 && !gain.tracks.front().silent,
+              "auto gain measures the prepared Warp fallback");
     }
 
     project.store->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
