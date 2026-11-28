@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <stop_token>
 #include <string>
@@ -66,6 +67,20 @@ struct WarpResult {
 /// Output PCM is aligned offline, so its eventual paged reader adds no live
 /// stretcher latency. A future live stretcher must declare its own PDC delay.
 [[nodiscard]] WarpResult prepareWarp(const WarpRenderPlan&,std::stop_token={});
+struct WarpPcmReader {
+    void* context = nullptr;
+    void (*read)(void*, std::uint64_t fileFrame, float* interleaved, std::uint32_t frames) = nullptr;
+};
+inline constexpr double kArrangementTonesGrainSeconds = 0.03;
+/// Admit the exact-unity, same-rate offline subset with less than one complete
+/// source window needed per page. Tones uses the default Arrangement grain.
+[[nodiscard]] std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan&,
+    std::uint32_t sourceRate,std::uint16_t channels) noexcept;
+/// Worker only. Render a page from an admitted plan in playback-reverse order.
+void renderReversedUnityR3Page(const WarpPcmReader&,std::uint64_t sourceStart,std::uint64_t sourceFrames,
+                               std::uint32_t rate,WarpMode,std::uint16_t channels,
+                               std::uint64_t first,std::span<float> output);
+
 
 /// A shared worker result. An empty result means the render is pending.
 /// Request and inspect from owner or disk workers only.

@@ -61,7 +61,8 @@ std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double 
     if (std::any_of(model.tempo.begin(), model.tempo.end(),
                     [](const rows::TempoEvent& event) { return event.curve == 1 || event.curve == 2; }))
         clock->rampClock = TempoMap::fromRows(model.tempo);
-    clock->knots.push_back({0,0,5765760.0L*2});
+    const auto initialBpm = model.tempo.empty() ? 120.0L : static_cast<long double>(model.tempo.front().bpm);
+    clock->knots.push_back({0, 0, 5765760.0L * initialBpm / 60.0L});
     for(const auto& row:model.tempo) {
         if(row.posTicks<0 || !std::isfinite(row.bpm) || row.bpm<=0 ||
             static_cast<long double>(row.posTicks)<clock->knots.back().tick)

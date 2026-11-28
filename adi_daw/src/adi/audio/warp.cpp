@@ -31,6 +31,7 @@ namespace {
 namespace fs=std::filesystem;
 constexpr std::uint32_t blockFrames=4096;
 constexpr std::uint64_t maxFrames=(std::uint64_t{1}<<31)-1;
+constexpr std::size_t maxAnchors=1000000;
 struct Failure {WarpError code;const char* text;};
 void cancelled(std::stop_token stop){if(stop.stop_requested())throw Failure{WarpError::Cancelled,"warp cancelled"};}
 struct Decoded {
@@ -57,7 +58,7 @@ void validate(const WarpRenderPlan& plan,const WavReader& reader) {
     if(plan.sourceFrames==0 || plan.sourceFrames>maxFrames || plan.sourceStart>reader.frames() ||
        plan.sourceFrames>reader.frames()-plan.sourceStart || reader.channels()==0 || reader.channels()>64 ||
        reader.sampleRate()<8000 || reader.sampleRate()>768000 || plan.outputRate<44100 || plan.outputRate>768000 ||
-       plan.anchors.size()<2 || plan.anchors.size()>1000000 || !std::isfinite(plan.transposeSemis) ||
+       plan.anchors.size()<2 || plan.anchors.size()>maxAnchors || !std::isfinite(plan.transposeSemis) ||
        plan.transposeSemis<-96 || plan.transposeSemis>96 || !std::isfinite(plan.formantScale) ||
        plan.formantScale<=0 || plan.formantScale>8)
         throw Failure{WarpError::InvalidPlan,"invalid warp source, rate, pitch or anchor count"};
@@ -248,7 +249,9 @@ void renderTexture(const WarpRenderPlan& plan,WavReader& reader,WavWriter& write
     }
 }
 
-void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std::stop_token stop) {
+template<class Read, class Write>
+void renderR3(const WarpRenderPlan& plan,std::uint32_t sourceRate,std::uint16_t channels,
+              Read&& readSource,Write&& write,std::stop_token stop) {
     using Stretcher=RubberBand::RubberBandStretcher;
     auto options=Stretcher::OptionProcessOffline|Stretcher::OptionEngineFiner|Stretcher::OptionThreadingNever;
     if(plan.mode==WarpMode::Tones) {
@@ -257,9 +260,9 @@ void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std
         if(plan.grainSeconds<=0.05)options|=Stretcher::OptionWindowShort;
     }
     if(plan.mode==WarpMode::ComplexPro)options|=Stretcher::OptionFormantPreserved;
-    const double rateScale=static_cast<double>(reader.sampleRate())/plan.outputRate;
+    const double rateScale=static_cast<double>(sourceRate)/plan.outputRate;
     const auto outputFrames=plan.anchors.back().outputFrame;
-    Stretcher stretcher(reader.sampleRate(),reader.channels(),options,
+    Stretcher stretcher(sourceRate,channels,options,
         static_cast<double>(outputFrames)/static_cast<double>(plan.sourceFrames),std::exp2(plan.transposeSemis/12)*rateScale);
     if(stretcher.getEngineVersion()!=3)throw Failure{WarpError::Process,"R3 engine unavailable"};
     stretcher.setDebugLevel(0);
@@ -277,23 +280,22 @@ void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std
         const auto& point=plan.anchors[index];anchors.emplace(static_cast<std::size_t>(point.sourceFrame),static_cast<std::size_t>(point.outputFrame));
     }
     stretcher.setKeyFrameMap(anchors);
-    const auto channels=reader.channels();
     std::vector<float> interleaved(static_cast<std::size_t>(blockFrames)*channels);
     std::vector<std::vector<float>> planes(channels,std::vector<float>(blockFrames));
     std::vector<const float*> input(channels);std::vector<float*> output(channels);
     for(std::size_t channel=0;channel<channels;++channel){input[channel]=planes[channel].data();output[channel]=planes[channel].data();}
-    auto read=[&](std::uint32_t frames) {
+    auto read=[&](std::uint64_t position,std::uint32_t frames) {
         cancelled(stop);
-        if(reader.read(interleaved.data(),frames)!=frames)throw Failure{WarpError::Io,"short warp source read"};
+        readSource(plan.sourceStart + position,interleaved.data(),frames);
         for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<channels;++channel)
             planes[channel][frame]=std::isfinite(interleaved[static_cast<std::size_t>(frame)*channels+channel])?interleaved[static_cast<std::size_t>(frame)*channels+channel]:0;
     };
-    reader.seek(plan.sourceStart);
     for(std::uint64_t position=0;position<plan.sourceFrames;) {
-        const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.sourceFrames-position));read(count);position+=count;
+        const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.sourceFrames-position));
+        read(position,count);position+=count;
         stretcher.study(input.data(),count,position==plan.sourceFrames);
     }
-    reader.seek(plan.sourceStart);std::uint64_t written=0;
+    std::uint64_t written=0;
     auto drain=[&]() {
         for(int available=stretcher.available();available>0;available=stretcher.available()) {
             cancelled(stop);const auto requested=std::min<std::size_t>(blockFrames,static_cast<std::size_t>(available));
@@ -302,17 +304,127 @@ void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std
             if(count>outputFrames-written)throw Failure{WarpError::Process,"R3 output exceeds its declared duration"};
             for(std::size_t frame=0;frame<count;++frame)for(std::size_t channel=0;channel<channels;++channel)
                 interleaved[frame*channels+channel]=planes[channel][frame];
-            writer.write(interleaved.data(),static_cast<std::uint32_t>(count));written+=count;
+            write(written,interleaved.data(),static_cast<std::uint32_t>(count));written+=count;
         }
     };
     for(std::uint64_t position=0;position<plan.sourceFrames;) {
-        const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.sourceFrames-position));read(count);position+=count;
+        const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.sourceFrames-position));
+        read(position,count);position+=count;
         stretcher.process(input.data(),count,position==plan.sourceFrames);drain();
     }
     drain();
     if(written!=outputFrames || stretcher.available()!=-1)throw Failure{WarpError::Process,"R3 did not produce its declared duration"};
 }
+
+void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std::stop_token stop) {
+    auto cursor=std::numeric_limits<std::uint64_t>::max();
+    renderR3(plan,reader.sampleRate(),reader.channels(),
+        [&](std::uint64_t first,float* output,std::uint32_t frames) {
+            if (cursor!=first) reader.seek(first);
+            if (reader.read(output,frames)!=frames) throw Failure{WarpError::Io,"short warp source read"};
+            cursor=first+frames;
+        },[&](std::uint64_t,const float* pcm,std::uint32_t frames) {
+            writer.write(pcm,frames);
+        },stop);
 }
+}
+
+namespace {
+struct UnityR3PageShape {
+    std::uint32_t pageFrames, historyFrames, maxReadFrames;
+};
+
+std::optional<UnityR3PageShape> unityR3PageShape(std::uint32_t rate,WarpMode mode) noexcept {
+    if ((rate != 44100 && rate != 48000 && rate != 96000) ||
+        (mode != WarpMode::Complex && mode != WarpMode::ComplexPro && mode != WarpMode::Tones))
+        return {};
+
+    // Pinned R3 rounds rate/32 up to a power of two for classification.
+    // The input window covers either the longest FFT (two classification
+    // windows) or the classification FFT plus its short-mode read-ahead.
+    const auto classification = rate == 96000 ? 4096u : 2048u;
+    const auto sourceWindow = mode == WarpMode::Tones ? classification + classification/4 : 2*classification;
+    const auto historyFrames = 2*sourceWindow;
+    const auto pageFrames = (8192u*rate+47999u)/48000u;
+    // Allow almost one feed block of outward alignment at each edge.
+    // Before clipping to the true source window the span is block-aligned.
+    const auto maxReadFrames = (pageFrames+2*historyFrames+2*(blockFrames-1))/blockFrames*blockFrames;
+    return UnityR3PageShape{pageFrames,historyFrames,maxReadFrames};
+}
+
+bool validUnityR3Source(std::uint64_t start,std::uint64_t frames,std::uint16_t channels,
+                         const UnityR3PageShape& shape) noexcept {
+    return channels >= 1 && channels <= 2 && frames > shape.maxReadFrames && frames <= maxFrames &&
+        start <= std::numeric_limits<std::uint64_t>::max()-frames;
+}
+}
+
+std::optional<std::uint32_t> reversedUnityR3PageFrames(const WarpRenderPlan& plan,
+    std::uint32_t sourceRate,std::uint16_t channels) noexcept {
+    // The multi-window 96 kHz modes can exhaust read-ahead even with
+    // optimized DSP. Keep their whole prepared render.
+    if (sourceRate == 96000 && (plan.mode == WarpMode::Complex || plan.mode == WarpMode::ComplexPro)) return {};
+    const auto shape = unityR3PageShape(sourceRate,plan.mode);
+    if (!shape || sourceRate != plan.outputRate ||
+        !validUnityR3Source(plan.sourceStart,plan.sourceFrames,channels,*shape) ||
+        plan.transposeSemis != 0 || plan.formantScale != 1 ||
+        (plan.mode == WarpMode::Tones && plan.grainSeconds != kArrangementTonesGrainSeconds) ||
+        plan.anchors.size() < 2 || plan.anchors.size() > maxAnchors || plan.anchors.front() != WarpAnchor{0,0} ||
+        plan.anchors.back() != WarpAnchor{plan.sourceFrames,plan.sourceFrames})
+        return {};
+    // The offline R3 key-frame map changes the time ratio at each marker.
+    // Strictly increasing identity anchors leave it exactly at unity, so
+    // the bounded page render can use its endpoint-only map.
+    const auto nonidentity = std::adjacent_find(plan.anchors.begin(),plan.anchors.end(),
+        [](const WarpAnchor& before,const WarpAnchor& next) {
+            return next.sourceFrame <= before.sourceFrame || next.sourceFrame != next.outputFrame;
+        });
+    if (nonidentity != plan.anchors.end()) return {};
+    return shape->pageFrames;
+}
+
+void renderReversedUnityR3Page(const WarpPcmReader& reader,std::uint64_t sourceStart,std::uint64_t sourceFrames,
+                               std::uint32_t rate,WarpMode mode,std::uint16_t channels,
+                               std::uint64_t first,std::span<float> output) {
+    const auto shape = unityR3PageShape(rate,mode);
+    if (onAudioThread || !reader.read || !shape || !validUnityR3Source(sourceStart,sourceFrames,channels,*shape) ||
+        output.empty() || output.size() % channels != 0 || output.size() / channels > shape->pageFrames ||
+        first > sourceFrames || output.size() / channels > sourceFrames-first)
+        throw std::invalid_argument("invalid reversed R3 page");
+    const std::uint64_t historyFrames = shape->historyFrames;
+    const auto count = static_cast<std::uint64_t>(output.size() / channels);
+    const auto forwardBegin = sourceFrames-first-count;
+    const auto forwardEnd = forwardBegin+count;
+    // Offline R3 fixes its hop and resets every phase at unity. Starting
+    // on the original input grid and retaining both analysis/synthesis
+    // halos reproduces the original PCM, including its true window edges.
+    const auto cropBegin = (forwardBegin > historyFrames ? forwardBegin-historyFrames : 0) /
+                           blockFrames * blockFrames;
+    const auto cropEnd = std::min(sourceFrames,(forwardEnd+historyFrames+blockFrames-1)/blockFrames*blockFrames);
+    WarpRenderPlan plan;
+    plan.mode = mode;
+    plan.outputRate = rate;
+    if (mode == WarpMode::Tones) plan.grainSeconds = kArrangementTonesGrainSeconds;
+    plan.sourceFrames = cropEnd-cropBegin;
+    plan.anchors = {{0,0},{plan.sourceFrames,plan.sourceFrames}};
+    std::vector<float> raw(static_cast<std::size_t>(plan.sourceFrames)*channels);
+    reader.read(reader.context,sourceStart+cropBegin,raw.data(),static_cast<std::uint32_t>(plan.sourceFrames));
+    const auto wantedBegin = forwardBegin-cropBegin;
+    const auto wantedEnd = forwardEnd-cropBegin;
+    try {
+        renderR3(plan,rate,channels,[&](std::uint64_t position,float* pcm,std::uint32_t frames) {
+            std::copy_n(raw.data()+position*channels,static_cast<std::size_t>(frames)*channels,pcm);
+        },[&](std::uint64_t position,const float* pcm,std::uint32_t frames) {
+            const auto begin = std::max(position,wantedBegin);
+            const auto end = std::min(position+frames,wantedEnd);
+            for (auto frame = begin; frame < end; ++frame)
+                std::copy_n(pcm+(frame-position)*channels,channels,output.data()+(wantedEnd-1-frame)*channels);
+        },{});
+    } catch (const Failure& failure) {
+        throw std::runtime_error(failure.text);
+    }
+}
+
 const char* warpModeName(WarpMode mode)noexcept {
     switch(mode) {
         case WarpMode::Beats:return "beats";

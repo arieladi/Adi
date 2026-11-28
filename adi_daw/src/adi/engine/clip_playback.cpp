@@ -244,6 +244,7 @@ struct Clip {
     std::int32_t playbackDelay = 0;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool reverse = false;
+    std::optional<audio::WarpMode> reversedUnityR3;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
     // Open streams and cache pins die with the generation off the callback.
@@ -510,7 +511,14 @@ struct Clip {
             std::fill_n(p.data.get(),sampleCount,0.0f);
         }
         const auto count=std::min(pageFrames,pageSourceEnd()-first);
-        if (r3Warp) {
+        if (reversedUnityR3) {
+            const audio::WarpPcmReader source{reader.get(),[](void* context,std::uint64_t frame,float* output,
+                                                               std::uint32_t frames) {
+                static_cast<WavSource*>(context)->read(frame,output,frames);
+            }};
+            audio::renderReversedUnityR3Page(source,sourceStart,sourceLength,rate,*reversedUnityR3,channels,
+                static_cast<std::uint64_t>(first),{p.data.get(),static_cast<std::size_t>(count)*channels});
+        } else if (r3Warp) {
             const WarpR3Source source{this, [](void* context,std::uint64_t frame,float* output,std::uint32_t frames) {
                 auto& clip = *static_cast<Clip*>(context);
                 // WarpR3Pages supplies file offsets. The clip reader applies
@@ -1062,7 +1070,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 spec.sourceFrames=clip->sourceLength;
                 spec.outputRate=clip->rate;
                 spec.mode=*warpMode;
-                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
+                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=audio::kArrangementTonesGrainSeconds;
                 // Re-Pitch derives pitch from the rate and preserves the
                 // authored transpose for selection of another mode.
                 spec.transposeSemis=*warpMode==audio::WarpMode::RePitch?0.0:a->transposeSemis;
@@ -1148,7 +1156,17 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                         std::all_of(spec.anchors.begin(), spec.anchors.end(), [](const auto& anchor) {
                             return anchor.sourceFrame == anchor.outputFrame;
                         });
-                    if (!nativeIdentity) {
+                    // Unity pages reproduce the offline render through the
+                    // same zero-latency source clock. A variable-tempo
+                    // generation still prepares the full Warp result.
+                    if (!impl_->synchronousReads && clip->reverse && clip->reader && a->formantShift == 0 &&
+                        warpClock.constantFramesPerTick() > 0) {
+                        if (const auto width = audio::reversedUnityR3PageFrames(spec,clip->sourceRate,clip->channels)) {
+                            clip->pageFrames = *width;
+                            clip->reversedUnityR3 = spec.mode;
+                        }
+                    }
+                    if (!nativeIdentity && !clip->reversedUnityR3) {
                         clip->sourceStart=0;clip->sourceLength=spec.anchors.back().outputFrame;clip->sourceRate=clip->rate;
                         clip->length=static_cast<std::int64_t>(clip->sourceLength);
                         auto task = audio::requestWarp(std::move(spec));
@@ -1293,7 +1311,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     // Spread heavier conversion work without increasing the number of workers
     // with every added clip. Each clip still has exactly one page writer.
     constexpr std::size_t maxWorkers=4, conversionsPerWorker=4;
-    const auto needsConversion=[](const auto& clip){return clip->r3Warp || (!clip->streamingWarp && clip->rate!=clip->sourceRate);};
+    const auto needsConversion=[](const auto& clip){
+        return clip->r3Warp || clip->reversedUnityR3 || (!clip->streamingWarp && clip->rate!=clip->sourceRate);
+    };
     const auto converted=static_cast<std::size_t>(std::count_if(impl_->clips.begin(),impl_->clips.end(),needsConversion));
     const auto hardware=static_cast<std::size_t>(std::thread::hardware_concurrency());
     const auto workerCount=std::max(std::size_t{1},std::min({hardware,maxWorkers,
