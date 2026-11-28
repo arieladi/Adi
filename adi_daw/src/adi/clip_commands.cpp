@@ -1175,7 +1175,7 @@ PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoi
             const auto first=coordinate(begin,1,time),last=coordinate(end,1,time);
             SQLite::Statement clips(store.db(),
                 "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
-                "FROM clips WHERE track_id=? AND lane_id IS NULL");
+                "FROM clips WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
             clips.bind(1,track);
             while(clips.executeStep()) {
                 const auto base=clips.getColumn(0).getInt();
