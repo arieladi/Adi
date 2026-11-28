@@ -970,7 +970,20 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 restartInBlock = sliced || std::max(sample + 1,due) - sample < remaining;
                 if (restartInBlock) wrap |= wrapsInBlock(cue.repeat->tick,cue.repeat->sourceTick);
             }
-            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap,restart,restartInBlock)) return false;
+            std::array<std::int64_t,kMaximumLaunchWarpCueWraps> wrapOffsets{};
+            std::optional<LaunchPagedAudio::WorkerLoopCue> loopCue;
+            if (wrap && !sliced && call.offset == 0 && !restart && !target.fade && target.mode != LaunchMode::Repeat &&
+                (scheduled || linked || musicalLinked) && !call.runtime.beforeClock_ && !call.arrangementLoop &&
+                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip)) {
+                const auto projected = nativeCueWraps(call.block,target,{sample,tick,cue.tick},remaining);
+                if (projected.bounded && projected.count >= 2) {
+                    for (std::size_t i = 0; i < projected.count; ++i)
+                        wrapOffsets[i] = projected.positions[i].frame - sample;
+                    loopCue = LaunchPagedAudio::WorkerLoopCue{pcm->frameForTick(target.loopStartTick,call.media->bpm()),
+                        {wrapOffsets.data(),projected.count}};
+                }
+            }
+            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap,restart,restartInBlock,loopCue)) return false;
         }
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;

@@ -53,12 +53,19 @@ public:
     /// A held Repeat also protects a return to saved Start at the first lap.
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                   bool requestAhead = true, bool repeatAtEnd = false) noexcept;
+    // Output-frame head and wrap offsets measured from the inherited cue.
+    struct WorkerLoopCue {
+        std::int64_t sourceHead;
+        std::span<const std::int64_t> wrapOffsets;
+    };
+
     /// Driver only. Pin the already requested aligned PCM and, if this
     /// callback can wrap, the loop head. Prepare a held Repeat's saved Start
     /// as read-ahead, and lease it too if the retrigger is in this callback.
     [[nodiscard]] bool reserveWorkerCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                         bool includeLoopHead, std::optional<std::int64_t> restartFrame = {},
-                                        bool restartInBlock = false) noexcept;
+                                        bool restartInBlock = false,
+                                        std::optional<WorkerLoopCue> loopCue = {}) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader
