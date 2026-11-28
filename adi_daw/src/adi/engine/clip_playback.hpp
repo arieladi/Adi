@@ -62,9 +62,11 @@ public:
     /// source window. Queue pages with the same worker used by playback.
     static void prefetchSource(Node&, std::span<const Transport> candidates) noexcept;
     /// Driver only. One private source, reserving every page read by the first
-    /// render window. Releases partial admission on refusal.
+    /// render window. Releases partial admission on refusal. A zero alternate
+    /// width uses the primary width for every alternate.
     [[nodiscard]] static bool reserveSource(Node&, const Transport&, std::int32_t frames, bool requestAhead,
-                                            std::span<const Transport> alternates = {}) noexcept;
+                                            std::span<const Transport> alternates = {},
+                                            std::int32_t alternateFrames = 0) noexcept;
     static void releaseSource(Node&) noexcept;
     /// Before publication or on the driver of a published private reader.
     /// Keep its saved Start in the same bounded request as current PCM.

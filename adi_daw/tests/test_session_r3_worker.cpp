@@ -478,13 +478,14 @@ enum class WorkerCueCase {
     Warm, ColdCue, WarmWrap, ColdWrap, ColdDistantHead, RepeatWrap,
     ColdRepeatStart, ColdLaterStart, ReleasedBeforeCut, ImmediateDeferred, ImmediateDeferredStop,
     ShortTwoWraps, ColdShortTwoWraps, ShortThreeWraps, ShortFourWraps, RoundedShortFourWraps,
-    RapidRepeat, ColdRapidRepeat, StopRapidRepeat,
+    RapidRepeat, ColdRapidRepeat, StopRapidRepeat, ShortInheritedRepeat,
 };
 
 void workerLegato(WorkerCueCase testCase, bool immediate = false) {
     const auto coldRapid = testCase == WorkerCueCase::ColdRapidRepeat;
     const auto stopRapid = testCase == WorkerCueCase::StopRapidRepeat;
-    const auto rapid = testCase == WorkerCueCase::RapidRepeat || coldRapid || stopRapid;
+    const auto shortInherited = testCase == WorkerCueCase::ShortInheritedRepeat;
+    const auto rapid = testCase == WorkerCueCase::RapidRepeat || coldRapid || stopRapid || shortInherited;
     const auto bpm = rapid ? 240.0 : 120.0;
     const auto framesPerQuarter = rapid ? rate / 4 : rate / 2;
     const auto deferred = testCase == WorkerCueCase::ImmediateDeferred || testCase == WorkerCueCase::ImmediateDeferredStop;
@@ -588,7 +589,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
         std::int64_t heldPage, cueMarkerPage, evictWith;
         std::atomic<bool> armed{false}, blocked{false}, resume{false};
         std::atomic<bool> cueReady{false}, evicted{false}, headReady{false}, evicting{false};
-    } gate{heldImmediate ? 7 : coldShortWrap ? 17 : coldStart ? 8 : rapid ? 27 : coldHead ? 0 : 18,
+    } gate{heldImmediate ? 7 : coldShortWrap ? 17 : coldStart ? 8 : shortInherited ? 26 : rapid ? 27 : coldHead ? 0 : 18,
            heldImmediate ? 1 : repeat ? 27 : 19, coldShortWrap ? 8 : heldImmediate ? 0 : -1};
     const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
         .afterService=[](void* opaque) noexcept {
@@ -789,9 +790,13 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false) {
         require(readyFor(cue,firstWrap) && (coldShortWrap ? !readyFor(loopHead,shortLap)
                     : readyFor(loopHead,shortLap) && !readyFor(cue,firstSlice)),
                 "the gated worker holds the intended page while the inherited prefix remains ready");
-    if (rapid)
+    if (shortInherited) {
+        require(readyFor(cue,repeatPeriod) && readyFor(savedStart,repeatPeriod) && !readyFor(cue,firstSlice),
+                "the inherited prefix and saved Start are ready while the unused linear page is cold");
+    } else if (rapid) {
         require(readyFor(cue,firstSlice) && readyFor(savedStart,firstSlice) != coldRapid,
                 "the inherited window is ready and the held worker cannot alter the saved Start window");
+    }
     std::vector<float> expected(static_cast<std::size_t>(firstSlice));
     std::array<float,blockFrames> expectedLater{};
     std::array<float,512> expectedAfterRelease{};
@@ -1211,6 +1216,7 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase,
 
 int main() {
     try {
+        workerLegato(WorkerCueCase::ShortInheritedRepeat);
         workerLegato(WorkerCueCase::RapidRepeat);
         workerLegato(WorkerCueCase::ColdRapidRepeat);
         workerLegato(WorkerCueCase::StopRapidRepeat);

@@ -53,6 +53,10 @@ public:
     /// A held Repeat also protects a return to saved Start at the first lap.
     [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                   bool requestAhead = true, bool repeatAtEnd = false) noexcept;
+    struct WorkerRepeatCue {
+        std::int32_t inheritedFrames;
+        std::int32_t savedStartFrames;
+    };
     // Output-frame head and wrap offsets measured from the inherited cue.
     struct WorkerLoopCue {
         std::int64_t sourceHead;
@@ -65,7 +69,8 @@ public:
     [[nodiscard]] bool reserveWorkerCue(std::int64_t clip, std::int64_t frame, std::int32_t frames,
                                         bool includeLoopHead, std::optional<std::int64_t> restartFrame = {},
                                         bool restartInBlock = false,
-                                        std::optional<WorkerLoopCue> loopCue = {}) noexcept;
+                                        std::optional<WorkerLoopCue> loopCue = {},
+                                        std::optional<WorkerRepeatCue> repeatCue = {}) noexcept;
     void releaseCue(std::int64_t clip) noexcept;
 
     /// Driver only. Missing pages emit silence and report the normal reader

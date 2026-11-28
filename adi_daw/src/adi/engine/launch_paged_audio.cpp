@@ -155,7 +155,8 @@ bool LaunchPagedAudio::reserveCue(std::int64_t id, std::int64_t frame, std::int3
 
 bool LaunchPagedAudio::reserveWorkerCue(std::int64_t id, std::int64_t frame, std::int32_t frames,
                                        bool includeLoopHead, std::optional<std::int64_t> restartFrame,
-                                       bool restartInBlock, std::optional<WorkerLoopCue> loopCue) noexcept {
+                                       bool restartInBlock, std::optional<WorkerLoopCue> loopCue,
+                                       std::optional<WorkerRepeatCue> repeatCue) noexcept {
     const auto* found = find(id);
     if (!found || found->latency <= 0 || frame < 0 || frame >= found->source.endFrame) return false;
     const auto& source = found->source;
@@ -183,7 +184,13 @@ bool LaunchPagedAudio::reserveWorkerCue(std::int64_t id, std::int64_t frame, std
     if (includeLoopHead && !exactLoop) alternates[count++].locate(source.loopBeginFrame);
     if (restartFrame && (*restartFrame < 0 || *restartFrame >= found->source.endFrame)) return false;
     if (restartInBlock && restartFrame) alternates[count++].locate(*restartFrame);
-    if (!ClipPlayback::reserveSource(*found->playback,next,frames,false,{alternates.data(),count})) return false;
+    const auto exactRepeat = restartInBlock && restartFrame && !includeLoopHead && repeatCue &&
+        repeatCue->inheritedFrames > 0 && repeatCue->inheritedFrames <= frames &&
+        repeatCue->savedStartFrames > 0 && repeatCue->savedStartFrames <= frames;
+    const auto inheritedFrames = exactRepeat ? repeatCue->inheritedFrames : frames;
+    const auto savedStartFrames = exactRepeat ? repeatCue->savedStartFrames : 0;
+    if (!ClipPlayback::reserveSource(*found->playback,next,inheritedFrames,false,
+                                    {alternates.data(),count},savedStartFrames)) return false;
     if (restartFrame) ClipPlayback::keepSourceStartWarm(*found->playback,*restartFrame);
     return true;
 }

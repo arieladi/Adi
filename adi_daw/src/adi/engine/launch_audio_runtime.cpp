@@ -1002,7 +1002,24 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                         {wrapOffsets.data(),projected.count}};
                 }
             }
-            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap,restart,restartInBlock,loopCue)) return false;
+            std::optional<LaunchPagedAudio::WorkerRepeatCue> repeatCue;
+            if (scheduled && restartInBlock && !sliced && call.offset == 0 &&
+                target.loopEndTick <= target.loopStartTick && !target.fade &&
+                !call.runtime.beforeClock_ && !call.arrangementLoop &&
+                nativeCueClockStable(call.block,call.follow,call.driver.performedSceneToken(),target.clip)) {
+                const auto resets = nativeCueRepeat(call.block,target,{sample,tick,cue.tick},remaining,cue,true);
+                if (resets.bounded && resets.count >= 2) {
+                    const auto cut = sample + remaining;
+                    const auto inheritedFrames = resets.positions.front().frame - sample;
+                    auto savedStartFrames = cut - resets.positions[resets.count-1].frame;
+                    for (std::size_t i = 1; i < resets.count; ++i)
+                        savedStartFrames = std::max(savedStartFrames,resets.positions[i].frame - resets.positions[i-1].frame);
+                    repeatCue = LaunchPagedAudio::WorkerRepeatCue{static_cast<std::int32_t>(inheritedFrames),
+                        static_cast<std::int32_t>(savedStartFrames)};
+                }
+            }
+            if (!pages->reserveWorkerCue(target.clip,frame,remaining,wrap,restart,restartInBlock,loopCue,repeatCue))
+                return false;
         }
         rendered->cuePages = pages;
         rendered->cueClip = target.clip;
