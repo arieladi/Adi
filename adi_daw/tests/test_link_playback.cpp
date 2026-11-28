@@ -490,8 +490,25 @@ void warpedLoopFollowsPeerTempo(std::string_view mode) {
             check(static_cast<bool>(result.preparation) && result.preparation.tempo == target,
                   "peer tempo change requests an exact performed boundary");
             const auto start = std::chrono::steady_clock::now();
-            check(playback.prepare(*project.store, result.preparation, frame.audibleMicros),
-                  "peer change publishes already requested streaming source pages");
+            const auto* previousGraph = project.session.graph().currentGraph();
+            const auto* previousClips = project.session.clips();
+            const auto previousTempo = project.session.spec().externalTempoBpm;
+            bool prepared = playback.prepare(*project.store, result.preparation, frame.audibleMicros);
+            // The synthetic driver stays at this boundary while the owner runs.
+            // A busy page worker can miss its wall-clock deadline. Retry only a
+            // readiness timeout, with the same packet and captured clock.
+            for (unsigned attempt = 0; !prepared && attempt < 2 &&
+                 project.session.error() == "external tempo source pages could not catch the current driver position";
+                 ++attempt) {
+                const bool keptPlayback = project.session.graph().currentGraph() == previousGraph &&
+                    project.session.clips() == previousClips &&
+                    project.session.spec().externalTempoBpm == previousTempo &&
+                    project.session.transport().position() == offset + blockSize;
+                check(keptPlayback, "a readiness timeout keeps the running graph, PCM and tempo");
+                if (!keptPlayback) break;
+                prepared = playback.prepare(*project.store, result.preparation, frame.audibleMicros);
+            }
+            check(prepared, "peer change publishes already requested streaming source pages");
             prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         } else {
             valid = valid && !result.preparation;
