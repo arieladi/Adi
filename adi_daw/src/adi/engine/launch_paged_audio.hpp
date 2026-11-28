@@ -44,6 +44,11 @@ public:
     /// its ordinary start and loop head in the same bounded worker request.
     void prefetch(std::int64_t clip, std::int64_t firstFrame) noexcept;
 
+    /// Driver only. A successful reservation pins the initial one-shot cue
+    /// across scheduling and overlay. A cold cue only queues the worker.
+    [[nodiscard]] bool reserveCue(std::int64_t clip, std::int64_t frame, std::int32_t frames) noexcept;
+    void releaseCue(std::int64_t clip) noexcept;
+
     /// Driver only. Missing pages emit silence and report the normal reader
     /// underrun count. Planar channels remain valid until the next read.
     [[nodiscard]] bool read(std::int64_t clip, std::int64_t firstFrame,

@@ -10,6 +10,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/launch_audio_runtime.hpp"
 #include "adi/engine/launch_gain_edits.hpp"
+#include "adi/engine/launch_paged_audio.hpp"
 #include "adi/engine/launcher.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/media/blake3.hpp"
@@ -20,6 +21,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -2346,6 +2348,181 @@ void residentModeRamp(const char* mode, std::int64_t tolerance) {
     require(callbackAllocations == 0 && audio::callbackFileIo == 0,
         "resident Warp performs no callback allocation or file I/O");
 }
+void scheduledPhysicalPagedLegato(bool ramp, bool queueStop) {
+    test::TempDirectory directory{"long_paged_legato", ramp ? "variable" : "steady"};
+    auto store = sceneProject(directory.path());
+    auto& db = store->db();
+    db.exec(ramp ? "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1)"
+                 : "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    if (ramp) {
+        SQLite::Statement change(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,140)");
+        change.bind(1,quarter / 2);
+        change.exec();
+    }
+    // Integrate the 120→140 ramp over the first half beat, then apply
+    // the constant 140 BPM tail to the sixth/eighth quarter note.
+    const auto due = ramp ? 124242 : 144000;
+    const auto stopAt = ramp ? 165385 : 192000;
+    constexpr auto oldStart = 2400;
+    constexpr auto newStart = 4800;
+    constexpr auto end = 216000;
+    constexpr auto tail = 3000;
+    static_assert(end > 3 * ClipPlayback::readAheadFrames(rate));
+    addClip(*store,directory.path(),101,10,1,false,oldStart + due + tail,1,240000);
+    pinUnwarpedOneShot(*store,50000000,4500000000);
+    addClip(*store,directory.path(),102,20,1,true,newStart + due,1,240000);
+    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000,"
+            "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
+            "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,100000000,4600000000);"
+            "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
+    Session session;
+    session.graph().setFadeFrames(0);
+    if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
+    std::vector<float> pcm(end + blockFrames);
+    Playback playback{session,pcm};
+    scene(*store,session,10);
+    playback.through(due-12000);
+    require(playback.count == 1 && playback.edges[0].sample == 0 && playback.edges[0].newClip == 101,
+            "play outgoing raw one-shot through actual persisted graph");
+    const auto run = trackState(session).run;
+    OpRequest press;
+    press.opType = "session.launchClip";
+    press.payload = {{"clip",102},{"track",1},{"scene",20},{"incarnation",session.launchIncarnation()}};
+    require(OpJournal(*store).commit(press).ok,"audit the persisted slot press");
+    playback.paged = true;
+    playback.through(playback.first + blockFrames);
+    const auto forecast = trackState(session).queued;
+    if (queueStop) {
+        playback.through(due-6000);
+        OpRequest stop;
+        stop.opType = "session.stopTrack";
+        stop.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+        require(OpJournal(*store).commit(stop).ok,"audit Stop superseding the posted slot press");
+        playback.through(playback.first + blockFrames);
+        const auto queued = trackState(session).queued;
+        require(queued.clip == 0 && queued.action == LaunchQueuedAction::Stop,
+                "Stop replaced the pending launch");
+    }
+    playback.through(due + tail + 1);
+    const auto after = trackState(session);
+    playback.through(end + blockFrames);
+    require(session.problems().empty() && forecast.legatoSourceFrame == newStart + due,
+            "a long raw slot forecasts the exact physical Legato cue");
+    if (queueStop) {
+        require(playback.count == 2 && playback.edges[1].sample == stopAt && playback.edges[1].newClip == 0 &&
+                after.run == run && pcm[static_cast<std::size_t>(due+tail)] == .55f,
+                "Stop holds the old PCM until its own quantized grid");
+    } else {
+        require(playback.count == 3 && playback.edges[1].newClip == 102 && playback.edges[1].sample == due &&
+                pcm[static_cast<std::size_t>(due)] == -.5f && playback.edges[2].newClip == 0 &&
+                playback.edges[2].sample == end,
+                "a warm scheduled one-shot takes over at the exact cue and stops at its physical End");
+    }
+    require(callbackAllocations == 0 && audio::callbackFileIo == 0,"physical launch probe allocates no callback memory or file I/O");
+}
+
+void coldPhysicalPagedLegato(bool queueStop) {
+    test::TempDirectory directory{"long_paged_legato", queueStop ? "cold-stop" : "missing-page"};
+    auto store = sceneProject(directory.path());
+    auto& db = store->db();
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    constexpr auto due = 144000;
+    constexpr auto oldStart = 2400;
+    constexpr auto tail = 3000;
+    constexpr auto stopAt = 192000;
+    constexpr auto stalledPage = 18;
+    constexpr auto cue = stalledPage * 8192 - 1;
+    constexpr std::uint64_t incarnation = 111;
+    addClip(*store,directory.path(),101,10,1,false,oldStart + due + tail,1,240000);
+    pinUnwarpedOneShot(*store,50000000,4500000000);
+    addClip(*store,directory.path(),102,20,1,true,cue,1,240000);
+    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4500000000,"
+            "loop_enabled=0,loop_len_ticks=NULL WHERE id=102;"
+            "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(102,71979167,4571979167);"
+            "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
+    struct Gate { std::atomic<bool> blocked{false}, resume{false}; } gate;
+    const ClipPlayback::RequestSnapshotProbeForTest probe{.context=&gate,
+        .beforePageClaim=[](void* opaque,std::int64_t,std::int64_t requestedPage) noexcept {
+            if (requestedPage != stalledPage) return;
+            auto& state = *static_cast<Gate*>(opaque);
+            state.blocked.store(true,std::memory_order_release);
+            while (!state.resume.load(std::memory_order_acquire)) std::this_thread::yield();
+        }};
+    const auto project = readClipProject(*store,rows::readModel(*store),true);
+    std::vector<std::string> problems;
+    TempoMap clock;
+    clock.events.push_back({0,120,0});
+    const auto bank = prepareStoredLaunchProject(*project,clock,rate,2,blockFrames,incarnation,problems,
+        kSessionResidentPcmBudget,{}, {},{},true);
+    const auto* target = bank ? bank->clip(102) : nullptr;
+    require(target && target->pageReader() && problems.empty(),"prime only the long physical Start window");
+    auto& pages = *target->pageReader();
+    // The guard releases the worker on assertion failures and outlives the
+    // driver. The probe's storage survives until the reader is destroyed.
+    struct ResumeOnExit { Gate& gate; ~ResumeOnExit(){ gate.resume.store(true,std::memory_order_release); } } resume{gate};
+    pages.setRequestSnapshotProbeForTest(&probe);
+    LaunchAudioRuntime runtime(bank,{1},blockFrames);
+    LaunchAudioDriver driver(1);
+    Transport transport;
+    transport.play();
+    std::vector<float> pcm(stopAt + blockFrames);
+    struct Events { std::array<LaunchTransition,4> edges{}; std::size_t count = 0; } events;
+    const auto through = [&](std::int64_t end) {
+        while (transport.position() < end) {
+            LaunchBlock block;
+            block.frames = static_cast<std::int32_t>(std::min<std::int64_t>(blockFrames,end - transport.position()));
+            block.clock = &clock;
+            block.tickAtSample = [](const void* context,std::int64_t sample) noexcept {
+                return static_cast<const TempoMap*>(context)->secondsToTicks(static_cast<double>(sample) / rate);
+            };
+            block.sampleAtTick = [](const void* context,std::int64_t tick) noexcept -> std::int64_t {
+                return std::llround(static_cast<const TempoMap*>(context)->ticksToSeconds(tick) * rate);
+            };
+            std::array<float,blockFrames> right{};
+            float* channels[]{pcm.data() + transport.position(), right.data()};
+            NodeIo io;
+            io.out = channels;
+            io.channels = 2;
+            io.frames = block.frames;
+            io.sampleRate = rate;
+            {
+                const audio::CallbackScope scope;
+                runtime.begin(driver,block,transport,transport.position(),&events,
+                    [](void* opaque,const LaunchTransition& edge,std::int64_t) noexcept {
+                        auto& out = *static_cast<Events*>(opaque);
+                        if (out.count < out.edges.size()) out.edges[out.count++] = edge;
+                    });
+                runtime.overlay(1,io);
+                runtime.finish();
+            }
+            transport.advance(block.frames);
+        }
+    };
+    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"queue old clip");
+    through(132000);
+    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue far cue");
+    through(132000 + blockFrames);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!gate.blocked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    require(gate.blocked.load(std::memory_order_acquire),"the worker reached the missing second page of the exact cue");
+    if (queueStop) require(driver.post(std::array{LaunchRequest{LaunchRequestKind::StopTrack,1,{},{},incarnation}}),"replace pending cue with Stop");
+    through(due + tail + 1);
+    require(events.count == 1 && events.edges[0].newClip == 101 && pcm[due + tail] == .55f,
+        "the missing second page leaves all outgoing PCM and the previous run intact");
+    gate.resume.store(true,std::memory_order_release);
+    through(stopAt + 1);
+    require((queueStop ? events.count == 2 && events.edges[1].newClip == 0 && events.edges[1].sample == stopAt
+                       : events.count == 1) && pages.underrunSamples() == 0 && callbackAllocations == 0 &&
+            audio::callbackFileIo == 0,
+        "a rejected cue never becomes a run, even after worker completion, while a newer Stop keeps its own grid");
+    std::printf("Mandatory page seam: frame %d, held page %d, old tail %.6f, target underruns %u, Stop %lld\n",
+        cue,stalledPage,static_cast<double>(pcm[due+tail]),pages.underrunSamples(),
+        static_cast<long long>(events.count == 2 ? events.edges[1].sample : -1));
+}
+
 }
 
 int main() {
@@ -2410,6 +2587,11 @@ int main() {
         pinnedRepeatUsesItsLaunchClock();
         longPagedRepeatKeepsStart();
         physicalLegatoRepeat();
+        for (const auto stop : {false,true}) {
+            scheduledPhysicalPagedLegato(false,stop);
+            scheduledPhysicalPagedLegato(true,stop);
+            coldPhysicalPagedLegato(stop);
+        }
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

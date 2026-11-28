@@ -592,7 +592,7 @@ void Launcher::settleScene(const ScenePending& pending, bool fromFollow, bool ro
 
 bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchView& view,
                           LaunchSink sink, const Pending& pending, std::int32_t offset,
-                          std::int64_t tick) noexcept {
+                          std::int64_t tick, bool scheduledPress) noexcept {
     const auto previous = track.run;
     const auto* target = pending.clip ? findSlot(view,track.id,pending.scene) : nullptr;
     if (pending.sceneGesture && !std::binary_search(view.scenes.begin(),view.scenes.end(),pending.scene)) return false;
@@ -605,23 +605,28 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
         if (slot && (occupied(slot) || !slot->hasStop)) return false;
     }
 
-    track.follow.reset();
-    track.repeat.reset();
-    track.regionEdit.reset();
-    track.run = {};
-    track.run.arrangement = pending.action == Action::Arrangement;
     LaunchSlot oldGeometry;
     const auto* oldSlot = previous.clip
         ? effectiveSlot(findClip(view,track.id,previous.clip),previous.region,previous.physicalRegion,oldGeometry) : nullptr;
     const auto oldLap = cuedPhysicalLap(oldSlot,previous.completedLoops,previous.physicalCueFrame);
     const auto elapsed = previous.frames - previous.pcmAnchorFrame;
+    LaunchSourceCue cue;
     if (pending.action == Action::Start) {
-        track.stopSuppressesFollow = false;
         const auto oldFrame = oldLap.startFrame < 0 ? -1 :
             oldSlot->physicalLoopEndFrame && elapsed == oldLap.length() ? oldSlot->physicalLoopBeginFrame :
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
-        const auto cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
+        if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,scheduledPress)) return false;
+    }
+    track.follow.reset();
+    track.repeat.reset();
+    track.regionEdit.reset();
+    track.run = {};
+    track.run.arrangement = pending.action == Action::Arrangement;
+    if (pending.action == Action::Start) {
+        track.stopSuppressesFollow = false;
         const auto position = cue.tick;
         track.run = {target->scene,target->clip,position,0,launchVelocity(*target,pending.velocity),
                      ++runSerial_,false,tick,position,position,0,0,target->fade};
@@ -802,7 +807,9 @@ void Launcher::render(Track& track, const LaunchBlock& block, const LaunchView& 
             }
             if (atSourceEdge) track.run.sourceTick = sourceEnd(*slot);
             const auto run = track.run.serial;
-            if (transition(track,block,view,sink,pending,cursor,edgeTick)) {
+            const auto scheduledPress = next == &track.user && pending.grid != LaunchQuantization::None &&
+                !pending.sceneGesture && !pending.repeat;
+            if (transition(track,block,view,sink,pending,cursor,edgeTick,scheduledPress)) {
                 if (track.dueScene && track.dueScene->earliestSample <= block.sample + cursor)
                     track.dueScene.reset();
                 if (pending.prepared) {
