@@ -241,7 +241,7 @@ std::optional<std::size_t> belowSelection(const Model& m) {
                                                                         : std::nullopt;
 }
 
-Payload followPayload(const char* key, std::int64_t id, const engine::FollowSettings& f, bool clip) {
+Payload followPayload(const char* key, std::int64_t id, const engine::launch::FollowSettings& f, bool clip) {
     Payload p{{key, id},
               {"enabled", f.enabled},
               {"duration", f.durationTicks},

@@ -91,7 +91,7 @@ ModelInput modelInput(const rows::Model& model, const engine::launch::LaunchData
         in.clips.push_back({c.id, c.name, c.color, c.muted,
                             settings ? settings->mode : engine::LaunchMode::Trigger,
                             settings && settings->follow.enabled, c.kind == "midi",
-                            settings ? settings->follow : engine::FollowSettings{}});
+                            settings ? settings->follow : engine::launch::FollowSettings{}});
     }
     return in;
 }

@@ -88,14 +88,14 @@ ModelInput grid() {
     in.scenes = {intro, verse, chorus, outro};
     in.slots = {{A, 10, 100, true}, {B, 10, 101, true}, {A, 20, 102, true}, {C, 20, 0, false},
                 {D, 20, 0, false},  {B, 30, 103, true}, {R, 10, 0, true}};
-    engine::FollowSettings again;
+    engine::launch::FollowSettings again;
     again.enabled = true;
     again.first = {engine::FollowAction::Again, std::nullopt};
     again.loopCount = 2;
-    in.clips = {{100, "Beat", 5, false, engine::LaunchMode::Trigger, false, true, engine::FollowSettings{}},
+    in.clips = {{100, "Beat", 5, false, engine::LaunchMode::Trigger, false, true, engine::launch::FollowSettings{}},
                 {101, "Line", 9, false, engine::LaunchMode::Trigger, true, true, again},
-                {102, "Fill", {}, true, engine::LaunchMode::Toggle, false, true, engine::FollowSettings{}},
-                {103, "Hold", 11, false, engine::LaunchMode::Gate, false, true, engine::FollowSettings{}}};
+                {102, "Fill", {}, true, engine::LaunchMode::Toggle, false, true, engine::launch::FollowSettings{}},
+                {103, "Hold", 11, false, engine::LaunchMode::Gate, false, true, engine::launch::FollowSettings{}}};
     return in;
 }
 

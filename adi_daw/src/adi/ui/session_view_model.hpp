@@ -71,7 +71,7 @@ struct ModelInput {
         engine::LaunchMode mode = engine::LaunchMode::Trigger;
         bool follow = false;
         bool midi = false;
-        engine::FollowSettings followSettings{}; // its `enabled` is `follow`
+        engine::launch::FollowSettings followSettings{}; // its `enabled` is `follow`
     };
     std::vector<Track> tracks;                   // display order: a group, then what it holds
     std::vector<engine::launch::Scene> scenes;    // display order (the scenes' `order`)
@@ -104,7 +104,7 @@ struct SlotFacts {
     engine::LaunchMode mode = engine::LaunchMode::Trigger;
     bool groupOccupied = false; // a group slot whose held tracks hold a clip in this scene
     bool midiClip = false;
-    engine::FollowSettings followSettings{}; // the clip's whole Follow Action, kept by a toggle
+    engine::launch::FollowSettings followSettings{}; // the clip's whole Follow Action, kept by a toggle
 };
 
 /// What a slot is doing; changes every frame.
@@ -127,7 +127,7 @@ struct SceneFacts {
     bool signatureEnabled = false;
     bool follow = false;
     std::int32_t occupied = 0; // clip tracks holding a clip in this scene
-    engine::FollowSettings followSettings{.linked = false};
+    engine::launch::FollowSettings followSettings{.linked = false};
 };
 
 struct SceneLive {
