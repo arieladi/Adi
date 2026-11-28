@@ -108,7 +108,7 @@ struct Fixture {
     }
 
     [[nodiscard]] std::optional<Payload> row(std::int64_t clip = 11) const {
-        return detail::captureRow(store->db(), "clip_pitch_edits", "clip_id", clip);
+        return adi::detail::captureRow(store->db(), "clip_pitch_edits", "clip_id", clip);
     }
 };
 
