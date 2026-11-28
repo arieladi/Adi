@@ -21,6 +21,9 @@
 | SC-225 | `basics/sc-225-note-editor-edge-scroll` `5cb6e05f` | Note moves, edge resizes, drawing, box and time selections, trim and stretch scroll at the editor edge. Loop and locator drags also scroll. Drag previews and commits keep the press-time grab point. Touched Note Editor, Arrangement scrub UI and synthetic drag fixtures. | Debug /WX app build and cumulative SC-226 shell 3,518/3,518. The final shell includes the time-signature marker regressions and the new edge drags. Uses the passing SC-60 acceptance build. | PR requested |
 | SC-226 | `basics/sc-226-midi-envelopes` `83da3483` | Clip View Envelopes can show, draw, move, delete and clear CC and channel pitch-wheel points. Standard MIDI import/export, Capture MIDI and linear Arrangement takes preserve those movements. Eligible overdubs add points to the source lane. Native playback chases the active wheel and centers it when it loses the owner. Touched controller storage, engine playback, recording, MIDI files and Clip View. | Debug /WX app build. Ten focused suites passed after updating a SQLite trace selector, including controller lanes 59/59, document 449/449 and Capture MIDI 75/75. Private-desktop shell 3,518/3,518 and acceptance 3/3. | PR requested |
 | SC-227 | `basics/sc-227-play-quantize` `0ab909cb` | Rec-Q works with SC-60. Play-Q snaps live monitored notes to the saved track grid while transport plays, with a late forgiveness window. Releases and per-note expression keep their timing relative to the attack. The recording clocks and authored clip notes retain their timing. Stopping, seeking or changing the active grid clears queued notes. Ending Auto overdub restores the clip wheel at its latency-compensated frame. Touched Session, the live MIDI scheduler, clip playback and Arrangement track controls. | Debug /WX app build. Play-Q 40/40, MIDI clips 655/655, recording 220/220, document 449/449, private-desktop shell 3,519/3,519 and acceptance 3/3. | PR requested |
+| SC-27 (MIDI part), director's instrument test | `basics/midi-chain` `705287f6` | Arrangement Record with the Loop on refused as soon as a MIDI track was armed. It now records MIDI passes on one running clock (pass n is n loop lengths after the first). MIDI Arrangement Overdub on: every pass folds into the brace through the linear overdub path, so a second pass adds notes and erases none, with one Undo, Rec-Q, controllers and expression. Overdub off: a take lane per pass and the last pass on the main lane (`prepareMidiLoopCommit`, one Undo per pass like audio loop passes). A pass stopped early leaves the pass before it playing after the stop. `prepareMidiLoopCommit` now writes controller and pitch-wheel lanes. Mixed audio and MIDI loop takes land both. The growing take shows inside the brace. The linear take now also proves the sustain pedal down and up. Touched the recording document (window-fn), recording commands (engine-win) and the SC-27 shell fixture. | Headless tests: `arrangementMidiLoopRecord` (Overdub on and off) in the document suite, the pedal in all four `arrangementMidiRecord` runs, the controller lanes in `midiLoopTakes`, and the SC-27 shell fixture now records the mixed loop. Slot check: see below. | check running |
+| SC-236 | `basics/midi-chain` `9d044654` | Legato carries the last notes to the end of the time selection, else the loop end, else the End marker. A last note already past that end keeps its length. Touched `note_edits.hpp` and the Clip View's tool call. | `test_ui_note_edits` asserts the loop end, a time selection, the End marker and the note already past the end; the Clip View tools shell fixture asserts Live's result where it asserted the old one. | check running |
+| SC-237 | `basics/midi-chain` `9d044654` | Showing another clip switched Fold to Notes off. Fold stays as the user left it and folds to the shown clip's notes. Touched the Note Editor. | Shell fixture: fold, open a second clip (folded to its C4), unfold, reopen the first (unfolded). | check running |
 
 The first six published MIDI branches now form a chain under the revised howto. The SC-53 stack built with Debug warnings as errors. The graph, recording command, MIDI clip, document, and private-desktop shell suites passed, including 3,373 shell checks and 602 MIDI clip checks. Acceptance for those six items ran on the original heads.
 
@@ -34,6 +37,38 @@ The remaining item branches were verified on the Arrangement landing base `9322d
 
 The current `basics/midi-chain` head `2d12f83a` includes `land/basics-1127i` at `2c59ae00`. The merge preserves MIDI controller lanes and Rec-Q through background audio publication, and refreshes Monitor Auto routing and pitch-chase ownership when an incremental edit would leave them stale. The Windows Debug app built with warnings as errors. All 4,030 shell checks, 20 focused suites and three acceptance tests passed. The clip-playback suite passed 615 checks on D: after the C: test volume fell below the decoder's free-space minimum. The optional speed checks passed 19 Arrangement redraw checks and 10 Note Editor selection checks. The 30-minute, four-track stereo fixture landed all four clips and matched the captured PCM sample for sample.
 
+## Round of 28 November (stream round 1)
+
+BASE was `origin/land/basics-1128c` (not yet in main). `basics/midi-chain` was already in it and fast-forwarded to it.
+
+**Grade A rows.** None left for this queue: SC-220 is on main; SC-451, SC-452 and SC-453 (with SC-229) are done by the director's-test session on `basics/test-chain-2` (`7494d44f`, `eda87936`, `b33ec13d`).
+
+**The director's instrument test, headless.** What he will try and where it is proved:
+- Notes appear while recording on a track with a hosted instrument, and land on the grid with Rec-Q on and stay put with it off: already proved by `arrangementMidiRecord` (the growing take before any clip row; exact played or heard ticks with Rec-Q off; the Rec-Q grid with a separate Record Quantize Undo). No change needed.
+- A second pass in a loop adds notes and erases none: **a finding.** Record refused with the Loop on and a MIDI track armed ("Loop recording supports audio tracks"). Fixed above (SC-27 MIDI part). In Live this needs MIDI Arrangement Overdub on; with it off each pass goes to a take lane, which the window cannot show yet (SC-253). See "For the director".
+- Undo removes a whole take in one step and Redo returns it: proved for linear takes (`arrangementMidiRecord`) and for an Overdub loop take (`arrangementMidiLoopRecord`). A loop take with Overdub off has one Undo per pass, as audio loop takes have since SC-27.
+- Pitch bend, mod wheel and sustain pedal are recorded: bend and mod wheel were proved; the sustain pedal is now proved in the linear take and in both loop modes.
+
+**Half done, and what I would do next.**
+- With Overdub off, a loop take keeps the pass notes and controllers, not per-note expression (MPE) in its take lanes. Next: give `MidiTakePass` expression lanes as `MidiLinearTake` has.
+- With Overdub off, a loop take's main-lane clip does not cut a clip already on the main lane under the brace (`prepareMidiLoopCommit` creates its clip beside it). Next: a splice of the brace on the main lane in the first pass's group, as `prepareLoopCommit` does for audio.
+- Notes played before the brace in a loop take that wrapped: kept with Overdub on (the clip starts at the take's start), dropped with Overdub off.
+- Rec-Q in an Overdub-off loop take snaps the starts before landing (no separate Record Quantize step).
+- SC-232 (Chase MIDI Notes): read, not started. The engine chases in `MidiClips` `chase()` (`src/adi/engine/midi_clips.cpp`, called on a locate, a wrap and a graph change). Off should skip it on a locate and a wrap only, not on a graph change (adopted voices). It needs the setting carried to the clip sources and the Options menu item.
+
+## Not now
+
+- SC-56 (program and bank changes): wave 3, needs Clip View fields a user would see; no sheet.
+- SC-59 (MIDI Learn): wave 3; next after SC-232 if no one has it.
+- SC-228, SC-230: Late.
+- SC-231: Quantize Settings is a window since SC-453 on `basics/test-chain-2`; recheck once that lands.
+- SC-233, SC-234, SC-244: workable, wave 3, not reached this round.
+- SC-235: to run (a sitting at Live 12).
+- SC-238 (hide the Velocity lane): a new control in the window; needs its place agreed.
+- SC-240, SC-243: groove and user tools beyond Live; need the director.
+- SC-241, SC-242: tunings in the Browser and live keyboard layouts; need a sheet (SC-242's layouts were left for later by ADR-0178 d5).
+- SC-477: to list.
+
 ## SC-55 virtual MIDI
 
 - **Surge XT CLAP.** ADI parsed all 16 virtual-port messages across both plugin runs without port overflow or a refused enqueue. At the CLAP input ABI, the trace showed CC1 93 and 0, CC64 127 and 0, and pitch wheel 12288 and 8192. Surge XT rendered the note using its default patch.
@@ -41,6 +76,8 @@ The current `basics/midi-chain` head `2d12f83a` includes `land/basics-1127i` at 
 - The wheel uses the engine's ordinary ±2-semitone range. The mod wheel is audible when the patch has an LFO depth assigned.
 
 ## For the director
+
+- **Loop recording MIDI, for tonight's test.** In Live 12 a second loop pass adds its notes only with MIDI Arrangement Overdub on (the Control Bar's + button, off by default). With it off, each pass goes to its own take lane and the main lane plays the last, so the first pass seems gone. ADI now does the same, and ADI's window cannot show take lanes yet (SC-253). I recommend testing the loop with Overdub on. Please also confirm, from Live, that a loop take with Overdub off is undone one pass at a time (ADI's choice for audio since SC-27) or as a whole.
 
 - **SC-54, Live reading R20.** Please confirm whether clicking in the Note Editor also moves the Arrangement insert marker. I recommend keeping the click local to the editor while its focused Space shortcut plays from that local marker. [Live 12 Playback Options](https://www.ableton.com/en/live-manual/12/editing-midi/#playback-options)
 
