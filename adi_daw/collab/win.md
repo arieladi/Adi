@@ -32,6 +32,17 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **He tested a newer build:** hosted VST3 and CLAP plug-ins work, automation records, a held drag bends a segment, the dial follows the automation. One new finding, a folded device that does not unfold by a double-click (SC-485). He tests instruments and MIDI recording next.
 
+**Twelve streams of win's own, started the same afternoon.** The director had most of a week's allowance unused and a day to use it: "i want to grind what we can to advance adi daw as match as we can". His answers: win starts the sessions itself as a workflow ("J a"), the devices' breadth is in ("K a"), and "choose model accordantly don't use fable max for no reason". Each stream is a session of the how-to: its own chain, its own log, tests first, no pull request. They build on the second PC, each in a build place of its own, at most four building at once.
+
+| Stream | Chain | Log | What |
+|---|---|---|---|
+| browser, midi, automation, clips, export, project | `basics/<name>-chain` | `basics/<name>-log` | the open rows of those queues, grade A first; midi also turns his instrument test list into tests; export writes SC-479's proofs |
+| shaper | `basics/shaper-chain` | `basics/shaper-log` | SC-481. First a survey: the clones seat already built much of what the list calls missing, on about fifty branches that never landed (most marked for after 3 December). The stream gathers them, proves the chain and scores the list again before it builds anything. That chain lands only on the director's word |
+| sampler, oneshot | `basics/sampler-chain`, `basics/oneshot-chain` | `basics/<name>-log` | SC-483 and SC-482: sound, controls and tests, no look |
+| review-recording, review-undo, review-saving | `basics/review-<area>-chain` | `basics/review-<area>-log` | a review of what landed since 26 November; a finding counts only with a failing test, and is fixed |
+
+No stream takes a number by itself: a schema minor, an op name or a register id is asked for in its log ("Reserve: ...") and win writes it in `collab/RESERVATIONS.md`. No stream changes a look. The integrator takes the chains whose logs ask for it; win lands the bundles.
+
 **Next free:** ADR-0269; schema minor 1.29; DF-W67, DF-R4, DF-C10, DF-E93; SC-486.
 
 ---
