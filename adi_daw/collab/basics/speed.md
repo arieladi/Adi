@@ -48,6 +48,16 @@ With `DISPLAY` unset, all 45 Release tests, 18 Debug window tests, nine Debug co
 
 All 19 targeted probes passed. Thirty-two resampled stereo tracks played 480 callbacks without gaps. Both reader generations played all 600 WAV clips exactly. The 30-minute, four-track linear take spent 25.094 ms in its longest owner tick and read 90,219 bytes on the owner. The 20-device staged Open yielded across 22 turns, with a longest turn of 32.40 ms. Browser lookup for `QXY` at 200,000 entries took a median of 0.034 ms. These probes ran alongside builds or suites. All speed rows are complete.
 
+## SC-194 follow-up for moved projects
+
+The original 19 speed rows are on main. The speed chain fast-forwarded through the tenth bundle and includes current `origin/main` at `c0d22ae45`. The follow-up head is `88ea54180` on `basics/speed-chain`. No additional speed row or second queue is assigned.
+
+SC-150's moved-project lookup rehashed large external WAVs on each full playback rebuild. The playback resolver now reuses a bounded cache of BLAKE3 digests for unchanged native file revisions. It checks the same candidates in the same order and compares each digest to the saved digest. A cacheable digest comes from the same handle as its file revision. Cold or changed sources are hashed, and symlinks and storage without reliable revision stamps use uncached verification. Touched the engine playback and media resolver paths and Win's native file revision helper.
+
+The Linux Debug fixture uses an 8 MiB WAV and a same-size file at the preferred path. A warm full refresh went from **141.031 to 3.203 ms** and from **16,818,489 to 41,086 owner-thread read bytes**. The new I/O check failed on main before the fix. The fixture checks exact PCM and candidate priority, including same-size writes that restore the modified timestamp.
+
+On the pushed head, the full JUCE/Pd Debug build kept warnings as errors and used a local link option to omit debug symbols for disk space. With `DISPLAY` unset, `ctest -LE performance` passed all **295 tests** in 261.72 seconds, including the UI shell and both ordinary acceptance tests.
+
 ## SC-194 ownership
 
 The speed session takes the Warp render cache and background rendering. The clips session owns the Warp controls and marker edits.
