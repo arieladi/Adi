@@ -1131,15 +1131,16 @@ bool MixerStrip::audioInputIsResampling() const {
     return track && track->inputRef == kResamplingInput;
 }
 bool MixerStrip::onAudioInput(juce::Point<int> at) const noexcept {
-    if (kind_ != "audio" || !panel_.root.externalAudioInputs)
+    if (kind_ != "audio")
         return false;
+    const bool hasChannelChooser = panel_.root.externalAudioInputs && !audioInputIsResampling();
     if (panel_.vertical()) {
         const auto width = getWidth() - 10;
         return io_ > 0 && (juce::Rectangle<int>(4, kMixerTop + 15, width, 13).contains(at) ||
-                           (!audioInputIsResampling() && juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at)));
+                           (hasChannelChooser && juce::Rectangle<int>(4, kMixerTop + 31, width, 13).contains(at)));
     }
     return showsInOut() && (juce::Rectangle<int>(5, 3, 70, 13).contains(at) ||
-                            (!audioInputIsResampling() && (getHeight() - 1) / 17 > 1 &&
+                            (hasChannelChooser && (getHeight() - 1) / 17 > 1 &&
                              juce::Rectangle<int>(5, 20, 70, 13).contains(at)));
 }
 juce::PopupMenu MixerStrip::audioInputMenu() {

@@ -8,6 +8,7 @@
 #include "adi/blob.hpp"
 #include "adi/changeset.hpp"
 #include "adi/check.hpp"
+#include "adi/control/headless_project.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
@@ -315,9 +316,9 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     }
 
     StoreError err = StoreError::Ok;
-    auto store = Store::open(path, err);
-    if (!store || store->readOnly()) {
-        std::fprintf(stderr, "propose: cannot open %s for writing: %s\n", file, toString(err));
+    auto store = doApply ? Store::openForHeadlessApply(path, err) : Store::open(path, err, true);
+    if (!store || (doApply && store->readOnly())) {
+        std::fprintf(stderr, "propose: cannot open %s: %s\n", file, toString(err));
         return 1;
     }
     std::string why;
@@ -328,7 +329,18 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     }
 
     const auto limits = userLimits();
-    const auto p = agent::preview(*store, *cs, limits);
+    agent::Preview p;
+    if (doApply) {
+        p = agent::preview(*store, *cs, limits);
+    } else {
+        store.reset();
+        auto project = control::HeadlessProject::open(path, why);
+        if (!project) {
+            std::fprintf(stderr, "propose: %s\n", why.c_str());
+            return 1;
+        }
+        p = project->preview(*cs, limits);
+    }
     if (!p.ok) {
         std::fprintf(stderr, "propose: refused (%s): %s\n", agent::toString(p.refusal), p.error.c_str());
         return p.refusal == agent::Refusal::Stale ? 3 : 1;

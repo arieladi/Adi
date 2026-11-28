@@ -33,6 +33,7 @@
 #include "juce/juce_device_loader.hpp"
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
+#include "app_control.hpp"
 #include "app_midi_ports.hpp"
 #include "ui_backup_trash.hpp"
 #include "ui_diagnostic_log.hpp"
@@ -416,6 +417,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (settingsWindow_)
                 settingsWindow_->panel().refreshValues();
         };
+        syncControlHost();
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
         // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
@@ -558,7 +560,9 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!root_)
             return;
         try {
-            root_->browser.setDevicePresets(preset::list(userLibraryPath()));
+            auto entries = preset::list(userLibraryPath());
+            root_->browser.setDevicePresets(entries);
+            if (appControl_) appControl_->setCataloguePresets(entries);
         } catch (const std::exception &e) {
             root_->say(e.what());
         }
@@ -961,6 +965,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             const auto &state = catalogue_->state();
             root_->browser.setPluginScan(state);
+            if (appControl_) appControl_->setCataloguePlugins(state);
             // SC-330: the scan's progress stands in the Status Bar while it runs, wherever the Browser is,
             // unless another message holds it; at its end the line goes, or says what went wrong.
             if (auto line = scanLine_.next(state, root_->error()))
@@ -1523,6 +1528,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void shutdown() override {
         stopTimer();
+        appControl_.reset();
         clearProjectOpen();
         stopProjectSave();
         backupStop_.request_stop();
@@ -1757,6 +1763,7 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             return false;
         }
+        if (appControl_) appControl_->attach(nullptr);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         hotSwap_.reset();
@@ -1800,6 +1807,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return std::pair<std::int64_t, int>{now.toMilliseconds() * 1000, now.getUTCOffsetSeconds() / 60};
         });
         if (!testLaunch()) document_->enableRecordingRecovery();
+        if (appControl_) appControl_->attach(document_.get());
         projectPlugins_ = std::move(plugins);
         document_->devicePresetLibrary = [this] { return userLibraryPath(); };
         document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
@@ -2082,6 +2090,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 discover(DiscoveryMode::Incremental);
             };
             root->browser.setPluginScan(catalogue_->state());
+            if (appControl_) appControl_->setCataloguePlugins(catalogue_->state());
             scanLine_ = {};
             if (auto line = scanLine_.next(catalogue_->state(), root->error()))
                 root->say(std::move(*line));
@@ -2247,6 +2256,21 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
+        root->promptInsertSilence = [owner = root.get()](AdiRootComponent::InsertSilenceReply reply) {
+            auto *prompt = new juce::AlertWindow("Set Time to Insert", "Enter bars, beats and sixteenths.",
+                                                 juce::MessageBoxIconType::NoIcon, owner);
+            prompt->addTextEditor("length", "0.0.0", "Length");
+            prompt->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            prompt->enterModalState(
+                true, juce::ModalCallbackFunction::create([prompt, reply = std::move(reply)](int chosen) {
+                    if (chosen == 1)
+                        reply(prompt->getTextEditorContents("length").toStdString());
+                    else
+                        reply(std::nullopt);
+                }),
+                true);
+        };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
         root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
                                       const std::string &label) {
@@ -3416,6 +3440,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_->panel().onChange = [this] {
                     refreshDiagnosticLog();
                     commands_->reload();
+                    syncControlHost();
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
@@ -3515,6 +3540,40 @@ class AdiApplication final : public juce::JUCEApplication,
         root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
                                                document_->landingTake());
     }
+    void syncControlHost() {
+        if (testLaunch()) return;
+        const auto enabled = settings_->get("control.enabled");
+        const auto port = settings_->get("control.port");
+        const auto origins = settings_->get("control.allowedOrigins");
+        const auto location = settings_->get("control.tokenLocation");
+        const auto tier = settings_->get("agent.tier");
+        const auto maxOps = settings_->get("agent.maxOpsPerRequest");
+        const auto minute = settings_->get("agent.maxOpsPerMinute");
+        const auto stamp = Payload::array({enabled, port, origins, location, tier, maxOps, minute}).dump();
+        if (stamp == controlSettings_) return;
+        controlSettings_ = stamp;
+        control::AppControlOptions options;
+        options.port = port.get<std::uint16_t>();
+        auto tokens = juce::StringArray::fromTokens(juce::String(origins.get<std::string>()), ",", "");
+        tokens.trim();
+        tokens.removeEmptyStrings();
+        for (const auto& origin : tokens) options.allowedOrigins.push_back(origin.toStdString());
+        options.writeDiscoveryFile = location == "file";
+        options.tier = control::tierFromString(tier.get<std::string>()).value_or(control::Tier::Propose);
+        options.limits.maxOps = maxOps.get<std::size_t>();
+        options.maxOpsPerMinute = minute.get<std::size_t>();
+        if (!appControl_) {
+            appControl_ = std::make_unique<control::AppControl>([](control::Task action) {
+                juce::MessageManager::callAsync(std::move(action));
+            }, std::move(options));
+        } else {
+            appControl_->configure(std::move(options));
+        }
+        appControl_->attach(document_.get());
+        std::string error;
+        if (enabled == true && !appControl_->start(error)) juce::Logger::writeToLog(juce::String(error));
+    }
+
     void reloadStoredHistory() {
         if (!pendingHistoryReload_)
             return;
@@ -3577,6 +3636,7 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->undoHistory.refresh();
             root_->say(result.error.empty() ? "Restored project version." : result.error);
         } else {
+            if (appControl_) appControl_->attach(nullptr);
             mainMeterSource_.reset();
             floating_.reset();
             historyWindow_.reset();
@@ -3609,6 +3669,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (appControl_) appControl_->tick(document_.get());
         if (root_) {
             root_->browser.setCurrentProjectSnapshot(projectLibrary_.update(document_->store()));
             if (root_->status.setPlaybackProblems(document_->session().problems()))
@@ -3693,6 +3754,8 @@ class AdiApplication final : public juce::JUCEApplication,
     bool controlTest_ = false;
     bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
+    std::unique_ptr<control::AppControl> appControl_;
+    std::string controlSettings_;
     std::optional<DiagnosticLog> diagnosticLog_;
     audio::DecodeCacheLimits cacheLimits_;
     std::unique_ptr<AppCommands> commands_;

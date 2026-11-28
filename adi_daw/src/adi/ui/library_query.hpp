@@ -5,6 +5,7 @@
 #include "adi/ui/library_listing.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <span>
 #include <string>
@@ -16,6 +17,12 @@ namespace adi {
 struct BuiltinInfo;
 namespace ui {
 struct PluginEntry;
+
+struct LibraryPathHash {
+    std::size_t operator()(const std::filesystem::path &path) const noexcept {
+        return std::filesystem::hash_value(path);
+    }
+};
 
 // Compile the text once per edit. Each word must occur as a substring of a searchable field.
 class LibraryQuery {

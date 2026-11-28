@@ -838,6 +838,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Browser origins the listener accepts, comma-separated; a request whose Origin "
                      "is not listed is refused (the plan's CTL-05). Empty: none.",
                      ""));
+    r.push_back(choice("control.tokenLocation", "Control", "Session token location",
+                       "Copy the session token from ADI, or discover it from an owner-only local file.",
+                       {"show", "file"}, "show"));
 }
 
 std::vector<Setting> build() {

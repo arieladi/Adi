@@ -107,6 +107,7 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
   private:
     juce::Rectangle<float> markerBox(const textproj::Meter &) const;
     juce::Rectangle<float> locatorBox(const Locator &) const;
+    void repairFragmentaryBar(std::int64_t at, bool complete);
     void endMeterEdit();
     // The locator being renamed or given info text, and which; the locator pressed, the ticks from
     // it to the press, where a drag would put it, and whether the mouse moved.
@@ -368,8 +369,10 @@ class ArrangementCanvas final : public juce::Component,
     RenameEditor &automationValueEditor() noexcept { return automationValueEditor_; }
     const juce::String &automationValueReadout() const noexcept { return automationValueReadout_; }
     void resetAutomationValueInput();
+    void cancelAutomationAddDrag();
 
   private:
+    void clearReleasedFadeHandles();
     struct DropPreview {
         juce::Rectangle<int> bounds;
         bool device = false;
@@ -585,6 +588,13 @@ class ArrangementCanvas final : public juce::Component,
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
     bool rangeEdit(bool deactivate);
+    bool moveTimeSelection(std::int64_t target);
+    struct RangeDrag {
+        Selection from;
+        std::int64_t to;
+        bool cancelled = false;
+    };
+    std::optional<RangeDrag> rangeDrag_;
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     std::optional<std::int64_t> resizeLimit_;

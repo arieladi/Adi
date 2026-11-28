@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/appdata.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/warp_commands.hpp"
@@ -1521,6 +1522,21 @@ void recoverPcm24AndReportDeletedTrack() {
           "a deleted recovery target is named and its private files stay available");
     check(fs::is_regular_file(original/"take-0.wav"),"unplaced source remains recoverable for inspection");
 }
+void discardOwnedTake() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    auto recorded=fixture.capture(false,Precision::Float32,false,128,
+                                  fixture.temporary.path()/"discard-take",512,true);
+    const auto directory=recorded.directory();
+    std::error_code leaseError;
+    check(fs::is_regular_file(directory/"start.json") && fs::is_regular_file(directory/"owner.lock") &&
+              !media::ProjectFileLease::openExclusive(directory/"owner.lock",leaseError),
+          "a captured take retains its active owner until discard");
+    const auto discarded=recorded.discard();
+    check(!discarded && recorded.directory().empty() && !fs::exists(directory),
+          "discard closes the take owner and removes the complete private directory");
+    if(discarded)std::printf("discard: %s\n",discarded.message().c_str());
+}
 void recoverRf64() {
     namespace fs=std::filesystem;
     Fixture fixture;
@@ -1678,12 +1694,26 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
     if(!fixture.store)throw std::runtime_error(toString(error));
     const auto directory=fs::directory_iterator(root)->path();
     const auto known=fs::canonical(directory);
+    // Exercise both directory scans with a name outside the usual Windows code pages.
+    const auto sessions=appdata::pathsFor(appdata::App::Daw).data/"recording-sessions";
+    const fs::path stray(u8"0\u05D0\u4E2D\U0001F3B5.txt");
+    std::vector<fs::path> strays;
+    for(const auto& session:fs::directory_iterator(sessions))
+        if(session.is_directory())strays.push_back(session.path()/stray);
+    strays.push_back(sessions/stray);
+    for(const auto& path:strays) {
+        std::ofstream file(path);
+        file<<"unrelated file";
+        if(!file)throw std::runtime_error("could not create the Unicode discovery fixture");
+    }
     const auto launched=recording::discoverInterrupted();
     const auto candidate=std::find_if(launched.begin(),launched.end(),
         [&](const auto& item){return item.directory==known;});
     check(candidate!=launched.end() && candidate->tracks==std::vector<std::int64_t>{21} &&
           !candidate->projectUuid.empty() && !candidate->recordingId.empty(),
-          "startup finds the unclosed process's recording without being given its directory");
+          "startup finds the unclosed process's recording without being given its directory despite Unicode entries");
+    check(strays.size()>1 && std::ranges::all_of(strays,[](const auto& path){return fs::is_regular_file(path);}),
+          "startup leaves unrelated Unicode entries in the registry and session alone");
     auto recovered=recording::recoverInterrupted(*fixture.store,root,directory);
     check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==128 &&
           recovered.capture.startSample==512,
@@ -1743,7 +1773,7 @@ int main(int argc,char** argv){try{
     unwarpedRecordingTempoChanges();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
-    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();refuseReboundRecoveryFile();
+    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();discardOwnedTake();recoverRf64();refuseReboundRecoveryFile();
     ordinaryStopUsesTheSameRecordingReceipt();
     stagedStopUsesTheSameRecordingReceipt();
     recoverAfterProcessExit(media::pathFromUtf8(argv[0]));

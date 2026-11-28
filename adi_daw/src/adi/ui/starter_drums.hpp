@@ -2,6 +2,8 @@
 #pragma once
 
 #include <filesystem>
+#include <initializer_list>
+#include <system_error>
 
 namespace adi::ui {
 // A development build and the Windows installer place the kit beside ADI.

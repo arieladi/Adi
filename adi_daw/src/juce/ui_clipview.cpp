@@ -421,6 +421,8 @@ void NoteEditor::handleDrag() {
     }
 }
 void NoteEditor::setDrawMode(bool on) {
+    if (drawMode_ != on)
+        panel.root.arrangement.canvas.cancelAutomationAddDrag();
     drawMode_ = on;
     if (on)
         trimMode_ = false;

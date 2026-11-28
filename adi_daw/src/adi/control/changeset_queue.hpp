@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -26,8 +27,9 @@
 
 namespace adi::control {
 
-/// Rejected is reserved for the app host's review panel (AGT-05, CTL-09):
-/// nothing in this slice sets it yet, and changeset.status passes it through.
+class ProjectAccess;
+
+/// Stale is computed from the current head and can clear after Undo.
 enum class Review { AwaitingReview, Applied, Rejected, Stale, Expired };
 [[nodiscard]] std::string_view toString(Review);
 
@@ -43,6 +45,15 @@ struct QueuedChangeset {
     Json proposal = Json::object();   ///< what changeset.propose answered
     Review state = Review::AwaitingReview;
     std::int64_t createdMs = 0;
+    /// Mandatory review even when the effective tier is Apply (ADR-0261 d8).
+    bool requiresReview = false;
+    std::string projectUuid;      ///< machine-local log routing, never shown on the wire
+    std::weak_ptr<ProjectAccess> projectAccess;  ///< exactly the attachment that previewed the edit
+};
+
+struct RejectedChangeset {
+    std::string id;
+    std::string projectUuid;
 };
 
 /// The `adi_tool propose` JSON for a changeset (changeset.hpp's
@@ -57,7 +68,10 @@ public:
     static constexpr std::size_t kCapacity = 256;
     static constexpr std::int64_t kReviewWindowMs = 24LL * 60 * 60 * 1000;
 
-    explicit ChangesetQueue(std::function<std::string()> newId = randomChangesetId);
+    /// The local observer runs in transition order and must not call the queue.
+    using Observer = std::function<void(const QueuedChangeset&, bool initial, std::string_view actor,
+                                        std::string_view source)>;
+    explicit ChangesetQueue(std::function<std::string()> newId = randomChangesetId, Observer = {});
 
     [[nodiscard]] std::string nextId();
 
@@ -68,15 +82,21 @@ public:
     /// The entry with this id, only if this credential owns it.
     [[nodiscard]] std::optional<QueuedChangeset> find(std::string_view id,
                                                       const std::string& credential) const;
+    /// Owner-side review seam. Never exposed by the control transport.
+    [[nodiscard]] std::vector<QueuedChangeset> forReview() const;
+    /// Stop Agent: the local user rejects every proposal still awaiting a decision.
+    [[nodiscard]] std::vector<RejectedChangeset> rejectPending(std::string_view surface);
     void add(QueuedChangeset entry);
     /// Moves an owned entry to `state`; false when there is none to move.
-    bool setState(std::string_view id, const std::string& credential, Review state);
+    bool setState(std::string_view id, const std::string& credential, Review state,
+                  std::string_view actor = "system", std::string_view source = "control");
     /// Awaiting entries older than the review window become expired.
     void expire(std::int64_t nowMs);
     [[nodiscard]] std::size_t size() const;
 
 private:
     std::function<std::string()> newId_;
+    Observer observer_;
     mutable std::mutex mutex_;
     std::vector<QueuedChangeset> entries_;
 };

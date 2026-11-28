@@ -7,6 +7,7 @@
 #include "../src/juce/ui_mix_meter.hpp"
 #include "../src/juce/ui_mix_analysers.hpp"
 #include "ui_fake_peer.hpp"
+#include "ui_picture_compare.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include <algorithm>
@@ -22,6 +23,7 @@ using adi::engine::ScopePoint;
 using adi::engine::ScopeTap;
 using adi::ui::SharedAnalysis;
 using adi::ui::SharedSpectrumView;
+using adi::uitest::samePicturePixels;
 namespace adi::ui {
 struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
@@ -68,6 +70,18 @@ struct Fixture {
         tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true);
     }
 };
+juce::Image softwarePicture(SharedSpectrumView &view) {
+    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics graphics(image);
+        view.paint(graphics);
+    }
+    return image;
+}
+adi::uitest::ComparisonPicture comparisonPicture(SharedSpectrumView &view) {
+    return adi::uitest::pictureForComparison(juce::Image::RGB, view.getWidth(), view.getHeight(),
+                                             [&](juce::Graphics &graphics) { view.paint(graphics); });
+}
 bool originalRasterPixels(SharedSpectrumView &, const SharedAnalysis::Result &);
 void sharingAndVisibility() {
     Fixture f;
@@ -206,12 +220,7 @@ void phaseGoniometer() {
         fixture.broker->pump();
         phase.frame();
     };
-    const auto image = [&] {
-        juce::Image pixels(juce::Image::RGB, phase.getWidth(), phase.getHeight(), true);
-        juce::Graphics graphics(pixels);
-        phase.paint(graphics);
-        return pixels;
-    };
+    const auto image = [&] { return softwarePicture(phase); };
     const auto greenTrace = [](const juce::Image &pixels, int atX, int atY) {
         for (int y = atY - 1; y <= atY + 1; ++y)
             for (int x = atX - 1; x <= atX + 1; ++x) {
@@ -341,7 +350,7 @@ void modesSourcesAndFreeze() {
                             SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase,
                             SharedSpectrumView::Mode::Spectrogram}) {
         pane.setMode(mode); f.write(4096); f.broker->pump(); pane.frame(f.broker, 1, 3);
-        juce::Image image(juce::Image::RGB, 600, 375, true);
+        juce::Image image(juce::Image::RGB, 600, 375, true, juce::SoftwareImageType{});
         juce::Graphics graphics(image); pane.view.paint(graphics); // software-only component render, never desktop capture
         check(pane.view.snapshot() && pane.view.mode() == mode, "each implemented mode consumes a real publication and paints offscreen");
     }
@@ -404,7 +413,7 @@ void cappedFrozenHistoryAndIdleReset() {
     check(live.snapshot() && !live.snapshot()->historyLimited && live.snapshot()->columns.size() == 1 &&
           live.snapshot()->columns.back().serial == 3 && broker->stats().transforms == before.transforms,
           "hiding the frozen picture frees capacity and resumes a pending hop without source audio or FFT");
-    juce::Image image(juce::Image::RGB, 156, 311, true);
+    juce::Image image(juce::Image::RGB, 156, 311, true, juce::SoftwareImageType{});
     { juce::Graphics graphics(image); live.paint(graphics); }
     bool missingBlank = true, currentVisible = false;
     const auto background = image.getPixelAt(0, 0);
@@ -472,17 +481,11 @@ void mainMetersSharedPresentation() {
     for (auto *view : {&full, &info, &window}) { view->setMainMeterSource(source); view->present(f.broker, 1); }
     f.write(); f.broker->pump(); full.frame(); info.frame(); window.frame();
     check(reads == 0 && !full.mainMeterSnapshot(), "default Spectrum performs no Main readout callbacks");
-    const auto paint = [](SharedSpectrumView &view) {
-        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true);
-        juce::Graphics graphics(image); view.paint(graphics); return image;
-    };
-    const auto spectrumWithBinding = paint(full);
+    const auto spectrumWithBinding = comparisonPicture(full);
     full.setMainMeterSource({});
-    const auto spectrumWithoutBinding = paint(full);
-    bool samePixels = true;
-    for (int y = 0; y < full.getHeight(); ++y) for (int x = 0; x < full.getWidth(); ++x)
-        samePixels = samePixels && spectrumWithBinding.getPixelAt(x, y) == spectrumWithoutBinding.getPixelAt(x, y);
-    check(samePixels, "default Spectrum software image is unchanged by the optional Main binding");
+    const auto spectrumWithoutBinding = comparisonPicture(full);
+    check(samePicturePixels(spectrumWithBinding, spectrumWithoutBinding),
+          "default Spectrum software image is unchanged by the optional Main binding");
     full.setMainMeterSource(source);
     for (auto *view : {&full, &info, &window}) view->setMode(SharedSpectrumView::Mode::Meters);
     const auto transforms = f.broker->stats().transforms;
@@ -496,7 +499,7 @@ void mainMetersSharedPresentation() {
     check(text.contains("Main aggregate programme / pre-cue") && text.contains("M -14.2") &&
           text.contains("S -15.3") && text.contains("I -16.4 LUFS") && text.contains("TP (held) -0.7 dBTP"),
           "Main text names aggregate pre-cue programme, independent LUFS windows and held dBTP at one decimal");
-    (void)paint(full); (void)paint(info); (void)paint(window);
+    (void)softwarePicture(full); (void)softwarePicture(info); (void)softwarePicture(window);
     const int minimisedReads = reads; root.fake->minimized = true; floating.fake->minimized = true;
     full.frame(); info.frame(); window.frame();
     check(reads == minimisedReads && !full.mainMeterSnapshot() && !window.mainMeterSnapshot(),
@@ -713,8 +716,10 @@ void referenceMainMeterScale() {
           "changing the K reference level keeps the same fixed-time interval");
     const auto paintTop = [&] {
         juce::Image raster(juce::Image::RGB, 152, 520, true, juce::SoftwareImageType{});
-        juce::Graphics g(raster);
-        meter.paintEntireComponent(g, true);
+        {
+            juce::Graphics g(raster);
+            meter.paintEntireComponent(g, true);
+        }
         return raster.getPixelAt(35, 123);
     };
     check(paintTop() != juce::Colour(look::record), "K bias does not light the raw clip indicator");
@@ -902,19 +907,32 @@ void compactAnalyzerDock() {
     check(f.broker->stats().consumers == 0 && !dock.spectrum.snapshot(), "document replacement releases the old dock publication");
 }
 
-juce::Image softwarePicture(SharedSpectrumView &view) {
-    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
-    {
-        juce::Graphics graphics(image);
-        view.paint(graphics);
-    }
-    return image;
-}
 bool samePixels(const juce::Image &a, const juce::Image &b) {
     if (a.getBounds() != b.getBounds()) return false;
     for (int y = 0; y < a.getHeight(); ++y) for (int x = 0; x < a.getWidth(); ++x)
         if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
     return true;
+}
+void wordsMaskedInComparison() {
+    const auto draw = [](const char *word, juce::Colour trace) {
+        return adi::uitest::pictureForComparison(juce::Image::RGB, 140, 40, [&](juce::Graphics &graphics) {
+            graphics.fillAll(juce::Colours::black);
+            graphics.setColour(trace);
+            graphics.fillRect(12, 26, 110, 3);
+            graphics.setColour(juce::Colours::white);
+            graphics.setFont(13.f);
+            graphics.drawFittedText(word, {0, 0, 140, 20}, juce::Justification::centredLeft, 1);
+        });
+    };
+    const auto before = draw("Short", juce::Colours::red);
+    const auto after = draw("A different label", juce::Colours::red);
+    bool textPainted = false;
+    for (int y = 0; y < 20 && !textPainted; ++y)
+        for (int x = 0; x < before.raster.getWidth(); ++x)
+            textPainted |= before.raster.getPixelAt(x, y) != juce::Colours::black;
+    check(textPainted && samePicturePixels(before, after), "raster comparisons mask the glyphs of both labels");
+    check(!samePicturePixels(before, draw("A different label", juce::Colours::green)),
+          "raster comparisons still detect changes to the drawn trace");
 }
 void paletteMenuTheme() {
     using namespace adi::ui;
@@ -940,16 +958,19 @@ void paletteMenuTheme() {
     const auto oldTheme = look::themeId();
     const auto density = look::densityId();
     const auto initialDefault = swatch(palettes::defaultIndex);
+    const juce::SoftwareImageType software;
+    const auto initialPixels = software.convert(initialDefault);
     const auto rocket = palettes::find("rocket");
     const auto initialStock = swatch(rocket);
-    check(initialDefault.isValid() && initialDefault.getPixelAt(0, 0) == look::display && initialStock.isValid(),
+    check(initialPixels.isValid() && initialPixels.getPixelAt(0, 0) == look::display && initialStock.isValid(),
           "an open analyser pane uses the current theme's default and a fixed stock swatch");
 
     look::apply(oldTheme == ThemeId::Light ? ThemeId::Dark : ThemeId::Light, density);
     pane.frame({}, 0, 0);
     const auto currentDefault = swatch(palettes::defaultIndex);
-    check(currentDefault.isValid() && currentDefault.getPixelAt(0, 0) == look::display &&
-              !samePixels(initialDefault, currentDefault) && swatch(rocket) == initialStock &&
+    const auto currentPixels = software.convert(currentDefault);
+    check(currentPixels.isValid() && currentPixels.getPixelAt(0, 0) == look::display &&
+              !samePixels(initialPixels, currentPixels) && swatch(rocket) == initialStock &&
               pane.requestedPalette() == "rocket" && pane.reverseButton.getToggleState(),
           "changing theme refreshes only the default thumbnail and preserves the palette selection");
     const auto repaints = root.fake->repaints;
@@ -1028,25 +1049,25 @@ void palettesAndFrozenRaster() {
     }
     check(pixels, "actual default raster pixels match old frequency aggregation/color/gap law across advancing columns");
     const auto snapshot = view.snapshot(); view.freeze(true);
-    const auto before = f.broker->stats(); const auto picture = softwarePicture(view);
-    view.setPalette("viridis"); const auto colored = softwarePicture(view);
-    check(!samePixels(picture, colored) && view.snapshot() == snapshot && view.frozen(),
+    const auto before = f.broker->stats(); const auto picture = comparisonPicture(view);
+    view.setPalette("viridis"); const auto colored = comparisonPicture(view);
+    check(!samePicturePixels(picture, colored) && view.snapshot() == snapshot && view.frozen(),
           "palette selection recolors the existing frozen raster without replacing its measurement");
-    view.setPalette("gray", true); const auto gray = softwarePicture(view);
-    check(!samePixels(colored, gray) && gray.getPixelAt(5, 21) == look::display,
+    view.setPalette("gray", true); const auto gray = comparisonPicture(view);
+    check(!samePicturePixels(colored, gray) && gray.raster.getPixelAt(5, 21) == look::display,
           "reverse and grayscale recolor valid pixels while missing history remains background");
     view.setPalette("adi");
-    check(samePixels(picture, softwarePicture(view)), "returning to original palette restores every frozen displayed pixel");
+    check(samePicturePixels(picture, comparisonPicture(view)), "returning to original palette restores every frozen displayed pixel");
     const auto oldTheme = look::themeId();
     const auto density = look::densityId();
     look::apply(oldTheme == ThemeId::Light ? ThemeId::Dark : ThemeId::Light, density);
     view.frame();
-    check(snapshot && analysisPaletteColour(0, 0) == look::display && !samePixels(picture, softwarePicture(view)) &&
+    check(snapshot && analysisPaletteColour(0, 0) == look::display && !samePicturePixels(picture, comparisonPicture(view)) &&
               originalRasterPixels(view, *snapshot) && view.snapshot() == snapshot,
           "a theme switch recolors gaps and signal in a frozen raster without changing its publication");
     look::apply(oldTheme, density);
     view.frame();
-    check(samePixels(picture, softwarePicture(view)), "restoring the theme restores every frozen pixel");
+    check(samePicturePixels(picture, comparisonPicture(view)), "restoring the theme restores every frozen pixel");
     for (int i = 0; i < 4; ++i) { view.frame(); (void)softwarePicture(view); }
     const auto after = f.broker->stats();
     check(after.transforms == before.transforms && after.analysisWindows == before.analysisWindows &&
@@ -1086,7 +1107,7 @@ void restartedRasterDomain() {
         SharedSpectrumView view; view.setMode(SharedSpectrumView::Mode::Spectrogram);
         root.addAndMakeVisible(view); view.setBounds(0, 0, 156, 311); view.present(f.broker, 1); view.frame();
         f.write(); f.broker->pump(); view.frame();
-        const auto first = view.snapshot(); const auto firstImage = softwarePicture(view);
+        const auto first = view.snapshot(); const auto firstImage = comparisonPicture(view);
         if (useFreeze) { view.freeze(true); view.freeze(false); }
         else { view.setVisible(false); view.setVisible(true); }
         view.frame(); // renew the sole cursor before supplying fresh audio
@@ -1099,7 +1120,7 @@ void restartedRasterDomain() {
                   !first->columns.empty() && !second->columns.empty() &&
                   *first->columns.back().binsDbfs != *second->columns.back().binsDbfs,
               "restarted sole spectrogram domain reuses counters on the same tap but carries fresh different audio");
-        check(second && !samePixels(firstImage, softwarePicture(view)) && originalRasterPixels(view, *second),
+        check(second && !samePicturePixels(firstImage, comparisonPicture(view)) && originalRasterPixels(view, *second),
               "hide or Freeze/Resume cannot reuse old raster pixels when new-domain counters repeat");
     }
 }
@@ -1333,15 +1354,15 @@ void spectrumSlopeProjection() {
     full.setBounds(0, 0, 300, 300); info.setBounds(330, 0, 300, 300);
     root.addAndMakeVisible(full); root.addAndMakeVisible(info); full.present(f.broker, 1); info.present(f.broker, 1);
     writeFrames(f, 1024); f.broker->pump(); full.frame(); info.frame();
-    const auto original = softwarePicture(full), compact = softwarePicture(info);
+    const auto original = comparisonPicture(full), compact = comparisonPicture(info);
     const auto snapshot = full.snapshot();
-    check(snapshot && snapshot == info.snapshot() && samePixels(original, compact),
+    check(snapshot && snapshot == info.snapshot() && samePicturePixels(original, compact),
           "slope fixture begins with exact shared calibrated data and identical Flat pictures");
     const auto raw = snapshot ? snapshot->binsDbfs : std::vector<float>{};
-    full.freeze(true); const auto frozenFlat = softwarePicture(full); const auto before = f.broker->stats();
-    full.setSpectrumSlope(SpectrumSlope::Tilt45); const auto tilted = softwarePicture(full);
-    check(snapshot && !samePixels(frozenFlat, tilted) && full.snapshot() == snapshot && full.frozen() &&
-              snapshot->binsDbfs == raw && samePixels(compact, softwarePicture(info)),
+    full.freeze(true); const auto frozenFlat = comparisonPicture(full); const auto before = f.broker->stats();
+    full.setSpectrumSlope(SpectrumSlope::Tilt45); const auto tilted = comparisonPicture(full);
+    check(snapshot && !samePicturePixels(frozenFlat, tilted) && full.snapshot() == snapshot && full.frozen() &&
+              snapshot->binsDbfs == raw && samePicturePixels(compact, comparisonPicture(info)),
           "Frozen Spectrum reprojects locally without mutating its retained bins or another consumer");
     for (int i = 0; i < 4; ++i) { full.frame(); (void)softwarePicture(full); }
     const auto after = f.broker->stats();
@@ -1350,7 +1371,7 @@ void spectrumSlopeProjection() {
               after.consumers == before.consumers && after.domains == before.domains && after.taps == before.taps,
           "slope changes and unchanged Frozen frames create no measurement, transform or demand work");
     full.setSpectrumSlope(SpectrumSlope::Flat);
-    check(samePixels(frozenFlat, softwarePicture(full)) && full.snapshot() == snapshot && snapshot->binsDbfs == raw,
+    check(samePicturePixels(frozenFlat, comparisonPicture(full)) && full.snapshot() == snapshot && snapshot->binsDbfs == raw,
           "returning Flat restores the exact original pixels and raw measurement");
     full.setSpectrumSlope(SpectrumSlope::Tilt45); full.freeze(false); writeFrames(f, 256); f.broker->pump(); full.frame(); info.frame();
     check(full.snapshot() && full.snapshot() == info.snapshot() && f.broker->stats().domains == 1 &&
@@ -1359,8 +1380,8 @@ void spectrumSlopeProjection() {
     full.setMode(SharedSpectrumView::Mode::Meters); f.broker->pump(); full.frame();
     check(full.snapshot() && full.snapshot()->outputs & SharedAnalysis::Meters,
           "meter-isolation oracle uses a real shared meter publication");
-    const auto meterFlat = softwarePicture(full); full.setSpectrumSlope(SpectrumSlope::Flat);
-    check(samePixels(meterFlat, softwarePicture(full)), "Spectrum slope never modifies raw sample peak/RMS presentation");
+    const auto meterFlat = comparisonPicture(full); full.setSpectrumSlope(SpectrumSlope::Flat);
+    check(samePicturePixels(meterFlat, comparisonPicture(full)), "Spectrum slope never modifies raw sample peak/RMS presentation");
     check(SharedSpectrumViewTestAccess::offsetCount(full) == 0,
           "choosing Flat releases prior offsets immediately even outside Spectrum mode");
     full.setMode(SharedSpectrumView::Mode::Spectrum); f.broker->pump(); full.frame(); full.setSpectrumSlope(SpectrumSlope::Tilt45);
@@ -1410,17 +1431,17 @@ void filledSpectrumProjection() {
     spectra->magnitudes[static_cast<std::size_t>(SharedAnalysis::FilledCurve::Average)].assign(2049, .03f);
     result->filledSpectrum = spectra;
     SharedSpectrumViewTestAccess::showFilled(view, result);
-    const auto picture = softwarePicture(view);
-    const auto held = picture.getPixelAt(225, 60), live = picture.getPixelAt(225, 110);
+    const auto picture = comparisonPicture(view);
+    const auto held = picture.raster.getPixelAt(225, 60), live = picture.raster.getPixelAt(225, 110);
     check(held.getGreen() > held.getRed() && live.getGreen() > held.getGreen(),
           "the software plot draws a darker filled hold behind the brighter live trace");
     view.setFilledSpectrumCurve(SharedAnalysis::FilledCurve::Average);
-    check(!samePixels(picture, softwarePicture(view)) && view.snapshot() == result,
+    check(!samePicturePixels(picture, comparisonPicture(view)) && view.snapshot() == result,
           "selecting another curve redraws the same immutable measurement");
     SharedSpectrumViewTestAccess::pointFilled(view, {222, 100});
-    const auto withPointer = softwarePicture(view);
+    const auto withPointer = comparisonPicture(view);
     SharedSpectrumViewTestAccess::pointFilled(view, {-1, -1});
-    check(!samePixels(withPointer, softwarePicture(view)), "a pointer inside the software plot draws the readout overlay");
+    check(!samePicturePixels(withPointer, comparisonPicture(view)), "a pointer inside the software plot draws the readout overlay");
 }
 
 void thirdOctaveAndPeriodSurface() {
@@ -1462,20 +1483,20 @@ void thirdOctaveAndPeriodSurface() {
                   (SharedAnalysis::Spectrum | SharedAnalysis::PeriodScope) &&
               shot->periodScope->lag > 0. && std::abs(12800. / shot->periodScope->lag - 440.) < 3.,
           "the fake-peer bands page uses the paired 4096-sample spectrum and a locked A3 scope");
-    const auto pixels = softwarePicture(view);
-    const auto cyan = pixels.getPixelAt(217, 102);
+    const auto pixels = comparisonPicture(view);
+    const auto cyan = pixels.raster.getPixelAt(217, 102);
     check(cyan.getBlue() > 175 && cyan.getGreen() > 200 && cyan.getRed() < 160,
           "the 400 Hz column is measured and drawn in the left pane");
     const auto scopePixel = [&pixels](int x, int y) {
         for (int dy = -4; dy <= 4; ++dy) {
-            const auto colour = pixels.getPixelAt(x, y + dy);
+            const auto colour = pixels.raster.getPixelAt(x, y + dy);
             if (colour.getGreen() > 115 && colour.getGreen() > colour.getRed() && colour.getRed() > colour.getBlue()) return true;
         }
         return false;
     };
     check(scopePixel(551, 146) && scopePixel(607, 230), "the right pane draws one rising, then falling period around its centre line");
     view.clear();
-    check(!view.snapshot() && !samePixels(pixels, softwarePicture(view)), "clearing resets the bands, held markers and scope together");
+    check(!view.snapshot() && !samePicturePixels(pixels, comparisonPicture(view)), "clearing resets the bands, held markers and scope together");
     root.setVisible(false);
     view.frame();
     check(!view.subscribed() && fixture.broker->stats().consumers == 0, "hidden bands release their passive analysis lease");
@@ -1513,7 +1534,7 @@ void colourWaveformSurface() {
     view.setMode(SharedSpectrumView::Mode::ColourWaveform);
     root.addAndMakeVisible(view);
     view.present(fixture.broker, 1);
-    const auto blank = softwarePicture(view);
+    const auto blank = comparisonPicture(view);
     constexpr int length = 4800;
     std::array<float, length> tone{}, silence{};
     for (std::size_t i = 0; i < tone.size(); ++i)
@@ -1532,8 +1553,8 @@ void colourWaveformSurface() {
     };
     const auto fresh = softwarePicture(view);
     check(hasBlue(fresh, 624, 150) && hasBlue(fresh, 624, 212) &&
-              fresh.getPixelAt(490, 150) == blank.getPixelAt(490, 150) &&
-              fresh.getPixelAt(638, 150) == blank.getPixelAt(638, 150),
+              fresh.getPixelAt(490, 150) == blank.raster.getPixelAt(490, 150) &&
+              fresh.getPixelAt(638, 150) == blank.raster.getPixelAt(638, 150),
           "the captured low band mirrors at the right edge, with empty past and no future trace");
     fixture.tap->write(silence.data(), silence.data(), length, length, true);
     fixture.broker->pump();
@@ -1559,7 +1580,7 @@ void colourWaveformSurface() {
     fixture.tap->write(silence.data(), silence.data(), length, 3 * length, true);
     fixture.broker->pump();
     view.frame();
-    check(view.snapshot() && samePixels(blank, softwarePicture(view)), "post-Clear silence cannot reveal older colour columns");
+    check(view.snapshot() && samePicturePixels(blank, comparisonPicture(view)), "post-Clear silence cannot reveal older colour columns");
     root.setVisible(false);
     view.frame();
     check(!view.subscribed() && fixture.broker->stats().consumers == 1, "hiding the waveform releases its lease alone");
@@ -1606,15 +1627,15 @@ void spectrumDetailScale() {
           "expanded Spectrum keeps the wide scale by default and allocates no detail geometry");
     writeTone(f, 32); f.broker->pump(); pane.frame(f.broker, 1, 1); sibling.frame();
     const auto source = pane.view.snapshot();
-    const auto original = softwarePicture(pane.view);
-    const auto siblingImage = softwarePicture(sibling);
+    const auto original = comparisonPicture(pane.view);
+    const auto siblingImage = comparisonPicture(sibling);
     const auto before = f.broker->stats();
 
     pane.scaleBox.setSelectedId(2, juce::dontSendNotification); pane.scaleBox.onChange();
-    const auto detail = softwarePicture(pane.view);
+    const auto detail = comparisonPicture(pane.view);
     check(source && source == pane.view.snapshot() && source == sibling.snapshot() && f.acquired == 1 &&
-              SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) && !samePixels(original, detail) &&
-              samePixels(siblingImage, softwarePicture(sibling)) && sameWork(before, f.broker->stats()),
+              SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) && !samePicturePixels(original, detail) &&
+              samePicturePixels(siblingImage, comparisonPicture(sibling)) && sameWork(before, f.broker->stats()),
           "detail menu reprojects the existing live publication while a wide sibling keeps the same single tap");
 
     // A coherent -30 dBFS tone lands one fifth down the detail range. Axis labels
@@ -1626,16 +1647,16 @@ void spectrumDetailScale() {
         return juce::Point<int>{juce::roundToInt(5.f + (width - 1.f) * x),
             juce::roundToInt(21.f + (height - 1.f) * ((-18.f - db) / 60.f))};
     };
-    const auto peak = tracePoint(detail, 1500., -30.f);
-    check(detail.getPixelAt(peak.x, peak.y + 12) != look::display &&
-              detail.getPixelAt(peak.x, peak.y - 12) == look::display,
+    const auto peak = tracePoint(detail.raster, 1500., -30.f);
+    check(detail.raster.getPixelAt(peak.x, peak.y + 12) != look::display &&
+              detail.raster.getPixelAt(peak.x, peak.y - 12) == look::display,
           "the tone fill starts at its calibrated detail height rather than at the wide scale height");
 
     const auto repaints = root.fake->repaints;
     pane.setSpectrumScale(Scale::Detail);
     pane.frame(f.broker, 1, 1);
     check(root.fake->repaints == repaints && sameWork(before, f.broker->stats()) &&
-              samePixels(detail, softwarePicture(pane.view)),
+              samePicturePixels(detail, comparisonPicture(pane.view)),
           "unchanged scale, paints and owner frame do no new work or invalidation");
     pane.setSize(420, 360);
     const auto resized = softwarePicture(pane.view);
@@ -1646,11 +1667,11 @@ void spectrumDetailScale() {
     pane.setSize(640, 360);
 
     pane.view.freeze(true);
-    const auto frozen = softwarePicture(pane.view);
+    const auto frozen = comparisonPicture(pane.view);
     const auto held = f.broker->stats();
     pane.setSpectrumScale(Scale::Wide);
     pane.setSpectrumScale(Scale::Detail);
-    check(pane.view.frozen() && pane.view.snapshot() == source && samePixels(frozen, softwarePicture(pane.view)) &&
+    check(pane.view.frozen() && pane.view.snapshot() == source && samePicturePixels(frozen, comparisonPicture(pane.view)) &&
               sameWork(held, f.broker->stats()),
           "frozen view can switch scales and return to the same cached picture without renewing demand");
 
@@ -1745,13 +1766,13 @@ void spectrumExtendedScale() {
 
     pane.view.freeze(true);
     const auto held = f.broker->stats();
-    const auto frozen = softwarePicture(pane.view);
+    const auto frozen = comparisonPicture(pane.view);
     pane.setSpectrumScale(Scale::Detail);
     check(pane.view.snapshot() == source && !pane.view.subscribed() && unchanged(held) &&
-              !samePixels(frozen, softwarePicture(pane.view)),
+              !samePicturePixels(frozen, comparisonPicture(pane.view)),
           "switching a frozen Extended spectrum remaps its display without renewing analysis demand");
     pane.setSpectrumScale(Scale::Extended);
-    check(samePixels(frozen, softwarePicture(pane.view)) && unchanged(held),
+    check(samePicturePixels(frozen, comparisonPicture(pane.view)) && unchanged(held),
           "switching back to Extended restores the same frozen pixels and slope");
     root.setVisible(false);
     const auto hidden = f.broker->stats();
@@ -1872,18 +1893,18 @@ void spectrogramHistoryMotion() {
     const auto initial = view.snapshot();
     const auto stat = f.broker->stats();
     view.setHistoryMotion(Motion::Sweep);
-    const auto first = softwarePicture(view), scroll = softwarePicture(sibling);
+    const auto first = comparisonPicture(view), scroll = comparisonPicture(sibling);
     check(initial && !initial->columns.empty() && initial->historySerial == initial->columns.front().serial &&
               initial == view.snapshot() && initial == sibling.snapshot() && f.acquired == 1 && sameWork(stat, f.broker->stats()),
           "Scroll and Sweep display the same first immutable history and single compatible analysis");
-    check(initial && isRotated(scroll, first, 0) && !samePixels(scroll, first) &&
-              first.getPixelAt(left + 1, top + height / 2) != look::display,
+    check(initial && isRotated(scroll.raster, first.raster, 0) && !samePicturePixels(scroll, first) &&
+              first.raster.getPixelAt(left + 1, top + height / 2) != look::display,
           "first published column moves to the left with a visible adjacent cursor");
 
     const auto repaints = root.fake->repaints;
     view.setHistoryMotion(Motion::Sweep); view.frame();
     check(root.fake->repaints == repaints && sameWork(stat, f.broker->stats()) &&
-              samePixels(first, softwarePicture(view)),
+              samePicturePixels(first, comparisonPicture(view)),
           "stationary publication leaves the sweep and cursor stationary without invalidation");
 
     const auto origin = initial ? initial->historySerial : 1;
@@ -1900,11 +1921,11 @@ void spectrogramHistoryMotion() {
 
     view.freeze(true);
     const auto held = view.snapshot();
-    const auto frozenSweep = softwarePicture(view);
+    const auto frozenSweep = comparisonPicture(view);
     const auto heldStats = f.broker->stats();
     view.setHistoryMotion(Motion::Scroll); view.setHistoryMotion(Motion::Sweep); view.frame();
     check(held && view.snapshot() == held && !view.subscribed() &&
-              samePixels(frozenSweep, softwarePicture(view)) && sameWork(heldStats, f.broker->stats()),
+              samePicturePixels(frozenSweep, comparisonPicture(view)) && sameWork(heldStats, f.broker->stats()),
           "switching history motion on a frozen display preserves its picture and released lease");
 
     view.freeze(false);
@@ -1915,10 +1936,10 @@ void spectrogramHistoryMotion() {
     const auto fresh = view.snapshot();
     const auto clearedSweep = softwarePicture(view);
     view.setHistoryMotion(Motion::Scroll);
-    const auto clearedScroll = softwarePicture(view);
+    const auto clearedScroll = comparisonPicture(view);
     const auto head = fresh && fresh->historySerial > clearAt
         ? static_cast<int>((fresh->historySerial - clearAt - 1) % width) : width - 1;
-    check(fresh && clearAt && head < width - 3 && isRotated(clearedScroll, clearedSweep, head) &&
+    check(fresh && clearAt && head < width - 3 && isRotated(clearedScroll.raster, clearedSweep, head) &&
               clearedSweep.getPixelAt(left + head + 2, top + height / 2) == look::display &&
               sibling.subscribed(),
           "a local history reset starts a new sweep without clearing sibling data or retaining old pixels");
@@ -1930,7 +1951,7 @@ void spectrogramHistoryMotion() {
     for (int frame = 0; frame < 8; ++frame) view.frame();
     check(fresh && view.snapshot() == fresh && sibling.snapshot() == fresh &&
               root.fake->repaints == clearedRepaints && sameWork(clearedStats, f.broker->stats()) &&
-              samePixels(clearedScroll, softwarePicture(view)),
+              samePicturePixels(clearedScroll, comparisonPicture(view)),
           "unchanged post-clear frames retain their raster without invalidation or analysis work");
 
     root.setVisible(false);
@@ -2704,7 +2725,7 @@ int main() {
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); phaseGoniometer(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); referenceMainMeterScale();
           linkedMainMeter(); parkedMainLoudnessProjection();
-          compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
+          compactAnalyzerDock(); wordsMaskedInComparison(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); filledSpectrumProjection(); thirdOctaveAndPeriodSurface(); colourWaveformSurface(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
