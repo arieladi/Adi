@@ -67,7 +67,7 @@ Session engine seat taken on 27 November 2026.
 | TM-SV-04 Warp task file revisions | Keyed recent Warp tasks on the canonical native file revision used by clock-bank preparation (`8319e5d5e`). | The native test rewrites a same-size WAV, restores its modification time, and checks distinct new PCM and continued access to the original prepared task. | Pushed. Verified in the full run at `7968950c7`. |
 | TM-SV-04 callback bank lookup | Used immutable contiguous storage in driver searches so checked vector iterators are absent from the callback path (`05a814d04`). | The boundary tests exercise empty and negative lookup, the samples on both sides of an exact cut, a repeated bank and the final period. | Pushed. Verified in the full run at `7968950c7`. |
 | TM-SV-04 resident No Stop tempo handoff | Admitted explicit No Stop when both banks have the same resident native one-shot window. Rejected in-flight source or region changes that would break continuity (`7968950c7`). | The native graph compares every stereo sample in a 257-frame block straddling frame 96,000, checks one run, and requires an audited Stop Track to silence it at that same frame. | Pushed. Verified in the full run at `7968950c7`. |
-| TM-SV-04 integer stereo Float64 Fold | Shared one exact Fold check between authored and gain-edited takes. Native-rate stereo integer PCM qualifies for Float64 replay with the same folded samples (`fd6761970`). | The graph fixture covers PCM16 and PCM24 signed extremes and half-LSB averages through a gain change and reopen. It also catches the Float32-source mismatch with and without a PCM tape. | Pushed. Full headless rerun pending. |
+| TM-SV-04 integer stereo Float64 Fold | Shared one exact Fold check between authored and gain-edited takes. Native-rate stereo integer PCM qualifies for Float64 replay with the same folded samples (`fd6761970`). | The graph fixture covers PCM16 and PCM24 signed extremes and half-LSB averages through a gain change and reopen. It also catches the Float32-source mismatch with and without a PCM tape. | Pushed. Verified in the full run at `fd6761970`. |
 
 ## Readings owed
 
@@ -78,6 +78,8 @@ Session engine seat taken on 27 November 2026.
 The plan calls the material writes literal `clip.create`. The present `clip.create` payload omits source pins and native BLOBs. `capture.sessionPerformance` uses the existing literal Arrangement row planner and keeps the complete linked rows in one transaction. Win can accept that journal representation or reserve a full-image `clip.create` contract for a combined follow-up.
 
 ## Verification
+
+- `fd6761970` passed all 303 suites in 217.89 s under GCC 14 Debug with Pd on, JUCE off, `ADI_WERROR=ON` and `ctest -LE performance`. Schema, op, parity, Pd and CI validators passed. The platform checker results recorded below cover earlier heads.
 
 - `7968950c7` passed all 303 suites in 189.80 s under GCC 14 Debug with Pd on, JUCE off, `ADI_WERROR=ON` and `ctest -LE performance`. Schema, op, parity, Pd and CI validators passed. The platform checker results recorded below cover earlier heads.
 
