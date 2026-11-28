@@ -1758,7 +1758,8 @@ void earlierFilterProject(const std::string& editedDir) {
         set(*device, id, 1.);
         for (const auto* group : {"params", "real", "units"}) previous.at(group).erase(std::to_string(id));
     }
-    check(previous.at("params").size() == 712, "earlier project retains every previous parameter");
+    check(previous.at("params").size() == static_cast<std::size_t>(device->paramCount() - 9),
+          "earlier project retains every previous parameter");
     const auto withPeak = adi::Payload::from_cbor(device->saveState("state"));
     check(combinedDifference(legacyAudio, restoredStageAudio(withPeak, editedDir)) > .0001,
           "the active signed Peak changes the Filter output on both device routes");
@@ -1783,7 +1784,7 @@ void combinedControlRecall(const std::string& editedDir) {
     auto earlier = adi::Payload::from_cbor(device->saveState("state"));
     const auto legacySound = restoredStageAudio(earlier, editedDir);
     const auto appended = [](int id) {
-        return (id >= 727 && id <= 764) || (id >= 850 && id <= 852) || (id >= 913 && id <= 936);
+        return (id >= 727 && id <= 764) || (id >= 850 && id <= 855) || (id >= 865 && id <= 936);
     };
     for (int id = 1; id <= 936; ++id) {
         if (!appended(id)) continue;
