@@ -20,7 +20,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 **His five answers, the same day (ADR-0266, which rides the next stack):** the two encoder libraries for MP3 and FLAC are taken in; the timed backups stay; a clip that does not loop stops at the end of its audio, as Live's; playback keeps running during an export, with a button that shows the file; EQ Eight is laid out as Live's and his own EQ comes through the Mix View as ruled. He asked for a sanity check that exporting while playing does no harm: win read the render path (a second engine on the saved project, one snapshot, its own plug-ins) and registered what is not yet proved as SC-479.
 
-**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-480.
+**The devices' panels, three sheets the same day (SC-455).** The first laid seven devices out as Live lays its own: he took EQ Eight and Utility and said the rest could improve. He then brought pictures from his outside panel that he liked better, one of them above all: a large main knob with its value inside, the signal behind each curve, joined buttons, meters on every device. Win told him what those pictures leave out (most of each device's controls: their Reverb has five, ADI's thirty-one) and drew the look on ADI's own controls, twice: the second sheet he found "still doesn't look as good", the third is drawn to that level, a card showing the controls reached for and opening to the whole device. He also asked for one Auto Filter that cuts lows and highs at once (SC-480, an addition). The sheets are on `win/devices-sheet-1` and ride the next stack. Not agreed yet.
+
+**Next free:** ADR-0267; schema minor 1.29; DF-W66, DF-R4, DF-C10, DF-E93; SC-481.
 
 ---
 
