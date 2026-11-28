@@ -135,23 +135,29 @@ NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot,
         if (position.anchorTick > limit - ticksUntilEnd) return wraps;
         const auto inheritedEnd = block.sampleAtTick(block.clock,position.anchorTick + ticksUntilEnd);
         const auto second = restart.followingTick == limit ? limit : block.sampleAtTick(block.clock,restart.followingTick);
-        if (second < end) {
-            // Fit exactly two grid resets with no intervening wrap or Fade
-            // tail. Use the grid captured by Launcher for the third deadline.
-            if (slot.fade || first > inheritedEnd || second <= first ||
-                restart.tick > limit - lapTicks || restart.followingTick > limit - lapTicks ||
-                second > block.sampleAtTick(block.clock,restart.tick + lapTicks) ||
-                block.sampleAtTick(block.clock,restart.followingTick + lapTicks) < end)
-                return wraps;
-            const auto third = launch_quantize::nextGridTick(restart.followingTick+1,restart.grid,block.meters);
-            if (!third || block.sampleAtTick(block.clock,*third) < end) return wraps;
-
-            wraps.positions[0] = {first,restart.tick,restart.sourceTick};
-            wraps.positions[1] = {second,restart.followingTick,restart.sourceTick};
-            wraps.count = 2;
-            wraps.bounded = true;
+        if (!slot.fade && first <= inheritedEnd) {
+            // Use a fresh saved-Start placement at every grid reset. A
+            // run spanning an ordinary source wrap needs a different plan.
+            wraps.positions[wraps.count++] = {first,restart.tick,restart.sourceTick};
+            auto next = LaunchWarpPosition{second,restart.followingTick,restart.sourceTick};
+            while (next.frame < end) {
+                const auto& previous = wraps.positions[wraps.count-1];
+                if (wraps.count == wraps.positions.size() || next.frame <= previous.frame ||
+                    previous.anchorTick > limit - lapTicks || next.anchorTick == limit ||
+                    next.frame > block.sampleAtTick(block.clock,previous.anchorTick + lapTicks))
+                    return wraps;
+                wraps.positions[wraps.count++] = next;
+                const auto following = launch_quantize::nextGridTick(next.anchorTick+1,restart.grid,block.meters);
+                if (!following || *following <= next.anchorTick) return wraps;
+                next.anchorTick = *following;
+                next.frame = block.sampleAtTick(block.clock,*following);
+            }
+            const auto lastReset = wraps.positions[wraps.count-1].anchorTick;
+            wraps.bounded = lastReset <= limit - lapTicks &&
+                block.sampleAtTick(block.clock,lastReset + lapTicks) >= end;
             return wraps;
         }
+        if (second < end) return wraps;
         if (first > inheritedEnd) {
             // The frame at the retrigger belongs to saved Start. Project
             // only earlier ordinary wraps, with a single unfaded lap allowed.
