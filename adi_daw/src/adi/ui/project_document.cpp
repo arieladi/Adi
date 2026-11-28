@@ -3585,7 +3585,8 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             return false;
         }
     }
-    spec.placementOffsetSamples = spec.loop ? 0 : deviceLatencySamples;
+    // A loop pass is corrected too: it reads the shared file the round trip later (loopPassPlacement).
+    spec.placementOffsetSamples = deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     spec.format = format;
@@ -3608,7 +3609,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
                      ". Choose an enabled input under Audio From.";
             return false;
         }
-        const bool keep = !spec.loop && track->recording.keepMonitoringLatency &&
+        const bool keep = track->recording.keepMonitoringLatency &&
                           recordState(states, id).monitor != Monitor::Off;
         spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end()),
                                 keep ? std::optional<std::int64_t>{0} : std::nullopt});
@@ -3986,8 +3987,18 @@ void ProjectDocument::landTake() {
         landing_ = false;
         TakeLanded outcome;
         std::vector<std::int64_t> lastPassClips;
+        std::size_t heardPasses = 0;
         const auto refuse = [&](const std::string &reason) {
             landed_ = TakeLanded{false, {}, attachmentFailure(*audio, reason)};
+        };
+        // The last pass the correction leaves anything of: a last pass shorter than the
+        // round trip holds nothing that was heard in it, and lands no take.
+        const auto lastHeardPass = [&](const engine::RecordedTrack &track) -> std::optional<std::size_t> {
+            const auto offset = track.placementOffsetSamples.value_or(audio->placementOffsetSamples);
+            for (auto pass = audio->passes().size(); pass > 0; --pass)
+                if (engine::loopPassPlacement(audio->passes()[pass - 1], audio->frames, offset))
+                    return pass - 1;
+            return std::nullopt;
         };
         try {
             RowIds rows(store_->db());
@@ -4002,8 +4013,10 @@ void ProjectDocument::landTake() {
                 target.passes.reserve(audio->passes().size());
                 for (std::size_t pass = 0; pass < audio->passes().size(); ++pass)
                     target.passes.push_back({rows.next("lanes"), rows.next("clips"), clipName});
-                if (!target.passes.empty())
-                    lastPassClips.push_back(target.passes.back().clip);
+                if (const auto last = lastHeardPass(track)) {
+                    lastPassClips.push_back(target.passes[*last].clip);
+                    heardPasses = std::max(heardPasses, *last + 1);
+                }
                 loopIds.push_back(std::move(target));
             }
             auto edit = recording::prepareLoopCommit(*store_, *audio, loopIds);
@@ -4049,7 +4062,7 @@ void ProjectDocument::landTake() {
             }
         }
         outcome.ok = true;
-        const auto passes = audio->passes().size();
+        const auto passes = heardPasses;
         outcome.message = passes == 1 ? "Recorded one pass of the loop."
                                       : "Recorded " + std::to_string(passes) + " passes of the loop, a take each.";
         if (audio->recovered()) outcome.message = "Recovered the interrupted loop recording.";

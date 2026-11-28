@@ -27,7 +27,7 @@ struct AudioMemoryTakeSpec {
 struct RecordingTarget {
     std::int64_t trackId=0;
     std::vector<std::uint32_t> channels; // indices in AudioIo.in, or 0/1 for MainMix
-    std::optional<std::int64_t> placementOffsetSamples{}; // linear take override for this track
+    std::optional<std::int64_t> placementOffsetSamples{}; // this track's override of the take's correction
     RecordingSource source = RecordingSource::PhysicalInput;
 };
 /// Explicit frozen sample-domain loop contract. One row per nonempty pass,
@@ -50,6 +50,12 @@ struct RecordedPass {
 // Intersect a latency-corrected linear take with its captured punch bounds.
 [[nodiscard]] std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,
     std::uint64_t frames,std::int64_t offsetSamples,const RecordingPunchWindow&) noexcept;
+// The part of one loop pass the clip plays after the round-trip correction. What was heard
+// at the pass's timeline reached the input `offsetSamples` later, so the pass reads the shared
+// file that much further on (into the next pass, or past the end of the last). Empty when
+// the file holds nothing of it: a last pass shorter than the correction.
+[[nodiscard]] std::optional<RecordedPass> loopPassPlacement(const RecordedPass& captured,
+    std::uint64_t sourceFrames,std::int64_t offsetSamples) noexcept;
 struct AudioRecordingSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // Session supplies its resolved project identity
@@ -57,7 +63,7 @@ struct AudioRecordingSpec {
     audio::WavFormat format=audio::WavFormat::Float32;
     std::vector<RecordingTarget> targets;
     std::optional<AudioRecordingLoop> loop; // absent retains linear capture
-    std::int64_t placementOffsetSamples = 0; // captured with the device settings for a linear take
+    std::int64_t placementOffsetSamples = 0; // captured with the device settings, for linear and loop takes
     // The document owner supplies this through recording::configureRecovery.
     // Empty keeps transient callers and custom recorder sinks unchanged.
     std::string recoveryProjectUuid{};

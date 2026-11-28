@@ -145,6 +145,23 @@ void latencyCompensatedPlacement() {
     check(drawn.startSample==0 && drawn.sourceStartFrame==192 && drawn.frames==320 &&
           kept.startSample==0 && kept.sourceStartFrame==0 && kept.frames==512,
           "the live waveform skips the hidden samples, and a track that keeps its monitoring latency shows all");
+    // A loop pass keeps the timeline it was heard at and reads the file the round trip later:
+    // into the next pass, past the end for none but the last, before the start for none.
+    const RecordedPass firstPass{0,100,40,140},middlePass{100,100,40,140},lastPass{200,30,40,70};
+    check(same(loopPassPlacement(firstPass,230,20),20,100,40) && same(loopPassPlacement(middlePass,230,20),120,100,40) &&
+          same(loopPassPlacement(lastPass,230,20),220,10,40) && !loopPassPlacement(lastPass,230,30) &&
+          same(loopPassPlacement(firstPass,230,-20),0,80,60) && same(loopPassPlacement(lastPass,230,0),200,30,40),
+          "a loop pass reads the file the correction later, and a last pass shorter than it holds nothing");
+    AudioRecordingPreview loopPreview;
+    loopPreview.loop=AudioRecordingLoop{40,140};
+    loopPreview.startSample=40;
+    loopPreview.placementOffsetSamples=20;
+    const auto growing=loopPreview.latestPass(110),wrapped=loopPreview.latestPass(230),early=loopPreview.latestPass(15);
+    const auto keptLoop=loopPreview.latestPass(230,std::int64_t{0});
+    check(growing.startSample==40 && growing.sourceStartFrame==20 && growing.frames==90 &&
+          wrapped.startSample==40 && wrapped.sourceStartFrame==220 && wrapped.frames==10 && early.frames==0 &&
+          keptLoop.startSample==40 && keptLoop.sourceStartFrame==200 && keptLoop.frames==30,
+          "the live waveform of a loop take shows each pass as it was heard");
 }
 void midiLinearTakes() {
     Fixture fixture;

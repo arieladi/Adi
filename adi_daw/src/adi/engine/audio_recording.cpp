@@ -63,27 +63,66 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
                         keptStart,keptEnd};
 }
 
+std::optional<RecordedPass> loopPassPlacement(const RecordedPass& captured,std::uint64_t sourceFrames,
+    std::int64_t offsetSamples) noexcept {
+    constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
+    if(captured.frames==0 || captured.frames>static_cast<std::uint64_t>(ceiling) ||
+       sourceFrames>static_cast<std::uint64_t>(ceiling) || captured.sourceStartFrame>sourceFrames ||
+       captured.timelineStartSample>ceiling-static_cast<std::int64_t>(captured.frames))
+        return {};
+    const auto source = static_cast<std::int64_t>(captured.sourceStartFrame);
+    if((offsetSamples>0 && source>ceiling-offsetSamples) || (offsetSamples<0 && offsetSamples<-ceiling))
+        return {};
+    const auto begin = source+offsetSamples;
+    const auto length = static_cast<std::int64_t>(captured.frames);
+    const auto end = begin>ceiling-length ? ceiling : begin+length;
+    // Keep the timeline the pass was heard at; only the part the file holds is placed.
+    const auto keptBegin = std::max<std::int64_t>(begin,0);
+    const auto keptEnd = std::min(end,static_cast<std::int64_t>(sourceFrames));
+    if(keptBegin>=keptEnd)
+        return {};
+    const auto timeline = captured.timelineStartSample+(keptBegin-begin);
+    return RecordedPass{static_cast<std::uint64_t>(keptBegin),static_cast<std::uint64_t>(keptEnd-keptBegin),
+                        timeline,timeline+(keptEnd-keptBegin)};
+}
+
 AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames,
     std::optional<std::int64_t> trackOffsetSamples) const noexcept {
     const auto frames = std::max(peaks.frames, acceptedFrames);
+    const auto offset = trackOffsetSamples.value_or(placementOffsetSamples);
     if (!loop) {
         // The same range the landed clip will play, hidden frames before song zero included.
-        const auto offset = trackOffsetSamples.value_or(placementOffsetSamples);
         const auto placed = recordingPlacementRange(rawStartSample, frames, offset, {});
         return placed ? Range{placed->timelineStartSample, placed->sourceStartFrame, placed->frames}
                       : Range{startSample, 0, 0};
     }
-    if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
-        startSample < 0 || startSample >= loop->endSample)
+    if (loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
+        startSample < 0 || startSample >= loop->endSample || frames > static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max()) || offset == std::numeric_limits<std::int64_t>::min())
         return {startSample, 0, frames};
+    // The passes as they were heard: the file reads `offset` frames later than the timeline,
+    // so the last `offset` captured frames belong to no pass yet (loopPassPlacement).
+    const auto signedFrames = static_cast<std::int64_t>(frames);
+    if (offset >= signedFrames)
+        return {startSample, 0, 0};
+    const auto heard = static_cast<std::uint64_t>(signedFrames - offset);
     const auto firstFrames = static_cast<std::uint64_t>(loop->endSample - startSample);
-    if (frames <= firstFrames)
-        return {startSample, 0, frames};
-    const auto loopFrames = static_cast<std::uint64_t>(loop->endSample - loop->beginSample);
-    // An exact wrap still shows the last complete pass until the next one
-    // has audio. Source offsets include a partial first pass.
-    const auto passFrames = (frames - firstFrames - 1) % loopFrames + 1;
-    return {loop->beginSample, frames - passFrames, passFrames};
+    RecordedPass pass{0, heard, startSample, 0};
+    if (heard > firstFrames) {
+        const auto loopFrames = static_cast<std::uint64_t>(loop->endSample - loop->beginSample);
+        // An exact wrap still shows the last complete pass until the next one
+        // has audio. Source offsets include a partial first pass.
+        const auto passFrames = (heard - firstFrames - 1) % loopFrames + 1;
+        pass = {heard - passFrames, passFrames, loop->beginSample, 0};
+    }
+    pass.timelineEndSample = pass.timelineStartSample + static_cast<std::int64_t>(pass.frames);
+    // In heard frames the pass starts at `sourceStartFrame`; in the file, `offset` later.
+    const auto heardStart = static_cast<std::int64_t>(pass.sourceStartFrame);
+    pass.sourceStartFrame = 0;
+    const auto inFile = loopPassPlacement({0, pass.frames, pass.timelineStartSample, pass.timelineEndSample},
+                                          frames, heardStart + offset);
+    return inFile ? Range{inFile->timelineStartSample, inFile->sourceStartFrame, inFile->frames}
+                  : Range{startSample, 0, 0};
 }
 
 struct AudioRecordingResult::Files {
@@ -254,10 +293,12 @@ struct Job {
         if (peaks.frames == 0) {
             try {
                 const auto start = firstSample.load(std::memory_order_relaxed);
-                const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
+                const auto offset = spec.placementOffsetSamples;
                 accumulatingPreview.rawStartSample = start;
                 accumulatingPreview.placementOffsetSamples = offset;
-                accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
+                // A loop pass keeps its timeline and reads the file later (loopPassPlacement).
+                accumulatingPreview.startSample =
+                    spec.loop ? start : recordingPlacementStart(start, offset).value_or(start);
                 if (punchWindow.active())
                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};
                 accumulatingPreview.loop = spec.loop;
@@ -269,8 +310,7 @@ struct Job {
                 for (std::size_t target = 0; target < spec.targets.size(); ++target) {
                     AudioRecordingPreview::Track track;
                     track.trackId = spec.targets[target].trackId;
-                    if (!spec.loop)
-                        track.placementOffsetSamples = spec.targets[target].placementOffsetSamples;
+                    track.placementOffsetSamples = spec.targets[target].placementOffsetSamples;
                     track.channels.reserve(mappings[target].size());
                     for (const auto channel : mappings[target])
                         track.channels.push_back(static_cast<std::uint32_t>(channel));
@@ -598,7 +638,7 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
         for(std::size_t index=0;index<spec.targets.size();++index) {
             const auto& target=spec.targets[index];const auto file=owned/("take-"+std::to_string(index)+".wav");
             const auto width=static_cast<std::uint16_t>(target.channels.size());
-            job->tracks.push_back({target.trackId,width,file,spec.loop ? std::nullopt : target.placementOffsetSamples});
+            job->tracks.push_back({target.trackId,width,file,target.placementOffsetSamples});
             std::vector<std::size_t> mapping;
             const auto base = target.source == RecordingSource::MainMix ? kMainChannelBase : 0U;
             for(const auto channel:target.channels)mapping.push_back(static_cast<std::size_t>(std::lower_bound(job->inputChannels.begin(),job->inputChannels.end(),channel + base)-job->inputChannels.begin()));

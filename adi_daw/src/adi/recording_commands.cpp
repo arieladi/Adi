@@ -1295,40 +1295,55 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
         for(auto& source:sourceEdits)
             if(source.mediaEdit)result.requests.push_back(std::move(*source.mediaEdit));
         std::vector<std::vector<RecordedPiece>> main(ids.size());Payload previous=Payload::array();
-        auto earliest=passes.front().timelineStartSample;auto latest=passes.front().timelineEndSample;
+        std::optional<std::int64_t> earliest,latest;
         edit_plan::Options placement{static_cast<double>(recorded.sampleRate),{}};
         placement.policy.automationFollowsClips=false; // Audio recording does not rewrite authored automation.
+        bool firstGroup=true;
         for(std::size_t pass=0;pass<passes.size();++pass) {
-            const auto groupStart=pass==0?std::size_t{0}:result.requests.size();
-            const auto& captured=passes[pass];earliest=std::min(earliest,captured.timelineStartSample);latest=std::max(latest,captured.timelineEndSample);
+            // Each track's pass as it was heard: the round-trip correction reads the file later.
+            std::vector<std::optional<engine::RecordedPass>> heard(ids.size());
+            for(std::size_t track=0;track<ids.size();++track) {
+                const auto offset=recorded.tracks[track].placementOffsetSamples.value_or(recorded.placementOffsetSamples);
+                heard[track]=engine::loopPassPlacement(passes[pass],recorded.frames,offset);
+                if(!heard[track])continue;
+                earliest=std::min(earliest.value_or(heard[track]->timelineStartSample),heard[track]->timelineStartSample);
+                latest=std::max(latest.value_or(heard[track]->timelineEndSample),heard[track]->timelineEndSample);
+            }
+            // A last pass shorter than the correction holds nothing that was heard in it.
+            if(std::none_of(heard.begin(),heard.end(),[](const auto& item){return item.has_value();}))continue;
+            const auto groupStart=firstGroup?std::size_t{0}:result.requests.size();firstGroup=false;
             edit_plan::detail::PlacementBatch batch;
-            const auto first=tickAt(tempo,earliest,recorded.sampleRate),last=tickAt(tempo,latest,recorded.sampleRate);
+            const auto first=tickAt(tempo,*earliest,recorded.sampleRate),last=tickAt(tempo,*latest,recorded.sampleRate);
             auto scope=edit_plan::materialScope(trackIds,edit_plan::PlacementClock::Ticks,{first,last});
             scope.domains=edit_plan::Domains::Clips;
-            const auto startTick=tickAt(tempo,captured.timelineStartSample,recorded.sampleRate);
-            const auto startNanos=captureStartNanos(captured.timelineStartSample,recorded.sampleRate);
             for(std::size_t track=0;track<ids.size();++track) {
-                const auto& wanted=ids[track].passes[pass];const auto trackId=recorded.tracks[track].trackId;
-                const auto name=wanted.name.empty()?(pass==0?std::string("Audio"):"Audio "+std::to_string(pass+1)):wanted.name;
-                const auto reused=takeReusableLane(reusable[track],startTick,startNanos);
-                const auto laneId=reused.value_or(wanted.lane);
-                if(!reused) {
-                    result.requests.push_back(createTakeLane(store,laneId,trackId));
-                    auto& lanesInOrder=laneOrders[track];auto& created=newLaneCounts[track];
-                    lanesInOrder.insert(lanesInOrder.begin()+static_cast<std::ptrdiff_t>(created),laneId);
-                    if(created!=0) {
-                        OpRequest order;order.opType="lane.reorder";
-                        order.payload={{"track",trackId},{"lanes",lanesInOrder}};
-                        result.requests.push_back(std::move(order));
+                const auto trackId=recorded.tracks[track].trackId;
+                if(const auto& captured=heard[track]) {
+                    const auto& wanted=ids[track].passes[pass];
+                    const auto startTick=tickAt(tempo,captured->timelineStartSample,recorded.sampleRate);
+                    const auto startNanos=captureStartNanos(captured->timelineStartSample,recorded.sampleRate);
+                    const auto name=wanted.name.empty()?(pass==0?std::string("Audio"):"Audio "+std::to_string(pass+1)):wanted.name;
+                    const auto reused=takeReusableLane(reusable[track],startTick,startNanos);
+                    const auto laneId=reused.value_or(wanted.lane);
+                    if(!reused) {
+                        result.requests.push_back(createTakeLane(store,laneId,trackId));
+                        auto& lanesInOrder=laneOrders[track];auto& created=newLaneCounts[track];
+                        lanesInOrder.insert(lanesInOrder.begin()+static_cast<std::ptrdiff_t>(created),laneId);
+                        if(created!=0) {
+                            OpRequest order;order.opType="lane.reorder";
+                            order.payload={{"track",trackId},{"lanes",lanesInOrder}};
+                            result.requests.push_back(std::move(order));
+                        }
+                        ++created;
                     }
-                    ++created;
+                    RecordedPiece take{wanted.clip,captured->timelineStartSample,captured->timelineEndSample,captured->sourceStartFrame,name};
+                    edit::RowEdits takeRows(store.db());
+                    clip_edit::createImage(takeRows,recordedImage(store,tempo,take,trackId,sourceEdits[track].mediaId,recorded.sampleRate,laneId));
+                    OpRequest clip;clip.opType="clip.duplicate";clip.payload={{"id",wanted.clip},{"changes",takeRows.changes()}};
+                    clip.targetKind="clip";clip.targetId=wanted.clip;result.requests.push_back(std::move(clip));
+                    take.id=allocated.next("clips");replaceRecordedSpan(main[track],std::move(take),allocated);
                 }
-                RecordedPiece take{wanted.clip,captured.timelineStartSample,captured.timelineEndSample,captured.sourceStartFrame,name};
-                edit::RowEdits takeRows(store.db());
-                clip_edit::createImage(takeRows,recordedImage(store,tempo,take,trackId,sourceEdits[track].mediaId,recorded.sampleRate,laneId));
-                OpRequest clip;clip.opType="clip.duplicate";clip.payload={{"id",wanted.clip},{"changes",takeRows.changes()}};
-                clip.targetKind="clip";clip.targetId=wanted.clip;result.requests.push_back(std::move(clip));
-                take.id=allocated.next("clips");replaceRecordedSpan(main[track],std::move(take),allocated);
+                // A track with nothing heard in this pass keeps its main-lane image in the batch.
                 for(const auto& piece:main[track])batch.incoming.push_back(recordedImage(store,tempo,piece,trackId,sourceEdits[track].mediaId,recorded.sampleRate));
                 batch.clear.push_back({{trackId,std::nullopt},{first,last}});
             }
@@ -1347,6 +1362,7 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
             if(!selections.empty())result.requests[groupStart].selBefore=selections[pass];
             result.groupEnds_.push_back(result.requests.size());
         }
+        if(firstGroup)throw std::runtime_error("the take ended before its latency-corrected start");
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();result.requests.clear();result.groupEnds_.clear();}
     return result;
