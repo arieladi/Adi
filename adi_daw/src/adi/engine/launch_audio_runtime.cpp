@@ -682,6 +682,7 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
         const auto* pcm = project_->clip(action.clip);
         auto* reader = pcm ? pcm->pageReader() : nullptr;
         auto& ranges = ranges_.data()[index];
+        auto leaseFrames = candidate.frames;
         if (action.kind == TimedSceneActionKind::Continue) {
             const auto* before = outgoing.pinnedCandidate(clockSample_-1,action.track,action.clip);
             const auto* after = pinnedCandidate(clockSample_,action.track,action.clip);
@@ -692,16 +693,21 @@ bool LaunchAudioRuntime::reserveTimedRawScene(LaunchAudioDriver& driver, const L
                 (retained && (!samePinnedShape(retained->slot,before->slot) ||
                               retained->source->pcm.pageReader() != reader)) ||
                 action.cue.physicalFrame < before->slot.physicalStartFrame ||
-                action.cue.physicalFrame - before->slot.physicalStartFrame > before->slot.physicalFrames - candidate.frames) {
+                action.cue.physicalFrame - before->slot.physicalStartFrame >= before->slot.physicalFrames) {
                 finish();
                 return false;
             }
+            // A non-looping run can end inside this suffix. The Launcher
+            // already closes it at its exclusive physical End.
+            const auto elapsed = action.cue.physicalFrame - before->slot.physicalStartFrame;
+            const auto remaining = before->slot.physicalFrames - elapsed;
+            leaseFrames = static_cast<std::int32_t>(std::min<std::int64_t>(leaseFrames,remaining));
         } else if ((action.outgoingRun == 0) != (action.outgoingClip == 0) || action.outgoingClip == action.clip) {
             finish();
             return false;
         }
         if (!reader || ranges.cuePages || action.cue.physicalFrame < 0 ||
-            !reader->reserveCue(action.clip,action.cue.physicalFrame,candidate.frames,false,false)) {
+            !reader->reserveCue(action.clip,action.cue.physicalFrame,leaseFrames,false,false)) {
             finish();
             return false;
         }

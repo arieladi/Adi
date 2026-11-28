@@ -38,6 +38,7 @@ using namespace adi::engine;
 constexpr std::uint32_t rate = 48'000;
 constexpr std::int32_t blockFrames = 257;
 constexpr std::int64_t cut = 96'000, prepareAt = cut - 396, crossing = prepareAt + blockFrames;
+constexpr auto continuedEndSample = cut + 37;
 constexpr auto bar = 4 * textproj::kPPQ;
 constexpr std::uint32_t mediaFrames = 240'000;
 constexpr std::int64_t durationNs = 4'000'000'000;
@@ -61,7 +62,8 @@ float signal(std::size_t index, std::int64_t frame) {
 
 enum class ThirdCell { Start, Stop, NoStop };
 
-std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCell thirdCell, bool pagedThird) {
+std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCell thirdCell, bool pagedThird,
+                                      bool shortThird = false) {
     StoreError error{};
     const auto project = folder.path() / "scene.adi";
     auto store = Store::createEmpty(project,error);
@@ -80,6 +82,7 @@ std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCe
             continue;
         }
         const auto id = clips[index];
+        const auto lengthNs = index == 2 && shortThird ? continuedEndSample * 1'000'000'000 / rate : durationNs;
         const auto track = static_cast<std::int64_t>(index % 3 + 1);
         const bool target = index >= 3;
         const auto name = std::to_string(id) + ".wav";
@@ -99,13 +102,13 @@ std::unique_ptr<Store> prepareProject(const test::TempDirectory& folder, ThirdCe
         media.bind(1,id); media.bind(2,digest.hex); media.bind(3,name); media.exec();
         SQLite::Statement clip(db,"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled)"
                                   " VALUES(?,?,'audio',1,0,?,0)");
-        clip.bind(1,id); clip.bind(2,track); clip.bind(3,durationNs); clip.exec();
+        clip.bind(1,id); clip.bind(2,track); clip.bind(3,lengthNs); clip.exec();
         SQLite::Statement raw(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled)"
                                  " VALUES(?,?,240000,0)");
         raw.bind(1,id); raw.bind(2,id); raw.exec();
         const auto ns = starts[index] * 1'000'000'000 / rate;
         SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(?,?,?)");
-        pins.bind(1,id); pins.bind(2,ns); pins.bind(3,ns + durationNs); pins.exec();
+        pins.bind(1,id); pins.bind(2,ns); pins.bind(3,ns + lengthNs); pins.exec();
         SQLite::Statement slot(db,"INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(?,?,?)");
         slot.bind(1,track); slot.bind(2,target ? 20 : 10); slot.bind(3,id); slot.exec();
         SQLite::Statement launch(db,"INSERT INTO clip_launch(clip_id,legato,ram_mode,clip_fade,launch_quant)"
@@ -168,33 +171,39 @@ std::array<LaunchTrackStatus,3> readTracks(const Session& session) {
 
 enum class Outcome {
     Warm, ColdThird, StopTrack, SavedStop, ColdSavedStop, CompetingSavedStop, ResidentNoStop,
-    Continues, ColdContinue, CompetingStopContinue, CompetingBackContinue
+    Continues, ColdContinue, CompetingStopContinue, CompetingBackContinue,
+    ShortContinue, ColdShortContinue, StopShortContinue
 };
 
 void exercise(Outcome outcome) {
-    const bool warm = outcome == Outcome::Warm || outcome == Outcome::SavedStop || outcome == Outcome::Continues;
+    const bool warm = outcome == Outcome::Warm || outcome == Outcome::SavedStop ||
+        outcome == Outcome::Continues || outcome == Outcome::ShortContinue;
     const bool savedStop = outcome == Outcome::SavedStop || outcome == Outcome::ColdSavedStop ||
         outcome == Outcome::CompetingSavedStop;
-    const bool continues = outcome == Outcome::Continues || outcome == Outcome::ColdContinue ||
+    const bool shortContinue = outcome == Outcome::ShortContinue || outcome == Outcome::ColdShortContinue ||
+        outcome == Outcome::StopShortContinue;
+    const bool continues = shortContinue || outcome == Outcome::Continues || outcome == Outcome::ColdContinue ||
         outcome == Outcome::CompetingStopContinue || outcome == Outcome::CompetingBackContinue;
     const bool residentNoStop = outcome == Outcome::ResidentNoStop;
     const bool back = outcome == Outcome::CompetingBackContinue;
     std::optional<std::size_t> manualStop;
     if (outcome == Outcome::StopTrack) manualStop = 1;
     if (outcome == Outcome::CompetingSavedStop || outcome == Outcome::CompetingStopContinue) manualStop = 0;
-    if (back) manualStop = 2;
+    if (back || outcome == Outcome::StopShortContinue) manualStop = 2;
     constexpr std::array names{"warm","cold-third","stop","saved-stop","cold-saved-stop","competing-saved-stop",
-                               "resident-no-stop","continue","cold-continue","competing-stop-continue","competing-back-continue"};
+                               "resident-no-stop","continue","cold-continue","competing-stop-continue","competing-back-continue",
+                               "short-continue","cold-short-continue","stop-short-continue"};
     const auto* mode = names[static_cast<std::size_t>(outcome)];
     auto startedAt = nearStarts;
     if (outcome == Outcome::ColdThird) startedAt[2] = blockFrames;
-    if (outcome == Outcome::ColdSavedStop || outcome == Outcome::ColdContinue) startedAt[1] = blockFrames;
+    if (outcome == Outcome::ColdSavedStop || outcome == Outcome::ColdContinue || outcome == Outcome::ColdShortContinue)
+        startedAt[1] = blockFrames;
     if (continues) startedAt[2] = 0;
     constexpr auto end = cut + 3 * blockFrames;
     constexpr auto gainAt = cut - 1000;
     test::TempDirectory folder{"three_raw_timed_scene",mode};
     auto store = prepareProject(folder,savedStop ? ThirdCell::Stop :
-        continues || residentNoStop ? ThirdCell::NoStop : ThirdCell::Start,continues);
+        continues || residentNoStop ? ThirdCell::NoStop : ThirdCell::Start,continues,shortContinue);
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
@@ -248,8 +257,10 @@ void exercise(Outcome outcome) {
     playback.through(end);
 
     const auto after = readTracks(session);
+    const bool naturalStop = shortContinue && !manualStop;
+    const auto expectedEdges = (warm ? (continues ? 5u : 6u) : manualStop ? 4u : 3u) + (naturalStop ? 1u : 0u);
     require(playback.crossedOnOldClock && session.beginRender().bpmAtTick(bar) == (warm ? 140 : 120) &&
-            playback.sceneCount == (warm ? 1u : 0u) && playback.edgeCount == (warm ? (continues ? 5u : 6u) : manualStop ? 4u : 3u),
+            playback.sceneCount == (warm ? 1u : 0u) && playback.edgeCount == expectedEdges,
             "clock, receipt and all three Starts are one driver decision");
     if (warm) require(playback.scene.sample == cut && playback.scene.tempoBpm == 140,
                       "the single receipt uses the same exact 140 BPM cut");
@@ -260,6 +271,14 @@ void exercise(Outcome outcome) {
                 edge.oldRun == old[index].run && edge.newClip == 0 && edge.sample == cut && edge.tick == bar &&
                 edge.arrangement == back,
                 "the manual command alone dispatches on the old clock while the timed Scene refuses");
+    }
+    if (naturalStop) {
+        const auto& edge = playback.edges[playback.edgeCount - 1];
+        const auto pin = session.beginRender();
+        require(edge.track == 3 && edge.oldClip == clips[2] && edge.oldRun == old[2].run && edge.newClip == 0 &&
+                edge.oldPhysicalSourceAnchorFrame == starts[2] && edge.oldFramesSinceSourceAnchor == continuedEndSample &&
+                edge.sample == continuedEndSample && edge.tick == pin.tickAtSample(continuedEndSample),
+                "the same paged run reaches its exclusive physical End on the selected clock");
     }
     const auto stopsAtCut = [&](std::size_t index) {
         return (manualStop && *manualStop == index) || (warm && savedStop && index == 2);
@@ -272,8 +291,8 @@ void exercise(Outcome outcome) {
                     edge.oldRun == old[index].run && edge.newClip == expectedClip &&
                     after[index].clip == expectedClip && after[index].run != old[index].run,
                     "every saved Start or Stop takes effect at the exact performed sample");
-        } else if (stopsAtCut(index)) {
-            require(after[index].clip == 0,"only the manual Stop persists after the refused Scene");
+        } else if (stopsAtCut(index) || (naturalStop && index == 2)) {
+            require(after[index].clip == 0,"the stopped run stays silent for the rest of the callback");
         } else {
             require(after[index].clip == old[index].clip && after[index].run == old[index].run,
                     "every track without a Start or Stop keeps its original run");
@@ -282,7 +301,8 @@ void exercise(Outcome outcome) {
     for (auto sample = std::int64_t{0}; sample < end; ++sample) {
         auto expected = 0.f;
         for (std::size_t index = 0; index < startedAt.size(); ++index) {
-            if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index))) continue;
+            if (sample < startedAt[index] || (sample >= cut && stopsAtCut(index)) ||
+                (shortContinue && index == 2 && sample >= continuedEndSample)) continue;
             const auto clip = warm && sample >= cut && !(continues && index == 2) ? index + 3 : index;
             const auto gain = continues && index == 2 && sample >= gainAt ? 0.5f : 1.0f;
             expected += gain * signal(clip,sample - startedAt[index] + starts[clip]);
@@ -454,6 +474,8 @@ void runThreeTrackTimedRawSceneTests() {
     for (const auto outcome : {Outcome::Warm,Outcome::ColdThird,Outcome::StopTrack,Outcome::SavedStop,
                                Outcome::ColdSavedStop,Outcome::CompetingSavedStop,Outcome::ResidentNoStop,Outcome::Continues,
                                Outcome::ColdContinue,Outcome::CompetingStopContinue,Outcome::CompetingBackContinue})
+        exercise(outcome);
+    for (const auto outcome : {Outcome::ShortContinue,Outcome::ColdShortContinue,Outcome::StopShortContinue})
         exercise(outcome);
 }
 } // namespace adi::test
