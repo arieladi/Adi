@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/launch_gestures.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
@@ -13,7 +14,9 @@
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/textproj.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "session_schema_fixture.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -107,9 +110,10 @@ struct Fixture {
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
     }
-    void clip(int id=1,std::int64_t on=24024,std::int64_t duration=480480,std::int64_t length=5765760){
+    void clip(int id=1,std::int64_t on=24024,std::int64_t duration=480480,std::int64_t length=5765760,
+              std::uint8_t key=60){
         SQLite::Statement q(store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) VALUES(?,1,'midi',0,0,?)");q.bind(1,id);q.bind(2,length);q.exec();
-        NoteRecord note{};note.start_ticks=on;note.dur_ticks=duration;note.note_id=42;note.key=60;note.channel=3;note.vel_on=93;note.vel_off=37;note.probability=10000;note.tuning_cents=31.25f;
+        NoteRecord note{};note.start_ticks=on;note.dur_ticks=duration;note.note_id=42;note.key=key;note.channel=3;note.vel_on=93;note.vel_off=37;note.probability=10000;note.tuning_cents=31.25f;
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
@@ -1070,6 +1074,67 @@ void musical(){
     Fixture tempo;tempo.clip(1,2882880,5765760,11531520);
     tempo.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(5765760,60,0)");tempo.load();while(tempo.clock<49000)tempo.render();
     check(tempo.instrument->count==3 && tempo.instrument->heard[0].clock==12000 && tempo.instrument->heard[2].clock==48000,"note duration integrates a tempo change");
+}
+void musicalRamp() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr std::array rates{44100.0, 48000.0, 96000.0};
+    constexpr std::array<std::int64_t, 3> starts{56877, 61907, 123813};
+    for (std::size_t n = 0; n < rates.size(); ++n) {
+        Fixture f(rates[n], 512);
+        f.clip(1, 2 * quarter, quarter / 2, 4 * quarter);
+        f.store->db().exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0)");
+        f.load();
+        const auto sample = f.session.beginRender().sampleAtTick(2 * quarter);
+        while (f.clock <= starts[n]) f.render();
+        check(sample == starts[n] && f.instrument->count >= 1 &&
+              f.instrument->heard[0].e.type == EventType::NoteOn && f.instrument->heard[0].clock == starts[n],
+              "the transport and real MIDI playback agree at the independent Bezier midpoint sample");
+    }
+}
+void livePlayQuantizeRamp() {
+    struct Reading {
+        double rate;
+        std::int64_t linear, bezier, step;
+    };
+    // Independent integral of 60 / BPM over two quarters, rounded up for Play-Q.
+    constexpr std::array readings{
+        Reading{44100, 45055, 56877, 58800},
+        Reading{48000, 49040, 61907, 64000},
+        Reading{96000, 98079, 123814, 128000},
+    };
+    for (const auto& reading : readings) {
+        for (const bool bezier : {false, true}) {
+            Fixture f(reading.rate, 64);
+            f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1; DELETE FROM tempo_map");
+            f.store->db().exec(bezier
+                ? "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0)"
+                : "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,1,0),(23063040,210,0,0)");
+            OpRequest setting;
+            setting.opType = "track.setPlayQuantize";
+            setting.payload = {{"id", 1}, {"on", true}, {"grid", "1/4"}, {"forgivenessMs", 0.0}};
+            if (!OpJournal(*f.store).commit(setting).ok)
+                throw std::runtime_error("enable Play-Q for the live tempo ramp");
+            f.load();
+            const auto expected = bezier ? reading.bezier : reading.linear;
+            f.clock = expected - 64;
+            f.session.transport().locate(f.clock);
+            check(f.session.enqueueMidiInput(expected - 8, {0, EventType::NoteOn, 0, 66, 1, 0, .75}) &&
+                  f.session.enqueueMidiInput(expected + 5, {0, EventType::NoteOff, 0, 66, 1, 0, 0}),
+                  "queue a monitored note and release across the integrated grid line");
+            while (f.clock < reading.step + 64) f.render();
+            const auto& on = f.instrument->heard[0];
+            const auto& off = f.instrument->heard[1];
+            std::printf("Play-Q %s %.0f Hz: attack %lld, release %lld, expected %lld/%lld\n",
+                        bezier ? "Bezier" : "linear", reading.rate,
+                        static_cast<long long>(on.clock), static_cast<long long>(off.clock),
+                        static_cast<long long>(expected), static_cast<long long>(expected + 13));
+            check(f.instrument->count == 2 && on.e.type == EventType::NoteOn &&
+                  off.e.type == EventType::NoteOff && on.e.dim == 66 && off.e.dim == 66 &&
+                  on.e.noteId == off.e.noteId && on.clock == expected && off.clock == expected + 13,
+                  "monitored MIDI follows the integrated Play-Q grid and retains note duration");
+        }
+    }
 }
 void activeFlag() {
     Fixture f(48000,128);f.clip(1,0,240240,5765760);
@@ -2103,6 +2168,247 @@ void expressionKnotFollowsNoteClock() {
                     static_cast<long long>(chased),static_cast<long long>(chasedValue));
 }
 
+void storedSessionSlots() {
+    constexpr std::int64_t quarterTicks = 5765760;
+    Fixture f(48000, 64);
+    test::applySessionSchema(f.store->db());
+    f.clip(1, 0, 2 * quarterTicks, 4 * quarterTicks, 60);
+    f.clip(11, 0, 480480, quarterTicks, 64);
+    f.clip(12, 0, 480480, quarterTicks, 67);
+    f.store->db().exec("INSERT INTO scenes(id,ord,name) VALUES(100,0,'One'),(200,1,'Two');"
+        "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,100,11),(1,200,12);"
+        "INSERT INTO clip_launch(clip_id,launch_quant) VALUES(11,8),(12,1);");
+    test::seedSessionMarker(f.store->db());
+    f.load();
+    auto noteEvents = [&] {
+        std::vector<Heard> events;
+        for (std::size_t i = 0; i < f.instrument->count; ++i) {
+            const auto& heard = f.instrument->heard[i];
+            if (heard.e.type == EventType::NoteOn || heard.e.type == EventType::NoteOff)
+                events.push_back(heard);
+        }
+        return events;
+    };
+    auto command = [&](LaunchRequestKind kind, std::optional<std::int64_t> scene = {},
+                       std::optional<std::int64_t> clip = {}) {
+        LaunchRequest request;
+        request.kind = kind;
+        request.track = 1;
+        request.scene = scene;
+        request.clip = clip;
+        request.incarnation = f.session.launchIncarnation();
+        return f.session.postLaunchGesture(std::array{request});
+    };
+    check(f.session.launchIncarnation() != 0, "normal Session load installs stored MIDI slots");
+    f.clock = 23888;
+    f.session.transport().locate(f.clock);
+    f.render();
+    auto heard = noteEvents();
+    check(heard.size() == 1 && heard[0].e.dim == 60 && heard[0].clock == 23888,
+          "loaded slot clips stay silent while the Arrangement plays");
+    if (heard.size() != 1)
+        return;
+
+    const auto arrangementVoice = heard[0].e.noteId;
+    check(command(LaunchRequestKind::SlotPress, 100, 11), "launch first MIDI slot");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 3 && heard[1].clock == 24000 && heard[2].clock == 24000 &&
+          heard[1].e.type == EventType::NoteOff && heard[1].e.noteId == arrangementVoice &&
+          heard[2].e.type == EventType::NoteOn && heard[2].e.dim == 64 &&
+          heard[2].e.noteId != arrangementVoice,
+          "48 frames into the callback the Arrangement releases before the first slot onset");
+    if (heard.size() != 3)
+        return;
+    const auto firstSlotVoice = heard[2].e.noteId;
+
+    f.store->db().exec("UPDATE clips SET name='Equivalent MIDI program' WHERE id=11");
+    f.refresh();
+    f.render();
+    check(noteEvents().size() == 3 && f.session.midiClips()->noteActivity(1).held,
+          "a replacement graph retains the first slot's held note");
+
+    check(command(LaunchRequestKind::SlotPress, 200, 12), "launch second MIDI slot");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 5 && heard[3].clock == 24080 && heard[4].clock == 24080 &&
+          heard[3].e.type == EventType::NoteOff && heard[3].e.noteId == firstSlotVoice &&
+          heard[4].e.type == EventType::NoteOn && heard[4].e.dim == 67 &&
+          heard[4].e.noteId != firstSlotVoice,
+          "at sample 24080 the first slot releases before the second slot onset");
+    if (heard.size() != 5)
+        return;
+    const auto secondSlotVoice = heard[4].e.noteId;
+
+    check(command(LaunchRequestKind::BackToArrangement), "return to Arrangement while a slot is held");
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 7 && heard[5].clock == 24144 && heard[6].clock == 24144 &&
+          heard[5].e.type == EventType::NoteOff && heard[5].e.noteId == secondSlotVoice &&
+          heard[6].e.type == EventType::NoteOn && heard[6].e.dim == 60 &&
+          heard[6].e.noteId != arrangementVoice,
+          "at sample 24144 the second slot releases and a fresh Arrangement voice is chased");
+    f.session.transport().play(false);
+    f.render();
+    heard = noteEvents();
+    check(heard.size() == 8 && heard.back().clock == 24208 && heard.back().e.type == EventType::NoteOff &&
+          f.instrument->balance() == 0, "stopping at sample 24208 clears all source ownership");
+}
+
+void storedSessionMidiCurves() {
+    constexpr std::int64_t quarter = 5765760, knotTicks = 48048, knotSample = 200;
+    const std::array<controllers::Point,2> volume{{{0,0,0.25,0,1,0},{0,knotTicks,0.75,0,0,0}}};
+    const std::array<controllers::Point,1> pedal{{{0,0,1,0,0,0}}};
+    const std::array<ExpressionPoint,2> points{{{0,1.0f,0,1,0,{}},{knotTicks,3.0f,0,0,0,{}}}};
+    for (const auto width : {257,4096}) {
+        Fixture f(48000,width);
+        test::applySessionSchema(f.store->db());
+        f.clip(11,0,2*quarter,4*quarter,64);
+        auto& db = f.store->db();
+        db.exec("INSERT INTO scenes(id,ord,name) VALUES(100,0,'Native data');"
+                "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,100,11);"
+                "INSERT INTO clip_launch(clip_id,launch_quant) VALUES(11,1);");
+        test::seedSessionMarker(db);
+        for (const auto number : {7,64}) {
+            const auto values = number == 7 ? std::span<const controllers::Point>(volume)
+                                            : std::span<const controllers::Point>(pedal);
+            const auto prepared = controllers::prepareWrite(*f.store,11,3,number,values);
+            if (!prepared.ok || !controllers::commitPrepared(*f.store,prepared).ok)
+                throw std::runtime_error("write ACTL for stored Session clip");
+        }
+        const auto bytes = writeStream<ExpressionPoint>(FourCC::Expression,points);
+        {
+            SQLite::Statement curve(db,"INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(11,42,0,?)");
+            curve.bind(1,bytes.data(),static_cast<int>(bytes.size()));
+            curve.exec();
+        }
+        f.load();
+        check(f.session.problems().empty(),"loaded Session accepts native ACTL and AEXP programs");
+        LaunchRequest press;
+        press.track = 1;
+        press.scene = 100;
+        press.clip = 11;
+        press.incarnation = f.session.launchIncarnation();
+        check(f.session.postLaunchGesture(std::array{press}),"post literal stored MIDI curve slot press");
+        f.render();
+        auto& heard = f.instrument->heard;
+        const auto find = [&](std::size_t from, EventType type, std::int64_t sample,
+                              std::uint32_t param, double value) {
+            for (auto i = from; i < f.instrument->count; ++i) {
+                const auto& item = heard[i];
+                if (item.clock == sample && item.e.type == type && item.e.paramId == param &&
+                    std::abs(item.e.value-value) < 1e-10)
+                    return i;
+            }
+            return f.instrument->count;
+        };
+        const auto note = find(0,EventType::NoteOn,0,0,93.0/127.0);
+        const auto firstCC = find(0,EventType::Controller,0,7,0.25);
+        const auto firstPedal = find(0,EventType::Controller,0,64,1);
+        const auto initialPitch = find(0,EventType::NoteExpression,0,kNativeNoteExpressionUnits,1.3125);
+        check(note < f.instrument->count && firstCC < note && firstPedal < note &&
+              initialPitch > note && initialPitch < f.instrument->count &&
+              heard[initialPitch].e.noteId == heard[note].e.noteId,
+              "native CC precedes note, and AEXP pitch follows it with tuning and the same runtime ID");
+        check(find(0,EventType::Controller,64,7,0.41) < f.instrument->count &&
+              find(0,EventType::Controller,knotSample,7,0.75) < f.instrument->count,
+              "CC interpolation grid and off-grid knot are exact in the rendered Session");
+        check(find(0,EventType::NoteExpression,96,kNativeNoteExpressionUnits,2.2725) < f.instrument->count &&
+              find(0,EventType::NoteExpression,knotSample,kNativeNoteExpressionUnits,3.3125) < f.instrument->count,
+              "AEXP grid and off-grid knot are exact in the rendered Session");
+        if (note >= f.instrument->count) continue;
+        const auto voice = heard[note].e.noteId;
+        const auto beforeRefresh = f.instrument->count;
+        db.exec("UPDATE clips SET name='Same controller and note image' WHERE id=11");
+        f.refresh();
+        f.render();
+        check(f.instrument->count == beforeRefresh && f.instrument->balance() == 1,
+              "refresh keeps the held voice, completed expression, and sustain without sending another onset");
+        LaunchRequest back;
+        back.kind = LaunchRequestKind::BackToArrangement;
+        back.track = 1;
+        back.incarnation = f.session.launchIncarnation();
+        check(f.session.postLaunchGesture(std::array{back}),"give the track back to Arrangement");
+        const auto boundary = f.clock;
+        f.render();
+        const auto release = find(beforeRefresh,EventType::NoteOff,boundary,0,37.0/127.0);
+        check(release < f.instrument->count && heard[release].e.noteId == voice &&
+              find(beforeRefresh,EventType::Controller,boundary,64,0) < f.instrument->count &&
+              f.instrument->balance() == 0,"handover releases both the original voice and its pedal at the exact boundary");
+    }
+}
+
+void storedSessionMidiPitchBend() {
+    Fixture f(48000,257);
+    test::applySessionSchema(f.store->db());
+    f.clip(11,0,2*textproj::kPPQ,4*textproj::kPPQ,64);
+    const std::array bends{controllers::Point{0,0,.75,0,1,0}, controllers::Point{0,48048,.25}};
+    const auto pitch = controllers::prepareWrite(*f.store,11,15,kCtrlPitchBend,bends);
+    if (!pitch.ok || !controllers::commitPrepared(*f.store,pitch).ok)
+        throw std::runtime_error("write native channel pitch before moving the clip into Session");
+    const auto commit = [&](std::string type,Payload payload) {
+        OpRequest request;
+        request.opType = std::move(type);
+        request.payload = std::move(payload);
+        const auto result = OpJournal(*f.store).commit(request);
+        if (!result.ok) throw std::runtime_error("commit Session slot operation: "+result.error);
+    };
+    commit("scene.create",{{"id",100},{"ord",0}});
+    commit("session.setSlotClip",{{"track",1},{"scene",100},{"clip",11}});
+    commit("session.setLaunchQuant",{{"clip",11},{"quant",1}});
+    const auto path = f.store->path();
+    f.store.reset();
+    StoreError error{};
+    f.store = Store::open(path,error);
+    if (!f.store) throw std::runtime_error("reopen stored pitch-bend slot: "+std::string(toString(error)));
+    const auto rows = controllers::readLanes(*f.store,11);
+    check(rows.ok && rows.lanes.size()==1 && rows.lanes[0].controller==kCtrlPitchBend,
+          "moving a clip through session.setSlotClip and reopening preserves its native pitch lane");
+    f.load();
+    for (const auto& problem : f.session.problems()) std::printf("Slot diagnostic: %s\n",problem.c_str());
+    check(f.session.problems().empty(),"a persisted pitch lane prepares as a native Session controller");
+    LaunchRequest launch;
+    launch.track = 1;
+    launch.scene = 100;
+    launch.clip = 11;
+    launch.incarnation = f.session.launchIncarnation();
+    check(f.session.postLaunchGesture(std::array{launch}),"launch the slot through the persisted Session graph");
+    f.render();
+    const auto events = std::span(f.instrument->heard);
+    auto findBend = [&](std::int64_t sample,double value) {
+        const auto end = events.begin()+static_cast<std::ptrdiff_t>(f.instrument->count);
+        const auto found = std::find_if(events.begin(),end,[&](const Heard& item) {
+            return item.clock==sample && item.e.type==EventType::Controller &&
+                item.e.channel==15 && item.e.paramId==kCtrlPitchBend && item.e.value==value;
+        });
+        return found==end ? events.end() : found;
+    };
+    auto findNote = [&] {
+        const auto end = events.begin()+static_cast<std::ptrdiff_t>(f.instrument->count);
+        const auto found = std::find_if(events.begin(),end,[](const Heard& item) {
+            return item.clock==0 && item.e.type==EventType::NoteOn;
+        });
+        return found==end ? events.end() : found;
+    };
+    const auto first = findBend(0,.75);
+    const auto note = findNote();
+    const auto knot = findBend(200,.25);
+    check(first!=events.end() && note!=events.end() && first<note && knot!=events.end(),
+          "channel 16 bend reaches the instrument before the note and at the exact 200-frame knot");
+    LaunchRequest back;
+    back.kind = LaunchRequestKind::BackToArrangement;
+    back.track = 1;
+    back.incarnation = f.session.launchIncarnation();
+    check(f.session.postLaunchGesture(std::array{back}),"release slot ownership with Back to Arrangement");
+    f.render();
+    const auto reset = findBend(257,.5);
+    check(reset!=events.end(),"the channel 16 wheel returns to center at the exact slot handover");
+    std::printf("Slot channel 16 bend: onset=%lld, knot=%lld, neutral=%lld samples\n",
+          static_cast<long long>(first==events.end()?-1:first->clock),
+          static_cast<long long>(knot==events.end()?-1:knot->clock),
+          static_cast<long long>(reset==events.end()?-1:reset->clock));
+}
+
 } // namespace
 
 int main(int argc,char** argv){
@@ -2134,9 +2440,13 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "play-quantize-ramp") livePlayQuantizeRamp(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "tempo-ramp") musicalRamp(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
     catch (const std::exception& e) { check(false, e.what()); }
@@ -2145,6 +2455,12 @@ int main(int argc,char** argv){
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }
     catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "session-slots") storedSessionSlots(); }
+    catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "session-slot-pitch") storedSessionMidiPitchBend(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "session-curves") storedSessionMidiCurves(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
     catch(const std::exception& e) { check(false,e.what()); }
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");

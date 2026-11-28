@@ -206,8 +206,8 @@ MaterialEdit prepareAudio(Store& store, const ImportOptions& options, double ref
         const int base=warped?0:options.at.base;
         if(warped) {
             engine::TempoMap tempo;
-            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
             if(tempo.events.empty())tempo.events.push_back({0,120,0});
             const auto projected=engine::projectWarpAnchors(warped->markers,tempo,beginTicks,referenceRate);
             if(projected.back().outputFrame>0x7fffffffULL)throw std::runtime_error("warped clip exceeds supported render duration");

@@ -100,11 +100,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
         problems_.push_back("automation: session rate " + std::to_string(sessionRate) + " is not a rate; nothing compiled");
         return;
     }
-    TempoMap tempo;
-    for (const auto& e : model.tempo) tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
-    if (tempo.events.empty()) tempo.events.push_back({0, 120.0, 0});
-    if (std::any_of(tempo.events.begin(), tempo.events.end(), [](const TempoEvent& e) { return e.curve != 0; }))
-        problems_.push_back("automation: tempo ramps unsupported; point times use step tempos");
+    const auto tempo = TempoMap::fromRows(model.tempo);
 
     std::map<std::int64_t,std::map<std::int64_t,const rows::AutomationSegmentRange*>> rangeIndex;
     std::set<std::int64_t> duplicateRanges;

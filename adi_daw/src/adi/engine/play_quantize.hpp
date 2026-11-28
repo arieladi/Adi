@@ -5,6 +5,8 @@
 #include <span>
 
 namespace adi::engine {
+struct TempoMap;
+class WarpArrangementClock;
 // A caller-owned sample-domain tempo map, distinct from snapshot TempoEvent's
 // tick-domain map. Tempo is constant from this point until the next one.
 struct PlayTempoPoint { std::int64_t sample; double bpm; };
@@ -23,4 +25,15 @@ inline constexpr std::int64_t playQuantizePpq = 960;
     std::int64_t eventSample, std::span<const PlayTempoPoint> tempo,
     std::uint32_t sampleRate, double gridTicks,
     std::int64_t forgivenessSamples = 0) noexcept;
+
+/// The same release rule on the effective project clock, including ramps.
+[[nodiscard]] std::optional<std::int64_t> playQuantizeReleaseOnTempoMap(
+    std::int64_t eventSample, const TempoMap& tempo,
+    std::uint32_t sampleRate, double gridTicks,
+    std::int64_t forgivenessSamples = 0) noexcept;
+
+/// The same grid rule on the prepared, indexed project clock.
+[[nodiscard]] std::optional<std::int64_t> playQuantizeReleaseOnClock(
+    std::int64_t eventSample, const WarpArrangementClock& clock,
+    double gridTicks, std::int64_t forgivenessSamples = 0) noexcept;
 } // namespace adi::engine

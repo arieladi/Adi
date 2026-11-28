@@ -19,8 +19,10 @@ std::int64_t playDelay(const LiveMidiInput::Route& route, const LiveMidiInput::P
     if (route.playGrid == 0 || !transport.playing())
         return 0;
     const auto timeline = transport.sampleAt(frame);
-    const auto release = playQuantizeRelease(timeline, clock.tempo, clock.sampleRate,
-                                              static_cast<double>(route.playGrid), route.playForgiveness);
+    const auto grid = static_cast<double>(route.playGrid);
+    const auto release = clock.projectClock
+        ? playQuantizeReleaseOnClock(timeline, *clock.projectClock, grid, route.playForgiveness)
+        : playQuantizeRelease(timeline, clock.tempo, clock.sampleRate, grid, route.playForgiveness);
     if (!release)
         return 0;
     // A wrap starts a new pass. Use its boundary for a grid line beyond this pass.

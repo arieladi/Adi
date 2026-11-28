@@ -79,9 +79,8 @@ def unparsed_op_rows(txt: str) -> list[tuple[int, str]]:
 # a new one has to be added deliberately in two places.
 ALLOWED_PAUSE = {"project.setSampleRate"}
 
-# "s" (session) went with Session View in ADR-0037; transport is all that is
-# left that persists nothing. Kept as a set so adding a scope stays a one-liner.
-EPHEMERAL_SCOPES = {"t"}
+# ADR-0101 d4 restores the non-undoable Session scope from ADR-0027.
+EPHEMERAL_SCOPES = {"t", "s"}
 
 
 def main(argv: list[str]) -> int:
@@ -140,9 +139,9 @@ def main(argv: list[str]) -> int:
     nonundo = [(n, s) for n, s, _e, inv, _p in rows if inv.strip() == "—"]
     stray = [n for n, s in nonundo if s not in EPHEMERAL_SCOPES]
     if stray:
-        fail(f"non-undoable ops outside the transport scope: {stray}")
+        fail(f"non-undoable ops outside the transport and Session scopes: {stray}")
     else:
-        ok(f"{len(nonundo)} non-undoable ops, all in the transport scope")
+        ok(f"{len(nonundo)} non-undoable ops in the transport and Session scopes")
 
     print("[5] RequiresPause stays small")
     pause = {n for n, _s, e, _i, _p in rows if e.strip("*") == "P"}

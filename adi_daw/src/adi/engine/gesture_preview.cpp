@@ -575,15 +575,14 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->stripLanes=out->controls->lanes;
+        timing->tempo = TempoMap::fromRows(playback.tempo);
         owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
-        timing->sourceReadiness=out->clips->readiness();
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
-        for(const auto& event:playback.tempo)timing->tempo.events.push_back({event.posTicks,event.bpm,static_cast<int>(event.curve)});
-        if(timing->tempo.events.empty())timing->tempo.events.push_back({0,120.0,0});
+        owner->prepareSourceReadiness(*timing, *out->clips);
         auto sample=[&](std::int64_t tick){
             const long double value=static_cast<long double>(timing->tempo.ticksToSeconds(tick))*owner->spec_.sampleRate;
             if(!std::isfinite(value) || value<0 || value>static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
@@ -591,8 +590,16 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             return static_cast<std::int64_t>(std::llround(value));
         };
         timing->setBraceSamples(sample(image->transport.loopStartTicks), sample(image->transport.loopEndTicks));
-        timing->signatures=image->model.signatures;
+        timing->signatures=owner->playbackSignatures(image->model);
         timing->prepareDeviceClockChanges();
+        if (reusedReaders) {
+            timing->launchAudio = previousTiming->launchAudio;
+            timing->preparedScene = previousTiming->preparedScene;
+        }
+        else {
+            owner->prepareLaunchAudio(*timing, image->model, *out->clips);
+            if (timing->launchAudio) out->midi->attachLaunchPlayback(timing->launchAudio);
+        }
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;

@@ -8,11 +8,15 @@
 // values were wrong in three of eight cases, so every value here is derived
 // from the model, not from that report.
 #include "adi/engine/transport.hpp"
+#include "adi/engine/snapshot.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <numeric>
 #include <string>
 
 namespace {
@@ -156,6 +160,49 @@ void advanceComposes() {
         }
     check(same, "advancing in blocks of any size lands where one advance does");
 }
+void authoredRamps() {
+    using adi::engine::TempoMap;
+    constexpr auto quarter = adi::textproj::kPPQ;
+    struct Reading {
+        double from, to, tension;
+        int shape;
+        double secondsAtMiddle;
+        std::array<std::int64_t, 3> samples;
+    };
+    // Independent 60-digit integration of d(beats)/BPM over the first two quarters.
+    constexpr std::array readings{
+        Reading{90, 210, -1, 2, 0.708527483061580948, {31246, 34009, 68019}},
+        Reading{90, 210, 1, 2, 1.289719454397736633, {56877, 61907, 123813}},
+        Reading{210, 90, -1, 2, 0.974330583277056309, {42968, 46768, 93536}},
+        Reading{210, 90, 1, 2, 0.580216785583741953, {25588, 27850, 55701}},
+        Reading{90, 210, 0, 1, 1.021651247531981366, {45055, 49039, 98079}},
+        Reading{210, 90, 0, 1, 0.672944473242425861, {29677, 32301, 64603}},
+        Reading{90, 210, 0.125, 2, 1.059740297382535925, {46735, 50868, 101735}},
+    };
+    constexpr std::array rates{44100.0, 48000.0, 96000.0};
+    for (const auto& reading : readings) {
+        TempoMap map{{{0, reading.from, reading.shape, reading.tension}, {4 * quarter, reading.to, 0}}};
+        const auto middle = map.ticksToSeconds(2 * quarter);
+        check(std::abs(middle - reading.secondsAtMiddle) < 1e-13, "tempo ramp has the analytic midpoint");
+        for (std::size_t i = 0; i < rates.size(); ++i)
+            check(std::llround(middle * rates[i]) == reading.samples[i], "tempo ramp rounds to the reference sample");
+        bool invertible = true;
+        for (std::int64_t offset = 0; offset <= 4 * quarter; offset += quarter / 14) {
+            invertible &= map.secondsToTicks(map.ticksToSeconds(offset)) == offset;
+            if (offset > 0) {
+                const auto before = std::midpoint(map.ticksToSeconds(offset), map.ticksToSeconds(offset - 1));
+                invertible &= map.secondsToTicks(before) == offset - 1;
+            }
+        }
+        check(invertible, "ramp inverse preserves exact ticks and floors between ticks");
+
+        TempoMap sliced{{{0, reading.from, reading.shape, reading.tension,
+                           adi::TempoRampSpan{0, 4 * quarter, reading.from, reading.to}},
+                        {2 * quarter, 173, 0}}};
+        check(sliced.ticksToSeconds(2 * quarter) == middle && sliced.bpmAt(2 * quarter) == 173,
+              "a private tempo step keeps the integrated ramp prefix and takes effect at its boundary");
+    }
+}
 }  // namespace
 
 int main() {
@@ -167,6 +214,7 @@ int main() {
     saturation();
     againstTheModel();
     advanceComposes();
+    authoredRamps();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

@@ -23,3 +23,11 @@ give the current schema (ADR-0144).
 **Bumping the minor:** first copy the current `schema.sql` here as
 `schema-1.<old minor>.sql`, then add the new minor's objects to
 `migrationSteps()` in `src/adi/store.cpp`. Check 9 fails until the copy exists.
+
+Session's reserved `../schema-session-1.26.sql` is tested over the current
+schema. Once the real 1.24 and 1.25 migrations land, freeze 1.25 and append
+the Session statements to `schema.sql`. Update `user_version`,
+`adi_meta.schema_minor`, `kSchemaMinor`, `SPEC_USER_VERSION`, and SPEC §3.1
+together. The 1.26 registry entry activates at that bump. Check 9 and
+`adi_migrate_tests` then verify the complete migration chain and the
+Session schema against fresh and upgraded projects.

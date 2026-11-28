@@ -30,11 +30,12 @@ private:
 };
 // Owner only, one coherent read, no writes/reservations. The explicit source
 // range contains every retained event and ends no later than snapshot.endSample.
-// Source timestamps are independent of project placement. Uses step tempos and
-// verifies every placed sample roundtrip. Refuses truncated/ambiguous ownership
-// and velocities that cannot roundtrip through ANOT. Per-note expression is
-// stored at native AEXP precision. Native CC initial chase/cross-stream ordering
-// follows existing playback; raw input memory retains its exact serial order.
+// Source timestamps are independent of project placement. The shared tempo map
+// verifies every placed sample roundtrip. Capture validates source history and
+// note ownership, and refuses velocities that cannot roundtrip through ANOT.
+// Per-note expression uses native AEXP precision. CC values remain double.
+// Native CC initial chase and cross-stream ordering follow existing playback.
+// Raw input memory retains its exact serial order.
 std::optional<PreparedMidi> prepareMidi(Store&,const engine::MidiMemorySnapshot&,const MidiSpec&,std::string& error);
 std::optional<PreparedMidi> prepareMidiBatch(Store&,std::span<const engine::MidiMemorySnapshot>,
                                              std::span<const MidiSpec>,std::string& error);

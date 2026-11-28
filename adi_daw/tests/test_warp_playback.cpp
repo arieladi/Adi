@@ -59,13 +59,22 @@ struct Fixture {
     std::vector<double> render(std::size_t frames,Precision width) {
         std::vector<double> result(frames*2);std::array<float,2048> narrow{};std::array<double,2048> wide{};
         float* out[]={narrow.data(),narrow.data()+1024};double* out64[]={wide.data(),wide.data()+1024};
-        for(std::size_t first=0;first<frames;) {
-            const auto count=static_cast<std::int32_t>(std::min<std::size_t>(1024,frames-first));
+        // Compare Arrangement frames at their compensated output positions,
+        // including when a seek or play starts the source delay pipeline.
+        const auto* graph=session.graph().currentGraph();
+        const auto delay=graph?graph->latencySamples():0;
+        const auto preroll=static_cast<std::size_t>(std::max<std::int64_t>(0,delay-session.transport().streamedFrames()));
+        const auto rawFrames=frames+preroll;
+        for(std::size_t first=0;first<rawFrames;) {
+            const auto count=static_cast<std::int32_t>(std::min<std::size_t>(1024,rawFrames-first));
             if(!session.clips()->prime(std::chrono::seconds(5)))throw std::runtime_error("prime warped project");
             AudioIo io;io.frames=count;io.numOut=2;if(width==Precision::Float64)io.out64=out64;else io.out=out;
             {audio::CallbackScope scope;session.process(io);}
-            for(std::size_t channel=0;channel<2;++channel)for(std::int32_t frame=0;frame<count;++frame)
-                result[(first+static_cast<std::size_t>(frame))*2+channel]=width==Precision::Float64?wide[channel*1024+static_cast<std::size_t>(frame)]:narrow[channel*1024+static_cast<std::size_t>(frame)];
+            for(std::size_t channel=0;channel<2;++channel)for(std::int32_t frame=0;frame<count;++frame) {
+                const auto position=first+static_cast<std::size_t>(frame);
+                if(position>=preroll)
+                    result[(position-preroll)*2+channel]=width==Precision::Float64?wide[channel*1024+static_cast<std::size_t>(frame)]:narrow[channel*1024+static_cast<std::size_t>(frame)];
+            }
             first+=static_cast<std::size_t>(count);
         }
         return result;
@@ -199,6 +208,27 @@ void sourceRatesAndTempoBoundary() {
     const auto anchors=projectWarpAnchors(map,tempo,0,48000);
     check(anchors==std::vector<audio::WarpAnchor>{{0,0},{6000,12000},{12000,36000}},"tempo projection inserts its exact interior anchor instead of flattening a bar");
     check(warpSourceSamples(tempo,-q,q,48000)==24000 && warpSourceSamples(tempo,-q,2*q,48000)==60000,"trimmed source clock extends the initial tempo before the project origin");
+}
+void rampProjection() {
+    const TempoMap tempo{{{0,90,1}, {q,210,0}}};
+    const std::vector<WarpMarker> markers{{0,0},{12000,q}};
+    const auto projected = projectWarpAnchors(markers,tempo,0,48000);
+    check(projected.size() > 3 && projected.front() == audio::WarpAnchor{0,0} &&
+              projected.back() == audio::WarpAnchor{12000,20335} &&
+              std::find(projected.begin(), projected.end(), audio::WarpAnchor{6000,12260}) != projected.end(),
+          "warp projection retains its endpoints and anchors the ramp midpoint to the integrated sample");
+    for (const auto width : {Precision::Float32, Precision::Float64}) {
+        Fixture f;
+        f.store->db().exec("UPDATE audio_clips SET warp_mode='re-pitch'; DELETE FROM tempo_map;"
+                           "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,90,1),(5765760,210,0)");
+        f.load(width);
+        const auto output = f.render(21000,width);
+        double power = 0;
+        for (std::size_t sample=19000; sample<20000; ++sample) power += output[sample*2]*output[sample*2];
+        check(f.session.problems().empty() && f.session.clips()->underrunSamples()==0 && power>1 &&
+              std::all_of(output.begin()+40670,output.end(),[](double value){return value==0;}),
+              "real warped audio plays to the integrated end of the ramp and stops on that sample");
+    }
 }
 void unwarpedPitch() {
     for(const double semitones:{12.0,-0.5}) {
@@ -472,7 +502,7 @@ int main(int argc,char** argv) {
 #endif
         if(argc==2 && std::string_view(argv[1])=="--long-warp-speed-only")longWarpResponse();
         else {
-            modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();modelAndRefusals();workerFailure();
+            modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();rampProjection();modelAndRefusals();workerFailure();
             replacementSourceInvalidatesWarp();
             unwarpedPitch();compressedPitchAndRecordingWarp();
             trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();

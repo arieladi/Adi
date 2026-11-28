@@ -858,19 +858,26 @@ void splitInsideFades() {
 std::vector<double> renderSplitPcm(Fixture& f,Precision width,std::int32_t frames) {
     if(frames<=0)return {};
     f.session.transport().locate(0);f.session.transport().play();
+    // The edit ranges below are in timeline frames. Render through the
+    // graph's physical latency and compare the same audible timeline range.
+    const auto* graph=f.session.graph().currentGraph();
+    const auto latency=graph ? graph->latencySamples() : 0;
+    const auto renderFrames=static_cast<std::int64_t>(frames)+latency;
     const auto total=static_cast<std::size_t>(frames);
     std::vector<double> result(total*2);
     std::array<float,2048> narrow{};std::array<double,2048> wide{};
     float* out[]={narrow.data(),narrow.data()+1024};double* out64[]={wide.data(),wide.data()+1024};
-    for(std::int32_t first=0;first<frames;) {
-        const auto count=std::min<std::int32_t>(1024,frames-first);
+    for(std::int64_t first=0;first<renderFrames;) {
+        const auto count=static_cast<std::int32_t>(std::min<std::int64_t>(1024,renderFrames-first));
         if(!f.session.clips() || !f.session.clips()->prime(std::chrono::seconds(5)))return {};
         AudioIo io;io.numOut=2;io.frames=count;
         if(width==Precision::Float64)io.out64=out64;else io.out=out;
         {audio::CallbackScope callback;f.session.process(io);}
         for(std::size_t c=0;c<2;++c)for(std::int32_t i=0;i<count;++i) {
+            const auto timeline=first+i-latency;
+            if(timeline<0)continue;
             const auto offset=static_cast<std::size_t>(i);
-            result[c*total+static_cast<std::size_t>(first)+offset]=width==Precision::Float64?
+            result[c*total+static_cast<std::size_t>(timeline)]=width==Precision::Float64?
                 wide[c*1024+offset]:static_cast<double>(narrow[c*1024+offset]);
         }
         first+=count;

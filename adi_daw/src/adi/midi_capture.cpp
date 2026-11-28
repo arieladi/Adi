@@ -26,12 +26,12 @@ int velocity(double value,bool onset) {
     return static_cast<int>(word);
 }
 engine::TempoMap tempoOf(Store& store) {
-    engine::TempoMap tempo;SQLite::Statement q(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    engine::TempoMap tempo;SQLite::Statement q(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
     while(q.executeStep()) {
         const auto tick=q.getColumn(0).getInt64();const auto bpm=q.getColumn(1).getDouble();
-        if(tick<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000 || q.getColumn(2).getInt()!=0 ||
-           (!tempo.events.empty() && tick<=tempo.events.back().posTicks))throw std::runtime_error("MIDI Capture requires an unambiguous valid step-tempo map");
-        tempo.events.push_back({tick,bpm,0});
+        if(tick<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000 ||
+           (!tempo.events.empty() && tick<=tempo.events.back().posTicks))throw std::runtime_error("MIDI Capture requires an unambiguous valid tempo map");
+        tempo.events.push_back({tick,bpm,q.getColumn(2).getInt(),q.getColumn(3).getDouble()});
     }
     if(tempo.events.empty() || tempo.events.front().posTicks!=0)tempo.events.insert(tempo.events.begin(),{0,120,0});
     return tempo;

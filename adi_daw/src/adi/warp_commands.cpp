@@ -293,8 +293,11 @@ PreparedEdit prepareWarpChange(Store& store,std::int64_t clipId,const WarpOption
             details["source_end_ns"]=endNs;
         }
         if(options.enabled) {
-            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            engine::TempoMap tempo;
+            SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())
+                tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                       points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
             if(tempo.events.empty())tempo.events.push_back({0,120,0});
             if(engine::projectWarpAnchors(markers,tempo,origin-integer(root,"content_offset_ticks"),rate).back().outputFrame>0x7fffffffULL)
                 throw std::runtime_error("warped clip exceeds supported duration");
@@ -400,9 +403,10 @@ PreparedEdit prepareWarpMapEdit(Store& store,std::int64_t clipId,double referenc
         transform(map.markers,source,image,plan);
         source["warp_markers"]=capturedWarpMap(map.markers,static_cast<std::uint64_t>(frames));
         engine::TempoMap tempo;
-        SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+        SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
         while(points.executeStep())
-            tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),
+                                   points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
         if(tempo.events.empty() || tempo.events.front().posTicks!=0)tempo.events.insert(tempo.events.begin(),{0,120,0});
         const auto origin=integer(root,"time_base")==0?integer(root,"pos_ticks"):
             tempo.storedNanosecondsToTicks(integer(root,"pos_ns"));

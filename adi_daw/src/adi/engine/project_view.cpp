@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/project_view.hpp"
+#include "adi/session_schema.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/engine/gesture_preview.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/gesture_capture_detail.hpp"
@@ -93,13 +95,19 @@ std::optional<ProjectView::LocalEdit> ProjectView::prepareLocalEdit(const Store&
     if ((!transport && op != "track.rename" && op != "clip.move" && op != "arranger.splice" && op != "note.insert") ||
         (preview_ && !transport) || request.capturedTransaction || !storeCurrent(store)) return {};
     try {
-        // The normal schema has three media-only guards. Any other trigger
-        // may turn a one-row edit (or its journal insert) into unrelated writes.
-        if (const_cast<SQLite::Database&>(store.db()).execAndGet(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND NOT "
+        // Known media and Session guards can only veto these edits. The
+        // Session scene-delete trigger never fires for the operations above.
+        // An unknown trigger could turn one edit into unrelated writes.
+        auto& db = const_cast<SQLite::Database&>(store.db());
+        if (db.execAndGet(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type IN ('trigger','view','table'))")
+                .getInt()) return {};
+        SQLite::Statement triggers(db, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND NOT "
                 "((tbl_name='media_files' AND name IN ('media_never_embedded_insert','media_never_embedded_update')) "
-                "OR (tbl_name='media_blobs' AND name='media_blobs_forbidden')) "
-                "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type IN ('trigger','view','table'))").getInt()) return {};
+                "OR (tbl_name='media_blobs' AND name='media_blobs_forbidden'))");
+        while (triggers.executeStep())
+            if (!adi::detail::isKnownSessionTrigger(triggers.getColumn(0).getString(), triggers.getColumn(1).getString()))
+                return {};
         if (transport) return LocalEdit{Kind::Transport, 0, generation_};
         if (op == "arranger.splice") {
             // The Arrangement's prepared move can splice overlapping clips
@@ -156,7 +164,8 @@ bool ProjectView::applyLocalEdit(const Store& store, LocalEdit edit) {
             // A musical MIDI clip can move without reprojecting its sample
             // edges, take-lane ownership or fades from another clock.
             SQLite::Statement row(store.db(), "SELECT track_id,pos_ticks FROM clips WHERE id=? AND kind='midi' "
-                                              "AND time_base=0 AND lane_id IS NULL");
+                                              "AND time_base=0 AND lane_id IS NULL" +
+                                              excludeSlotClips(store.db(), "clips.id"));
             row.bind(1, edit.id);
             if (!row.executeStep()) return false;
             edit.toTrack = row.getColumn(0).getInt64();

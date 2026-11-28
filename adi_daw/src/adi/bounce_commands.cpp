@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/bounce_commands.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/engine/timeline_clip_sql.hpp"
 #include "adi/freeze_commands.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
@@ -187,7 +188,9 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                     const auto end = edit::nanosFromSeconds(static_cast<double>(options.job.endSample) / rate);
                     edit::TimeMap time(store.db());
                     SQLite::Statement clips(store.db(), "SELECT id,time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
-                                                       "WHERE track_id=? AND lane_id IS NULL AND muted=0 ORDER BY id");
+                                                       "WHERE track_id=? AND lane_id IS NULL AND muted=0" +
+                                                       engine::excludeSlotClips(store.db(), "clips.id") +
+                                                       " ORDER BY id");
                     clips.bind(1, options.sourceTrack);
                     while (clips.executeStep()) {
                         const bool absolute = clips.getColumn(1).getInt() != 0;
@@ -283,7 +286,7 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
             SQLite::Statement clips(
                 store.db(),
                 "SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
-                "WHERE track_id=? AND lane_id IS NULL");
+                "WHERE track_id=? AND lane_id IS NULL" + engine::excludeSlotClips(store.db(), "clips.id"));
             clips.bind(1, options.sourceTrack);
             while (clips.executeStep()) {
                 const auto base = clips.getColumn(0).getInt();
