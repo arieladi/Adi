@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <string>
 
 namespace adi {
 namespace {
