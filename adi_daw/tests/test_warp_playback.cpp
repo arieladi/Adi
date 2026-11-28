@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
+#include "adi/audio/warp.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -31,6 +32,7 @@
 #include <optional>
 #include <stop_token>
 #include <string_view>
+#include <thread>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
 void adi::test::countReplacedNew() noexcept{if(adi::audio::onAudioThread)++callbackAllocations;}
 namespace {
@@ -250,6 +252,27 @@ void longWarpResponse(bool prepared = false) {
                                          : "an unrelated edit preserves streamed Beats PCM");
     }
     store.reset();
+    if (prepared) {
+        // The worker may still own its last completed task after ready is
+        // published. A distinct request drains it before testing disk reuse.
+        audio::WarpRenderPlan miss;
+        miss.source = source;
+        miss.workFolder = workFolder;
+        miss.sourceFrames = frames;
+        miss.outputRate = rate;
+        miss.anchors = {{0,0},{frames,frames}};
+        miss.mode = audio::WarpMode::RePitch;
+        const auto task = audio::requestWarp(std::move(miss));
+        if (!task) throw std::runtime_error("queue uncached Warp control");
+        const auto deadline = Clock::now() + std::chrono::seconds(60);
+        auto outcome = task->result();
+        while (!outcome && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            outcome = task->result();
+        }
+        if (!outcome || outcome->error != audio::WarpError::Io)
+            throw std::runtime_error("uncached Warp control must fail with staging blocked");
+    }
     const auto reopen=Clock::now();
     store=Store::open(project,error);
     if(!store)throw std::runtime_error(toString(error));
