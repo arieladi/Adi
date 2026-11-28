@@ -26459,7 +26459,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         const auto before = panel.getBounds();
         check(!root.state().mixAnalyzerDock && !panel.analyzerDockShown(), "right analyzer dock is opt-in by default");
         panel.setSize(1000, 650);
-        check(panel.setAnalyzerDock(true) && panel.setAnalyzerWidth(360), "show and size the optional analyzer dock");
+        check(panel.analyzerToggle.isVisible() && !panel.analyzerToggle.getToggleState(),
+              "SC-467: Stack offers the optional dock where it fits");
+        panel.analyzerToggle.setToggleState(true, juce::dontSendNotification);
+        panel.analyzerToggle.onClick();
+        check(root.state().mixAnalyzerDock && panel.setAnalyzerWidth(360), "show and size the optional analyzer dock");
         panel.frame(root.reader());
         check(panel.analyzerDockShown() && panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth &&
                   !panel.stack.getBounds().intersects(panel.analyzerDock.getBounds()) &&
@@ -26467,6 +26471,25 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "dock sits beside actual channel tools and preserves their editing width");
         check(persistence.load("mix").mixAnalyzerDock && persistence.load("mix").mixAnalyzerWidth == 360,
               "dock visibility and width use window view persistence without an audio edit");
+        for (const auto tab : {MixViewPanel::Tab::Analysis, MixViewPanel::Tab::Overview, MixViewPanel::Tab::Focus}) {
+            const bool chosen = root.chooseMixViewTab(static_cast<int>(tab));
+            panel.frame(root.reader());
+            check(chosen && !panel.analyzerToggle.isVisible() && !panel.analyzerDockShown() &&
+                      root.state().mixAnalyzerDock,
+                  "SC-467: pages without the optional dock omit its switch and preserve the preference");
+        }
+        const bool stackChosen = root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
+        panel.frame(root.reader());
+        check(stackChosen && panel.analyzerToggle.isVisible() && panel.analyzerToggle.getToggleState() &&
+                  panel.analyzerDockShown() && panel.analyzerDock.getWidth() == 360,
+              "SC-467: Stack restores the remembered shown dock and switch");
+        const int chrome = panel.getHeight() - panel.body().getHeight();
+        panel.setSize(1000, chrome + MixViewPanel::kDockMinimumHeight - 1);
+        check(!panel.analyzerToggle.isVisible() && !panel.analyzerDockShown() && root.state().mixAnalyzerDock,
+              "SC-467: the switch and dock are absent at 419 px of body height");
+        panel.setSize(1000, chrome + MixViewPanel::kDockMinimumHeight);
+        check(panel.analyzerToggle.isVisible() && panel.analyzerDockShown() && panel.analyzerDock.getHeight() == 420,
+              "SC-467: the switch and dock return at 420 px of body height");
         for (const int width : {400, 570, 900}) {
             panel.setSize(width, 650); panel.frame(root.reader());
             bool fits = panel.getLocalBounds().contains(panel.analyzerToggle.getBounds()) &&
@@ -26485,13 +26508,18 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "tabs, dock toggle and float wrap without overlap while channel editing keeps its minimum");
         }
         panel.setSize(400, 650); panel.frame(root.reader());
-        check(root.state().mixAnalyzerDock && !panel.analyzerDockShown() && panel.stack.getBounds() == panel.body(),
-              "narrow layout suppresses requested dock and gives the whole body back to channel tools");
+        check(root.state().mixAnalyzerDock && !panel.analyzerToggle.isVisible() && !panel.analyzerDockShown() &&
+                  panel.stack.getBounds() == panel.body(),
+              "SC-467: narrow layout omits the switch and gives the whole body back to channel tools");
         const auto zoom = root.state().zoom; root.state().zoom = 0;
         check(!panel.setAnalyzerDock(false) && root.state().mixAnalyzerDock,
               "failed preference persistence rolls back dock visibility instead of changing the view");
         root.state().zoom = zoom;
-        check(panel.setAnalyzerDock(false), "restore default hidden dock after geometry checks");
+        panel.setSize(1000, 650);
+        panel.analyzerToggle.setToggleState(false, juce::dontSendNotification);
+        panel.analyzerToggle.onClick();
+        check(panel.analyzerToggle.isVisible() && !panel.analyzerDockShown() && !root.state().mixAnalyzerDock,
+              "SC-467: switching the dock off in Stack visibly gives its space back");
         panel.setBounds(before); panel.frame(root.reader());
     }
     {
