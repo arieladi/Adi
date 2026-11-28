@@ -14,10 +14,18 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <stop_token>
+#include <string>
+#include <system_error>
+#include <vector>
 #include <cstdio>
 #include <fstream>
 #include <future>
-#include <fstream>
 #include <iterator>
 
 namespace {
@@ -157,6 +165,33 @@ void projectBackups() {
           "SC-157: a same-name replacement cannot select or rotate the previous song's backups");
 }
 
+void backupFolderSpelling() {
+    Fixture fixture;
+    const auto lower = fixture.folder / "backup";
+    fs::create_directory(lower);
+    const auto written = Store::writeProjectBackup(fixture.source, 1'800'000'000'000'000);
+    const auto backups = Store::projectBackups(fixture.source);
+    check(written.ok && backups.size() == 1, "SC-157: write and list a backup with a lowercase folder present");
+    if (!written.ok || backups.size() != 1) return;
+    fixture.store.reset();
+
+    // On a case-insensitive volume, select the actual lowercase spelling. On a case-sensitive
+    // volume, the distinct capitalized directory is the correct one.
+    const auto& listed = backups.front().path;
+    const auto backup = fs::equivalent(lower, listed.parent_path()) ? lower / listed.filename() : listed;
+    fs::path recovered;
+    const auto restored = Store::restoreProjectBackup(fixture.source, backup, recovered);
+    check(restored.ok && fs::is_regular_file(recovered), "SC-157: restore from the same backup directory under its actual spelling");
+#if !defined(_WIN32)
+    const auto moved = fixture.folder / "Moved Backup";
+    fs::rename(listed.parent_path(), moved);
+    fs::create_directory_symlink(moved, listed.parent_path());
+    check(!Store::restoreProjectBackup(fixture.source, backup, recovered).ok && recovered.empty() &&
+              fs::is_regular_file(moved / listed.filename()),
+          "SC-157: preserve the backup when a directory symlink replaces its required parent");
+#endif
+}
+
 void automaticProjectBackups() {
     Fixture fixture;
     auto& store = *fixture.store;
@@ -278,6 +313,7 @@ void automaticProjectBackups() {
 
 void copiesAndSwitches() {
     Fixture f;const auto before=digestProject(*f.store).text,history=historyBytes(*f.store);
+    const auto projectUuid = f.store->projectUuid();
     const auto target=f.target("elsewhere");
     check(fs::exists(media::pathFromUtf8(media::pathUtf8(f.source)+"-wal")),"the source has committed WAL data");
     const auto copied=f.store->saveCopy(target, StoreFileCollision::Fail, StoreCopyPolicy::shareWithUndo);
@@ -290,6 +326,8 @@ void copiesAndSwitches() {
     check(copy && copy->db().execAndGet("SELECT count(*) FROM audio_clips").getInt()==1 && resolves(*copy),
           "the copy includes committed WAL rows and resolves media from its new folder");
     if(!copy)return;
+    check(!projectUuid.empty() && !copy->projectUuid().empty() && copy->projectUuid() != projectUuid,
+          "Save a Copy with Undo has a fresh project id");
     check(copy->db().execAndGet("SELECT count(*) FROM ops").getInt()==3,"copy retains the undo transaction without a save op");
     History copiedHistory(*copy);
     check(copiedHistory.undo().ok && copy->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0,
@@ -318,10 +356,55 @@ void copiesAndSwitches() {
     auto original=Store::open(f.source,error,true);
     check(original && original->db().execAndGet("SELECT name FROM project").getString()=="Original",
           "continuing edits do not touch the original project");
+    check(original && original->projectUuid() == projectUuid && f.store->projectUuid() == projectUuid,
+          "Save As retains the same project id in both files");
     check(activeHistory.undo().ok && resolves(*f.store),"Undo continues in the new project with working media references");
     original.reset();f.store.reset();
     auto reopened=Store::open(newPath,error);
     check(reopened && resolves(*reopened) && History(*reopened).canUndo(),"Save As and its history survive reopen");
+    check(reopened && reopened->projectUuid() == projectUuid, "reopening Save As keeps its project id");
+}
+
+void sessionCopies() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    const auto original = store.projectUuid();
+    const auto head = OpJournal(store).headSeq();
+    StoreError error{};
+
+    const auto preservedPath = fixture.target("preserve-copy");
+    check(store.saveCopy(preservedPath, StoreFileCollision::Fail, StoreCopyPolicy::preserve).ok,
+          "the internal preserve copy can be saved from the live project");
+    auto preserved = Store::open(preservedPath, error, true);
+    check(preserved && !original.empty() && preserved->projectUuid() == original,
+          "the internal preserve copy retains its source project id");
+
+    const auto copyPath = fixture.target("session-copy");
+    const auto copied = store.saveSessionCopy(copyPath);
+    check(copied.ok, "a session copy can be saved from the live project");
+    if (!copied.ok) return;
+    auto copy = Store::open(copyPath, error, true);
+    check(copy && !copy->projectUuid().empty() && copy->projectUuid() != original &&
+              OpJournal(*copy).headSeq() == head && resolves(*copy),
+          "a session copy has its own project id and the original's history and media");
+
+    const auto stagedPath = fixture.target("staged-session-copy");
+    StoreFileSave task;
+    const auto prepared = store.prepareFileSave(stagedPath, StoreSaveKind::sessionCopy, task);
+    check(prepared.ok, "the owner can pin a session copy for the file worker");
+    if (!prepared.ok) return;
+    const auto staged = std::async(std::launch::async, [&] { return task.write(); }).get();
+    check(staged.ok, "the file worker publishes a complete session copy");
+    if (!staged.ok) return;
+    check(!store.adoptFileSave(task).ok, "a session copy cannot replace the active project");
+    auto workerCopy = Store::open(stagedPath, error, true);
+    check(copy && workerCopy && !workerCopy->projectUuid().empty() &&
+              workerCopy->projectUuid() != original && workerCopy->projectUuid() != copy->projectUuid() &&
+              OpJournal(*workerCopy).headSeq() == head && resolves(*workerCopy),
+          "the staged copy has its own id and includes the pinned history and media");
+    check(!original.empty() && store.projectUuid() == original && store.path() == fixture.source &&
+              OpJournal(store).headSeq() == head,
+          "neither session copy changes the active source's path, project id or head");
 }
 void sharedCopyPrivacy() {
     Fixture fixture;
@@ -652,5 +735,5 @@ void stagedFileSaves() {
     check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
-int main(){try{projectBackups();automaticProjectBackups();copiesAndSwitches();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{projectBackups();backupFolderSpelling();automaticProjectBackups();copiesAndSwitches();sessionCopies();sharedCopyPrivacy();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

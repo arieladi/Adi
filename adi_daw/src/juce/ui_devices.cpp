@@ -3349,6 +3349,23 @@ void DeviceChainStrip::resized() {
     addTab.setBounds(x + 2, 2, 28, 22);
     content.setSize(std::max(x + (addTab.isVisible() ? 34 : 0), getWidth()), h);
 }
+const char *DeviceChainStrip::dropInstruction() const {
+    const auto *track = root.reader().findTrack(selectedTrack);
+    if (track == nullptr)
+        return "Select a Track to Add Devices";
+    if (track->kind == "master")
+        return "Drop Audio Effects on Main";
+    if (track->kind == "vca")
+        return "VCA Tracks Do Not Take Devices";
+    if (!hasAudioMixer(*track, presented.get()))
+        return panels.empty() ? "Drop a MIDI Effect, Instrument or Sample Here"
+                              : "Drop a MIDI Effect or Instrument Here";
+    return "Drop Audio Effects Here";
+}
+juce::Rectangle<int> DeviceChainStrip::dropInstructionArea() const noexcept {
+    const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
+    return {from, 0, std::max(0, getWidth() - from), getHeight()};
+}
 void DeviceChainStrip::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
     // Each gap shows the two channels leaving the device on its left.
@@ -3365,22 +3382,9 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
             }
         }
     }
-    const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
-    const auto *track = root.reader().findTrack(selectedTrack);
-    const char *instruction = "Drop Audio Effects Here";
-    if (track == nullptr)
-        instruction = "Select a Track to Add Devices";
-    else if (track->kind == "master")
-        instruction = "Drop Audio Effects on Main";
-    else if (track->kind == "vca")
-        instruction = "VCA Tracks Do Not Take Devices";
-    else if (!hasAudioMixer(*track, presented.get()))
-        instruction = panels.empty() ? "Drop a MIDI Effect, Instrument or Sample Here"
-                                     : "Drop a MIDI Effect or Instrument Here";
     g.setColour(look::text);
     g.setFont(look::font(11.5f));
-    g.drawText(instruction, from, 0, std::max(0, getWidth() - from), getHeight(),
-               juce::Justification::centred);
+    g.drawText(dropInstruction(), dropInstructionArea(), juce::Justification::centred);
     // The chosen end: where a paste goes, marked as Live marks an insert point.
     if (endChosen()) {
         g.setColour(look::accent);

@@ -106,6 +106,7 @@ Incoming parseMessage(std::string_view line, const WireLimits& limits) {
         }
         m.params = std::move(*params);
     }
+    if (const auto meta = j.find("meta"); meta != j.end()) m.meta = std::move(*meta);
     return m;
 }
 

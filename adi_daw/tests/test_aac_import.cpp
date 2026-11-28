@@ -36,9 +36,13 @@ namespace {
 // std::vector is constructed, so an empty result returned from the callback path costs one allocation
 // and one free per container there and none on the other CRTs. The refusal check allows exactly that.
 template<class Result> std::pair<unsigned,unsigned> emptyResultCost(){
+#if defined(_MSC_VER) && _ITERATOR_DEBUG_LEVEL == 2
     const auto allocated=allocations.load(),freed=frees.load();
     {adi::audio::CallbackScope scope;Result empty;(void)empty;}
     return {allocations.load()-allocated,frees.load()-freed};
+#else
+    return {};
+#endif
 }
 }
 namespace {
@@ -192,7 +196,7 @@ void material(){
     const auto mediaCost=emptyResultCost<media::MediaResult>(),materialCost=emptyResultCost<clip_edit::MaterialEdit>();
     const auto allocatedBefore=allocations.load(),freedBefore=frees.load();
     {CallbackScope scope;callback=media::prepareImport(*store,callbackSource,23,0,request,&cache,{});callbackMaterial=clip_edit::prepareImportAudio(*store,options,44100);}
-    check(!callback.ok && !callbackMaterial.edit.ok && request.opType=="preserve" && request.payload==kept && allocations-allocatedBefore==mediaCost.first+materialCost.first && frees-freedBefore==mediaCost.second+materialCost.second && callbackFileIo==0,"media and material capture refuse callbacks before clearing caller values, allocation/free, SQL or file I/O");
+    check(!callback.ok && !callbackMaterial.edit.ok && request.opType=="preserve" && request.payload==kept && allocations-allocatedBefore==mediaCost.first+materialCost.first && frees-freedBefore==mediaCost.second+materialCost.second && callbackFileIo==0,"media and material capture refuse callbacks with caller values intact and only the empty result's Windows Debug proxy cost");
 }
 } // namespace
 int main(){try{

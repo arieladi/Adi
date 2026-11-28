@@ -92,6 +92,20 @@ void UndoHistoryPanel::refresh() {
             currentStep_ = static_cast<int>(rows_.size());
         rows_.push_back(std::move(row));
     }
+    if (opening != timeline.originSeq) {
+        Row origin;
+        for (const auto &snapshot : timeline.snapshots)
+            if (!snapshot.opSeq || snapshot.opSeq == timeline.originSeq)
+                origin.detail += (origin.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snapshot.name;
+        if (!origin.detail.empty()) {
+            origin.label = "Project created";
+            origin.applied = true;
+            origin.current = timeline.headSeq == timeline.originSeq;
+            if (origin.current)
+                currentStep_ = static_cast<int>(rows_.size());
+            rows_.push_back(std::move(origin));
+        }
+    }
     // The opening event has its own row even when earlier edits remain visible.
     {
         Row root;
@@ -100,9 +114,11 @@ void UndoHistoryPanel::refresh() {
         root.applied = true;
         root.root = true;
         root.current = atOpening;
-        for (const auto &snap : timeline.snapshots)
-            if (snap.opSeq == opening)
+        for (const auto &snap : timeline.snapshots) {
+            const auto snapshotHead = snap.opSeq ? snap.opSeq : timeline.originSeq;
+            if (snapshotHead == opening)
                 root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
+        }
         if (root.current)
             currentStep_ = static_cast<int>(rows_.size());
         rows_.push_back(std::move(root));

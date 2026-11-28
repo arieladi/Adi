@@ -372,6 +372,8 @@ class DeviceChainStrip final : public juce::Component,
     void resized() override;
     void paint(juce::Graphics &) override;
     void paintOverChildren(juce::Graphics &) override;
+    [[nodiscard]] const char *dropInstruction() const;
+    [[nodiscard]] juce::Rectangle<int> dropInstructionArea() const noexcept;
     void fold(std::int64_t);
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);

@@ -352,6 +352,7 @@ subject, say so in your log instead of writing it twice.
 | 0263 | win | `win/adr-0263-collab` | working together at different times: Undo that reverses, a heartbeat for presence, tempo as mine or theirs, a shared folder studied beside the bucket, eleven refinements of the collision design | used |
 | 0264 | win | `win/adr-0264-tip-zone` | the Tip Zone, a goal: techniques taught in ADI's own terms, written by anyone, read by agents, with links to videos at a saved moment | used |
 | 0265 | win | `win/adr-0264-tip-zone` | after the director's own test: how far Stop Agent reaches, a new song with no returns, FX channels as decided, a double-click that adds a track | used |
+| 0266 | win | `win/adr-0266` | after the director's second test: the encoders, backups on a timer, a clip ends with its audio, an export does not stop the song, the EQ on a track | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
