@@ -93,6 +93,7 @@ struct RecordingEdit::Files {
     std::shared_ptr<media::detail::PublishedRollback> publications;
     ~Files(){if(!publicationDirectory.empty()){std::error_code ignored;fs::remove_all(publicationDirectory,ignored);}}
     bool committed=false,keepPrivate=false;
+    bool slotPlacement = false;
 };
 struct RecordingEdit::PreparedSource {
     std::int64_t mediaId;
@@ -998,6 +999,7 @@ std::vector<std::int64_t> RecordingEdit::prepareSlotFiles(Store& store, std::str
         result.options.expectHead.emplace(OpJournal(store).headSeq());
         result.files_ = std::make_shared<Files>();
     }
+    result.files_->slotPlacement = true;
     return media;
 }
 
@@ -1596,6 +1598,8 @@ StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,Recordin
         if (edit.owner_ != &store || edit.client_ != store.clientId() || identity(store) != edit.sourceProject)
             throw std::runtime_error("recording project changed during publication");
         if (edit.options.expectHead && *edit.options.expectHead == OpJournal(store).headSeq()) return StagedRefresh::ready;
+        if (published->slotPlacement)
+            return refuse(StagedRefresh::refused, "Session slot recording needs fresh preparation after a project edit during publication");
         auto current = prepareStagedCommit(store, staged, ids, midi, placementOffsetSamples);
         if (!current.ok) {
             edit.audioOutsidePunch = current.audioOutsidePunch;

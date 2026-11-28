@@ -49,7 +49,7 @@ struct Project {
 
     std::int64_t scalar(const std::string& sql) { return db().execAndGet(sql).getInt64(); }
 
-    SlotRecordingResult capture(bool audio = true) {
+    SlotRecordingResult capture(bool audio = true, bool midi = true) {
         SlotInputRecorder recorder;
         AudioRecordingSpec format;
         format.workFolder = dir.path();
@@ -58,7 +58,8 @@ struct Project {
         format.maxFrames = 128;
         const std::array targets{SlotRecordingTarget{{21, 11}, {0}}, SlotRecordingTarget{{22, 11}, {}}};
         std::string error;
-        const auto selected = audio ? std::span(targets).subspan(0) : std::span(targets).subspan(1);
+        auto selected = audio ? std::span(targets).subspan(0) : std::span(targets).subspan(1);
+        if (!midi) selected = selected.first(1);
         require(recorder.start(format, selected, error), "prime real slot capture");
 
         std::array<float, 96> pcm{};
@@ -159,7 +160,49 @@ void mixedCommit() {
             "native audio and MIDI slot rows reopen from the database");
 }
 
+void staleStageRefresh() {
+    Project project;
+    project.db().exec("DELETE FROM clips WHERE id=31");
+    auto take = project.capture(true, false);
+    const auto audioIds = std::span(ids).first(1);
+    require(take.audio && take.targets.size() == 1, "capture one audio-only Session slot");
+    const auto privateWav = take.audio->tracks.front().file;
+    const auto folder = media::projectFolder(*project.store);
+    const auto staged = recording::stageTake(*take.audio, folder);
+    auto edit = recording::prepareSlotCommit(*project.store, take, audioIds, captureClock, &staged);
+    require(staged.ok && edit.ok && recording::publishStagedTake(edit), "publish a verified audio-only slot take");
+    const auto publicWav = folder / media::pathFromUtf8(
+        edit.requests.front().payload.at("row").at("rel_path").get<std::string>());
+    require(recording::refreshStagedCommit(*project.store, staged, edit, audioIds) == recording::StagedRefresh::ready,
+            "a current staged slot take keeps its prepared placement");
+
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 21}, {"name", "Renamed during slot publication"}};
+    require(OpJournal(*project.store).commit(rename).ok, "move the journal head while the slot WAV is published");
+    require(recording::refreshStagedCommit(*project.store, staged, edit, audioIds) == recording::StagedRefresh::refused &&
+            !edit.ok && edit.error.find("Session slot recording needs fresh preparation") != std::string::npos,
+            "a stale slot take refuses the Arrangement refresh route");
+    require(!recording::commit(*project.store, edit).ok && project.scalar("SELECT count(*) FROM clips") == 1 &&
+            project.scalar("SELECT count(*) FROM clip_slots") == 0 && project.scalar("SELECT count(*) FROM media_files") == 0 &&
+            std::filesystem::is_regular_file(privateWav), "refresh preserves the private take without writing any placement");
+    if (std::filesystem::exists(publicWav)) {
+        const auto hash = media::blake3File(privateWav);
+        require(hash && media::blake3File(publicWav).hex == hash.hex &&
+                edit.error.find(media::pathUtf8(publicWav)) != std::string::npos,
+                "refresh rollback reports the verified public copy when it is retained");
+    }
+    const auto restaged = recording::stageTake(*take.audio, folder);
+    auto retry = recording::prepareSlotCommit(*project.store, take, audioIds, captureClock, &restaged);
+    require(restaged.ok && retry.ok && recording::publishStagedTake(retry) && recording::commit(*project.store, retry).ok &&
+            project.scalar("SELECT clip_id FROM clip_slots WHERE track_id=21 AND scene_id=11") == 41 &&
+            project.scalar("SELECT count(*) FROM clips") == 2,
+            "fresh Session preparation attaches the recovered WAV to the original slot");
+    require(recording::cleanupStagedTake(retry).empty(), "remove finalized private staging after refresh refusal");
+}
+
 void staleStage() {
+    staleStageRefresh();
     Project project;
     auto take = project.capture();
     const auto privateWav = take.audio->tracks.front().file;
