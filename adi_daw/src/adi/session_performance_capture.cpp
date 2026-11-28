@@ -648,6 +648,19 @@ double capturedGainDb(double authored, float multiplier, engine::Precision preci
     return db;
 }
 
+void checkFloat64Fold(const Payload& audioRow, const audio::WavReader& wav, std::uint32_t rate) {
+    if (wav.channels() == 1) return;
+    // The mean of two signed PCM16/24 samples is a power-of-two
+    // fraction with at most 24 significant bits, so the resident float bank
+    // and the Float64 Arrangement reader produce the same folded value.
+    const bool nativeStereoPcm = wav.channels() == 2 && wav.sampleRate() == rate &&
+        (wav.format() == audio::WavFormat::Pcm16 || wav.format() == audio::WavFormat::Pcm24) &&
+        audioRow.at("warp_enabled") == 0 && audioRow.at("transpose_semis") == 0 &&
+        audioRow.at("formant_shift") == 0;
+    if (!nativeStereoPcm)
+        throw std::runtime_error("exact Float64 Session PCM channel folding needs native stereo PCM16/24");
+}
+
 void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCapturedSpan& span,
                    std::span<const engine::LaunchCapturedPcmRange> ranges, const std::filesystem::path& path,
                    const edit::TimeMap& placementClock, const engine::TempoMap& authored,
@@ -661,8 +674,8 @@ void arrangeRawPcm(Store& store, const Payload& image, const engine::LaunchCaptu
                           audioCapture->precision != engine::Precision::Float64))
         throw std::runtime_error("exact Session PCM capture requires raw forward audio and its graph precision");
     const audio::WavReader wav(path);
-    if (audioCapture->precision == engine::Precision::Float64 && audioRow->at("channel_mode") == 3 && wav.channels() > 1)
-        throw std::runtime_error("Session PCM channel folding loses precision before the Float64 launch mix");
+    if (audioCapture->precision == engine::Precision::Float64 && audioRow->at("channel_mode") == 3)
+        checkFloat64Fold(*audioRow, wav, rate);
     const auto fileStart = detail::signedInteger(audioRow->at("src_start_frames"));
     const auto fileLength = detail::signedInteger(audioRow->at("src_len_frames"));
     if (wav.sampleRate() != rate || fileStart < 0 || fileLength <= 0 ||
@@ -936,6 +949,9 @@ clip_edit::PreparedEdit prepareSessionPerformance(Store& store, const SessionPer
                     if (media::readFileRevision(verified->path, status) != verified->revision)
                         throw std::runtime_error("Session source media changed during the capture");
                 }
+                if (!needsPcm && audio && audio->precision == engine::Precision::Float64 &&
+                    audioRow->at("channel_mode") == 3)
+                    checkFloat64Fold(*audioRow, audio::WavReader(verified->path), rate);
             }
             if (needsPcm) {
                 if (!verified || row.at("kind") != "audio" || !frozen.residentClips.contains(span.clip))
