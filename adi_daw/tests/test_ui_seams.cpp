@@ -43,6 +43,7 @@
 #include "adi/row_ids.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/object_snap.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -2793,7 +2794,67 @@ void insertTrackMovesTheReturnsAndMainDown() {
     check(!geometry.reveal(reader, 8), "a geometry without its view: nothing to scroll");
 }
 
+// ED-09: object snapping's candidates and the shift that lands a dragged clip's nearest edge.
+void objectSnapping() {
+    engine::Snapshot snap;
+    auto track = std::make_shared<engine::TrackNode>();
+    track->id = 2;
+    auto clipA = std::make_shared<engine::ClipNode>();
+    clipA->id = 1;
+    clipA->posTicks = 1000;
+    clipA->lengthTicks = 500;
+    auto clipB = std::make_shared<engine::ClipNode>();
+    clipB->id = 2;
+    clipB->posTicks = 4000;
+    clipB->lengthTicks = 1000;
+    track->clips = {clipA, clipB};
+    snap.tracks.push_back(track);
+    auto locator = std::make_shared<engine::MarkerNode>();
+    locator->id = 1;
+    locator->kind = "position";
+    locator->posTicks = 7000;
+    snap.markers.push_back(locator);
+    auto cycle = std::make_shared<engine::MarkerNode>(); // not a locator: no candidate
+    cycle->id = 2;
+    cycle->kind = "cycle";
+    cycle->posTicks = 8000;
+    snap.markers.push_back(cycle);
+    auto inSeconds = std::make_shared<engine::MarkerNode>(); // a locator with no tick position: none either
+    inSeconds->id = 3;
+    inSeconds->kind = "position";
+    inSeconds->timeBase = 1;
+    snap.markers.push_back(inSeconds);
+    auto hiddenTrack = std::make_shared<engine::TrackNode>();
+    hiddenTrack->id = 5;
+    auto clipC = std::make_shared<engine::ClipNode>();
+    clipC->id = 3;
+    clipC->posTicks = 6000;
+    clipC->lengthTicks = 100;
+    hiddenTrack->clips = {clipC};
+    snap.tracks.push_back(hiddenTrack);
+    snap.meters.push_back({9000, 3, 4});
+    const auto all = ui::snapCandidates(snap);
+    check(all == std::vector<std::int64_t>{1000, 1500, 4000, 5000, 6000, 6100, 7000, 9000},
+          "the candidates: every clip's start and end on every track, the locator, the signature change, sorted once "
+          "each; a cycle marker and a locator in seconds are none");
+    const auto others = ui::snapCandidates(snap, [](std::int64_t clip) { return clip == 2; },
+                                           [](std::int64_t track) { return track == 5; });
+    check(others == std::vector<std::int64_t>{1000, 1500, 7000, 9000},
+          "a dragged clip is no candidate of its own, nor a clip on a track the lanes do not show");
+    check(ui::objectSnap(all, 1490, 0, 20) == std::optional<std::int64_t>{10}, "a start 10 short of an end lands on it");
+    check(ui::objectSnap(all, 6400, 590, 20) == std::optional<std::int64_t>{10},
+          "a clip whose end comes 10 short of the locator moves so its end lands on it");
+    check(!ui::objectSnap(all, 2500, 100, 20), "nothing near: no snap, the grid decides");
+    const std::vector<std::int64_t> two{1000, 4000};
+    check(ui::objectSnap(two, 1010, 2980, 20) == std::optional<std::int64_t>{-10} &&
+              ui::objectSnap(two, 1005, 2980, 20) == std::optional<std::int64_t>{-5} &&
+              ui::objectSnap(two, 1015, 2980, 20) == std::optional<std::int64_t>{5},
+          "of a start and an end both near, the nearer one wins, either way and backwards too");
+    check(ui::objectSnap(two, 990, 3020, 20) == std::optional<std::int64_t>{10},
+          "a tie between the start (10 after) and the end (10 before) goes to the start");
+}
 int main() {
+    objectSnapping();
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
     anEmptyRenameGivesTheDefaultNameBack();
