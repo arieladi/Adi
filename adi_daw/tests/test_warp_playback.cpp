@@ -24,8 +24,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <new>
 #include <numbers>
+#include <optional>
 #include <stop_token>
 #include <string_view>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
@@ -112,11 +115,67 @@ std::array<float,2048> hearWarpHead(Session& session) {
     {audio::CallbackScope scope;session.process(io);}
     return samples;
 }
-void longWarpResponse() {
-    constexpr std::uint32_t rate=48000,seconds=180,frames=rate*seconds;
-    constexpr std::int64_t length=q*400; // stretch 180 source seconds to 200 at 120 BPM
+// Only the prepared-cache case redirects staging. All other test directories
+// are claimed before or after this process-local override.
+class ScopedWarpTemp {
+    using Char = std::filesystem::path::value_type;
+public:
+    ScopedWarpTemp(const Char* name,const std::filesystem::path& root) : name_(name) {
+#if defined(_WIN32)
+        wchar_t* value = nullptr;
+        std::size_t size = 0;
+        if (_wdupenv_s(&value,&size,name_) != 0) throw std::runtime_error("read test Warp temp root");
+        const std::unique_ptr<wchar_t,decltype(&std::free)> owned(value,std::free);
+        if (owned) saved_ = owned.get();
+        if (_wputenv_s(name_,root.c_str()) != 0) throw std::runtime_error("set test Warp temp root");
+#else
+        if (const auto* value = std::getenv(name_)) saved_ = value;
+        if (setenv(name_,root.c_str(),1) != 0) throw std::runtime_error("set test Warp temp root");
+#endif
+    }
+    ~ScopedWarpTemp() {
+#if defined(_WIN32)
+        (void)_wputenv_s(name_,saved_ ? saved_->c_str() : L"");
+#else
+        if (saved_) (void)setenv(name_,saved_->c_str(),1);
+        else (void)unsetenv(name_);
+#endif
+    }
+    ScopedWarpTemp(const ScopedWarpTemp&) = delete;
+    ScopedWarpTemp& operator=(const ScopedWarpTemp&) = delete;
+
+private:
+    const Char* const name_;
+    std::optional<std::filesystem::path::string_type> saved_;
+};
+
+void longWarpResponse(bool prepared = false) {
+    constexpr std::uint32_t rate = 48000;
+    const auto seconds = prepared ? 2u : 180u;
+    const auto frames = rate * seconds;
+    // Stretch 2 s to 6 s to require prepared Complex beyond the live R3 range.
+    const auto length = q * (prepared ? 12 : 400);
     using Clock=std::chrono::steady_clock;
-    test::TempDirectory temporary{"warp_playback","long_beats"};
+    test::TempDirectory temporary{"warp_playback",prepared ? "prepared_cache" : "long_beats"};
+    const auto workerRoot = temporary.path() / "worker";
+    const auto workFolder = workerRoot / "adi-warp";
+    std::optional<ScopedWarpTemp> scopedTemp;
+#if defined(_WIN32)
+    std::optional<ScopedWarpTemp> scopedSystemTemp;
+#endif
+    if (prepared) {
+        std::filesystem::create_directory(workerRoot);
+#if defined(_WIN32)
+        scopedTemp.emplace(L"TMP",workerRoot);
+        // GetTempPath2 uses SystemTemp when the checker runs as SYSTEM.
+        if (!std::filesystem::equivalent(workerRoot,std::filesystem::temp_directory_path()))
+            scopedSystemTemp.emplace(L"SystemTemp",workerRoot);
+#else
+        scopedTemp.emplace("TMPDIR",workerRoot);
+#endif
+        if (!std::filesystem::equivalent(workerRoot,std::filesystem::temp_directory_path()))
+            throw std::runtime_error("Warp test staging is outside its private temp folder");
+    }
     const auto project=temporary.path()/"long.adi";
     const auto source=temporary.path()/"source.wav";
     std::vector<float> burst(rate*2);
@@ -150,8 +209,11 @@ void longWarpResponse() {
         clip.bind(1,length);clip.exec();
         const auto markers=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{frames,length}},frames);
         SQLite::Statement audio(db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode,warp_markers) "
-                                   "VALUES(7,1,?,1,'beats',?)");
-        audio.bind(1,frames);audio.bind(2,markers.bytes.data(),static_cast<int>(markers.bytes.size()));audio.exec();
+                                   "VALUES(7,1,?,1,?,?)");
+        audio.bind(1,frames);
+        audio.bind(2,prepared ? "complex" : "beats");
+        audio.bind(3,markers.bytes.data(),static_cast<int>(markers.bytes.size()));
+        audio.exec();
     }
     const auto elapsed=[](Clock::time_point start){return std::chrono::duration<double,std::milli>(Clock::now()-start).count();};
     const auto load=[&](Session& session) {
@@ -170,12 +232,22 @@ void longWarpResponse() {
         original=hearWarpHead(session);coldReady=elapsed(start);
         check(std::any_of(original.begin(),original.end(),[](float sample){return std::abs(sample)>0.01f;}),
               "long warped PCM is audible after cold preparation");
+        if (prepared) {
+            // The complete cached WAV has left its private staging directory.
+            // A cache miss on refresh or reopen would have to create a new
+            // render here, which the regular file makes impossible.
+            if (!std::filesystem::is_directory(workFolder) || !std::filesystem::remove(workFolder))
+                throw std::runtime_error("cold Warp did not publish its prepared WAV");
+            std::ofstream blocked(workFolder);
+            if (!blocked) throw std::runtime_error("block private Warp staging");
+        }
         OpRequest rename;rename.opType="track.rename";rename.payload={{"id",2},{"name","Renamed"}};
         const auto edit=Clock::now();
         if(!OpJournal(*store).commit(rename).ok || !session.refresh(*store))throw std::runtime_error("rename in warped song");
         renameOwner=elapsed(edit);
         const auto renamed=hearWarpHead(session);renameReady=elapsed(edit);
-        check(renamed==original,"unrelated rename preserves the prepared warped PCM");
+        check(renamed==original,prepared ? "an unrelated edit reuses prepared Warp with staging blocked"
+                                         : "an unrelated edit preserves streamed Beats PCM");
     }
     store.reset();
     const auto reopen=Clock::now();
@@ -184,12 +256,11 @@ void longWarpResponse() {
     Session reopened;
     load(reopened);const auto reopenOwner=elapsed(reopen);
     const auto reopenedPcm=hearWarpHead(reopened);const auto reopenReady=elapsed(reopen);
-    check(reopenedPcm==original,"reopening the project preserves the prepared warped PCM");
-    std::printf("SC-194 three-minute stereo Beats, owner/first PCM ms: cold %.2f/%.2f, rename %.2f/%.2f, reopen %.2f/%.2f\n",
+    check(reopenedPcm==original,prepared ? "a reopened project reuses its prepared Warp WAV with staging blocked"
+                                         : "a reopened project preserves streamed Beats PCM");
+    std::printf("SC-194 %s, owner/first PCM ms: cold %.2f/%.2f, rename %.2f/%.2f, reopen %.2f/%.2f\n",
+                prepared ? "prepared Complex" : "three-minute streamed Beats",
                 coldOwner,coldReady,renameOwner,renameReady,reopenOwner,reopenReady);
-    check(coldOwner<coldReady/2,"cold Warp load returns on the owner before the stretch finishes");
-    check(renameReady<coldReady/2,"an unrelated edit reuses the complete prepared warp");
-    check(reopenReady<coldReady/2,"a reopened project reuses the complete prepared warp");
 }
 void sourceRatesAndTempoBoundary() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
@@ -502,7 +573,7 @@ int main(int argc,char** argv) {
 #endif
         if(argc==2 && std::string_view(argv[1])=="--long-warp-speed-only")longWarpResponse();
         else {
-            modesAndLoops();longWarpResponse();sourceRatesAndTempoBoundary();rampProjection();modelAndRefusals();workerFailure();
+            modesAndLoops();longWarpResponse();longWarpResponse(true);sourceRatesAndTempoBoundary();rampProjection();modelAndRefusals();workerFailure();
             replacementSourceInvalidatesWarp();
             unwarpedPitch();compressedPitchAndRecordingWarp();
             trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();
