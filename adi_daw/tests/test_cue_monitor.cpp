@@ -718,6 +718,42 @@ void hardwareMainOut() {
     offline.process(block);
     check(near(block.wide[0][511], .075) && near(block.wide[1][511], .0375) && block.wide[2][511] == 0,
           "SC-261: physical Main Out and reference never change the exported channels");
+    Fixture missing;
+    check(missing.op("mixer.setMainOutput", {{"first", 6}}) && missing.op("cue.setOutput", {{"first", 4}}) &&
+          missing.load(Precision::Float64),
+          "SC-261: a song may name a Main Out pair that the device has not opened");
+    Block sparse;
+    sparse.io.outputChannels.enabled = 0b00111100; // physical 3/4 and 5/6: Main Out 7/8 is missing
+    const auto silent = [&](std::size_t channel) {
+        return std::ranges::all_of(sparse.wide[channel], [](double sample) { return sample == 0.; }) &&
+               std::ranges::all_of(sparse.narrow[channel], [](float sample) { return sample == 0.f; });
+    };
+    missing.process(sparse);
+    check(silent(0) && silent(1) && silent(2) && silent(3),
+          "SC-261: a missing Main Out pair is silent and never plays on the device's first outputs");
+    check(missing.op("cue.setReference", {{"on", true}, {"id", 2}}),
+          "SC-261: the reference engages while Main Out is missing");
+    missing.process(sparse);
+    check(silent(0) && silent(1) && near(sparse.wide[2][511], 0.5) && near(sparse.narrow[3][511], 0.5),
+          "SC-261: with Main Out missing the reference reaches Cue Out and no other output");
+    check(missing.op("cue.setOutput", {{"first", 2}}),
+          "SC-261: Cue Out can occupy the first two packed channels when Main Out is missing");
+    missing.process(sparse);
+    check(near(sparse.wide[0][511], 0.5) && near(sparse.narrow[1][511], 0.5) && silent(2) && silent(3),
+          "SC-261: reference reaches the first packed Cue pair exactly once");
+    Fixture single;
+    check(single.load(Precision::Float64), "SC-261: load Main Out 1/2 for devices that lack output 2");
+    Block mono(512, 1);
+    mono.io.outputChannels.enabled = 0b1;
+    single.process(mono);
+    check(near(mono.wide[0][511], .075) && near(mono.narrow[0][511], .075),
+          "SC-261: a one-channel device still plays Main's left on its own output 1");
+    Block half(512, 3);
+    half.io.outputChannels.enabled = 0b1101; // physical 1, 3 and 4: the right of Main Out 1/2 is missing
+    single.process(half);
+    check(near(half.wide[0][511], .075) && half.wide[1][511] == 0. && half.narrow[1][511] == 0.f &&
+          half.wide[2][511] == 0.,
+          "SC-261: Main's right never plays on another pair's output when only its left is open");
 }
 void inactiveBits() {
     CueMonitor monitor;CueSettings settings;monitor.publish(settings,48000,64,2,true);GraphHost graph;Block b(64);
