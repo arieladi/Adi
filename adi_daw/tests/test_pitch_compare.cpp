@@ -141,6 +141,24 @@ double frequency(std::span<const float> interleaved, std::uint32_t rate) {
     return crossings > 1 ? static_cast<double>(crossings - 1) * rate / (last - first) : 0;
 }
 
+std::shared_ptr<const clip_edit::ClipPitchEdits> shiftedNote(const media::AnalysisIdentity& source,
+    std::span<const float> mono, media::AnalysisCache& cache, std::int64_t clipId, double shiftCents) {
+    const auto analyzed = media::buildSourcePitchAnalysisFromMono(source, mono, &cache);
+    if (!analyzed || analyzed.analysis->notes.size() != 1) throw std::runtime_error("analyze source fixture");
+    const auto& note = analyzed.analysis->notes.front();
+    auto edit = resolvePitchNoteEdit(*analyzed.analysis, {}, 0);
+    edit.pitchShiftCents = shiftCents;
+    auto stored = std::make_shared<clip_edit::ClipPitchEdits>();
+    stored->clipId = clipId;
+    stored->sourceHash = source.hash;
+    stored->sampleRate = source.sampleRate;
+    stored->sourceFrames = source.frames;
+    stored->analysisVersion = media::kPitchAnalysisVersion;
+    stored->analysisConfiguration = media::kPitchAnalysisConfiguration;
+    stored->rows.push_back({note.startFrame, note.endFrame, edit});
+    return stored;
+}
+
 void preparedPair() {
     constexpr std::uint32_t rate = 44100, frames = 30000, start = 2000, length = 24000;
     constexpr std::uint32_t marker = 700, bodyFirst = 8000;
@@ -168,19 +186,7 @@ void preparedPair() {
     if (!hash) throw std::runtime_error("hash source fixture");
     DecodeCache decoded(temp.path() / "decoded");
     media::AnalysisCache cache(temp.path() / "analysed");
-    const auto analyzed = media::buildSourcePitchAnalysisFromMono({hash.hex, rate, channels, frames}, mono, &cache);
-    if (!analyzed || analyzed.analysis->notes.size() != 1) throw std::runtime_error("analyze source fixture");
-    const auto& note = analyzed.analysis->notes.front();
-    auto edit = resolvePitchNoteEdit(*analyzed.analysis, {}, 0);
-    edit.pitchShiftCents = 100;
-    auto stored = std::make_shared<clip_edit::ClipPitchEdits>();
-    stored->clipId = 45;
-    stored->sourceHash = hash.hex;
-    stored->sampleRate = rate;
-    stored->sourceFrames = frames;
-    stored->analysisVersion = media::kPitchAnalysisVersion;
-    stored->analysisConfiguration = media::kPitchAnalysisConfiguration;
-    stored->rows.push_back({note.startFrame, note.endFrame, edit});
+    const auto stored = shiftedNote({hash.hex, rate, channels, frames}, mono, cache, 45, 100);
     const media::ClipPitchRenderPlan plan{path, temp.path() / "work", stored, start, length, false, {}};
 
     const auto beginPreparation = std::chrono::steady_clock::now();
@@ -322,12 +328,86 @@ void preparedPair() {
           callbackAllocations.load() == oldAllocations, "worker preparation refuses on the callback without allocating");
     check(media::blake3File(path).hex == hash.hex, "comparison leaves the source bytes intact");
 }
+
+void extremeRatePair() {
+    constexpr std::uint32_t rate = 8000, graphRate = 192000, frames = 5500;
+    constexpr std::uint64_t start = 43, length = 5301, marker = 170;
+    constexpr std::uint16_t channels = 2;
+    constexpr double sourceHz = 220, shiftCents = 100;
+    const auto playbackRate = static_cast<std::uint32_t>(pitchedSampleRate(rate, -48));
+    test::TempDirectory temp{"pitch_compare", "extreme_rate"};
+    const auto path = temp.path() / "voice.wav";
+    std::vector<float> stereo(frames * channels), mono(frames);
+    for (std::uint32_t frame = 850; frame < 5150; ++frame) {
+        const double gain = std::min(1.0, static_cast<double>(std::min(frame - 850, 5150 - frame)) / 160);
+        const auto sample = static_cast<float>(gain * 0.45 * std::sin(2 * std::numbers::pi * sourceHz * frame / rate));
+        stereo[2 * frame] = sample;
+        stereo[2 * frame + 1] = sample * 0.5f;
+        mono[frame] = static_cast<float>((static_cast<double>(sample) + stereo[2 * frame + 1]) / 2);
+    }
+    stereo[2 * (start + marker)] = 0.6f;
+    stereo[2 * (start + marker) + 1] = -0.6f;
+    {
+        WavWriter writer(path, rate, channels, WavFormat::Float32);
+        writer.write(stereo.data(), frames);
+        writer.close();
+    }
+    const auto hash = media::blake3File(path);
+    if (!hash) throw std::runtime_error("hash extreme-rate fixture");
+    DecodeCache decoded(temp.path() / "decoded");
+    media::AnalysisCache cache(temp.path() / "analysed");
+    const auto stored = shiftedNote({hash.hex, rate, channels, frames}, mono, cache, 46, shiftCents);
+    const media::ClipPitchRenderPlan plan{path, temp.path() / "work", stored, start, length, false, {}, playbackRate};
+
+    auto invalid = plan;
+    invalid.playbackRate = 1;
+    invalid.sourceFrames = 1;
+    const auto refusal = media::prepareClipPitchCompare(invalid, {}, &decoded, &cache, graphRate);
+    check(refusal.problem == media::ClipPitchRenderProblem::Unsupported && !refusal.prepared &&
+          !std::filesystem::exists(plan.workFolder), "ratios outside two valid stages are refused before staging");
+
+    const auto begin = std::chrono::steady_clock::now();
+    const auto pair = media::prepareClipPitchCompare(plan, {}, &decoded, &cache, graphRate);
+    const auto elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    const auto expectedFrames = (length * graphRate + playbackRate / 2) / playbackRate;
+    check(playbackRate == 500 && pair && pair.prepared->rate() == graphRate && pair.prepared->channels() == channels &&
+          pair.prepared->frames() == expectedFrames, "384x comparison covers the entire odd source window at the graph rate");
+    if (!pair) {
+        if (pair.detail) std::printf("extreme-rate prepare error: %s\n", pair.detail->c_str());
+        return;
+    }
+
+    PitchComparePlayback playback(pair.prepared);
+    const auto body = 1600u * graphRate / playbackRate;
+    const auto count = 2000u * graphRate / playbackRate;
+    std::vector<float> editedSignal(count * channels), rawSignal(count * channels);
+    const bool readEdited = playback.readAt(body, editedSignal);
+    playback.select(PitchCompareSide::Original);
+    const bool readRaw = playback.readAt(body, rawSignal);
+    const double originalHz = frequency(rawSignal, graphRate), editedHz = frequency(editedSignal, graphRate);
+    const double expectedHz = sourceHz * playbackRate / rate;
+    std::printf("%u to %u Hz comparison: %llu output frames, %.4f Hz original, %.4f Hz corrected, %.3f ms preparation\n",
+                playbackRate, graphRate, static_cast<unsigned long long>(pair.prepared->frames()),
+                originalHz, editedHz, elapsedMs);
+    check(readEdited && readRaw && std::abs(originalHz - expectedHz) < 0.01 &&
+          std::abs(editedHz - expectedHz * std::exp2(shiftCents / 1200)) < 0.1,
+          "both stages retain the requested clip pitch and corrected-note semitone");
+
+    const auto impulse = marker * graphRate / playbackRate;
+    std::array<float, 10> rawLandmark{}, editedLandmark{};
+    const bool readRawLandmark = playback.readAt(impulse - 2, rawLandmark);
+    playback.select(PitchCompareSide::Corrected);
+    check(readRawLandmark && playback.readAt(impulse - 2, editedLandmark) && rawLandmark == editedLandmark &&
+          std::distance(rawLandmark.begin(), std::max_element(rawLandmark.begin(), rawLandmark.end())) == 4,
+          "both stages retain the exact rational address of an unchanged impulse");
+}
 } // namespace
 
 int main() {
     try {
         sameAddressAndFade();
         preparedPair();
+        extremeRatePair();
     } catch (const std::exception& error) {
         std::printf("FAIL fixture: %s\n", error.what());
         ++failures;

@@ -276,34 +276,76 @@ struct ComparisonResampleInput {
     }
 };
 
-std::vector<float> readComparisonSide(const PreparedClipPitch& prepared, std::uint32_t inputRate,
-                                      std::uint32_t outputRate, std::uint64_t frames, std::stop_token stop) {
+struct ComparisonRateRatios {
+    double first = 1, second = 1;
+};
+
+ComparisonRateRatios comparisonRateRatios(double ratio) {
+    if (src_is_valid_ratio(ratio)) return {ratio, 1};
+    // Match the paged clip converter. The minimum effective rate is 500 Hz,
+    // so up to 1536x is needed. Supported clips downsample by at most 139.32x.
+    constexpr double upsample = 128;
+    const double second = ratio / upsample;
+    if (ratio > 1 && src_is_valid_ratio(upsample) && src_is_valid_ratio(second)) return {upsample, second};
+    throw Failure{ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison sample-rate ratio is unsupported"};
+}
+
+using ComparisonResampler = std::unique_ptr<SRC_STATE, decltype(&src_delete)>;
+
+ComparisonResampler comparisonResampler(src_callback_t supply, void* input, double ratio, std::uint16_t channels) {
+    int error = 0;
+    ComparisonResampler state(src_callback_new(supply, SRC_SINC_BEST_QUALITY, channels, &error, input), &src_delete);
+    if (!state || src_set_ratio(state.get(), ratio) != 0)
+        throw Failure{ClipPitchRenderProblem::Dsp, "cannot prepare Pitch Editor comparison resampler"};
+    return state;
+}
+
+struct ComparisonResampleBridge {
+    SRC_STATE* first;
+    double ratio;
+    std::vector<float> samples;
+
+    static long supply(void* opaque, float** buffer) noexcept {
+        auto& bridge = *static_cast<ComparisonResampleBridge*>(opaque);
+        *buffer = bridge.samples.data();
+        return src_callback_read(bridge.first, bridge.ratio, blockFrames, *buffer);
+    }
+};
+
+std::vector<float> readComparisonSide(const PreparedClipPitch& prepared, ComparisonRateRatios ratios,
+                                      std::uint64_t frames, std::stop_token stop) {
     audio::WavReader reader(prepared.file);
     if (reader.sampleRate() != prepared.rate || reader.channels() != prepared.channels || reader.frames() != prepared.frames)
         throw Failure{ClipPitchRenderProblem::Io, "prepared Pitch Editor comparison side changed"};
-    if (outputRate == inputRate) return readPcm(reader, stop);
+    if (ratios.first == 1) return readPcm(reader, stop);
 
     // Use the exact device/source ratio. Round only the number of requested
     // frames, so the fractional sample clock does not drift to meet an end
     // anchor. Zero extension keeps sinc context beyond the trimmed boundary.
-    const double ratio = static_cast<double>(outputRate) / inputRate;
     const auto channels = prepared.channels;
-    const auto padding = blockFrames * static_cast<std::uint32_t>(std::ceil(std::max(1.0, 1 / ratio)));
-    ComparisonResampleInput input{reader, stop, std::vector<float>(static_cast<std::size_t>(blockFrames) * channels),
-                                  prepared.frames, padding};
-    int error = 0;
-    const std::unique_ptr<SRC_STATE, decltype(&src_delete)> state(
-        src_callback_new(&ComparisonResampleInput::supply, SRC_SINC_BEST_QUALITY, channels, &error, &input), &src_delete);
-    if (!state || src_set_ratio(state.get(), ratio) != 0)
-        throw Failure{ClipPitchRenderProblem::Dsp, "cannot prepare Pitch Editor comparison resampler"};
+    const auto blockSamples = static_cast<std::size_t>(blockFrames) * channels;
+    const auto padding = blockFrames * static_cast<std::uint32_t>(std::ceil(std::max(1.0, 1 / ratios.first)));
+    ComparisonResampleInput input{reader, stop, std::vector<float>(blockSamples), prepared.frames, padding};
+    auto first = comparisonResampler(&ComparisonResampleInput::supply, &input, ratios.first, channels);
+    std::optional<ComparisonResampleBridge> bridge;
+    ComparisonResampler second(nullptr, &src_delete);
+    if (ratios.second != 1) {
+        // Stream stage one's filter tail as well as its in-window samples.
+        // Stage two then sees a continuous, zero-extended source clock.
+        bridge.emplace(first.get(), ratios.first, std::vector<float>(blockSamples));
+        second = comparisonResampler(&ComparisonResampleBridge::supply, &*bridge, ratios.second, channels);
+    }
+    auto* const state = second ? second.get() : first.get();
+    const auto ratio = second ? ratios.second : ratios.first;
     std::vector<float> output(static_cast<std::size_t>(frames) * channels);
     for (std::uint64_t frame = 0; frame < frames;) {
         checkCancelled(stop);
         const auto count = static_cast<long>(std::min<std::uint64_t>(frames - frame, blockFrames));
-        const auto read = src_callback_read(state.get(), ratio, count, output.data() + static_cast<std::size_t>(frame) * channels);
+        const auto read = src_callback_read(state, ratio, count, output.data() + static_cast<std::size_t>(frame) * channels);
         checkCancelled(stop);
         if (input.failed) throw Failure{ClipPitchRenderProblem::Io, "cannot read Pitch Editor comparison resample input"};
-        if (read != count) throw Failure{ClipPitchRenderProblem::Dsp, "Pitch Editor comparison resampler ended early"};
+        if (read != count || (second && src_error(first.get()) != 0))
+            throw Failure{ClipPitchRenderProblem::Dsp, "Pitch Editor comparison resampler ended early"};
         frame += static_cast<std::uint64_t>(count);
     }
     return output;
@@ -340,16 +382,15 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
         if (frames > maxSourceSamples / channels)
             return fail(ClipPitchRenderProblem::Resource, "Pitch Editor source exceeds render PCM budget");
 
-        std::uint32_t comparisonInputRate = 0, comparisonRate = 0;
+        std::uint32_t comparisonRate = 0;
         std::uint64_t comparisonFrames = 0;
+        ComparisonRateRatios ratios;
         if (comparison) {
             const auto playbackRate = !plan.warp && plan.playbackRate ? plan.playbackRate : rate;
-            comparisonInputRate = plan.warp ? plan.warp->outputRate : playbackRate;
-            comparisonRate = outputRate ? outputRate : comparisonInputRate;
+            comparisonRate = plan.warp ? plan.warp->outputRate : outputRate ? outputRate : playbackRate;
             comparisonFrames = plan.warp && !plan.warp->anchors.empty() ? plan.warp->anchors.back().outputFrame :
                 (plan.sourceFrames * comparisonRate + playbackRate / 2) / playbackRate;
-            if (!plan.warp && !src_is_valid_ratio(static_cast<double>(comparisonRate) / comparisonInputRate))
-                return fail(ClipPitchRenderProblem::Unsupported, "Pitch Editor comparison sample-rate ratio is unsupported");
+            if (!plan.warp) ratios = comparisonRateRatios(static_cast<double>(comparisonRate) / playbackRate);
             if (comparisonFrames == 0) return fail(ClipPitchRenderProblem::Source, "Pitch Editor comparison has no output frames");
             if (comparisonFrames > audio::kPitchCompareMaxResidentSamples / (2 * static_cast<std::uint64_t>(channels)))
                 return fail(ClipPitchRenderProblem::Resource, "Pitch Editor comparison exceeds resident PCM budget");
@@ -416,8 +457,8 @@ ClipPitchRenderResult preparePitch(const ClipPitchRenderPlan& plan, std::stop_to
         std::vector<float>(std::size_t{0}).swap(pcm);
         std::vector<float>(std::size_t{0}).swap(mono);
         rendered.reset();
-        auto dry = readComparisonSide(*original.prepared, comparisonInputRate, comparisonRate, comparisonFrames, stop);
-        auto edited = readComparisonSide(*corrected.prepared, comparisonInputRate, comparisonRate, comparisonFrames, stop);
+        auto dry = readComparisonSide(*original.prepared, ratios, comparisonFrames, stop);
+        auto edited = readComparisonSide(*corrected.prepared, ratios, comparisonFrames, stop);
         checkCancelled(stop);
         auto pair = audio::PitchComparePcm::prepare(comparisonRate, corrected.prepared->channels,
                                                      std::move(dry), std::move(edited), stop);
