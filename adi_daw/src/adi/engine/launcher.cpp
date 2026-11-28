@@ -672,7 +672,8 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
             if (repeatTick > tick && repeatTick != lastTick) {
                 const auto following = pending.grid == LaunchQuantization::None ? lastTick :
                     launch_quantize::nextGridTick(add(repeatTick,1),pending.grid,block.meters).value_or(lastTick);
-                cue.repeat = LaunchSourceCue::ScheduledRepeat{repeatTick,launchSourceTick(*target,nullptr,0),following};
+                cue.repeat = LaunchSourceCue::ScheduledRepeat{
+                    repeatTick,launchSourceTick(*target,nullptr,0),following,pending.grid};
             }
         }
         if (legato && sink.admitLegatoCue && !sink.admitLegatoCue(sink.context,*target,cue,tick,offset,cueAdmission)) return false;

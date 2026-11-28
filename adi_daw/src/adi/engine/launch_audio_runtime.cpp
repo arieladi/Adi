@@ -5,6 +5,7 @@
 #include "adi/engine/launch_capture.hpp"
 #include "adi/engine/launch_follow_playback.hpp"
 #include "adi/engine/launch_paged_audio.hpp"
+#include "adi/engine/launch_quantize.hpp"
 #include "adi/engine/launch_warp_source.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/textproj.hpp"
@@ -107,14 +108,32 @@ NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot,
     // A later reset leaves this callback playing the inherited placement,
     // including ordinary wraps. Its saved Start still uses native read-ahead.
     if (first >= end) return nativeCueWraps(block,slot,position,frames);
+    const auto lapTicks = sourceEnd - restart.sourceTick;
     if (scheduled) {
         if (position.anchorTick < 0 || position.anchorSourceTick < 0 || position.anchorSourceTick >= sourceEnd)
             return wraps;
         const auto ticksUntilEnd = sourceEnd - position.anchorSourceTick;
-        if (position.anchorTick > limit - ticksUntilEnd ||
-            (restart.followingTick != limit && block.sampleAtTick(block.clock,restart.followingTick) < end))
+        if (position.anchorTick > limit - ticksUntilEnd) return wraps;
+        const auto inheritedEnd = block.sampleAtTick(block.clock,position.anchorTick + ticksUntilEnd);
+        const auto second = restart.followingTick == limit ? limit : block.sampleAtTick(block.clock,restart.followingTick);
+        if (second < end) {
+            // Fit exactly two grid resets with no intervening wrap or Fade
+            // tail. Use the grid captured by Launcher for the third deadline.
+            if (slot.fade || first > inheritedEnd || second <= first ||
+                restart.tick > limit - lapTicks || restart.followingTick > limit - lapTicks ||
+                second > block.sampleAtTick(block.clock,restart.tick + lapTicks) ||
+                block.sampleAtTick(block.clock,restart.followingTick + lapTicks) < end)
+                return wraps;
+            const auto third = launch_quantize::nextGridTick(restart.followingTick+1,restart.grid,block.meters);
+            if (!third || block.sampleAtTick(block.clock,*third) < end) return wraps;
+
+            wraps.positions[0] = {first,restart.tick,restart.sourceTick};
+            wraps.positions[1] = {second,restart.followingTick,restart.sourceTick};
+            wraps.count = 2;
+            wraps.bounded = true;
             return wraps;
-        if (first > block.sampleAtTick(block.clock,position.anchorTick + ticksUntilEnd)) {
+        }
+        if (first > inheritedEnd) {
             // The frame at the retrigger belongs to saved Start. Project
             // only earlier ordinary wraps, with a single unfaded lap allowed.
             if (!looping || slot.fade) return wraps;
@@ -124,7 +143,6 @@ NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot,
             wraps.positions[wraps.count++] = ordinary.positions[0];
         }
     }
-    const auto lapTicks = sourceEnd - restart.sourceTick;
     if (restart.tick > limit - lapTicks || block.sampleAtTick(block.clock,restart.tick + lapTicks) < end)
         return wraps;
 

@@ -750,7 +750,8 @@ void repeatedBeatsLegato() {
 }
 
 enum class NativeLegatoGesture {
-    Immediate, HeldImmediate, HeldQuantized, HeldQuantizedAfterWrap, HeldDeferred, HeldImmediateDeferred
+    Immediate, HeldImmediate, HeldQuantized, HeldQuantizedAfterWrap, HeldDeferred, HeldImmediateDeferred,
+    HeldTwoGridResets
 };
 
 void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = NativeLegatoGesture::Immediate) {
@@ -759,25 +760,29 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
     const bool deferred = gesture == NativeLegatoGesture::HeldDeferred;
     const bool immediateDeferred = gesture == NativeLegatoGesture::HeldImmediateDeferred;
     const bool laterRepeat = deferred || immediateDeferred;
-    const bool quantized = gesture == NativeLegatoGesture::HeldQuantized || afterWrap || deferred;
+    const bool twoGridResets = gesture == NativeLegatoGesture::HeldTwoGridResets;
+    const bool quantized = gesture == NativeLegatoGesture::HeldQuantized || afterWrap || deferred || twoGridResets;
     constexpr std::int32_t maxFrames = 4096;
     const auto framesPerBlock = quantized ? maxFrames : blockSize;
     constexpr std::uint32_t rate = 48'000;
     constexpr std::int64_t targetId = 106, targetScene = 60;
     constexpr std::uint64_t incarnation = 91;
     constexpr auto ppq = textproj::kPPQ;
-    constexpr auto ticksForFrames = [](std::int64_t frames) { return (frames * ppq + 12'000) / 24'000; };
-    constexpr auto start = ticksForFrames(2'000);
+    const std::int64_t framesPerBeat = twoGridResets ? 12000 : 24000;
+    const auto ticksForFrames = [framesPerBeat](std::int64_t frames) {
+        return (frames * ppq + framesPerBeat / 2) / framesPerBeat;
+    };
+    const auto start = ticksForFrames(2'000);
     const auto loopEnd = ticksForFrames(deferred ? 51'000 : immediateDeferred ? 15'000 : afterWrap ? 16'000 : quantized ? 17'000 : 14'000);
     const auto loopBegin = repeat ? ticksForFrames(deferred ? 10'000 : immediateDeferred ? 4'000 : afterWrap ? 14'500 : quantized ? 15'000 : 10'000)
                                   : start;
     constexpr std::int64_t cueAge = 11'952;
-    const std::int32_t restartOffset = deferred ? 6000 : immediateDeferred ? 1048 : quantized ? 3000 : 48;
+    const std::int32_t restartOffset = twoGridResets ? 1500 : deferred ? 6000 : immediateDeferred ? 1048 : quantized ? 3000 : 48;
     constexpr std::int64_t coldPage = 1, startPage = 0;
     Fixture fixture;
     {
         const std::uint32_t frames = repeat ? 431'000 : 192'000;
-        const std::uint16_t channels = afterWrap || immediateDeferred ? 2 : 1;
+        const std::uint16_t channels = afterWrap || immediateDeferred || twoGridResets ? 2 : 1;
         std::vector<float> waveform(static_cast<std::size_t>(frames)*channels);
         for (std::size_t frame = 0; frame < frames; ++frame) {
             const auto at = static_cast<float>(frame) / 20'000.f;
@@ -805,6 +810,7 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
                 "INSERT INTO clip_slots(track_id,scene_id,clip_id) VALUES(1,60,106);"
                 "INSERT INTO clip_launch(clip_id,legato,ram_mode) VALUES(106,1,0)");
         if (repeat) db.exec("UPDATE clip_launch SET launch_mode=3 WHERE clip_id=106");
+        if (twoGridResets) db.exec("UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0");
         if (deferred) db.exec("UPDATE clip_launch SET launch_quant=12 WHERE clip_id=106");
         else if (quantized) db.exec("UPDATE clip_launch SET launch_quant=14 WHERE clip_id=106");
         SQLite::Statement clip(db,"UPDATE clips SET content_offset_ticks=?,loop_enabled=1,"
@@ -821,7 +827,7 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
         row.exec();
     }
     TempoMap clock;
-    clock.events.push_back({0,120,0});
+    clock.events.push_back({0,twoGridResets ? 240.0 : 120.0,0});
     const auto tickAt = [&](std::int64_t frame) { return clock.secondsToTicks(static_cast<double>(frame) / rate); };
     const auto sampleAt = [&](std::int64_t tick) -> std::int64_t { return std::llround(clock.ticksToSeconds(tick)*rate); };
     const auto prepare = [&](bool ram) {
@@ -904,8 +910,10 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
         const auto headTick = quantized ? tickAt(due+restartOffset) : ordinaryEnd;
         const std::array starts{LaunchWarpPosition{sampleAt(ordinaryEnd),ordinaryEnd,loopBegin},
                                 LaunchWarpPosition{sampleAt(headTick),headTick,start}};
-        const auto wraps = deferred ? std::span(starts).first(1) :
-            std::span(starts).last(immediateDeferred ? 0 : afterWrap ? 2 : 1);
+        const auto secondTick = tickAt(due + 2 * restartOffset);
+        const std::array gridStarts{starts.back(),LaunchWarpPosition{sampleAt(secondTick),secondTick,start}};
+        const std::span<const LaunchWarpPosition> wraps = twoGridResets ? std::span(gridStarts).first(2) :
+            deferred ? std::span(starts).first(1) : std::span(starts).last(immediateDeferred ? 0 : afterWrap ? 2 : 1);
         require(starts.back().frame-due == restartOffset &&
                 (laterRepeat ? restartOffset > framesPerBlock : restartOffset < framesPerBlock),
                 "the saved-Start deadline is on the expected callback");
@@ -918,6 +926,12 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
             require(wraps.front().frame == firstWrap && firstWrap < wraps.back().frame &&
                     sampleAt(ordinaryEnd+loopEnd-loopBegin) > wraps.back().frame,
                     "exactly one ordinary wrap precedes the frozen saved-Start retrigger");
+        } else if (twoGridResets) {
+            const auto third = sampleAt(tickAt(due + 3 * restartOffset));
+            require(starts.back().frame <= sampleAt(ordinaryEnd) && gridStarts.back().frame == due + 3000 &&
+                    gridStarts.back().frame < due + framesPerBlock && third == due + 4500 &&
+                    due + framesPerBlock < third && sampleAt(headTick + loopEnd - start) >= due + framesPerBlock,
+                    "both saved Start resets fit the callback and the third grid and ordinary wraps are later");
         } else if (quantized) {
             require(cold ? sampleAt(ordinaryEnd) == wraps.back().frame : sampleAt(ordinaryEnd) > wraps.back().frame,
                     "the frozen Repeat grid lands exactly at End when cold and before it when warm");
@@ -939,7 +953,7 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
         transport.play();
         struct Output {
             std::array<float,maxFrames> left{}, right{};
-            std::array<LaunchTransition,4> edges{};
+            std::array<LaunchTransition,5> edges{};
             std::size_t count = 0;
         } output;
         const auto render = [&](std::int32_t frames) {
@@ -998,7 +1012,7 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
             state.armed.store(true,std::memory_order_release);
         } else if (cold && repeat && !immediateDeferred) {
             constexpr auto denseFrame = 60'110;
-            constexpr auto denseTick = ticksForFrames(denseFrame);
+            const auto denseTick = ticksForFrames(denseFrame);
             {
                 const audio::CallbackScope scope;
                 target->prefetchWarp({denseFrame,denseTick,denseTick});
@@ -1028,7 +1042,8 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
         } else if (cold && repeat && !immediateDeferred) {
             require(wait([&] { return state.held.load(std::memory_order_acquire); }),
                     "leave saved Start cold after filling the inherited Repeat cue");
-            require(windowReady(cue,framesPerBlock,wraps.first(wraps.size()-1)) && !ready(),
+            const auto beforeRepeats = wraps.first(wraps.size() - (twoGridResets ? 2u : 1u));
+            require(windowReady(cue,framesPerBlock,beforeRepeats) && !ready(),
                     "the disjoint Repeat Start is the only cold required phase");
         } else if (deferred) {
             require(wait(ready),"the scheduled worker forecast fills the inherited cue before the due callback");
@@ -1061,7 +1076,8 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
                     rows[0].queued.action == LaunchQueuedAction::None && output.count == 1,
                     "the original run remains selected with no queued retry or late edge");
         } else {
-            require(output.count == (repeat && !laterRepeat ? 4u : 3u) && output.edges[2].newClip == targetId &&
+            const auto expectedEdges = twoGridResets ? 5u : repeat && !laterRepeat ? 4u : 3u;
+            require(output.count == expectedEdges && output.edges[2].newClip == targetId &&
                     output.edges[2].sample == due && output.edges[2].sourceTick == sourceTick && output.edges[2].offset == 0,
                     "the warm native Legato switches at the exact sample and inherited tick");
             if (repeat && !laterRepeat)
@@ -1069,6 +1085,11 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
                         output.edges[3].sample == due+restartOffset && output.edges[3].sourceTick == start &&
                         output.edges[3].newRun != output.edges[2].newRun && loopBegin != start,
                         "the held Repeat restarts at saved Start rather than the ordinary loop head");
+            if (twoGridResets)
+                require(output.edges[4].oldClip == targetId && output.edges[4].newClip == targetId &&
+                        output.edges[4].sample == gridStarts.back().frame && output.edges[4].sourceTick == start &&
+                        output.edges[4].newRun != output.edges[3].newRun,
+                        "the same callback takes the second saved Start at the exact frozen grid");
             std::array<float,maxFrames> expectedLeft{}, expectedRight{};
             float* channels[]{expectedLeft.data(),expectedRight.data()};
             const AudioIo oracle{channels,nullptr,2,0,framesPerBlock,0};
@@ -1112,7 +1133,7 @@ void nativeManualLegato(std::string_view mode, NativeLegatoGesture gesture = Nat
     run(false);
     run(true);
     std::printf("PASS -- %s native %.*s %s reused warm pages and a refused cue never replayed\n",
-                deferred ? "deferred quantized" : immediateDeferred ? "deferred immediate" :
+                twoGridResets ? "two-grid quantized" : deferred ? "deferred quantized" : immediateDeferred ? "deferred immediate" :
                 afterWrap ? "quantized after wrap" : quantized ? "quantized" : "immediate",
                 static_cast<int>(mode.size()),mode.data(),
                 repeat ? "held Repeat" : "Legato");
@@ -1525,6 +1546,7 @@ int main() {
         nativeManualLegato("re-pitch",NativeLegatoGesture::HeldQuantizedAfterWrap);
         nativeManualLegato("re-pitch",NativeLegatoGesture::HeldDeferred);
         for (const auto mode : {"beats","texture","re-pitch"}) nativeManualLegato(mode,NativeLegatoGesture::HeldImmediateDeferred);
+        nativeManualLegato("re-pitch",NativeLegatoGesture::HeldTwoGridResets);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL -- %s\n", error.what());
         return 1;
