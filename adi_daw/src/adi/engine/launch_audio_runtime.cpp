@@ -84,6 +84,32 @@ NativeCueWraps nativeCueWraps(const LaunchBlock& block, const LaunchSlot& slot,
     return wraps;
 }
 
+NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot, LaunchWarpPosition position,
+                              std::int32_t frames, const LaunchSourceCue& cue) noexcept {
+    NativeCueWraps wraps{};
+    wraps.bounded = false;
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+    if (!cue.repeat || cue.repeat->tick <= position.anchorTick || frames <= 0 ||
+        position.frame < 0 || position.frame > limit - frames) return wraps;
+    const auto& restart = *cue.repeat;
+    const auto end = position.frame + frames;
+    const auto first = block.sampleAtTick(block.clock,restart.tick);
+    if (first <= position.frame || first >= end) return wraps;
+
+    const auto sourceEnd = slot.loopEndTick > slot.loopStartTick ? slot.loopEndTick : slot.endTick;
+    if (restart.sourceTick < 0 || restart.sourceTick >= sourceEnd) return wraps;
+    const auto lapTicks = sourceEnd - restart.sourceTick;
+    if (restart.tick > limit - lapTicks || block.sampleAtTick(block.clock,restart.tick + lapTicks) < end)
+        return wraps;
+
+    // The held gesture reaches End before any ordinary wrap, then reads
+    // the Launcher's separately anchored saved Start for the rest of the block.
+    wraps.positions[0] = {first,restart.tick,restart.sourceTick};
+    wraps.count = 1;
+    wraps.bounded = true;
+    return wraps;
+}
+
 bool needsWorkerCueLease(const LaunchAudioClip& clip) noexcept {
     return clip.latencySamples() > 0 && !clip.allWorkerPhasesPrimed();
 }
@@ -687,9 +713,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                      : !scheduled && !linked && !readyOnly) return true;
         const auto* pcm = call.media->clip(target.clip);
         const auto nativeImmediate = cueAdmission == LaunchCueAdmission::ReadyOnly;
-        auto* nativePages = (scheduled || nativeImmediate) && pcm ? pcm->warpPageReader() : nullptr;
-        if (nativePages && target.mode != LaunchMode::Repeat &&
-            (nativeImmediate || !nativePages->wholeSourceFitsPageCache())) {
+        const auto nativeRepeat = cueAdmission == LaunchCueAdmission::HeldRepeat;
+        auto* nativePages = (scheduled || nativeImmediate || nativeRepeat) && pcm ? pcm->warpPageReader() : nullptr;
+        if (nativePages && (nativeRepeat ? target.mode == LaunchMode::Repeat
+            : target.mode != LaunchMode::Repeat && (nativeImmediate || !nativePages->wholeSourceFitsPageCache()))) {
             // Arrangement wraps, prepared scenes and Follow Actions can
             // add another placement before this block's overlay. Their
             // launches keep the usual reader path.
@@ -707,7 +734,8 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                 if (sameReader(rendered->tails.data()[index].range)) return true;
             const auto remaining = call.frames - call.offset - offset;
             const LaunchWarpPosition position{call.block.sample + offset,tick,cue.tick};
-            const auto wraps = nativeCueWraps(call.block,target,position,remaining);
+            const auto wraps = nativeRepeat ? nativeCueRepeat(call.block,target,position,remaining,cue)
+                                            : nativeCueWraps(call.block,target,position,remaining);
             if (!wraps.bounded) return true;
             if (!pcm->reserveWarpCue(position,remaining,wraps.span())) return false;
             rendered->warpCuePages = nativePages;
