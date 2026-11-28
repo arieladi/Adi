@@ -79,22 +79,26 @@ bool hasCompletePhysicalWindow(const LaunchAudioProject& bank, const LaunchSlot&
 }
 
 // Admit raw, non-looping audio tracks with long disk targets that need
-// exact cue-page leases. One saved Stop is allowed. Only the three-track
-// shape may continue a No Stop run.
+// exact cue-page leases. Saved Stops can accompany at least two Starts.
+// A No Stop still needs the three-track shape with two Starts.
 bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcept {
     const auto view = before.view();
     if (!before.stored() || !supportsTimedRawSceneTrackCount(view.tracks.size()) ||
         std::ranges::any_of(view.tracks,[&](auto track) { return before.isMidiTrack(track); })) return false;
     auto targets = std::size_t{0};
-    auto other = std::size_t{0};
+    auto stops = std::size_t{0};
+    auto noStops = std::size_t{0};
     for (const auto& slot : view.slots) {
         if (slot.clip == 0) {
-            if (slot.scene == scene) {
-                if (++other > 1) return false;
-                if (!slot.hasStop && (view.tracks.size() != 3 || std::ranges::none_of(view.slots,[&](const LaunchSlot& source) {
-                    const auto* pcm = source.track == slot.track ? before.clip(source.clip) : nullptr;
-                    return pcm && pcm->pageReader();
-                }))) return false;
+            if (slot.scene != scene) continue;
+            if (slot.hasStop) {
+                ++stops;
+            } else {
+                if (view.tracks.size() != 3 || ++noStops > 1 ||
+                    std::ranges::none_of(view.slots,[&](const LaunchSlot& source) {
+                        const auto* pcm = source.track == slot.track ? before.clip(source.clip) : nullptr;
+                        return pcm && pcm->pageReader();
+                    })) return false;
             }
             continue;
         }
@@ -107,7 +111,7 @@ bool timedRawScene(const LaunchAudioProject& before, std::int64_t scene) noexcep
             return false;
         ++targets;
     }
-    return targets + other == view.tracks.size() && targets >= 2;
+    return targets >= 2 && targets + stops + noStops == view.tracks.size() && (noStops == 0 || stops == 0);
 }
 
 bool samePhysicalWindow(const LaunchSlot& before, const LaunchSlot& after) noexcept {
