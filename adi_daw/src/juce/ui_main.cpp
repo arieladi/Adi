@@ -31,6 +31,7 @@
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "juce/net_plugin_owner.hpp"
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
 #include "app_control.hpp"
@@ -894,7 +895,7 @@ class AdiApplication final : public juce::JUCEApplication,
             });
         };
         render_ = std::thread([this, alive, completed, jobs = std::move(jobs), stateWarning = std::move(stateWarning),
-                               made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
+                               made = loader_.fn(hosting_.loader()), control, stop = renderStop_.get_token()]() mutable {
             std::string message;
             try {
                 render::Queue queue;
@@ -1389,7 +1390,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 open.plugins.holdOff->scope = PluginHoldOff::Scope::All;
             }
             open.job = ProjectDocument::startOpen(
-                open.path, false, holdingOff(loader_.fn(), open.plugins.holdOff, open.plugins.guard));
+                open.path, false, holdingOff(loader_.fn(hosting_.loader()), open.plugins.holdOff, open.plugins.guard));
         } catch (const std::exception &error) {
             openFailed(error.what());
         }
@@ -1749,7 +1750,7 @@ class AdiApplication final : public juce::JUCEApplication,
         {
             const ScopedLoadingMarker marker(plugins.guard.get(), projectPath);
             next = ProjectDocument::open(projectPath, true,
-                                         holdingOff(loader_.fn(), plugins.holdOff, plugins.guard), error,
+                                         holdingOff(loader_.fn(hosting_.loader()), plugins.holdOff, plugins.guard), error,
                                          &commands_->recordingDefaults());
         }
         if (!next) {
@@ -3665,6 +3666,16 @@ class AdiApplication final : public juce::JUCEApplication,
             report(result.error);
         }
     }
+    // A grant revoked or renewed by another process reaches a streaming device within a second.
+    // While no remote device holds a lease this reads nothing.
+    void refreshPluginHosting() {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (static_cast<juce::int32>(now - hostingRefreshAt_) < 0)
+            return;
+        hostingRefreshAt_ = now + 1000;
+        (void)hosting_.refresh();
+    }
+
     void timerCallback() override {
         if (ticking_)
             return;
@@ -3678,6 +3689,7 @@ class AdiApplication final : public juce::JUCEApplication,
         pollInterruptedRecordings();
         pollProjectRecovery();
         pollProjectBackups();
+        refreshPluginHosting();
         reloadStoredHistory();
         if (std::exchange(quitAfterHistoryReload_, false))
             systemRequestedQuit();
@@ -3777,6 +3789,10 @@ class AdiApplication final : public juce::JUCEApplication,
     audio::DecodeCacheLimits cacheLimits_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // DEV-27: plug-ins on another computer. Every project load and render takes its loader as the
+    // remote half of loader_.fn; the timer re-reads the consent ledger for live streams once a second.
+    net::PluginServerHosting hosting_;
+    juce::uint32 hostingRefreshAt_ = 0;
     // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes
     // first, and the Settings' plug-in folders the last discovery searched.
     std::unique_ptr<PluginCatalogueService> catalogue_;

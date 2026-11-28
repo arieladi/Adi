@@ -902,8 +902,11 @@ add_library(adi_control STATIC
     src/adi/control/mcp.cpp
     src/adi/control/stdio_server.cpp
     src/juce/app_control.cpp
-    # DEV-27: the consent ledger issues the plug-in server's hosting lease.
-    src/juce/net_plugin_hosting.cpp)
+    # DEV-27: the consent ledger issues the plug-in server's hosting lease;
+    # the app's pairing records and the one owner that composes them.
+    src/juce/net_plugin_hosting.cpp
+    src/juce/net_plugin_pairing.cpp
+    src/juce/net_plugin_owner.cpp)
 if(NOT EXISTS "${ADI_THIRD_PARTY}/cpp-httplib/httplib.h")
     message(FATAL_ERROR "Run adi_daw/tools/fetch_external.sh --build-only for cpp-httplib")
 endif()
@@ -930,6 +933,9 @@ add_test(NAME adi_consent_tests COMMAND adi_consent_tests)
 
 add_executable(adi_plugin_hosting_tests tests/test_plugin_hosting.cpp)
 target_link_libraries(adi_plugin_hosting_tests PRIVATE adi_control adi_core adi_warnings)
+if(WIN32)
+    target_link_libraries(adi_plugin_hosting_tests PRIVATE ws2_32) # its loopback listener
+endif()
 add_test(NAME adi_plugin_hosting_tests COMMAND adi_plugin_hosting_tests)
 
 add_executable(adi_jobs_tests tests/test_jobs.cpp)
@@ -1944,6 +1950,7 @@ if(ADI_WITH_JUCE)
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_PLUGINHOST_ARA=0)
     target_link_libraries(adi_play PRIVATE
+        adi_control
         adi_core
         juce::juce_audio_processors
         juce::juce_audio_utils
@@ -1960,7 +1967,7 @@ if(ADI_WITH_JUCE)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
     get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
     target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
-    target_link_libraries(adi_play_render_tests PRIVATE adi_core adi_settings
+    target_link_libraries(adi_play_render_tests PRIVATE adi_control adi_core adi_settings
         juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play_render_tests SYSTEM PRIVATE ${_adi_proc_incs})

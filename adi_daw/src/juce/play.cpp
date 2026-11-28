@@ -29,6 +29,7 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "juce/net_plugin_owner.hpp"
 #include "juce/play_edits.hpp"
 #include "juce/play_diagnostics.hpp"
 #include "juce/vst3_host.hpp"
@@ -606,7 +607,10 @@ int main(int argc, char** argv) {
     spec.precision = o.precision;
     spec.offline = o.render > 0;
     spec.performanceState = !spec.offline;
-    const bool loaded = session.load(*store, loader.fn(), spec);
+    // DEV-27: a device on a plug-in server loads through the same owner as the app's: a pairing,
+    // the server's cached list and a consent grant in the ledger. The player records no grant.
+    const adi::net::PluginServerHosting hosting;
+    const bool loaded = session.load(*store, loader.fn(hosting.loader()), spec);
     report(session, loader, peek);
     if (!loaded) {
         std::printf("\nFAILED -- %s\n", session.error().c_str());
