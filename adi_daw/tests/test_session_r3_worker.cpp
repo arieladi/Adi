@@ -479,6 +479,7 @@ enum class WorkerCueCase {
     ColdRepeatStart, ColdLaterStart, ReleasedBeforeCut, ImmediateDeferred, ImmediateDeferredStop,
     ShortTwoWraps, ColdShortTwoWraps, ShortThreeWraps, ShortFourWraps, RoundedShortFourWraps,
     RapidRepeat, ColdRapidRepeat, StopRapidRepeat, ShortInheritedRepeat,
+    ShortFiveWraps, ShortSixWraps, ColdShortSixWraps, RoundedShortSixWraps,
 };
 
 void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidResets = 2) {
@@ -486,19 +487,24 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
     const auto stopRapid = testCase == WorkerCueCase::StopRapidRepeat;
     const auto shortInherited = testCase == WorkerCueCase::ShortInheritedRepeat;
     const auto rapid = testCase == WorkerCueCase::RapidRepeat || coldRapid || stopRapid || shortInherited;
-    const auto beatsPerMinute = rapid ? 80 * (rapidResets + 1) : 120;
+    const auto manyWraps = testCase == WorkerCueCase::ShortFiveWraps ||
+        testCase == WorkerCueCase::ShortSixWraps || testCase == WorkerCueCase::ColdShortSixWraps ||
+        testCase == WorkerCueCase::RoundedShortSixWraps;
+    const auto beatsPerMinute = rapid ? 80 * (rapidResets + 1) : manyWraps ? 125 : 120;
     const auto bpm = static_cast<double>(beatsPerMinute);
     const auto framesPerQuarter = 60 * rate / static_cast<std::uint32_t>(beatsPerMinute);
     const auto deferred = testCase == WorkerCueCase::ImmediateDeferred || testCase == WorkerCueCase::ImmediateDeferredStop;
     const auto stopAtRestart = testCase == WorkerCueCase::ImmediateDeferredStop;
-    const auto coldShortWrap = testCase == WorkerCueCase::ColdShortTwoWraps;
-    const auto roundedWrap = testCase == WorkerCueCase::RoundedShortFourWraps;
-    const auto shortWraps = testCase == WorkerCueCase::ShortTwoWraps || coldShortWrap ? 2
+    const auto coldShortWrap = testCase == WorkerCueCase::ColdShortTwoWraps || testCase == WorkerCueCase::ColdShortSixWraps;
+    const auto roundedWrap = testCase == WorkerCueCase::RoundedShortFourWraps || testCase == WorkerCueCase::RoundedShortSixWraps;
+    const auto shortWraps = manyWraps ? (testCase == WorkerCueCase::ShortFiveWraps ? 5 : 6)
+        : testCase == WorkerCueCase::ShortTwoWraps || coldShortWrap ? 2
         : testCase == WorkerCueCase::ShortThreeWraps ? 3
         : testCase == WorkerCueCase::ShortFourWraps || roundedWrap ? 4 : 0;
     const auto shortWrap = shortWraps != 0;
     constexpr int longestShortLap = 105;
-    const auto shortLap = shortWraps == 4 ? 48 : shortWraps == 3 ? 70 : longestShortLap;
+    const auto shortLap = manyWraps ? (shortWraps == 5 ? 40 : 36)
+        : shortWraps == 4 ? 48 : shortWraps == 3 ? 70 : longestShortLap;
     const auto coldStart = testCase == WorkerCueCase::ColdRepeatStart || testCase == WorkerCueCase::ColdLaterStart ||
         testCase == WorkerCueCase::ReleasedBeforeCut || coldRapid;
     const auto repeat = testCase == WorkerCueCase::RepeatWrap || coldStart || deferred || rapid;
@@ -511,18 +517,20 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
     const auto refused = testCase == WorkerCueCase::ColdCue || testCase == WorkerCueCase::ColdWrap ||
         testCase == WorkerCueCase::ColdRepeatStart || coldShortWrap || roundedWrap || coldRapid;
     const auto immediateWrap = loop && testCase != WorkerCueCase::ColdDistantHead && !deferred;
-    constexpr auto due = 144000;
+    const auto due = manyWraps ? 6 * static_cast<int>(framesPerQuarter) : 144000;
     constexpr int maxFrames = 4096;
     const auto repeatPeriod = static_cast<int>(framesPerQuarter) / 8;
-    constexpr auto onset = due + 140;
+    const auto onset = due + 140;
     constexpr auto page = 8192, nearTail = 37, prefix = 17;
-    const auto firstWrap = shortWraps == 4 ? 49 : nearTail;
+    const auto firstWrap = manyWraps ? (shortWraps == 5 ? 44 : coldShortWrap ? 24 : 40)
+        : shortWraps == 4 ? 49 : nearTail;
     const auto blockSize = repeat ? maxFrames : blockFrames;
     const auto firstSlice = (laterRestart || heldImmediate ? blockFrames : blockSize) - prefix;
     const auto initialAge = heldImmediate ? repeatPeriod : due;
     const auto restartDelay = deferred ? 750 : heldImmediate ? nearTail : repeatPeriod;
     const auto wrapsBeforeRestart = immediateWrap && !heldImmediate && !shortWrap;
-    const auto savedStart = repeat ? 8*page-1 : coldShortWrap ? 3500 : shortWrap ? 3400 : 3455;
+    const auto savedStart = repeat ? 8*page-1 : manyWraps ? (coldShortWrap ? 147460 : 147400) - due
+        : coldShortWrap ? 3500 : shortWrap ? 3400 : 3455;
     const auto cue = savedStart + initialAge;
     // Keep Loop Begin on the cue's page in the deferred case. A look-ahead
     // for the ordinary wrap must not accidentally warm saved Start.
@@ -545,7 +553,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
             "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
             "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slots',0),(9,'master','Main',1);"
             "INSERT INTO scenes(id,ord) VALUES(10,0),(20,1)");
-    if (rapid) {
+    if (beatsPerMinute != 120) {
         SQLite::Statement tempo(db,"UPDATE tempo_map SET bpm=?");
         tempo.bind(1,bpm);
         tempo.exec();
@@ -567,10 +575,10 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
     const auto startTick = frameToTick(savedStart);
     const auto phase = startTick+frameToTick(initialAge);
     // A fractional saved Begin and End leave both rounded reader frames
-    // alone and move the fourth projected wrap one frame later.
-    const auto headTick = frameToTick(loopHead) - (roundedWrap ? 25 : 0);
+    // alone and move only the final projected wrap one frame later.
+    const auto headTick = frameToTick(loopHead) - (roundedWrap ? (manyWraps ? 23 : 25) : 0);
     const auto endTick = phase + frameToTick(deferred ? restartDelay : immediateWrap ? firstWrap : 10000) +
-        (roundedWrap ? 14 : 0);
+        (roundedWrap ? (manyWraps ? 4 : 14) : 0);
     {
         SQLite::Statement trim(db,"UPDATE clips SET content_offset_ticks=?,length_ticks=length_ticks-? WHERE id=102");
         trim.bind(1,startTick);
@@ -636,8 +644,8 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
     require(target && target->pageReader() && target->latencySamples() == 2048 &&
             !target->allWorkerPhasesPrimed() && problems.empty(),"prepare the long aligned worker bank");
     if (shortWrap) {
-        require(target->frameForTick(headTick,120) == loopHead &&
-                target->frameForTick(endTick,120) == cue+firstWrap,
+        require(target->frameForTick(headTick,bpm) == loopHead &&
+                target->frameForTick(endTick,bpm) == cue+firstWrap,
                 "the reader's rounded short-loop endpoints are exact");
         for (int lap = 0; lap <= shortWraps; ++lap) {
             const auto tick = frameToTick(due)+endTick-phase+lap*(endTick-headTick);
@@ -645,7 +653,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
             if (lap == shortWraps) {
                 require(offset >= firstSlice,"the following wrap lies outside the shortened due slice");
             } else {
-                const auto expectedWrap = firstWrap+lap*shortLap+(roundedWrap && lap == 3 ? 1 : 0);
+                const auto expectedWrap = firstWrap+lap*shortLap+(roundedWrap && lap == shortWraps-1 ? 1 : 0);
                 require(offset == expectedWrap && offset < firstSlice,"each authored wrap has the expected sample offset");
             }
         }
@@ -698,7 +706,7 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
                         auto& report = *static_cast<Events*>(opaque);
                         const auto index = report.count++;
                         if (index < report.edges.size()) report.edges[index] = edge;
-                    });
+                    },nullptr,nullptr,nullptr,manyWraps ? static_cast<std::uint32_t>(beatsPerMinute) : 0);
                 source->process(io);
                 runtime->finish();
             }
@@ -752,7 +760,8 @@ void workerLegato(WorkerCueCase testCase, bool immediate = false, int rapidReset
             const audio::CallbackScope callback;
             // Hold the three already warm opening pages so the disjoint
             // read replaces the old Loop Begin through the normal worker.
-            leasedStart = pages.reserveWorkerCue(102,page-1,blockFrames,false,2*page,true);
+            const auto openingPage = (savedStart / page) * page;
+            leasedStart = pages.reserveWorkerCue(102,openingPage+page-1,blockFrames,false,openingPage+2*page,true);
             if (leasedStart) (void)pages.read(102,8*page,1,false);
         }
         require(leasedStart && waitFor(gate.evicted),"evict the primed Loop Begin with an ordinary worker read");
@@ -1244,6 +1253,10 @@ void linkedWorkerLegato(bool noGrid, WorkerFollowCase testCase,
 
 int main() {
     try {
+        workerLegato(WorkerCueCase::ShortFiveWraps);
+        workerLegato(WorkerCueCase::ShortSixWraps);
+        workerLegato(WorkerCueCase::ColdShortSixWraps);
+        workerLegato(WorkerCueCase::RoundedShortSixWraps);
         for (const auto resets : {3,4}) {
             workerLegato(WorkerCueCase::ShortInheritedRepeat,false,resets);
             workerLegato(WorkerCueCase::ColdRapidRepeat,false,resets);

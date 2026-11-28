@@ -161,12 +161,15 @@ bool LaunchPagedAudio::reserveWorkerCue(std::int64_t id, std::int64_t frame, std
     if (!found || found->latency <= 0 || frame < 0 || frame >= found->source.endFrame) return false;
     const auto& source = found->source;
     const auto exactLoop = [&] {
-        if (!includeLoopHead || restartFrame || !loopCue || loopCue->wrapOffsets.empty() ||
+        if (!includeLoopHead || restartFrame || !loopCue ||
             loopCue->sourceHead != source.loopBeginFrame || frame >= source.loopEndFrame)
             return false;
         const auto lap = source.loopEndFrame - source.loopBeginFrame;
         if (lap <= 0) return false;
         auto nextWrap = source.loopEndFrame - frame;
+        if (loopCue->integralLapFrames > 0)
+            return loopCue->firstWrap == nextWrap && nextWrap < frames && loopCue->integralLapFrames == lap;
+        if (loopCue->wrapOffsets.empty()) return false;
         for (std::size_t i = 0; i < loopCue->wrapOffsets.size(); ++i) {
             if (nextWrap >= frames || loopCue->wrapOffsets.data()[i] != nextWrap) return false;
             nextWrap += std::min(lap,frames - nextWrap);

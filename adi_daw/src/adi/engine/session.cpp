@@ -4223,9 +4223,14 @@ bool Session::RenderBlock::processSlice(const AudioIo& io, bool captureRecording
         auto* runtime = call.timing ? call.timing->launchAudio.get() : nullptr;
         auto* launcher = liveSession.launchAudioDriver_.get();
         if (runtime && launcher) {
+            const auto& events = call.timing->tempo.events;
+            const auto bpm = events.empty() || (events.size() == 1 && events.data()[0].posTicks == 0)
+                ? call.timing->tempoClock.bpmAt(0) : 0.0;
+            const auto wholeBpm = bpm >= 20 && bpm <= 999 ? static_cast<std::uint32_t>(bpm) : 0u;
             runtime->begin(*launcher, call.timing->launchBlock(call.block.frames), liveSession.transport_,
                            call.block.streamTimeSamples, call.driver.launchObserverContext_, call.driver.launchObserver_,
-                           call.driver.sceneObserverContext_, call.driver.sceneObserver_, call.driver.launchCapture_);
+                           call.driver.sceneObserverContext_, call.driver.sceneObserver_, call.driver.launchCapture_,
+                           bpm == wholeBpm ? wholeBpm : 0u);
         } else if (launcher) {
             launcher->suspend();
         }

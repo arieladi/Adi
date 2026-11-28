@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -107,6 +108,41 @@ NativeCueWraps nativeCueWraps(const LaunchBlock& block, const LaunchSlot& slot,
         ticksToWrap = lapTicks;
     }
     return wraps;
+}
+
+std::optional<LaunchPagedAudio::WorkerLoopCue> constantWorkerLoop(
+    const LaunchBlock& block, const LaunchSlot& slot, LaunchWarpPosition cue, std::int32_t frames,
+    std::int64_t sourceHead, std::uint32_t fixedTempoBpm, std::uint32_t rate) noexcept {
+    // The zero-origin projection uses exact integer ticks and at most four
+    // rounded operations. Keep their accumulated error below half a frame.
+    constexpr auto tickLimit = std::int64_t{1} << std::numeric_limits<double>::digits;
+    constexpr auto frameLimit = tickLimit / 64;
+    if (fixedTempoBpm == 0 || rate == 0 || block.sampleRate != rate || frames <= 0 ||
+        cue.frame < 0 || cue.frame > frameLimit - frames || cue.anchorTick < 0 ||
+        cue.anchorTick >= tickLimit || cue.anchorSourceTick < 0 || cue.anchorSourceTick >= slot.loopEndTick ||
+        slot.loopStartTick < 0 || slot.loopStartTick >= slot.loopEndTick) return {};
+    const auto untilWrap = slot.loopEndTick - cue.anchorSourceTick;
+    if (untilWrap > tickLimit - cue.anchorTick) return {};
+    const auto wrapTick = cue.anchorTick + untilWrap;
+    const auto lapTicks = slot.loopEndTick - slot.loopStartTick;
+    const auto numerator = std::int64_t{60} * rate;
+    const auto denominator = textproj::kPPQ * static_cast<std::int64_t>(fixedTempoBpm);
+    const auto factor = std::gcd(numerator,denominator);
+    const auto frameUnits = numerator / factor;
+    const auto tickUnits = denominator / factor;
+    if (wrapTick % tickUnits != 0 || lapTicks % tickUnits != 0) return {};
+    const auto end = cue.frame + frames;
+    if (wrapTick / tickUnits > (end-1) / frameUnits || lapTicks / tickUnits > frames / frameUnits) return {};
+    const auto first = wrapTick / tickUnits * frameUnits;
+    const auto lapFrames = lapTicks / tickUnits * frameUnits;
+    if (first <= cue.frame || lapFrames <= 0) return {};
+    const auto wraps = 1 + (end-1-first) / lapFrames;
+    if (wraps <= static_cast<std::int64_t>(kMaximumLaunchWarpCueWraps) ||
+        wraps > (tickLimit-wrapTick) / lapTicks) return {};
+    const auto next = first + wraps * lapFrames;
+    if (next > frameLimit || block.sampleAtTick(block.clock,wrapTick) != first ||
+        block.sampleAtTick(block.clock,wrapTick + wraps * lapTicks) != next) return {};
+    return LaunchPagedAudio::WorkerLoopCue{sourceHead,{},first - cue.frame,lapFrames};
 }
 
 NativeCueWraps nativeCueRepeat(const LaunchBlock& block, const LaunchSlot& slot, LaunchWarpPosition position,
@@ -765,7 +801,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                                void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
                                void* sceneObserverContext,
                                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept,
-                               LaunchCaptureBuffer* capture) noexcept {
+                               LaunchCaptureBuffer* capture, std::uint32_t fixedTempoBpm) noexcept {
     if (active_) finish();
     for (std::size_t index = 0; index < ranges_.size(); ++index) {
         auto& ranges = ranges_.data()[index];
@@ -818,6 +854,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept;
         LaunchCaptureBuffer* capture;
         bool arrangementLoop;
+        std::uint32_t fixedTempoBpm;
         std::int32_t offset = 0;
     };
     if (streamSample < 0 || streamSample > std::numeric_limits<std::int64_t>::max() - frames) {
@@ -826,7 +863,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
     }
     Context context{*this, driver, project_.get(), {}, block, follow, block.incarnation,
         followPassSeed(project_->followSeed(), driver.pass_), streamSample, frames, observerContext, observer,
-        sceneObserverContext, sceneObserver, capture, transport.looping()};
+        sceneObserverContext, sceneObserver, capture, transport.looping(), fixedTempoBpm};
     const LaunchSink sink{&context, [](void* state, const LaunchSection& section) noexcept {
         auto& call = *static_cast<Context*>(state);
         call.runtime.add(call.driver, *call.media, section, call.block, call.offset, call.capture);
@@ -1025,6 +1062,10 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
                         wrapOffsets[i] = projected.positions[i].frame - sample;
                     loopCue = LaunchPagedAudio::WorkerLoopCue{pcm->frameForTick(target.loopStartTick,call.media->bpm()),
                         {wrapOffsets.data(),projected.count}};
+                } else if (!projected.bounded && projected.count == wrapOffsets.size() &&
+                           call.fixedTempoBpm == call.media->bpm()) {
+                    loopCue = constantWorkerLoop(call.block,target,{sample,tick,cue.tick},remaining,
+                        pcm->frameForTick(target.loopStartTick,call.media->bpm()),call.fixedTempoBpm,pcm->rate());
                 }
             }
             std::optional<LaunchPagedAudio::WorkerRepeatCue> repeatCue;

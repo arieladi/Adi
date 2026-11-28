@@ -61,6 +61,8 @@ public:
     struct WorkerLoopCue {
         std::int64_t sourceHead;
         std::span<const std::int64_t> wrapOffsets;
+        std::int64_t firstWrap = 0;
+        std::int64_t integralLapFrames = 0;
     };
 
     /// Driver only. Pin the already requested aligned PCM and, if this

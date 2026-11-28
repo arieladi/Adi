@@ -175,12 +175,14 @@ public:
     [[nodiscard]] LaunchQuantization globalQuantization() const noexcept {
         return project_->globalQuantization();
     }
+    // A nonzero fixedTempoBpm certifies the matching zero-origin integer-tempo clock.
     void begin(LaunchAudioDriver&, LaunchBlock, const Transport&, std::int64_t streamSample,
                void* observerContext,
                void (*observer)(void*, const LaunchTransition&, std::int64_t) noexcept,
                void* sceneObserverContext = nullptr,
                void (*sceneObserver)(void*, const LaunchSceneTransition&, std::int64_t) noexcept = nullptr,
-               LaunchCaptureBuffer* capture = nullptr) noexcept;
+               LaunchCaptureBuffer* capture = nullptr,
+               std::uint32_t fixedTempoBpm = 0) noexcept;
     [[nodiscard]] bool reserveTimedRawScene(LaunchAudioDriver&, const LaunchAudioRuntime& outgoing,
         LaunchBlock previous, LaunchBlock candidate, const Transport&) noexcept;
     void finish() noexcept;
