@@ -23017,6 +23017,127 @@ void automationParameterDemand(AppCommands &commands, const std::filesystem::pat
     check(stripDemand() && automationDemand().empty(),
           "automation demand: switching the last device lane back to Volume retires its live demand");
 }
+void automationFollowsControl(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-control-touch.adi", true, {}, error);
+    check(document != nullptr, "SC-458: open the project for control touches");
+    if (!document)
+        return;
+    constexpr std::int64_t track = 4, returnTrack = 41, device = 31;
+    document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) "
+                                "VALUES(31,'vst3','test-automation-control-touch','Test device')");
+    std::vector<OpRequest> edits;
+    auto &ret = edits.emplace_back();
+    ret.opType = "track.create";
+    ret.payload = {{"id", returnTrack}, {"kind", "return"}, {"name", "Touch Return"}};
+    auto &chain = edits.emplace_back();
+    chain.opType = "chain.create";
+    chain.payload = {{"id", device}, {"track", track}, {"ord", 0}, {"name", "Devices"}};
+    auto &insert = edits.emplace_back();
+    insert.opType = "device.insert";
+    insert.payload = {{"id", device}, {"chain", device}, {"ord", 0}, {"ref", device}, {"name", "Test device"}};
+    const bool made = document->ops().submit(std::move(edits)).ok && document->synchronise();
+    check(made, "SC-458: make a device and a return without a send row from the test track");
+    if (!made)
+        return;
+
+    auto publication = std::make_shared<ParameterPublication>();
+    auto &data = publication->emplace_back();
+    data.id = device;
+    data.track = track;
+    data.chain = device;
+    data.instance = 1;
+    data.available = data.plugin = data.activatorAvailable = true;
+    data.format = "vst3";
+    data.name = "Test device";
+    for (const auto &[id, name] : {std::pair{"7", "Cutoff"}, std::pair{"8", "Resonance"}}) {
+        data.declared.push_back({id, name, true, true});
+        data.resolved.entries.push_back({id});
+        auto &record = data.records.emplace_back();
+        record.id = id;
+        record.name = name;
+        record.playing = .5;
+    }
+    std::vector<engine::ParamEventKind> gestures;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-control-touch");
+    root.setSize(1400, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [publication] { return publication; };
+    root.devices.gesture = [&](std::int64_t id, const std::string &, engine::ParamEventKind kind, double) {
+        gestures.push_back(kind);
+        return id == device;
+    };
+    root.devices.submit = [&](const std::string &op, Payload payload) {
+        return root.submitEdit(op, std::move(payload), "Disable Test device");
+    };
+    root.arrangement.geometry.selection.track = track;
+    root.publishSelection();
+    root.frame();
+    const auto strip = std::find_if(root.mixer.strips().begin(), root.mixer.strips().end(),
+                                    [](const auto &row) { return row->track() == track; });
+    const bool controlsReady = strip != root.mixer.strips().end() && root.devices.panels.size() == 1 &&
+                               root.devices.panels.front()->controls.size() == 2;
+    check(controlsReady, "SC-458: find the mixer strip and both device controls");
+    if (!controlsReady)
+        return;
+    auto &row = **strip;
+    auto &panel = *root.devices.panels.front();
+    auto &cutoff = *panel.controls[0];
+    auto &resonance = *panel.controls[1];
+    const auto left = juce::ModifierKeys::leftButtonModifier;
+    const auto head = OpJournal(document->store()).headSeq();
+    const auto touch = [&](ParameterControl &control) {
+        control.mouseDown(pressAt(control.slider, control.slider.getLocalBounds().getCentre().toFloat(), left));
+    };
+    touch(cutoff);
+    check(!root.automationMode() && root.automationTarget(track) == volumeTarget(track),
+          "SC-458: clicking a device control with Automation Mode off leaves the overlay alone");
+    root.setAutomationMode(true);
+    touch(cutoff);
+    check(root.automationTarget(track).paramRef == "7", "SC-458: a click selects the Cutoff lane without changing its value");
+    auto playing = std::make_shared<ParameterPublication>(*publication);
+    playing->front().records[1].playing = .75;
+    playing->front().records[1].driven = true;
+    root.devices.publication = [playing] { return playing; };
+    root.frame();
+    check(root.automationTarget(track).paramRef == "7" && gestures.empty(),
+          "SC-458: a new playback value on another dial does not count as a touch");
+    resonance.slider.onDragStart();
+    resonance.slider.onDragEnd();
+    check(root.automationTarget(track).paramRef == "8" && gestures == std::vector{engine::ParamEventKind::Begin, engine::ParamEventKind::End},
+          "SC-458: the next control's gesture selects Resonance and still reaches its existing edit authority");
+    root.hideAutomationOverlay(track);
+    touch(resonance);
+    check(root.automationOverlayShown(track) && root.automationTarget(track).paramRef == "8" &&
+              OpJournal(document->store()).headSeq() == head && root.current()->automationLanes.empty(),
+          "SC-458: a touch reveals the same hidden overlay without writing or overriding automation");
+    row.mouseDown(pressAt(row.pan, row.pan.getLocalBounds().getCentre().toFloat(), left));
+    check(root.automationTarget(track) == panTarget(track), "SC-458: the mixer Pan touch selects Pan on the same track");
+
+    panel.enabled.setToggleState(false, juce::dontSendNotification);
+    panel.enabled.onClick();
+    check(root.automationTarget(track).paramRef == kDeviceActivatorParamRef && root.undoTitle(false) == "Undo Disable Test device",
+          "SC-458: the Device Activator selects its own lane and retains its normal undo step");
+
+    const auto &knobs = row.sendKnobs();
+    std::size_t index = 0;
+    while (index < knobs.size() && row.sendsTo(index) != returnTrack)
+        ++index;
+    check(index < knobs.size() && !findSend(root.current()->sends, track, returnTrack),
+          "SC-458: the target send has a control but no automation address before its first edit");
+    if (index == knobs.size())
+        return;
+    auto &knob = *knobs[index];
+    knob.onDragStart();
+    knob.setValue(-12., juce::dontSendNotification);
+    knob.onDragEnd();
+    const auto current = root.current();
+    const auto *send = findSend(current->sends, track, returnTrack);
+    check(send != nullptr && send->gainDb == -12. && root.automationTarget(track) == sendTarget(send->id, {}) &&
+              root.undoTitle(false) == "Undo Change Send Level" && current->automationLanes.empty(),
+          "SC-458: the newly committed send selects its real routing lane with just the ordinary level edit");
+}
 void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-mode.adi", true, {}, error);
@@ -32822,6 +32943,7 @@ int main(int argc, char **argv) {
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("automationFollowsControl", [&] { automationFollowsControl(commands, temp.path()); });
     trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
     trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("steppedDeviceAutomation", [&] { steppedDeviceAutomation(commands, temp.path()); });

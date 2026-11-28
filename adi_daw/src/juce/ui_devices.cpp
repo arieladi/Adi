@@ -84,7 +84,11 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
 ParameterControl::~ParameterControl() = default;
 bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
     if (kind != engine::ParamEventKind::End && !isEnabled()) return false;
-    return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
+    const SafePointer<ParameterControl> alive(this);
+    const bool accepted = parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
+    if (alive && accepted && kind == engine::ParamEventKind::Begin)
+        strip.root.followDeviceAutomation(device, parameter);
+    return accepted;
 }
 bool ParameterControl::keyPressed(const juce::KeyPress &k) {
     // Live 12 manual 41.6: Return to Default is Delete. Backspace with it, as the device's own
@@ -173,10 +177,8 @@ void ParameterControl::mouseDown(const juce::MouseEvent &e) {
         if (e.eventComponent == this || e.eventComponent == &slider || e.eventComponent == &toggle ||
             e.eventComponent == &menu || menu.isParentOf(e.eventComponent))
             showMenu();
-    } else if (e.mods.isLeftButtonDown() && strip.root.automationMode() && record && !record->missing) {
-        if (const auto target = strip.root.deviceAutomationTarget(device, parameter))
-            strip.root.showAutomation(target->first, target->second);
-    }
+    } else if (e.mods.isLeftButtonDown() && isEnabled() && record && !record->missing)
+        strip.root.followDeviceAutomation(device, parameter);
 }
 void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
@@ -1114,6 +1116,8 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         if (!validTarget()) return;
         if (nativeFunction()) cancelInteractions();
         if (!safe || !safe->validTarget() || !safe->data) return;
+        safe->strip.root.followDeviceAutomation(safe->id, std::string(kDeviceActivatorParamRef));
+        if (!safe || !safe->data) return;
         const bool requested = safe->nativeFunction() ? !safe->data->enabled : safe->enabled.getToggleState();
         if (!safe->strip.setEnabledExpected(*safe->data, requested) && safe && safe->data)
             safe->enabled.setToggleState(safe->data->enabledNow(), juce::dontSendNotification);
@@ -1423,6 +1427,8 @@ bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) 
     const double before = record->playing, desired = on ? 1. : 0.;
     const auto safe = SafePointer<DevicePanelView>(this);
     if (!editFunctionParameter(parameter, engine::ParamEventKind::Begin, before) || !safe) return false;
+    safe->strip.root.followDeviceAutomation(safe->id, parameter);
+    if (!safe) return false;
     const bool accepted = editFunctionParameter(parameter, engine::ParamEventKind::Value, desired);
     if (!safe) return accepted;
     editFunctionParameter(parameter, engine::ParamEventKind::End, desired);

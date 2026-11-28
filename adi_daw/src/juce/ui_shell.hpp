@@ -965,6 +965,9 @@ class AdiRootComponent final : public juce::Component,
     std::function<std::shared_ptr<const ParameterPublication>(std::int64_t track)> automationParameters;
     // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
     void showAutomation(std::int64_t track, const AutomationTarget &target);
+    // A manual control touch follows the lane only in Automation Mode.
+    void followAutomation(std::int64_t track, const AutomationTarget &target);
+    void followDeviceAutomation(std::int64_t device, const std::string &parameter);
     // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
     bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
     // The track and target a device parameter's Show Automation would show; none for one the engine

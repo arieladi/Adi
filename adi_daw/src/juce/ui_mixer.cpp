@@ -490,8 +490,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : cueOut(cuePairLabel(0)), panel_(pane
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] {
         auto &root = panel_.root;
-        if (root.automationMode() && kind_ != "master")
-            root.showAutomation(track_, activatorTarget(track_));
+        if (kind_ != "master")
+            root.followAutomation(track_, activatorTarget(track_));
         root.activateTrack(track_);
     };
     active.onMenu = [this] {
@@ -1753,9 +1753,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         else if (!own)
             root.say("This send is off. Right-click it for Enable Send.");
         else if (chooseEnvelope && i < returns_.size())
-            if (const auto snapshot = root.current())
-                if (const auto *send = findSend(snapshot->sends, track_, returns_[i]))
-                    root.showAutomation(track_, sendTarget(send->id, {}));
+            followSendAutomation(returns_[i]);
         return;
     }
     if (e.eventComponent == this) {
@@ -1812,9 +1810,9 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (chooseEnvelope) {
         if (onControl(pan))
-            root.showAutomation(track_, panTarget(track_));
+            root.followAutomation(track_, panTarget(track_));
         else if (onControl(volume))
-            root.showAutomation(track_, volumeTarget(track_));
+            root.followAutomation(track_, volumeTarget(track_));
     }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
@@ -2032,21 +2030,33 @@ bool MixerStrip::keyPressed(const juce::KeyPress &key) {
     }
     return false;
 }
+void MixerStrip::followSendAutomation(std::int64_t returnTrack) {
+    auto &root = panel_.root;
+    if (const auto snapshot = root.current())
+        if (const auto *send = findSend(snapshot->sends, track_, returnTrack))
+            root.followAutomation(track_, sendTarget(send->id, {}));
+}
 void MixerStrip::commitSend(std::size_t index) {
     // From the CURRENT cell, as every action is (ADR-0201).
     const auto current = panel_.root.current();
     if (!current || index >= sends_.size())
         return;
-    auto edit = setSend(*current, track_, returns_[index], sends_[index]->getValue());
+    const auto track = track_, returnTrack = returns_[index];
+    const auto *existing = findSend(current->sends, track, returnTrack);
+    auto edit = setSend(*current, track, returnTrack, sends_[index]->getValue());
     if (!edit.refusal.empty()) {
         // A new row with no routing id left (N39): nothing lands, so the knob goes back to its row's
         // level, fully down without one, and the Status Bar says why.
-        sends_[index]->setValue(std::clamp(sendLevel(findSend(current->sends, track_, returns_[index])), kSendFloorDb, kSendTopDb),
+        sends_[index]->setValue(std::clamp(sendLevel(existing), kSendFloorDb, kSendTopDb),
                                 juce::dontSendNotification);
         panel_.root.say(edit.refusal);
         return;
     }
-    panel_.root.submitEdits(std::move(edit.ops));
+    const auto safe = SafePointer<MixerStrip>(this);
+    // A new send first acquires an automation target when its routing row lands.
+    const bool followNewSend = !existing && panel_.root.automationMode();
+    if (panel_.root.submitEdits(std::move(edit.ops)) && safe && followNewSend && safe->track_ == track)
+        safe->followSendAutomation(returnTrack);
 }
 void MixerStrip::enableSend(std::size_t index, bool on) {
     const auto current = panel_.root.current();

@@ -280,6 +280,7 @@ class MixerStrip final : public juce::Component,
 
   private:
     void sendMenu(std::size_t index);
+    void followSendAutomation(std::int64_t returnTrack);
     // A send's tap chosen from its menu (DF-W33): one `routing.setSendTap`.
     void chooseSendTap(std::size_t index, IndividualSendTap tap);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;

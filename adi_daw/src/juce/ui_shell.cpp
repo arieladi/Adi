@@ -4945,6 +4945,15 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
         selected.paramName + ".");
     arrangement.repaint();
 }
+void AdiRootComponent::followAutomation(std::int64_t track, const AutomationTarget &target) {
+    if (automationMode_ && (state_.hiddenAutomationOverlays.contains(track) || automationTarget(track) != target))
+        showAutomation(track, target);
+}
+void AdiRootComponent::followDeviceAutomation(std::int64_t device, const std::string &parameter) {
+    if (automationMode_)
+        if (const auto target = deviceAutomationTarget(device, parameter))
+            followAutomation(target->first, target->second);
+}
 namespace {
 bool sameAutomationLaneStructure(const engine::Snapshot *a, const engine::Snapshot *b) {
     if (a == b)
