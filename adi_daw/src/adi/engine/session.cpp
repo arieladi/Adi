@@ -433,6 +433,30 @@ bool Session::setHearDifference(std::int64_t deviceId) {
     return true;
 }
 
+bool Session::setPreviewTrack(std::int64_t trackId) {
+    if (trackId == previewTrack_) return true;
+    if (trackId != 0) {
+        if (samplePreview_ == nullptr || !spec_.performanceState || spec_.exporting || spec_.channels < 2)
+            return false;
+        const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
+                                        [trackId](const rows::Track& t) { return t.id == trackId; });
+        if (track == model_.tracks.end() || track->kind != "audio" || track->frozen ||
+            frozenSources_.contains(trackId))
+            return false;
+        if (!previewSource_) {
+            previewSource_ = std::make_unique<PreviewThroughTrack>(*samplePreview_);
+            cueMonitor_.setPreviewThroughTrack(previewSource_.get());
+        }
+    }
+    const auto previous = previewTrack_;
+    previewTrack_ = trackId;
+    if (loaded_ && !rebuild()) {
+        previewTrack_ = previous;   // the graph that plays is unchanged
+        return false;
+    }
+    return true;
+}
+
 device::DeviceInstance* Session::instanceFor(std::int64_t deviceId) noexcept {
     const Entry* e = entryFor(deviceId);
     return e == nullptr ? nullptr : &devices_.deviceAt(e->hostIndex);
@@ -962,6 +986,10 @@ SourceFn Session::playbackSources(ClipPlayback* clipSource, MidiClips* midiSourc
     return [this, clipSource, midiSource, timing=std::move(timing)](std::int64_t id) {
         auto nodes = sources_ && !frozenSources_.contains(id) ? sources_(id) : std::vector<Node *>{};
         if (auto* monitor = timing->inputMonitorSource(id)) nodes.push_back(monitor);
+        // MX-40: the preview, at the same seam as the track's input monitor.
+        if (previewSource_ && previewTrack_ != 0 && id == previewTrack_ && !frozenSources_.contains(id) &&
+            timing->spec.performanceState && !timing->spec.exporting)
+            nodes.push_back(previewSource_.get());
         if (clipSource) {
             const auto frozen = frozenSources_.find(id);
             auto audio = clipSource->sourcesFor(frozen == frozenSources_.end() ? id : frozen->second.first);

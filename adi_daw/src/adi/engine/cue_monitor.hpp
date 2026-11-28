@@ -7,6 +7,7 @@
 #include <memory>
 namespace adi::engine {
 class SamplePreview;
+class PreviewThroughTrack;
 class CueControlBatch {
 public:
     void apply() const noexcept;
@@ -40,6 +41,10 @@ public:
     void setMainAudition(MainAudition mode) noexcept;
     // Attach before starting the driver; the application owns this player.
     void setSamplePreview(SamplePreview *) noexcept;
+    /// MX-40: the node that plays the preview through a track. A callback in
+    /// which it played leaves the preview off Cue Out. Any thread; the node
+    /// outlives the monitor's use of it (the session owns both).
+    void setPreviewThroughTrack(PreviewThroughTrack *) noexcept;
     struct Click {
         void* context=nullptr;
         void (*render)(void*,const AudioIo&) noexcept=nullptr;

@@ -245,6 +245,54 @@ void samplePreview() {
               "the take contains the input samples only while audition is audible");
     }
 }
+// MX-40 (ADR-0254 d16): the preview heard through the selected track's
+// devices and mixer path; off, on Cue Out as Live's. Track 2's device doubles,
+// Main's device is x0.1 and Main's fader -20 dB, so through track 2 the
+// preview's L .5 / R -.25 reaches Main at .01 / -.005 and Cue Out stays silent.
+void previewThroughTrack() {
+    SamplePreview preview;
+    Fixture f;
+    f.main.value = f.reference.value = 0;
+    f.effects();
+    f.session.setSamplePreview(&preview);
+    check(f.op("cue.setOutput", {{"first", 2}}) && f.load(), "preview-through fixture loads");
+    const auto source = f.temp.path() / "through.wav";
+    std::array<float, 8192> pcm;
+    for (std::size_t i = 0; i < pcm.size(); i += 2) {
+        pcm[i] = .5f;
+        pcm[i + 1] = -.25f;
+    }
+    audio::WavWriter writer(source, 48000, 2, audio::WavFormat::Float32);
+    writer.write(pcm.data(), static_cast<std::uint32_t>(pcm.size() / 2));
+    writer.close();
+    Block block;
+    using namespace std::chrono_literals;
+    const auto waitUntil = [&](auto ready) {
+        const auto end = std::chrono::steady_clock::now() + 5s;
+        do {
+            f.process(block);
+            if (ready()) return true;
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < end);
+        return false;
+    };
+    f.process(block);
+    check(f.session.previewTrack() == 0, "the preview goes to Cue Out by default");
+    check(!f.session.setPreviewTrack(123) && !f.session.setPreviewTrack(9) && f.session.previewTrack() == 0,
+          "a track that is missing or not an audio track keeps the preview on Cue Out");
+    check(f.session.setPreviewTrack(2) && f.session.previewTrack() == 2, "the preview plays through track 2");
+    check(!History(*f.store).canUndo(), "the switch is not an undo step and writes nothing to the project");
+    preview.play(source);
+    const bool through = waitUntil([&] {
+        return near(block.wide[0].back(), .01) && near(block.wide[1].back(), -.005);
+    });
+    check(through && block.wide[2].back() == 0 && block.wide[3].back() == 0,
+          "with the transport stopped, the preview passes the track's device and Main, and Cue Out is silent");
+    check(f.session.setPreviewTrack(0) && f.session.previewTrack() == 0, "the switch off returns the preview to Cue Out");
+    preview.play(source);
+    const bool cue = waitUntil([&] { return near(block.wide[2].back(), .5) && near(block.wide[3].back(), -.25); });
+    check(cue && block.wide[0].back() == 0 && block.wide[1].back() == 0, "off, the preview reaches Cue Out only");
+}
 void sparseCueOutput() {
     const auto render = [](int first, std::uint64_t enabled) {
         Fixture fixture;
@@ -854,5 +902,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();sparseCueOutput();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();for(auto precision:{Precision::Float32,Precision::Float64})hearDifference(precision);allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();samplePreview();previewThroughTrack();sparseCueOutput();metronomeOptions();automationOnlyRecordingClick();compensatedPunchClick();locateOutsideMidiPunchSilencesClick();formatChangeClearsPendingRecordingClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();hardwareMainOut();inactiveBits();coldReference();for(auto precision:{Precision::Float32,Precision::Float64})hearDifference(precision);allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

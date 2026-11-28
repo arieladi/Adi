@@ -54,6 +54,7 @@
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/engine/cue_monitor.hpp"
+#include "adi/engine/preview_through.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
@@ -490,7 +491,18 @@ public:
     [[nodiscard]] std::int64_t hearDifference() const noexcept { return hearDifference_; }
     // The application owns the single player. Attach before starting the
     // driver, and keep it alive until the driver has stopped.
-    void setSamplePreview(SamplePreview *player) noexcept { cueMonitor_.setSamplePreview(player); }
+    void setSamplePreview(SamplePreview *player) noexcept {
+        samplePreview_ = player;
+        cueMonitor_.setSamplePreview(player);
+    }
+    /// MX-40 (ADR-0254 d16): the Browser's preview heard through an audio
+    /// track's devices and mixer path, fed at its input-monitor seam; zero
+    /// (the default) is Cue Out, as Live's. Nothing is written to the project
+    /// and nothing records it. Refused, with no change, for a track that is
+    /// not an audio track, a frozen track, a session with no player attached,
+    /// a mono format or an export. Rebuilds the graph. Message thread.
+    bool setPreviewTrack(std::int64_t trackId);
+    [[nodiscard]] std::int64_t previewTrack() const noexcept { return previewTrack_; }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
@@ -780,6 +792,9 @@ private:
     rows::Model playbackModel_;
     std::map<std::int64_t, std::int64_t> auditionedTakeLanes_;
     std::int64_t hearDifference_ = 0;   ///< MX-38: the device Hear Difference plays, or 0
+    SamplePreview* samplePreview_ = nullptr;   ///< the application's player, when attached
+    std::unique_ptr<PreviewThroughTrack> previewSource_;   ///< MX-40; lives as long as the session
+    std::int64_t previewTrack_ = 0;            ///< MX-40: the track the preview plays through, or 0
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
         std::string row;

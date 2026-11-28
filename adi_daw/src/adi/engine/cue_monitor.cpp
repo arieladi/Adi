@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/cue_monitor.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
+#include "adi/engine/preview_through.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/sample_preview.hpp"
 #include "adi/mix/filters/FlushDenormals.hpp"
@@ -120,6 +121,7 @@ struct Scene final:Sequenced {
 struct CueMonitor::Impl {
     std::atomic<MainAudition> audition{MainAudition::Stereo};
     SamplePreview* preview=nullptr; // attached while the driver is stopped
+    std::atomic<PreviewThroughTrack*> through{nullptr}; // MX-40
     std::map<std::int64_t,std::unique_ptr<Feed>> feeds;
     std::set<std::int64_t> present,selected;
     std::shared_ptr<Buffers> buffers;
@@ -236,6 +238,9 @@ void CueMonitor::setMainAudition(MainAudition mode) noexcept {
 }
 void CueMonitor::setSamplePreview(SamplePreview* player) noexcept {
     impl_->preview=player;
+}
+void CueMonitor::setPreviewThroughTrack(PreviewThroughTrack* node) noexcept {
+    impl_->through.store(node,std::memory_order_release);
 }
 namespace {
 template<class T> void auditionStereo(T* const* output, int frames, MainAudition mode) noexcept {
@@ -389,7 +394,10 @@ void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) n
     const auto physicalFirst=scene->settings.firstOutputChannel;
     const auto first=io.packedOutputPair(physicalFirst);
     auto* preview=impl_->preview;
-    const bool sampleActive=preview && preview->active() && SamplePreview::canOutput(io,physicalFirst);
+    // MX-40: a callback in which a track played the preview leaves it off Cue Out.
+    auto* through=impl_->through.load(std::memory_order_acquire);
+    const bool routed=through!=nullptr && through->takeMixed();
+    const bool sampleActive=!routed && preview && preview->active() && SamplePreview::canOutput(io,physicalFirst);
     // Checked vector iterators can take a lock on the audio thread in MSVC Debug.
     const auto* voices=scene->voices.data();
     const auto voiceCount=scene->voices.size();
