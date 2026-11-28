@@ -623,9 +623,8 @@ bool Launcher::transition(Track& track, const LaunchBlock& block, const LaunchVi
             oldLap.originFrame() + std::min(elapsed,oldLap.length());
         const auto sourceTick = oldLap.startFrame >= 0 ? oldLap.tickAt(elapsed) : previous.sourceTick;
         cue = launchSourceCue(*target,oldSlot,sourceTick,oldFrame);
-        const bool eligibleHandoff = quantizedHandoff && (!target->physicalLoopEndFrame || !pending.linkedPhysical);
         if (occupied(oldSlot) && target->clip != previous.clip && target->legato && sink.admitLegatoCue &&
-            !sink.admitLegatoCue(sink.context,*target,cue,offset,eligibleHandoff)) return false;
+            !sink.admitLegatoCue(sink.context,*target,cue,offset,quantizedHandoff)) return false;
     }
     track.follow.reset();
     track.repeat.reset();
@@ -1263,8 +1262,7 @@ void Launcher::prefetchLinkedLegato(const Track& track, const LaunchView& view, 
         !track.run.clip) return;
     const auto& pending = *track.follow;
     const auto* target = findSlot(view,track.id,pending.scene);
-    if (!occupied(target) || target->clip != pending.clip || target->physicalFrames <= 0 ||
-        target->physicalLoopEndFrame) return;
+    if (!occupied(target) || target->clip != pending.clip || target->physicalFrames <= 0) return;
     const auto* current = findSlot(view,track.id,track.run.scene);
     if (!current || current->clip != track.run.clip) current = findClip(view,track.id,track.run.clip);
     LaunchSlot region;

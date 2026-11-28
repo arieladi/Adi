@@ -2666,84 +2666,133 @@ void linkedLongPagedLegato(bool ramp, LinkedPagedLegato action) {
             "Linked Follow prefetch and physical cue admission do no callback allocation or file IO");
 }
 
-std::unique_ptr<Store> longPagedLoopLegatoProject(const std::filesystem::path& folder, bool ramp, bool immediate) {
+enum class LongLoopLaunch { Scheduled, Immediate, Linked, LinkedUser, LinkedStop };
+
+struct LongLoopTiming {
+    static constexpr int oldStart = 2400, start = 60000, head = 9600, tail = 37;
+    bool ramp;
+    LongLoopLaunch launch;
+    bool linked() const { return launch != LongLoopLaunch::Scheduled && launch != LongLoopLaunch::Immediate; }
+    int due() const { return ramp ? 124242 : 120000; }
+    int oldLap() const { return ramp ? 110000 : 120000; }
+    int oldHead() const { return ramp ? 100800 : 112800; }
+    int oldFrame(int frame) const {
+        return linked() && frame >= oldLap() ? oldHead() + (frame - oldLap()) % (oldStart + oldLap() - oldHead())
+                                             : oldStart + frame;
+    }
+    int cue() const { return start + oldFrame(due()) - oldStart; }
+};
+
+std::unique_ptr<Store> longPagedLoopLegatoProject(const std::filesystem::path& folder, LongLoopTiming timing) {
     auto store = sceneProject(folder);
     auto& db = store->db();
-    db.exec(ramp ? "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1)"
-                 : "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
-    if (ramp) {
+    db.exec(timing.ramp ? "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,1)"
+                        : "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+    if (timing.ramp) {
         SQLite::Statement change(db,"INSERT INTO tempo_map(pos_ticks,bpm) VALUES(?,140)");
         change.bind(1,quarter / 2);
         change.exec();
     }
-    const auto due = ramp ? 124242 : 120000;
-    constexpr auto start = 60000;
-    constexpr auto head = 9600;
-    constexpr auto tail = 37;
-    // The second pulse is placed at the inherited tail cue. The first pulse
-    // is at the loop head, in a separate page before the clip's saved Start.
-    addClip(*store,folder,101,10,1,false,2400 + due + tail,1,260000);
+    const auto nsAt = [](int frame) { return static_cast<std::int64_t>(std::llround(static_cast<double>(frame)*1e9/rate)); };
+    addClip(*store,folder,101,10,1,false,timing.oldFrame(timing.due()+timing.tail),1,260000);
     pinUnwarpedOneShot(*store,50000000,4500000000);
-    addClip(*store,folder,102,20,2,true,head,1,start + due - head);
+    if (timing.linked()) {
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880 WHERE id=101;"
+                "UPDATE clip_launch SET follow_enabled=1,follow_linked=1,follow_a=4 WHERE clip_id=101;");
+        SQLite::Statement loop(db,"UPDATE clip_playback_details SET loop_begin_ns=?,loop_end_ns=? WHERE clip_id=101");
+        loop.bind(1,nsAt(timing.oldHead()));
+        loop.bind(2,nsAt(timing.oldStart+timing.oldLap()));
+        loop.exec();
+    }
+    // The pulse at the inherited tail cue and the pulse at the loop head
+    // lie in separate pages on either side of the clip's saved Start.
+    addClip(*store,folder,102,20,2,true,timing.head,1,timing.cue()-timing.head);
     db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,pos_ns=0,length_ticks=NULL,length_ns=4000000000,"
             "loop_enabled=1,loop_start_ticks=1153152,loop_len_ticks=2882880 WHERE id=102;"
             "UPDATE audio_clips SET warp_enabled=0,warp_markers=NULL WHERE clip_id=102;");
     SQLite::Statement pins(db,"INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns,loop_begin_ns,loop_end_ns)"
                               " VALUES(102,1250000000,5250000000,200000000,?)");
-    pins.bind(1,static_cast<std::int64_t>(std::llround(static_cast<double>(start + due + tail)*1e9/rate)));
+    pins.bind(1,nsAt(timing.cue()+timing.tail));
     pins.exec();
-    db.exec(immediate ? "UPDATE clip_launch SET launch_quant=1,ram_mode=0 WHERE clip_id=102;"
-                      : "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
+    db.exec(timing.launch == LongLoopLaunch::Immediate ? "UPDATE clip_launch SET launch_quant=1,ram_mode=0 WHERE clip_id=102;"
+                                                       : "UPDATE clip_launch SET launch_quant=8,ram_mode=0 WHERE clip_id=102;");
+    if (timing.launch == LongLoopLaunch::LinkedUser) {
+        db.exec("INSERT INTO scenes(id,ord) VALUES(30,2)");
+        addClip(*store,folder,103,30,2,false);
+        db.exec("UPDATE clip_launch SET launch_quant=8 WHERE clip_id=103");
+    }
     return store;
 }
 
-void longPagedLoopLegato(bool ramp, bool immediate = false) {
+void longPagedLoopLegato(bool ramp, LongLoopLaunch launch = LongLoopLaunch::Scheduled) {
+    const LongLoopTiming timing{ramp,launch};
+    const auto immediate = launch == LongLoopLaunch::Immediate;
+    const auto stop = launch == LongLoopLaunch::LinkedStop;
+    const auto user = launch == LongLoopLaunch::LinkedUser;
     test::TempDirectory folder{"long_paged_loop_legato",ramp ? "ramp" : "steady"};
-    auto store = longPagedLoopLegatoProject(folder.path(),ramp,immediate);
+    auto store = longPagedLoopLegatoProject(folder.path(),timing);
     Session session;
     session.graph().setFadeFrames(0);
     if (!session.load(*store,{}, {2,rate,blockFrames})) throw std::runtime_error(session.error());
-    const auto due = ramp ? 124242 : 120000;
-    const auto wrap = due + 37;
+    const auto due = timing.due();
+    const auto wrap = due + timing.tail;
     const auto firstEnd = due + blockFrames - 17;
-    std::vector<float> pcm(static_cast<std::size_t>(firstEnd));
+    const auto stopAt = ramp ? 165385 : 192000;
+    std::vector<float> pcm(static_cast<std::size_t>(stop ? stopAt + 1 : firstEnd));
     Playback playback{session,pcm};
     scene(*store,session,10);
     playback.through(immediate ? due : due-10000);
     const auto prior = trackState(session);
-    require(prior.clip == 101,"launch the outgoing pinned one-shot");
-    OpRequest press;
-    press.opType = "session.launchClip";
-    press.payload = {{"track",1},{"scene",20},{"clip",102},{"incarnation",session.launchIncarnation()}};
-    require(OpJournal(*store).commit(press).ok,"queue the saved raw Legato loop");
+    require(prior.clip == 101 && prior.queued.action == LaunchQueuedAction::None,
+            "the outgoing run is live and a Linked Follow stays out of public queued status");
+    if (launch != LongLoopLaunch::Linked) {
+        OpRequest press;
+        press.opType = stop ? "session.stopTrack" : "session.launchClip";
+        press.payload = {{"track",1},{"incarnation",session.launchIncarnation()}};
+        if (!stop) {
+            press.payload["scene"] = user ? 30 : 20;
+            press.payload["clip"] = user ? 103 : 102;
+        }
+        require(OpJournal(*store).commit(press).ok,"post the saved user action");
+    }
     playback.paged = !immediate;
     if (!immediate) playback.through(playback.first+1);
-    const auto forecast = trackState(session).queued.legatoSourceFrame.value_or(-1);
+    const auto queued = trackState(session).queued;
+    const auto forecast = queued.legatoSourceFrame.value_or(-1);
+    if (launch == LongLoopLaunch::Linked) require(queued.action == LaunchQueuedAction::None,"the automatic cue stays private");
+    if (user) require(queued.clip == 103,"the coincident user launch owns the public queue");
+    if (stop) require(queued.action == LaunchQueuedAction::Stop,"Stop replaces the linked loop");
     playback.through(due - 17);
     playback.through(firstEnd);
     const auto after = trackState(session);
+    if (stop) playback.through(stopAt+1);
     const auto attack = pcm[static_cast<std::size_t>(due)];
     const auto head = pcm[static_cast<std::size_t>(wrap)];
-    std::printf("Long paged loop %s: forecast %lld, cut %lld, cue %.6f, wrap %d/head %.6f, laps %llu, same run %d\n",
-        immediate ? "immediate" : ramp ? "ramp" : "steady",static_cast<long long>(forecast),
+    std::printf("Long paged loop %s mode %d: forecast %lld, cut %lld, cue %.6f, wrap %d/head %.6f, laps %llu, same run %d\n",
+        ramp ? "ramp" : "steady",static_cast<int>(launch),static_cast<long long>(forecast),
         static_cast<long long>(playback.edges[1].sample),static_cast<double>(attack),wrap,static_cast<double>(head),
         static_cast<unsigned long long>(after.completedLoops),after.run == prior.run);
     for (const auto& problem : session.problems()) std::printf("  %s\n",problem.c_str());
     if (immediate) {
         require(playback.count == 1 && after.run == prior.run && head == .55f,
             "a cold immediate inherited loop cue leaves the previous run and PCM intact");
+    } else if (stop) {
+        require(playback.count == 2 && playback.edges[1].newClip == 0 && playback.edges[1].sample == stopAt &&
+                after.run == prior.run && head == .55f,"Stop keeps the old loop audible until its own grid");
+    } else if (user) {
+        require(playback.count == 2 && playback.edges[1].newClip == 103 && playback.edges[1].sample == due,
+                "the coincident user press wins over the Linked loop");
     } else {
-        constexpr auto loopBegin = 9600;
-        const auto cue = 60000 + due;
+        const auto cue = timing.cue();
         audio::WavReader file(folder.path()/"102.wav");
         std::vector<float> raw(static_cast<std::size_t>(cue + 37));
         require(file.read(raw.data(),static_cast<std::uint32_t>(raw.size())) == raw.size(),"read original loop PCM");
         auto same = true;
         for (auto at = due; at < firstEnd; ++at) {
-            const auto source = at < wrap ? cue + at - due : loopBegin + at - wrap;
+            const auto source = at < wrap ? cue + at - due : timing.head + at - wrap;
             same &= pcm[static_cast<std::size_t>(at)] == raw[static_cast<std::size_t>(source)];
         }
-        require(forecast == cue && playback.count == 2 && playback.edges[1].newClip == 102 &&
+        require(forecast == (timing.linked() ? -1 : cue) && playback.count == 2 && playback.edges[1].newClip == 102 &&
                 playback.edges[1].sample == due && after.completedLoops == 1 && attack == -.6f && head == -.5f && same,
             "the scheduled cue and first wrap read exact PCM from both disjoint pages in one callback");
     }
@@ -2751,12 +2800,13 @@ void longPagedLoopLegato(bool ramp, bool immediate = false) {
             "scheduled physical loop Legato preserves the real-time callback budget");
 }
 
-void longPagedLoopCuePages(bool holdCue) {
+void longPagedLoopCuePages(bool holdCue, bool linked = false) {
     test::TempDirectory folder{"long_paged_loop_legato",holdCue ? "hold-head" : "missing-head"};
-    auto store = longPagedLoopLegatoProject(folder.path(),false,false);
-    constexpr auto due = 120000;
-    constexpr auto cue = 180000;
-    constexpr auto wrap = due + 37;
+    const LongLoopTiming timing{false,linked ? LongLoopLaunch::Linked : LongLoopLaunch::Scheduled};
+    auto store = longPagedLoopLegatoProject(folder.path(),timing);
+    const auto due = timing.due();
+    const auto cue = timing.cue();
+    const auto wrap = due + timing.tail;
     constexpr auto headPage = 1;
     constexpr std::uint64_t incarnation = 112;
     struct Gate {
@@ -2869,8 +2919,15 @@ void longPagedLoopCuePages(bool holdCue) {
     };
     require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,10,101,incarnation}}),"queue outgoing resident clip");
     through(due-12000);
-    require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue distant loop tail");
-    through(due-12000+blockFrames);
+    if (linked) {
+        std::array<LaunchTrackStatus,1> rows{};
+        LaunchStatusHeader status;
+        require(driver.readStatus(rows,status) && rows[0].queued.action == LaunchQueuedAction::None,
+                "the stalled automatic loop cue remains out of public queued status");
+    } else {
+        require(driver.post(std::array{LaunchRequest{LaunchRequestKind::SlotPress,1,20,102,incarnation}}),"queue distant loop tail");
+        through(due-12000+blockFrames);
+    }
     const auto wait = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!gate.held.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < wait)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -2878,8 +2935,8 @@ void longPagedLoopCuePages(bool holdCue) {
     through(due-17);
     through(due-17+blockFrames);
     const auto retained = pcm[static_cast<std::size_t>(wrap)];
-    std::printf("Cold loop head: tail %.6f at %d, held page %d, outgoing %.6f at %d, target underruns %u\n",
-        -.6, cue, headPage, static_cast<double>(retained), wrap, pages.underrunSamples()-underrunsBefore);
+    std::printf("Cold %s loop head: tail %.6f at %d, held page %d, outgoing %.6f at %d, target underruns %u\n",
+        linked ? "linked" : "scheduled", -.6, cue, headPage, static_cast<double>(retained), wrap, pages.underrunSamples()-underrunsBefore);
     require(events.count == 1 && events.edges[0].newClip == 101 && retained == .55f &&
             pages.underrunSamples() == underrunsBefore && callbackAllocations == 0 && audio::callbackFileIo == 0,
             "a warm tail and cold head leave the outgoing run and raw PCM intact across the whole callback");
@@ -2965,9 +3022,14 @@ int main() {
         coldPhysicalPagedLegato(false,StalledLegato::TiedUser);
         longPagedLoopLegato(false);
         longPagedLoopLegato(true);
-        longPagedLoopLegato(false,true);
+        longPagedLoopLegato(false,LongLoopLaunch::Immediate);
         longPagedLoopCuePages(false);
         longPagedLoopCuePages(true);
+        longPagedLoopLegato(false,LongLoopLaunch::Linked);
+        longPagedLoopLegato(true,LongLoopLaunch::Linked);
+        longPagedLoopLegato(true,LongLoopLaunch::LinkedUser);
+        longPagedLoopLegato(true,LongLoopLaunch::LinkedStop);
+        longPagedLoopCuePages(false,true);
         residentModeRamp("beats", 12);
         // At 48 kHz allow 23 ms for the 65 ms grain's 25% fluctuation
         // and for the overlap of grains while the tempo changes.

@@ -25,6 +25,12 @@ bool positiveAscending(const std::vector<std::int64_t>& ids) {
         std::adjacent_find(ids.begin(), ids.end()) == ids.end();
 }
 
+bool needsCueLease(const LaunchSlot& slot, std::uint32_t rate) noexcept {
+    const auto start = slot.physicalLoopEndFrame
+        ? std::min(slot.physicalStartFrame,slot.physicalLoopBeginFrame) : slot.physicalStartFrame;
+    return slot.physicalStartFrame + slot.physicalFrames - start > 3 * ClipPlayback::readAheadFrames(rate);
+}
+
 bool needsRetainedPages(const LaunchSlot& slot, std::uint32_t rate) noexcept {
     return slot.physicalLoopEndFrame > 0 || slot.physicalFrames > 3 * ClipPlayback::readAheadFrames(rate);
 }
@@ -596,10 +602,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
            std::int32_t offset, bool quantizedHandoff) noexcept {
         auto& call = *static_cast<Context*>(state);
         if (!call.media->stored() || target.physicalFrames <= 0) return true;
-        const auto start = target.physicalLoopEndFrame
-            ? std::min(target.physicalStartFrame,target.physicalLoopBeginFrame) : target.physicalStartFrame;
-        const auto window = target.physicalStartFrame + target.physicalFrames - start;
-        if (window <= 3 * ClipPlayback::readAheadFrames(static_cast<std::uint32_t>(call.block.sampleRate))) return true;
+        if (!needsCueLease(target,static_cast<std::uint32_t>(call.block.sampleRate))) return true;
         const auto* pcm = call.media->clip(target.clip);
         if (!pcm) return false;
         auto* pages = pcm->pageReader();
@@ -627,7 +630,7 @@ void LaunchAudioRuntime::begin(LaunchAudioDriver& driver, LaunchBlock block,
         const auto& call = *static_cast<const Context*>(state);
         if (call.runtime.mediaAt(due).get() != call.media) return;
         const auto* clip = call.media->clip(target.clip);
-        if (!clip || !clip->pageReader() || target.physicalFrames <= 3 * ClipPlayback::readAheadFrames(clip->rate())) return;
+        if (!clip || !clip->pageReader() || !needsCueLease(target,clip->rate())) return;
         const auto* rendered = call.runtime.trackRanges(target.track);
         if (rendered && rendered->cuePages == clip->pageReader() && rendered->cueClip == target.clip) return;
         clip->pageReader()->prefetch(target.clip,frame);
