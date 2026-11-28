@@ -17,6 +17,8 @@ public:
     void setBias(float normalized) noexcept;
     void setTreble(float normalized) noexcept;
     void setJitter(float normalized) noexcept;
+    void setPrefilter(bool enabled) noexcept { prefilterEnabled_ = enabled; }
+    // A full-rate point in a moving hold contour still drives the prefilter.
     void processStereo(float& left, float& right, float bitsHeight,
                        float resampleHeight, bool flatHold = true) noexcept;
     bool finishBlock() noexcept;
@@ -28,6 +30,7 @@ private:
     void updateClock(float height) noexcept;
     static double noise(std::uint32_t& seed) noexcept;
     void quantize(Stereo& sample, double previousLevels, double codeScale) noexcept;
+    void prefilter(Stereo& sample) noexcept;
     void hold(Stereo& sample, bool flatHold) noexcept;
     void jitteredHold(Stereo& sample, bool flatHold) noexcept;
 
@@ -38,8 +41,11 @@ private:
     float step_ = 1, phase_ = 0, bits_ = -1, clock_ = -1, bias_ = 0, treble_ = 1, jitter_ = 0;
     Stereo previousQuantInput_{}, previousCode_{}, previousHoldInput_{}, held_{}, low_{}, trebleState_{};
     static constexpr std::uint32_t initialSeed = 0x297a04b3u;
+    std::array<std::array<float, 2>, 8> prefilterMemory_{};
+    double prefilterStep_ = -1;
+    float prefilterGain_ = 0;
     std::uint32_t seed_ = initialSeed, jitterSeed_ = initialSeed;
-    bool dither_ = false;
+    bool dither_ = false, prefilterEnabled_ = false;
 };
 
 } // namespace adi::dsp

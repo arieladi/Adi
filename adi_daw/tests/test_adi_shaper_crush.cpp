@@ -559,6 +559,117 @@ void jitterAndDither() {
     }
 }
 
+std::array<float,2> stereoMarker(int frame) {
+    if (frame < 20) return {};
+    return {static_cast<float>(frame * 71 % 251 - 125) / 256.f,
+            static_cast<float>((frame * 13 + 49) % 251 - 125) / 256.f};
+}
+
+void prefilterReadings() {
+    // Left and right were measured together on signed, independent inputs.
+    // A full plateau at 96 kHz begins before the first change of its curve.
+    struct Reading {
+        double rate;
+        float bits, clock;
+        bool flat, switched;
+        int frame;
+        double left, right;
+    };
+    constexpr Reading readings[]{
+        {44100, .67f, .43f, true, false, 101, .024926441, .018489731},
+        {48000, .31f, .72f, true, false, 318, .065135881, -.198494330},
+        {96000, 1.f, .985f, true, false, 101, -.206670254, -.199953899},
+        {96000, 1.f, 1.f, false, false, 578, .000291218, -.361458153},
+        {48000, 1.f, .61f, true, true, 169, -.003104904, .205336869},
+        {48000, 1.f, .61f, true, true, 293, .016960168, -.008124054}};
+    for (const auto& reading : readings) {
+        Crush band;
+        check(band.prepare(reading.rate), "prefilter prepare");
+        std::array<float,2> signal{};
+        for (int i=0; i<=reading.frame; ++i) {
+            signal = stereoMarker(i);
+            band.setPrefilter(!reading.switched || i < 137 || i >= 271);
+            band.processStereo(signal[0], signal[1], reading.bits, reading.clock, reading.flat);
+        }
+        near(signal[0], reading.left, .00012, "prefilter measured left");
+        near(signal[1], reading.right, .00012, "prefilter measured right");
+    }
+}
+
+void prefilterEndpoints() {
+    Crush wet, dry;
+    check(wet.prepare(96000) && dry.prepare(96000), "prepare endpoint bands");
+    wet.setPrefilter(true);
+    const float belowFull = std::nextafter(1.f, 0.f);
+    double difference = 0;
+    for (int i=0; i<512; ++i) {
+        auto a = stereoMarker(i), b = a;
+        const float rate = i < 256 ? 1.f : belowFull;
+        wet.processStereo(a[0], a[1], .51f, rate);
+        dry.processStereo(b[0], b[1], .51f, rate);
+        if (i < 256) check(a == b, "flat full-rate curve skips prefilter");
+        else difference += std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]);
+    }
+    check(difference > 1., "nearest rate below full engages prefilter");
+    wet.reset();
+    dry.reset();
+    // At full rate in a moving curve the hold is transparent. The pole
+    // arithmetic and the gain cap can be checked without fractional clock drift.
+    std::array<std::array<float,2>,8> memory{};
+    for (int i=0; i<4096; ++i) {
+        auto a = stereoMarker(i), b = a;
+        for (auto& state : memory) {
+            for (unsigned ch=0; ch<2; ++ch) {
+                const float delta = .999686062335968f * (b[ch] - state[ch]);
+                b[ch] = state[ch] + delta;
+                state[ch] = b[ch] + delta;
+            }
+        }
+        wet.processStereo(a[0], a[1], 1.f, 1.f, false);
+        dry.processStereo(b[0], b[1], 1.f, 1.f);
+        check(a == b, "moving full-rate pole arithmetic");
+    }
+    auto healthy = wet;
+    float bad = std::numeric_limits<float>::quiet_NaN(), right = .13f;
+    float left = .36f, expectedRight = right;
+    wet.processStereo(bad, right, 1.f, .61f);
+    healthy.processStereo(left, expectedRight, 1.f, .61f);
+    wet.setPrefilter(false);
+    check(wet.finishBlock() && !wet.finishBlock(), "repair inactive filter memories once");
+    wet.setPrefilter(true);
+    for (int i=0; i<256; ++i) {
+        auto a = stereoMarker(i), b = a;
+        wet.processStereo(a[0], a[1], .4f, .63f);
+        healthy.processStereo(b[0], b[1], .4f, .63f);
+        check(std::isfinite(a[0]) && a[1] == b[1], "repair preserves healthy stereo channel");
+    }
+}
+
+void movingPrefilter() {
+    Crush band;
+    check(band.prepare(48000), "prepare moving prefilter");
+    band.setPrefilter(true);
+    struct Marker { int frame; double left, right; };
+    constexpr std::array<Marker,6> measured{{
+        {502, -.0473070815, -.1108339280}, {507, -.0533162579, -.2486526668},
+        {512, -.0380109735, -.0081906626}, {999, -.0275315363, .2218676060},
+        {1000, -.0724930093, .2527466416}, {1063, -.0009904406, -.0232571177}}};
+    std::size_t next = 0;
+    for (int i=0; i<=measured.back().frame; ++i) {
+        // Sampled heights of a three-level curve, including its two cubic edges.
+        float height = i < 500 ? .34f : (i < 1000 ? .83f : .44f);
+        if (i == 499) height = .33439885312f;
+        if (i == 999) height = .83445805568f;
+        auto signal = stereoMarker(i);
+        band.processStereo(signal[0], signal[1], .31f, height, false);
+        if (i == measured[next].frame) {
+            near(signal[0], measured[next].left, .00015, "moving prefilter left");
+            near(signal[1], measured[next].right, .00015, "moving prefilter right");
+            ++next;
+        }
+    }
+}
+
 std::array<float, 2> endpointMarker(int offset) {
     constexpr std::array<std::array<float, 2>, 3> markers{{
         {.8f, -.1f}, {-.25f, .6f}, {.16f, -.42f}}};
@@ -639,6 +750,7 @@ int main() try {
     quantizer(band);movingResolution();clock(band);longClock(band);sustainedStereoClock();combined(band);dither(band);quantizerBias();
     trebleSteps();trebleContours();trebleTransfer();trebleHistory();
     jitterStatistics(); jitterCap(); jitterBypass(); jitterAndDither();
+    prefilterReadings();prefilterEndpoints();movingPrefilter();
     fullRatePlateau(); flatOrCappedHold();
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");

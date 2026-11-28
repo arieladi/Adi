@@ -1546,6 +1546,12 @@
 #X msg 9085 111 p 871 \$1;
 #X obj 9085 148 adi.param \$0 873 0 100 0 % lin Crush_High_Jitter;
 #X msg 9085 175 p 872 \$1;
+#X obj 9360 20 adi.param \$0 874 0 1 0 - toggle Crush_Low_Prefilter;
+#X msg 9360 47 p 873 \$1;
+#X obj 9360 84 adi.param \$0 875 0 1 0 - toggle Crush_Mid_Prefilter;
+#X msg 9360 111 p 874 \$1;
+#X obj 9360 148 adi.param \$0 876 0 1 0 - toggle Crush_High_Prefilter;
+#X msg 9360 175 p 875 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -3094,3 +3100,9 @@
 #X connect 1544 0 1 0;
 #X connect 1545 0 1546 0;
 #X connect 1546 0 1 0;
+#X connect 1547 0 1548 0;
+#X connect 1548 0 1 0;
+#X connect 1549 0 1550 0;
+#X connect 1550 0 1 0;
+#X connect 1551 0 1552 0;
+#X connect 1552 0 1 0;

@@ -52,12 +52,15 @@ static_assert(Shaper::SweepLowOffset + 1 == 853 && Shaper::SweepHighOffset + 1 =
 static_assert(Shaper::CrushLowBias + 1 == 865 && Shaper::CrushHighBias + 1 == 867);
 static_assert(Shaper::CrushLowTreble + 1 == 868 && Shaper::CrushHighTreble + 1 == 870);
 static_assert(Shaper::CrushLowJitter + 1 == 871 && Shaper::CrushHighJitter + 1 == 873);
+static_assert(Shaper::CrushLowPrefilter + 1 == 874 && Shaper::CrushHighPrefilter + 1 == 876);
 static_assert(Shaper::holdFollowerParam(Band::Low, Control::On) == 876);
 static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::HoldFollowerSourceLow);
 static_assert(Shaper::holdFollowerSourceParam(Band::Low) == 903 && Shaper::holdFollowerSourceParam(Band::High) + 1 == 906);
 static_assert(Shaper::holdHighPassParam(Band::Low) == 906 && Shaper::holdLowPassParam(Band::Low) == 909);
 static_assert(Shaper::holdLowPassParam(Band::High) == Shaper::HoldHighLowPass && Shaper::HoldHighLowPass == 911);
-static_assert(Shaper::hasParameter(876) && Shaper::hasParameter(911) && !Shaper::hasParameter(875));
+// The Crush prefilter switches fill the ids just below the hold follower.
+static_assert(Shaper::hasParameter(876) && Shaper::hasParameter(911)
+              && Shaper::CrushHighPrefilter + 1 == Shaper::HoldFollowerLow);
 int failures = 0;
 
 void check(bool condition, const char* description) {

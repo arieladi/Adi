@@ -60,6 +60,7 @@ class AdiShaper {
                  CrushLowBias = 864, CrushMidBias, CrushHighBias,
                  CrushLowTreble = 867, CrushMidTreble, CrushHighTreble,
                  CrushLowJitter = 870, CrushMidJitter, CrushHighJitter,
+                 CrushLowPrefilter = 873, CrushMidPrefilter, CrushHighPrefilter,
                  HoldFollowerLow = 876, HoldFollowerSourceLow = HoldFollowerLow + 3 * HoldFollowerCount,
                  HoldHighPassLow = HoldFollowerSourceLow + 3, HoldLowPassLow = HoldHighPassLow + 3,
                  HoldHighLowPass = HoldLowPassLow + 2,
@@ -137,6 +138,7 @@ class AdiShaper {
             || (id >= CrushLowBias && id <= CrushHighBias)
             || (id >= CrushLowTreble && id <= CrushHighTreble)
             || (id >= CrushLowJitter && id <= CrushHighJitter)
+            || (id >= CrushLowPrefilter && id <= CrushHighPrefilter)
             || (id >= HoldFollowerLow && id <= HoldHighLowPass)
             || (id >= FilterLowPeak && id <= FilterHighSteep)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)

@@ -40,6 +40,36 @@ float clockExponential(float logFrequency) noexcept {
                               clockLow[ticks & clockPartMask]);
 }
 
+// Tabulate the bilinear one-pole gain and its derivative over [0, Nyquist].
+// A moving contour then uses one cubic interpolation for all sixteen poles.
+constexpr unsigned prefilterIntervals = 256;
+constexpr double prefilterBinWidth = .5 / prefilterIntervals;
+constexpr float prefilterMaximum = .999686062335968f;
+struct PrefilterPoint { double gain, slope; };
+const auto prefilterCurve = [] {
+    std::array<PrefilterPoint, prefilterIntervals + 1> curve{};
+    for (unsigned i = 0; i <= prefilterIntervals; ++i) {
+        const double angle = std::numbers::pi * (i * prefilterBinWidth - .25);
+        const double gain = .5 * (1.0 + std::tan(angle));
+        const double slope = std::numbers::pi * prefilterBinWidth *
+                             (gain * gain + (1.0 - gain) * (1.0 - gain));
+        curve[i] = {gain, slope};
+    }
+    return curve;
+}();
+
+float prefilterCoefficient(double step) noexcept {
+    if (step >= .4999) return prefilterMaximum;
+    const double position = step / prefilterBinWidth;
+    const auto index = static_cast<unsigned>(position);
+    const double t = position - index;
+    const auto& a = prefilterCurve[index];
+    const auto& b = prefilterCurve[index + 1];
+    const double delta = b.gain - a.gain;
+    return static_cast<float>(a.gain + t * (a.slope + t *
+        (3.0 * delta - 2.0 * a.slope - b.slope + t * (a.slope + b.slope - 2.0 * delta))));
+}
+
 float sanitized(float height) noexcept {
     if (height >= 0.f && height <= 1.f) return height;
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
@@ -74,6 +104,8 @@ void AdiShaperCrush::reset() noexcept {
     seed_ = jitterSeed_ = initialSeed;
     previousPerturbation_ = 0.;
     previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = trebleState_ = {};
+    prefilterMemory_ = {};
+    prefilterStep_ = -1;
 }
 
 void AdiShaperCrush::setTreble(float normalized) noexcept {
@@ -189,6 +221,22 @@ void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double code
     previousPerturbation_ = perturbation;
 }
 
+void AdiShaperCrush::prefilter(Stereo& sample) noexcept {
+    if (step_ != prefilterStep_) {
+        prefilterGain_ = prefilterCoefficient(step_);
+        prefilterStep_ = step_;
+    }
+    std::array<float, 2> value{static_cast<float>(sample[0]), static_cast<float>(sample[1])};
+    for (auto& memory : prefilterMemory_) {
+        for (unsigned ch = 0; ch < 2; ++ch) {
+            const float delta = prefilterGain_ * (value[ch] - memory[ch]);
+            value[ch] = memory[ch] + delta;
+            memory[ch] = value[ch] + delta;
+        }
+    }
+    sample = {value[0], value[1]};
+}
+
 void AdiShaperCrush::jitteredHold(Stereo& sample, bool flatHold) noexcept {
     // A flat full-height contour pauses the phase and the timing draws.
     if (flatHold && clock_ == 1.f) {
@@ -284,6 +332,7 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
     quantize(sample, previousLevels, codeScale);
+    if (prefilterEnabled_ && !(flatHold && r == 1.f)) prefilter(sample);
     hold(sample, flatHold);
     // The treble shelf follows the product of the bit and hold contours.
     const double highGain = treble_ + (1.0 - treble_) * u * r;
@@ -306,10 +355,13 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
 bool AdiShaperCrush::finishBlock() noexcept {
     bool repaired = false;
     for (std::size_t ch = 0; ch < low_.size(); ++ch) {
-        if (!std::isfinite(trebleState_[ch]) || !std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
+        const bool damagedFilter = std::any_of(prefilterMemory_.begin(), prefilterMemory_.end(),
+            [ch](const auto& pole) { return !std::isfinite(pole[ch]); });
+        if (damagedFilter || !std::isfinite(trebleState_[ch]) || !std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
             !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
             trebleState_[ch] = low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] =
                 previousCode_[ch] = 0.0;
+            for (auto& pole : prefilterMemory_) pole[ch] = 0.f;
             repaired = true;
         }
     }
