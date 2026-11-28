@@ -1521,6 +1521,21 @@ void recoverPcm24AndReportDeletedTrack() {
           "a deleted recovery target is named and its private files stay available");
     check(fs::is_regular_file(original/"take-0.wav"),"unplaced source remains recoverable for inspection");
 }
+void discardOwnedTake() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    auto recorded=fixture.capture(false,Precision::Float32,false,128,
+                                  fixture.temporary.path()/"discard-take",512,true);
+    const auto directory=recorded.directory();
+    std::error_code leaseError;
+    check(fs::is_regular_file(directory/"start.json") && fs::is_regular_file(directory/"owner.lock") &&
+              !media::ProjectFileLease::openExclusive(directory/"owner.lock",leaseError),
+          "a captured take retains its active owner until discard");
+    const auto discarded=recorded.discard();
+    check(!discarded && recorded.directory().empty() && !fs::exists(directory),
+          "discard closes the take owner and removes the complete private directory");
+    if(discarded)std::printf("discard: %s\n",discarded.message().c_str());
+}
 void recoverRf64() {
     namespace fs=std::filesystem;
     Fixture fixture;
@@ -1743,7 +1758,7 @@ int main(int argc,char** argv){try{
     unwarpedRecordingTempoChanges();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
-    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();refuseReboundRecoveryFile();
+    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();discardOwnedTake();recoverRf64();refuseReboundRecoveryFile();
     ordinaryStopUsesTheSameRecordingReceipt();
     stagedStopUsesTheSameRecordingReceipt();
     recoverAfterProcessExit(media::pathFromUtf8(argv[0]));
