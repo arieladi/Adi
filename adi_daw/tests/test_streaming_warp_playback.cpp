@@ -426,14 +426,16 @@ constexpr std::array reverseExpectedMarkers{WarpMarker{0, 0}, WarpMarker{26000, 
 constexpr std::array reverseAttacks{6500u, 42000u, 50000u, 65000u};
 constexpr std::array reverseBeats{0.5, 2.5, 2.75, 3.5};
 
-void reverseSource(Project& project, bool physicalReverse, bool ramp, bool singleAttacks = false) {
+enum class ReverseSignal { Pulses, SingleAttacks, Sustained };
+
+void reverseSource(Project& project, bool physicalReverse, bool ramp, ReverseSignal signal = ReverseSignal::Pulses) {
     constexpr auto fileFrames = reverseStart + reverseLength + 509;
     constexpr auto halfWidth = 96u;
     std::vector<float> pcm(fileFrames * 2, 0.7f);
     std::fill_n(pcm.data() + 2 * reverseStart, 2 * reverseLength, 0.0f);
     for (std::size_t attack = 0; attack < reverseAttacks.size(); ++attack) {
         const auto center = reverseAttacks[attack];
-        if (singleAttacks) {
+        if (signal == ReverseSignal::SingleAttacks) {
             // Each isolated pulse is exactly at the forward source position
             // corresponding to a known reversed fractional beat.
             const auto input = reverseStart + reverseLength - center;
@@ -448,6 +450,14 @@ void reverseSource(Project& project, bool physicalReverse, bool ramp, bool singl
             const auto input = reverseStart + (physicalReverse ? frame : reverseLength - 1 - frame);
             pcm[2 * input] = scale * pulse;
             pcm[2 * input + 1] = -0.2f * pulse;
+        }
+    }
+    if (signal == ReverseSignal::Sustained) {
+        for (std::uint32_t frame = 0; frame<reverseLength; ++frame) {
+            const auto input = reverseStart + (physicalReverse ? frame : reverseLength-1-frame);
+            const auto at = static_cast<double>(frame)/sourceRate;
+            pcm[2*input] = static_cast<float>(0.3*std::sin(2*std::numbers::pi*167*at));
+            pcm[2*input+1] = static_cast<float>(0.2*std::cos(2*std::numbers::pi*223*at));
         }
     }
     {
@@ -599,7 +609,7 @@ void reverseBeatsAttacks() {
         return static_cast<std::size_t>(std::llround(seconds*sourceRate));
     };
     Project project("beats");
-    reverseSource(project, false, true, true);
+    reverseSource(project,false,true,ReverseSignal::SingleAttacks);
     Session session;
     project.load(session,Precision::Float32,sourceRate);
     std::vector<StereoFrame> heard(sampleAtBeat(8));
@@ -644,6 +654,130 @@ void reverseBeatsAttacks() {
     render(flat,Precision::Float32,native,313);
     comparePreparedReverse(steady,native,audio::WarpMode::Beats,0.002f,0.0001);
     check(flat.clips()->problems().empty(),"steady reversed Beats streams without a prepared render");
+}
+
+void reverseTexture() {
+    for (const auto curve : {0,1}) {
+        Project project("texture");
+        reverseSource(project,false,true);
+        const auto boundaryBeat = curve == 0 ? 2 : 4;
+        project.tempo(curve, boundaryBeat * quarter, 140);
+        const auto before = [&](double beat) {
+            return curve == 0 ? beat/2 : 12*std::log1p(beat/24);
+        };
+        const auto sampleAtBeat = [&](double beat) {
+            const auto seconds = before(std::min(beat, static_cast<double>(boundaryBeat))) +
+                std::max(0.0, beat - boundaryBeat) * 60 / 140;
+            return static_cast<std::size_t>(std::llround(seconds*sourceRate));
+        };
+
+        Session session;
+        project.load(session,Precision::Float32,sourceRate);
+        std::vector<StereoFrame> heard(sampleAtBeat(8));
+        render(session,Precision::Float32,heard,311);
+        std::size_t worst = 0, landmarks = 0;
+        for (int lap = 0; lap<2; ++lap) {
+            for (const auto beat : reverseBeats) {
+                const auto expected = sampleAtBeat(4*lap+beat);
+                const auto* peak = std::min_element(heard.data()+expected-1400,heard.data()+expected+1401,
+                    [](const auto& a, const auto& b) { return a.right<b.right; });
+                if (peak->right < -0.018f) {
+                    const auto at = static_cast<std::size_t>(peak-heard.data());
+                    worst = std::max(worst,at>expected ? at-expected : expected-at);
+                    ++landmarks;
+                }
+            }
+        }
+        std::printf("reverse Texture %s: %zu/8 landmarks, worst %zu samples\n",
+                    curve == 0 ? "step" : "ramp",landmarks,worst);
+        check(landmarks==8 && worst<=1250,"reversed Texture follows the integrated clock through both loop laps");
+
+        const auto seek = sampleAtBeat(3.5)-1400;
+        session.transport().play(false);
+        session.transport().locate(static_cast<std::int64_t>(seek));
+        session.transport().play();
+        std::vector<StereoFrame> sought(sampleAtBeat(4.5)+1400-seek);
+        render(session,Precision::Float32,sought,201);
+        check(std::equal(sought.begin(),sought.end(),heard.data()+seek),
+              "a reverse Texture cold seek preserves grain phase across audible loop boundaries");
+        check(session.clips()->problems().empty() && session.clips()->underrunSamples()==0 &&
+              session.clips()->readErrors()==0,"reversed Texture plays and seeks with all source PCM available");
+
+        if (curve == 1) {
+            const auto saved = project.temporary.path()/"reopened.adi";
+            if (!project.store->saveAs(saved).ok) throw std::runtime_error("save reversed Texture project");
+            project.store.reset();
+            StoreError error{};
+            project.store = Store::open(saved,error);
+            if (!project.store) throw std::runtime_error("reopen reversed Texture project");
+            Session reopened;
+            project.load(reopened,Precision::Float32,sourceRate);
+            std::vector<StereoFrame> replay(heard.size());
+            render(reopened,Precision::Float32,replay,217);
+            check(replay==heard,"reopened reversed Texture renders identical PCM");
+        }
+    }
+
+    Project steady("texture");
+    reverseSource(steady,false,false);
+    Session flat;
+    steady.load(flat,Precision::Float32,sourceRate);
+    std::vector<StereoFrame> native(115200);
+    render(flat,Precision::Float32,native,313);
+    comparePreparedReverse(steady,native,audio::WarpMode::Texture,0.002f,0.0001);
+    check(flat.clips()->problems().empty(),"steady reversed Texture streams without a prepared render");
+}
+
+void reverseTextureTypedTempo() {
+    // Start the edit inside a sounding grain and cross a source-page boundary
+    // while the following callbacks use the new project clock.
+    constexpr auto changeFrame = std::int64_t{3}*8192 + 64;
+    constexpr auto changeTick = (changeFrame*quarter + framesPerBeat/2)/framesPerBeat;
+    const auto end = static_cast<std::size_t>(std::llround(static_cast<double>(changeFrame) +
+        static_cast<double>(8*quarter-changeTick)*60.0*sourceRate/(140.0*quarter)));
+    Project typed("texture"), authored("texture");
+    reverseSource(typed,false,true,ReverseSignal::Sustained);
+    reverseSource(authored,false,true,ReverseSignal::Sustained);
+    typed.tempo(0,changeTick,120);
+    authored.tempo(0,changeTick,140);
+    Session liveSession, referenceSession;
+    typed.load(liveSession,Precision::Float32,sourceRate);
+    authored.load(referenceSession,Precision::Float32,sourceRate);
+    std::vector<StereoFrame> heard(end), reference(end);
+    const auto switchAt = static_cast<std::size_t>(changeFrame);
+    auto live = std::span(heard);
+    render(liveSession,Precision::Float32,live.first(switchAt),257);
+
+    std::array<OpRequest,2> edit;
+    edit[0].opType = "project.removeTempoEvent";
+    edit[0].payload = {{"pos",changeTick}};
+    edit[1].opType = "project.insertTempoEvent";
+    edit[1].payload = {{"pos",changeTick},{"bpm",140.0},{"curve",0}};
+    if (!OpJournal(*typed.store).commit(edit).ok || !liveSession.refresh(*typed.store))
+        throw std::runtime_error("type tempo while reversed Texture plays");
+    check(liveSession.transport().playing() && liveSession.transport().position()==changeFrame,
+          "typing a tempo preserves the reversed Texture playhead");
+    render(liveSession,Precision::Float32,live.subspan(switchAt,257),257,false);
+    render(liveSession,Precision::Float32,live.subspan(switchAt+257),257);
+    render(referenceSession,Precision::Float32,reference,463);
+    const auto changed = live.subspan(switchAt);
+    check(std::any_of(changed.begin(),changed.begin()+257,[](const auto& frame) { return std::abs(frame.left)>0.05f; }),
+          "the first new-clock callback contains audible reversed grains");
+    check(std::equal(changed.begin(),changed.end(),reference.data()+switchAt),
+          "typed and authored tempos produce the same reversed grain phase from the boundary callback");
+    check(liveSession.clips()->problems().empty() && liveSession.clips()->underrunSamples()==0 &&
+          liveSession.clips()->readErrors()==0, "typed reverse Texture plays immediately with ready source pages");
+    const auto step = std::max(std::abs(heard[switchAt].left-heard[switchAt-1].left),
+                              std::abs(heard[switchAt].right-heard[switchAt-1].right));
+    float largestNearby = 0;
+    for (auto i = switchAt-257; i<switchAt+257; ++i) {
+        if (i == switchAt) continue;
+        largestNearby = std::max({largestNearby,std::abs(heard[i].left-heard[i-1].left),
+            std::abs(heard[i].right-heard[i-1].right)});
+    }
+    std::printf("reverse Texture typed at %lld: %zu exact frames, boundary %.6f vs nearby %.6f FS\n",
+        static_cast<long long>(changeFrame), changed.size(), static_cast<double>(step),static_cast<double>(largestNearby));
+    check(step <= largestNearby,"typed tempo seam stays within nearby waveform variation");
 }
 
 constexpr double bezierTension = 0.72;
@@ -810,6 +944,8 @@ int main() {
         reverseRePitch(false);
         reverseRePitch(true);
         reverseBeatsAttacks();
+        reverseTexture();
+        reverseTextureTypedTempo();
         steadyTempo("texture", 120.0);
         // Real-time and offline R3 use different spectral histories around
         // transients. Compare at -22 dBFS peak and -48 dBFS RMS error.

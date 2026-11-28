@@ -32,7 +32,8 @@ public:
           loopStart_(loopStart), loopLength_(loopLength),
           arrangement_{sourceOrigin, std::numeric_limits<std::int64_t>::min(), endFrame(sourceOrigin)},
           framesPerTick_(tempo.constantFramesPerTick()),
-          reverseEndTick_(reverseSynthesis && !markers_.empty() ? static_cast<double>(markers_.back().tick) : 0) {
+          reverseEndTick_(reverseSynthesis && !markers_.empty() ? static_cast<double>(markers_.back().tick) : 0),
+          reverseTexture_(reverseSynthesis && pendingPlan_.mode == audio::WarpMode::Texture) {
         if (pendingPlan_.mode == audio::WarpMode::Beats && pendingPlan_.transients.empty())
             onsetJob_ = requestWarpOnsets(pendingPlan_.source, pendingPlan_.sourceStart,
                                          pendingPlan_.sourceFrames);
@@ -131,7 +132,8 @@ private:
         std::int64_t frameOrigin;
         double framesPerTick;
         double reverseEndTick;
-        std::int64_t reverseFrames;
+        std::int64_t reverseFrames, textureGridShift;
+        bool causalTextureCenters;
 
         [[nodiscard]] std::int64_t processorFrame(std::int64_t arrangementFrame) const noexcept {
             const auto relative = arrangementFrame-frameOrigin;
@@ -152,7 +154,7 @@ private:
                 const auto frame = self.framesPerTick != 0 ? tick * self.framesPerTick :
                     self.tempo->frameAtTick(tick + self.originTick) - self.originFrame;
                 return self.reverseEndTick > 0 ? static_cast<double>(self.reverseFrames)-frame : frame;
-            }, tempo->maxTicksPerFrame()};
+            }, tempo->maxTicksPerFrame(), textureGridShift, causalTextureCenters};
         }
     };
 
@@ -176,13 +178,23 @@ private:
         const auto frame = tempo_.frameAtTick(tick);
         const auto rounded = std::llround(frame);
         if (reverseEndTick_ == 0)
-            return {&tempo_, tick, static_cast<double>(rounded), rounded, framesPerTick_, 0, 0};
+            return {&tempo_, tick, static_cast<double>(rounded), rounded, framesPerTick_, 0, 0, 0, false};
         // Keep the forward slice boundaries and envelopes. Reflect the
         // playback clock and the requested frame together.
         const auto duration = framesPerTick_ != 0 ? reverseEndTick_*framesPerTick_ :
             tempo_.frameAtTick(tick+reverseEndTick_)-frame;
+        const auto reverseFrames = std::llround(std::clamp(duration,0.0,0x1p50));
+        const bool causalTextureCenters = reverseTexture_ && framesPerTick_ == 0;
+        auto textureGridShift = std::int64_t{0};
+        if (causalTextureCenters) {
+            // A future tempo edit can move the end of the virtual forward
+            // window. Keep the grain grid and seed fixed at the lap's head.
+            const auto headRate = tempo_.framesPerTickAt(tick + loopStart_);
+            const auto phaseFrames = std::llround(std::clamp(reverseEndTick_ * headRate, 0.0, 0x1p50));
+            textureGridShift = reverseFrames - phaseFrames;
+        }
         return {&tempo_, tick, frame, rounded, framesPerTick_, reverseEndTick_,
-            std::llround(std::clamp(duration,0.0,0x1p50))};
+            reverseFrames, textureGridShift, causalTextureCenters};
     }
 
     [[nodiscard]] const audio::StreamingWarp* get() const noexcept {
@@ -197,6 +209,7 @@ private:
     double endTick_, loopStart_, loopLength_;
     Placement arrangement_;
     double framesPerTick_, reverseEndTick_;
+    bool reverseTexture_;
     std::shared_ptr<const WarpOnsetJob> onsetJob_;
     std::unique_ptr<audio::StreamingWarp> player_;
     std::atomic<const audio::StreamingWarp*> compiled_{nullptr};

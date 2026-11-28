@@ -955,9 +955,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if (a->warpEnabled && !warpMode) throw std::runtime_error("warp mode is not available");
             const bool arrangementStreaming = warpPlayback == WarpPlayback::Streaming;
             const bool nativeWarp = (arrangementStreaming || warpPlayback == WarpPlayback::NativePages) &&
-                warpMode && a->formantShift == 0 &&
-                (!a->reverse || (arrangementStreaming &&
-                    (*warpMode == audio::WarpMode::RePitch || *warpMode == audio::WarpMode::Beats))) &&
+                warpMode && a->formantShift == 0 && (!a->reverse || arrangementStreaming) &&
                 (*warpMode == audio::WarpMode::Beats || *warpMode == audio::WarpMode::Texture ||
                  *warpMode == audio::WarpMode::RePitch);
             const bool r3Mode = (arrangementStreaming || warpPlayback == WarpPlayback::AlignedR3) &&
@@ -1098,9 +1096,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if (warpPlayback == WarpPlayback::NativePages && warpMode == audio::WarpMode::RePitch &&
                 !supportsLaunchRePitchRates(map.markers,warpClock))
                 throw std::runtime_error("Session Re-Pitch Warp rate exceeds the streaming resampler range");
-            const bool reverseSynthesis = stream && clip->reverse && spec.mode == audio::WarpMode::Beats;
-            // Traverse the forward Beats slices backward. Its worker supplies
-            // original PCM and the onset analysis stays in the forward source.
+            const bool reverseSynthesis = stream && clip->reverse &&
+                (spec.mode == audio::WarpMode::Beats || spec.mode == audio::WarpMode::Texture);
+            // Traverse the forward Beats slices or Texture grains backward.
+            // Their worker and onset analysis still see the original source.
             if (reverseSynthesis) clip->reverse = false;
             if (stream && !r3)
                 clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*clip->sourceRate/48000.0));

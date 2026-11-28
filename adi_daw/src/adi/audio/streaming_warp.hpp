@@ -29,6 +29,10 @@ struct WarpStreamClock {
     double (*frameAtTick)(const void*, double) noexcept = nullptr;
     // Optional bound for page read-ahead through a monotone clock segment.
     double maxTicksPerFrame = 0;
+    // Reversed Texture keeps its grain indices on the lap-head grid and
+    // chooses each source center from the clock at that grain's launch.
+    std::int64_t textureGridShift = 0;
+    bool causalTextureCenters = false;
 };
 
 struct WarpSourceRange {
@@ -83,6 +87,11 @@ private:
     [[nodiscard]] double maxFramesPerTick(double firstTick, double lastTick) const noexcept;
     void sampleFrame(WarpStreamInput, double position, std::span<float>) const noexcept;
     void sincFrame(WarpStreamInput, double position, double cutoff, std::span<float>) const noexcept;
+    [[nodiscard]] std::pair<std::int64_t, std::int64_t> textureGrains(double first, double last,
+                                                                   WarpStreamClock) const noexcept;
+    [[nodiscard]] double textureGrainCenter(std::int64_t, WarpStreamClock) const noexcept;
+    [[nodiscard]] double textureGrainStart(double center) const noexcept;
+    [[nodiscard]] double reverseTextureCenterTick(double center, WarpStreamClock) const noexcept;
     void renderTexture(double frame, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
     bool renderRePitch(double frame, double source, WarpStreamInput, WarpStreamClock, std::span<float>) const noexcept;
 

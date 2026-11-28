@@ -1329,6 +1329,8 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     decltype(midiHistories_) histories;
     const bool validPlayRate = std::isfinite(timing.sampleRate) && timing.sampleRate >= 1 &&
                                timing.sampleRate <= std::numeric_limits<std::uint32_t>::max();
+    if (validPlayRate)
+        timing.playQuantizeRate = static_cast<std::uint32_t>(std::llround(timing.sampleRate));
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
         const bool armed = recordArmed(track);
@@ -1408,18 +1410,6 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         route.voices = output->liveVoices;
         route.processes = true;
         timing.midiInputRoutes.push_back(std::move(route));
-    }
-    if (std::any_of(timing.midiInputRoutes.begin(), timing.midiInputRoutes.end(),
-                    [](const auto& route) { return route.playGrid != 0; })) {
-        timing.playQuantizeRate = static_cast<std::uint32_t>(std::llround(timing.sampleRate));
-        timing.playQuantizeTempo.push_back({0, timing.tempo.bpmAt(0)});
-        for (const auto& point : timing.tempo.events) {
-            const auto sample = timing.sampleForTick(point.posTicks);
-            if (sample == timing.playQuantizeTempo.back().sample)
-                timing.playQuantizeTempo.back().bpm = point.bpm;
-            else
-                timing.playQuantizeTempo.push_back({sample, point.bpm});
-        }
     }
     midiHistories_.swap(histories);
     prepareMidiPreview(timing, model);
@@ -3762,7 +3752,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories, session_.transport_,
-                                    {timing->playQuantizeTempo, timing->playQuantizeRate}, capture, punch, punchWindow);
+                                    {{}, timing->playQuantizeRate, &timing->tempo}, capture, punch, punchWindow);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     const auto* midiSink = timing && timing->spec.performanceState && !block.exporting && !io.exporting &&
