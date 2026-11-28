@@ -211,7 +211,11 @@ std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double
         auto raw=std::make_unique<PdSampleBuffer>();raw->id=info.slot;raw->channels=channels;raw->sampleRate=sourceRate;
         raw->frames=static_cast<std::int64_t>(interleaved.size()/static_cast<std::size_t>(channels));
         raw->interleaved=std::move(interleaved);raw->blake3=info.mediaHash;
-        auto prepared=prepareOneShotSample(std::move(raw));
+        // SC-482: the slices placed by hand (Slice by Manual), when the state
+        // holds them; preparation refuses a frame past the end or more than 64.
+        std::vector<std::size_t> slices;
+        if(value.contains("slices"))slices=value.at("slices").get<std::vector<std::size_t>>();
+        auto prepared=prepareOneShotSample(std::move(raw),slices);
         if(!prepared)throw std::runtime_error("OneShot sample preparation refused");
         return prepared;
     }

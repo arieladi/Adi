@@ -3,6 +3,7 @@
 #include "adi/ops.hpp"
 #include "adi/engine/param_ops.hpp"
 #include <filesystem>
+#include <span>
 namespace adi::audio {class DecodeCache;}
 namespace adi {
 struct PreparedSampleAssignment {
@@ -34,5 +35,12 @@ struct PreparedSampleAssignment {
     std::int32_t slot, double engineRate, std::int64_t importedUtc);
 [[nodiscard]] PreparedSampleAssignment prepareSampleCrop(Store&, std::int64_t device,
     std::int32_t slot, double engineRate, std::int64_t importedUtc);
+// SC-482: Slice by Manual's markers for OneShot's sample, as frames of the
+// sample (0 is always a slice and need not be given; at most 63 more, each
+// before the last frame). Adding, moving and deleting a marker are each this
+// command with the changed list; an empty list removes them all. One Undo step
+// that rewrites the slot's state (its optional `slices` field) and nothing else.
+[[nodiscard]] PreparedSampleAssignment prepareSampleSlices(Store&, std::int64_t device,
+    std::int32_t slot, std::span<const std::size_t> frames);
 [[nodiscard]] CommitResult commitSampleAssignment(Store&,const PreparedSampleAssignment&,Actor=Actor::User);
 }

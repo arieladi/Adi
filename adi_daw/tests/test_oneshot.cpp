@@ -703,6 +703,11 @@ void sliceSensitivity() {
     check(first(37) == .3f && first(38) == .9f && silent(39), "a lower Sensitivity finds fewer slices");
     set(d, OneShot::SliceSensitivity, 100);
     check(first(37) == .03f && first(38) == .08f && first(40) == .9f, "a higher one finds more");
+    const auto prepared = OneShot::prepareSample(clicks, 1, 48000);
+    check(prepared && OneShot::transientSlices(*prepared, 50) == std::vector<std::size_t>{0, 9600, 14400, 19200} &&
+              OneShot::transientSlices(*prepared, 0).size() == 3 &&
+              OneShot::transientSlices(*prepared, 100).size() == 5,
+          "the window can read the slices each Sensitivity plays");
 }
 void liveDefaults() {
     struct Row {

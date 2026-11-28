@@ -26,6 +26,9 @@ slots mediaHash, sourceRate, source_f32le (mono float32 little-endian), and the
 derived rate/kernel/target. The original-rate mono backup permits preparation
 at another engine rate when the original file is absent. The derived profile
 is restored directly at its saved rate. Unknown CBOR fields survive a save.
+A OneShot slot may also hold `slices`, its markers placed by hand (frames of the
+source, ascending, frame 0 implied, at most 63); a state without it has none
+(SC-482). A build that predates it keeps it as an unknown field.
 The backup is limited to 8M input frames and 8M resampled frames; oversized,
 nonfinite, corrupt or unsupported state fails before publication. The source
 hash is verified against the captured import to catch changes during decode.

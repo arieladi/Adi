@@ -4,11 +4,15 @@
 #include "adi/builtin_catalog.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/dsp/oneshot.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/builtin_samples.hpp"
+#if ADI_WITH_PD
+#include "adi/pd_builtins/oneshot_sample.hpp"
+#endif
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <bit>
@@ -215,6 +219,51 @@ void reverseAndCrop() {
               storedParam(*store, device, "2") == .25 && storedParam(*store, device, "3") == .75,
           "Undo brings the whole sample and its region back");
     check(!prepareSampleReverse(*store, 999, 1, 48000, 10).ok, "a missing device refuses");
+    // SC-482: slices placed by hand. Key 36 plays from 0, 37 from the first
+    // marker; on the ramp a slice's first output sample is its frame / 400.
+    const auto playKey = [&](int key) {
+        SQLite::Statement row(db, "SELECT state_hash FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+        row.bind(1, device);
+        if (!row.executeStep()) return -1.f;
+        const auto blob = store->getStateBlob(row.getColumn(0).getString());
+        std::vector<std::uint8_t> bytes;
+        for (const auto b : *blob) bytes.push_back(static_cast<std::uint8_t>(b));
+        auto restored = restoreBuiltinSample(Payload::from_cbor(bytes), 48000);
+        const auto* sample = dynamic_cast<const PdOneShotSample*>(restored.get());
+        if (sample == nullptr) return -1.f;
+        OneShot voice;
+        // Slice by Manual, Mono; no snap, filter or fade in; full level.
+        const std::array<std::pair<const char*, double>, 7> settings{{{"mode", 1.}, {"slice_by", 1.}, {"snap", 0.},
+            {"filter_on", 0.}, {"fade_in", 0.}, {"vel_to_vol", 1.}, {"volume", .5}}};
+        for (const auto& [id, value] : settings) voice.setParam(id, ParamValue::fromNormalized(value));
+        voice.prepare(48000, 64);
+        std::array<float, 64> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        const Event note{0, EventType::NoteOn, 0, static_cast<std::uint16_t>(key), 1, 0, 1};
+        NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = 64;
+        io.events = {&note, 1};
+        voice.processPrepared(io, sample->prepared.get(), 1);
+        return left[0];
+    };
+    const std::array<std::size_t, 3> marks{300, 100, 100};
+    const auto placed = prepareSampleSlices(*store, device, 1, marks);
+    if (!placed.ok) std::printf("slices: %s\n", placed.error.c_str());
+    check(placed.ok && commitSampleAssignment(*store, placed).ok && History(*store).nextUndo()->label == "Edit Slices",
+          "placing slices by hand is one Undo step");
+    check(playKey(36) == 0.f && playKey(37) == .25f && playKey(38) == .75f && playKey(39) == 0.f,
+          "Slice by Manual plays the markers placed, in order, each once");
+    const std::array<std::size_t, 2> moved{200, 300};
+    check(commitSampleAssignment(*store, prepareSampleSlices(*store, device, 1, moved)).ok && playKey(37) == .5f,
+          "moving a marker moves its slice");
+    const std::array<std::size_t, 1> deleted{300};
+    check(commitSampleAssignment(*store, prepareSampleSlices(*store, device, 1, deleted)).ok && playKey(37) == .75f,
+          "deleting a marker joins its slice to the one before");
+    const std::array<std::size_t, 1> past{400};
+    check(!prepareSampleSlices(*store, device, 1, past).ok, "a marker past the sample's end refuses");
+    check(History(*store).undo().ok && playKey(37) == .5f, "Undo puts the deleted marker back");
 }
 #endif
 void callbackRefusal() {

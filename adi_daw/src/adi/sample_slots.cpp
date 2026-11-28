@@ -260,6 +260,46 @@ PreparedSampleAssignment prepareSampleCrop(Store& store, std::int64_t device, st
                                            double rate, std::int64_t utc) {
     return prepareProcessed(store, device, slot, SampleProcess::Crop, rate, utc);
 }
+PreparedSampleAssignment prepareSampleSlices(Store& store, std::int64_t deviceId, std::int32_t slot,
+                                             std::span<const std::size_t> frames) {
+    PreparedSampleAssignment result;
+    result.deviceId = deviceId;
+    try {
+        if (audio::onAudioThread) throw std::runtime_error("slice editing belongs off the audio thread");
+        if (store.readOnly()) throw std::runtime_error("project is read-only");
+        auto& db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0) read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        if (sampleDeviceUid(store, deviceId) != sampleInstrumentUid)
+            throw std::runtime_error("slices by hand are OneShot's");
+        auto state = currentSampleState(store, deviceId, slot);
+        if (device::inspectBuiltinSample(state).empty) throw std::runtime_error("the sample slot holds no sample");
+        const auto channels = state.at("channels").get<int>();
+        const auto& bytes = state.at("source_f32le").get_binary();
+        if (channels < 1 || channels > 2 || bytes.size() % (4 * static_cast<std::size_t>(channels)) != 0)
+            throw std::runtime_error("the sample slot's audio is invalid");
+        const std::size_t sampleFrames = bytes.size() / (4 * static_cast<std::size_t>(channels));
+        std::vector<std::size_t> slices(frames.begin(), frames.end());
+        std::sort(slices.begin(), slices.end());
+        slices.erase(std::unique(slices.begin(), slices.end()), slices.end());
+        std::erase(slices, std::size_t{0});
+        if (slices.size() > 63) throw std::runtime_error("a sample holds at most 64 slices");
+        if (!slices.empty() && slices.back() >= sampleFrames) throw std::runtime_error("a slice lies past the sample's end");
+        if (slices.empty())
+            state.erase("slices");
+        else
+            state["slices"] = slices;
+        result.sourceFile = media::pathUtf8(store.path());
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        addState(result, state);
+        for (auto& request : result.requests) request.label = "Edit Slices";
+        result.ok = true;
+    } catch (const std::exception& error) {
+        result = {};
+        result.error = error.what();
+    }
+    return result;
+}
 CommitResult commitSampleAssignment(Store& store,const PreparedSampleAssignment& prepared,Actor actor) {
     CommitResult result;
     if(audio::onAudioThread){result.error="sample assignment belongs off the audio thread";return result;}

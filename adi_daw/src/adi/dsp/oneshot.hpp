@@ -15,16 +15,19 @@ class OneShot final : public DeviceInstance {
     // Opaque immutable preparation. Construction/copying/analysis happens only
     // in prepareSample(), never when the audio thread adopts a sample slot.
     class PreparedSample {
+      public:
+        /// SC-482: Sensitivity's steps, 0 % to 100 % in 5 % steps.
+        static constexpr int kSensitivitySteps = 21;
+      private:
         friend class OneShot;
         PreparedSample() = default;
         std::vector<float> data;
         int channels = 1;
         double rate = 48000;
         std::vector<std::size_t> manual, zeros;
-        /// SC-482: the transient slices at each step of Sensitivity, 0 % to
-        /// 100 % in 5 % steps; step 10 (50 %, the default) is the one list
-        /// OneShot found before Sensitivity existed, found the same way.
-        static constexpr int kSensitivitySteps = 21;
+        /// SC-482: the transient slices at each step of Sensitivity; step 10
+        /// (50 %, the default) is the one list OneShot found before
+        /// Sensitivity existed, found the same way.
         std::array<std::vector<std::size_t>, kSensitivitySteps> transients;
         std::size_t frames() const noexcept {
             return data.size() / static_cast<std::size_t>(channels);
@@ -163,6 +166,11 @@ class OneShot final : public DeviceInstance {
     [[nodiscard]] static std::shared_ptr<const PreparedSample> prepareSample(
         std::span<const float> interleaved, int channels, double rate,
         std::span<const std::size_t> manualSlices = {});
+    /// SC-482, message thread: the transient slices a prepared sample plays at
+    /// this Sensitivity (percent), frame 0 first, so the window can show them
+    /// and turn one into a slice placed by hand (prepareSampleSlices).
+    [[nodiscard]] static std::vector<std::size_t> transientSlices(const PreparedSample &,
+                                                                  double sensitivity);
     // Sampler (DEV-21): set only before this voice engine is published by
     // Sampler. Classic mode pitches each key against it; Slice ignores it.
     void setRootKey(int key) noexcept { rootKey_ = std::clamp(key, 0, 127); }

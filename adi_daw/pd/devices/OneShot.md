@@ -40,6 +40,12 @@ Sensitivity (Slice by Transient) picks one of 21 lists found when the sample is
 prepared, 0 % to 100 % in 5 % steps; 50 %, the default, is the list OneShot
 found before the control existed (above 0.05 and three times the envelope, 10
 ms apart), each step 2^(1/5) stricter or looser. Up to 64 slices in each.
+Slices placed by hand (Slice by Manual) live in the sample slot's state as its
+optional `slices` field (frames; 0 is always a slice); `prepareSampleSlices` in
+`src/adi/sample_slots.cpp` sets the list, so adding, moving and deleting a
+marker are each one Undo step, and `OneShot::transientSlices` gives the window
+the transient list to turn a transient into a marker. Changing Sensitivity
+leaves the markers alone.
 Reverse and Crop (Simpler's context-menu commands) are `prepareSampleReverse`
 and `prepareSampleCrop` in `src/adi/sample_slots.cpp`: each writes a changed
 copy of the slot's sample to `Samples/Processed/Reverse` or `.../Crop` in the

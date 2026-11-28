@@ -133,6 +133,12 @@ double real(int i, double n) {
 double normal(int i, double v) {
     return std::clamp((v - specs[i].lo) / (specs[i].hi - specs[i].lo), 0., 1.);
 }
+// SC-482: the transient list Sensitivity (percent) picks: 50 % is step 10.
+std::size_t sensitivityStep(double percent) noexcept {
+    constexpr long last = OneShot::PreparedSample::kSensitivitySteps - 1;
+    return static_cast<std::size_t>(
+        std::clamp(std::lround(percent / 100. * static_cast<double>(last)), 0L, last));
+}
 } // namespace
 OneShot::OneShot() {
     for (int i = 0; i < Count; ++i) {
@@ -296,6 +302,9 @@ std::shared_ptr<const OneShot::PreparedSample> OneShot::prepareSample(
         }
     }
     return s;
+}
+std::vector<std::size_t> OneShot::transientSlices(const PreparedSample &s, double sensitivity) {
+    return s.transients[sensitivityStep(std::isfinite(sensitivity) ? sensitivity : 50.)];
 }
 bool OneShot::publishSample(std::span<const float> audio, int channels, double rate,
                             std::span<const std::size_t> manual) {
@@ -488,11 +497,7 @@ bool OneShot::slice(int key, const Sample &s, const std::array<double, Count> &p
         if (p[SlicePlayback] != 2)
             to = std::min(end, from + size);
     } else {
-        // SC-482: Sensitivity picks its step's list (50 %: step 10).
-        const auto step = static_cast<std::size_t>(std::clamp(
-            std::lround(p[SliceSensitivity] / 100. * (Sample::kSensitivitySteps - 1)), 0L,
-            static_cast<long>(Sample::kSensitivitySteps - 1)));
-        const auto &slices = by == 2 ? s.transients[step] : s.manual;
+        const auto &slices = by == 2 ? s.transients[sensitivityStep(p[SliceSensitivity])] : s.manual;
         auto first = std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(begin));
         if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key))
             return false;
