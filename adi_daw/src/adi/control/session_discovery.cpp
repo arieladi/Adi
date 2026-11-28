@@ -24,6 +24,9 @@
 #include <cerrno>
 #include <signal.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/random.h> // getentropy is declared here on macOS, not in unistd.h
+#endif
 #endif
 
 namespace adi::control {
