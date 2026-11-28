@@ -768,8 +768,23 @@ void unwarpedRecordingTempoChanges() {
         change[0].payload = {{"pos", 0}};
         change[1].opType = "project.insertTempoEvent";
         change[1].payload = {{"pos", 0}, {"bpm", bpm}};
+        const auto lengthOf = [&] {
+            return f.store->db().execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64();
+        };
+        const auto lengthBefore = lengthOf();
+        const auto rowsBefore = digestProject(*f.store).text;
         if (!OpJournal(*f.store).commit(change).ok)
             throw std::runtime_error("could not change the recording's tempo");
+        // The tempo change rewrites the take's length beside the tempo row: one step, both ways.
+        const auto lengthAfter = lengthOf();
+        const auto rowsAfter = digestProject(*f.store).text;
+        const auto undone = History(*f.store).undo();
+        const bool restored = undone.ok && lengthOf() == lengthBefore && digestProject(*f.store).text == rowsBefore;
+        const auto redone = History(*f.store).redo();
+        check(lengthAfter != lengthBefore && restored && redone.ok && lengthOf() == lengthAfter &&
+                  digestProject(*f.store).text == rowsAfter,
+              bpm == 240 ? "SC-11: one Undo and Redo of a faster tempo restore the unwarped take's length and every row"
+                         : "SC-11: one Undo and Redo of a slower tempo restore the unwarped take's length and every row");
         const auto snapshot = SnapshotBuilder::fromStore(*f.store);
         const auto& clip = *snapshot->findTrack(21)->clips.front();
         const auto first = static_cast<std::size_t>(at120 * 120 / bpm);
