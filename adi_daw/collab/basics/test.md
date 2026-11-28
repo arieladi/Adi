@@ -153,6 +153,7 @@ The second chain starts from `origin/main` at `c0d22ae45`. This session owns the
 | SC | Branch and head | What changed | How it was proved | State |
 |---|---|---|---|---|
 | SC-449 | `basics/test-chain-2` at `5cdad58fe` | Refresh the native Edit menu when Redo becomes available. Window and edit seats. | The peerless menu fixture follows real Undo and Redo and uses the platform chord. Physical macOS key delivery remains a native check. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
+| SC-475, SC-184 | `basics/test-chain-2` at `385447fcd` | Split uses the marker track or picked clips and ranges. The explicit all-tracks setting remains. Edit and window seats. | The focused display-free fixture failed seven checks before and passed 98 after, including one-step Undo and Redo. All 295 headless tests outside the performance label passed in Debug with warnings as errors. | Pushed |
 
 ### Second test measurements and findings
 
@@ -167,3 +168,15 @@ Redo is still item 2 of Edit. There are no added controls or position changes. A
 The linked Debug fixture passed seven of nine checks against the baseline and all nine against the fix with DISPLAY unset. The separate isolated message-loop probe held an Edit menu cache and made no manual menu reads between actions. The baseline delivered zero updates. The fix delivered one after a normal rename, one after Undo and one after Redo. Cached Undo and Redo availability followed the history, and querying the menu during its callback did not schedule a second refresh. Native keyboard delivery on macOS remains a runner check.
 
 The first full Redo run tripped the unchanged History List wall-time ratio. A solo run passed all 79 checks at 8.05 ms for 2,000 retained operations and 60.12 ms for 8,000. The subsequent full runs schedule that timing test on its own while retaining it in the same headless set.
+
+#### SC-475 and SC-184 · Arrangement Split
+
+Base `6aeeed1b1`. Main already has the batch split from `cc7bc859a`. The safety seat’s published `3789b35ac` adds picked clips, retains picked multi-track ranges, and keeps the anchor's complete span if it only touches the cut point. It still defaults to cutting every visible track when there is just one insert marker.
+
+Candidate `1c021026d` carries the published safety fix and defaults `editing.splitAllWithNoSelection` to off in the registry and command cache. Drawing a marker in a lane and pressing Cmd/Ctrl+E cuts the clip under the marker in that lane. Doing the same with multiple picked clips cuts each selected clip that crosses the marker, in one Undo/Redo. A user's explicitly enabled REAPER option still splits every eligible track. Settings with no explicit override adopt the current registry default.
+
+At 1440 × 900, the marker was canvas-local x18 y0 in integer coordinates. Each track originally covered x0–37. After the operation, the marker lane had spans x0–18 and x18–37. The other track retained x0–37. Component geometry is unchanged. The fixture also tests two-edge cuts across a picked time range and the optional all-tracks scope.
+
+A focused Debug replay compiled the candidate’s shell implementation, settings registry and exact `splitAndRangeEdits` fixture with the Werror CMake flags, linked read-only built dependencies, and ran with temporary ADI_HOME and DISPLAY unset. Passed 98 checks, zero failures and no unexpected JUCE assertions. The integrated test suite is the chain owner's separate gate.
+
+The same fixture linked without the two production replacements failed seven checks, including the new default, single-lane scope, picked-range retention, and picked-clip Split/Redo. Main's shell and settings sources are identical to those of the built baseline on these paths.
